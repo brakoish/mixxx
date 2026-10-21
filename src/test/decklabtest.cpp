@@ -74,10 +74,13 @@ class NativeDeckLabTest : public BaseSignalPathTest {
         auto* search = new WSearchLineEdit(panel.get(), config());
         panel->bindBrowser(search, sidebar, library); navigation->bindSearchboxWidget(search);
         navigation->bindSidebarWidget(sidebar); navigation->bindLibraryWidget(library, nullptr);
-        // Empty native viewers exercise screen geometry. Their empty rendering
-        // is not evidence of waveform pacing or physical touchscreen behavior.
-        for (int deck = 1; deck <= 3; ++deck) panel->addWaveform(
-                new WWaveformViewer(QStringLiteral("[Channel%1]").arg(deck), config(), panel.get()), deck);
+        // Geometry slots only. A bare WWaveformViewer is opaque but cannot
+        // paint until the skin parser creates its renderer. The separate full
+        // application smoke check captures the actual configured viewers.
+        for (int deck = 1; deck <= 3; ++deck) {
+            auto* slot = new QWidget(panel.get()); slot->setStyleSheet("background:#000");
+            panel->addWaveform(slot, deck);
+        }
         panel->resize(800, 480); panel->show(); QCoreApplication::processEvents();
     }
     void TearDown() override {
@@ -146,6 +149,17 @@ TEST_F(NativeDeckLabTest, EmptySamplerHasAnExplicitLoadAndCancelFlow) {
     EXPECT_TRUE(cancel->text().contains("Cancel")); cancel->click(); EXPECT_EQ(2, panel->currentPage());
 }
 
+TEST_F(NativeDeckLabTest, UsbUtilityReturnsDirectlyToNativeSources) {
+    panel->browsePress(); panel->browsePress(); panel->browsePress();
+    const int before = source->activations;
+    ASSERT_TRUE(sidebar->rootIndex().isValid());
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_sources"), 1);
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_sources"), 0);
+    QCoreApplication::processEvents();
+    EXPECT_EQ(1, panel->currentPage()); EXPECT_FALSE(sidebar->rootIndex().isValid());
+    EXPECT_TRUE(sidebar->isVisible()); EXPECT_EQ(before, source->activations);
+}
+
 TEST_F(NativeDeckLabTest, TouchSearchUsesNativeKeyboardAndReturnsWaveforms) {
     panel->selectPage(1);
     panel->findChild<QPushButton*>("decklab-search")->click();
@@ -173,10 +187,14 @@ TEST_F(NativeDeckLabTest, PagesFit800By480) {
         panel->selectPage(page); QCoreApplication::processEvents();
         EXPECT_EQ(QSize(800, 480), panel->size()) << page;
         for (auto* button : panel->findChildren<QPushButton*>()) {
-            if (!button->isVisible() || button->visibleRegion().isEmpty()) continue;
+            if (!button->isVisible()) continue;
             QRect bounds(button->mapTo(panel.get(), QPoint()), button->size());
             EXPECT_TRUE(panel->rect().contains(bounds)) << qPrintable(button->text()) << " page " << page;
             EXPECT_GE(button->height(), 38) << qPrintable(button->text());
+        }
+        if (page == 0) {
+            auto* cue = panel->findChild<QPushButton*>("decklab-1-cue_default");
+            EXPECT_TRUE(cue->isVisible()); EXPECT_FALSE(cue->visibleRegion().isEmpty());
         }
         if (!output.isEmpty()) EXPECT_TRUE(panel->grab().save(QDir(output).filePath(QStringLiteral("screen-%1.png").arg(page))));
     }
@@ -222,6 +240,7 @@ TEST_F(NativeDeckLabTest, LongMetadataCannotHideTempoOrExpandSurface) {
 }
 
 TEST_F(NativeDeckLabTest, ControllerLayerChangeRefreshesPlayState) {
+    m_pMixerDeck1->loadFakeTrack(false, 128); ProcessBuffer();
     ControlObject::set(ConfigKey("[Channel1]", "play"), 1);
     ControlObject::set(ConfigKey("[Channel3]", "play"), 0);
     QCoreApplication::processEvents();
@@ -269,7 +288,7 @@ TEST(DeckLabTempoTest, JitterIsSmoothedButPitchChangesImmediately) {
     DeckLabTempoPresenter display;
     const double initial = display.update(true, 141.97, 1, 141.97, 0);
     for (int n = 1; n < 8; ++n) EXPECT_EQ(initial, display.update(true, n % 2 ? 141.93 : 141.97, 1, 141.93, n * 100));
-    EXPECT_NEAR(144.79, display.update(true, 141.97, 1.02, 144.8, 800), .02);
+    EXPECT_DOUBLE_EQ(144.81, display.update(true, 141.97, 1.02, 144.8, 800));
     EXPECT_EQ(130, display.update(true, 130, 1, 130, 900));
     EXPECT_EQ(0, display.update(false, 130, 1, 130, 1000));
 }

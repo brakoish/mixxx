@@ -28,7 +28,7 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
     const auto check = [surface, failures] {
         if (surface->size() != QSize(800, 480)) failures->append("Surface is not 800x480");
         for (auto* b : surface->findChildren<QPushButton*>()) {
-            if (!b->isVisible() || b->visibleRegion().isEmpty()) continue;
+            if (!b->isVisible()) continue;
             const QRect rect(b->mapTo(surface, QPoint()), b->size());
             if (!surface->rect().contains(rect)) failures->append(QString(QStringLiteral("Clipped button: ") + b->text()));
         }
@@ -39,9 +39,9 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
     QObject::connect(timer, &QTimer::timeout, surface, [=] {
         // Capture the real parser/Library/PlayerManager surface, including the
         // empty native waveform viewers. These are not moving-audio evidence.
-        if (*step < 5) surface->selectPage(*step);
-        else if (*step < 10) { surface->selectPage(3); surface->findChild<QStackedWidget*>("decklab-fx-pages")->setCurrentIndex(*step - 5); }
-        else if (*step < 15) { surface->selectPage(4); surface->findChild<QStackedWidget*>("decklab-settings-pages")->setCurrentIndex(*step - 10); }
+        if (*step < 5) surface->findChild<QPushButton*>(QStringLiteral("decklab-tab-%1").arg(*step))->click();
+        else if (*step < 10) { surface->selectPage(3); surface->findChild<QPushButton*>(QStringLiteral("decklab-fx-view-%1").arg(*step - 5))->click(); }
+        else if (*step < 15) { surface->selectPage(4); surface->findChild<QPushButton*>(QStringLiteral("decklab-settings-category-%1").arg(*step - 10))->click(); }
         else if (*step == 15) surface->openCollection();
         else if (*step == 16) surface->findChild<QPushButton*>("decklab-search")->click();
         else {

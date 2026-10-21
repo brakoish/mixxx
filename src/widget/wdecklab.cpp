@@ -74,6 +74,7 @@ const QString kStyle = QStringLiteral(R"(
  WDeckLab QHeaderView::section {background:#222;color:#aaa;border:0;border-right:1px solid #444;padding:5px;}
  WDeckLab QScrollBar:vertical {width:10px;background:#111;}
  WDeckLab QScrollBar::handle:vertical {background:#666;min-height:24px;}
+ WDeckLab QScrollArea, WDeckLab QScrollArea > QWidget, WDeckLab QScrollArea > QWidget > QWidget {background:#101010;border:0;}
  WDeckLab QMenu {background:#191919;border:1px solid #666;}
  WDeckLab QMenu::item {padding:13px 20px;}
  WDeckLab QMenu::item:selected {background:#333;}
@@ -144,7 +145,7 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     setAttribute(Qt::WA_StyledBackground);
     setMinimumSize(800, 480);
     m_clock.start();
-    for (const auto& name : {"active", "browse_press", "browse_back", "tool_request", "tool_serial", "tools_ready"}) {
+    for (const auto& name : {"active", "browse_press", "browse_back", "browse_sources", "tool_request", "tool_serial", "tools_ready"}) {
         createControl(kNative, QString::fromLatin1(name));
     }
     m_toolSerial = static_cast<unsigned int>(value(kNative, "tool_serial"));
@@ -187,6 +188,7 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     m_waveforms = new QWidget(this);
     m_waveLayout = column(m_waveforms);
     m_pages = new QStackedWidget(this);
+    m_pages->setObjectName("decklab-pages");
     m_pages->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
     m_pages->addWidget(buildDecks());
     m_pages->addWidget(buildBrowse());
@@ -202,6 +204,13 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     m_root->addWidget(m_status);
     watch(kNative, "browse_press", [this](double v) { if (v > 0) browsePress(); });
     watch(kNative, "browse_back", [this](double v) { if (v > 0) browseBack(); });
+    watch(kNative, "browse_sources", [this](double v) {
+        if (v <= 0 || !m_sidebar) return;
+        selectPage(1); setSearchOpen(false);
+        m_sidebar->setRootIndex(QModelIndex());
+        m_sidebar->setCurrentIndex(QModelIndex());
+        showSources();
+    });
     watch(kNative, "tools_ready", [this](double v) {
         if (v > 0) { const bool wasOnline = m_toolsOnline; m_lastToolsReady = m_clock.elapsed(); m_toolsOnline = true; for (auto* b : m_toolButtons) b->setEnabled(true); if (!wasOnline) updateStatus(); }
     });
@@ -746,7 +755,8 @@ QWidget* WDeckLab::buildSettings() {
             }
         }
         rows->addStretch(); scroll->setWidget(content); pages->addWidget(scroll);
-        auto* link = button(names[index], [pages, index] { pages->setCurrentIndex(index); }, categories);
+        auto* link = button(names[index], [pages, index] { pages->setCurrentIndex(index); }, categories,
+                QStringLiteral("decklab-settings-category-%1").arg(index));
         link->setCheckable(true); link->setChecked(index == 0); link->setProperty("rail", true);
         connect(pages, &QStackedWidget::currentChanged, link, [link, index](int page) { link->setChecked(page == index); });
         link->setFixedHeight(52); links->addWidget(link);
