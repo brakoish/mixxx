@@ -632,7 +632,8 @@ QWidget* WDeckLab::buildEffects() {
             refreshFx();
             if(m_fxActive&&m_sampleRouting)applyEffects();
         };
-        watch(group,"play",[pad](double v){pad->setChecked(v>0);}); watch(group,"track_loaded",refresh);
+        watch(group,"play",[this,pad](double v){pad->setChecked(v>0);refreshFx();}); watch(group,"track_loaded",refresh);
+        watch(group,"local_bpm",[this](double){refreshFx();});
         if(m_players) if(auto* player=m_players->getPlayer(group)) connect(player,&BaseTrackPlayer::newTrackLoaded,this,[refresh](TrackPointer){refresh(1);});
         QTimer::singleShot(0,pad,[refresh]{refresh(0);});
         triggers->addWidget(pad,1);
@@ -1077,6 +1078,13 @@ void WDeckLab::refreshFx() {
     for(int n=0;n<3;++n) {m_levers[n]->setEnabled(source);m_isolates[n]->setEnabled(source);}
     for(int n=0;n<4;++n) if(auto* hold=findChild<QPushButton*>(QStringLiteral("decklab-hold-%1").arg(n))) hold->setEnabled(source);
     for(int n=0;n<4;++n) if(auto* starter=findChild<QPushButton*>(QStringLiteral("decklab-transition-%1").arg(n))) starter->setEnabled(source);
+    const QString sampleGroup = QStringLiteral("[Sampler%1]").arg(m_fxSample);
+    for (int n = 0; n < 4; ++n) {
+        if (auto* roll = findChild<QPushButton*>(QStringLiteral("decklab-roll-%1").arg(n)))
+            roll->setEnabled(loaded && value(channel(m_fxDeck), "play"));
+        if (auto* roll = findChild<QPushButton*>(QStringLiteral("decklab-sample-roll-%1").arg(n)))
+            roll->setEnabled(value(sampleGroup, "play") && value(sampleGroup, "local_bpm") > 0);
+    }
     m_fxStatus->setText(!ready ? tr("RMX processor unavailable") : !source ? tr("Load a track / arm sample FX") : m_fxReleasing ? tr("Releasing tail") : m_fxActive ? tr("RMX active") : tr("RMX ready · Dry"));
     if (m_fxActive && (!ready || !source)) releaseEffects();
 }

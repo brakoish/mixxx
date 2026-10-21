@@ -338,6 +338,19 @@ TEST_F(NativeDeckLabTest, TransitionStartersApplyOwnedRmxAndOpenItsEditor) {
     EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "play")));
 }
 
+TEST_F(NativeDeckLabTest, RollPadsRequireAPlayingDeck) {
+    m_pEffectsManager->setup(); m_pEffectsManager->ensureDeckLabEffects();
+    m_pEngineMixer->prepareAudio(mixxx::audio::SampleRate(44100));
+    m_pMixerDeck1->loadFakeTrack(false, 128); ProcessBuffer(); QCoreApplication::processEvents();
+    panel->selectPage(3);
+    auto* roll = panel->findChild<QPushButton*>("decklab-roll-0"); ASSERT_NE(nullptr, roll);
+    EXPECT_FALSE(roll->isEnabled());
+    ControlObject::set(ConfigKey("[Channel1]", "play"), 1); QCoreApplication::processEvents();
+    EXPECT_TRUE(roll->isEnabled());
+    ControlObject::set(ConfigKey("[Channel1]", "play"), 0); QCoreApplication::processEvents();
+    EXPECT_FALSE(roll->isEnabled());
+}
+
 #ifdef __LILV__
 TEST_F(NativeDeckLabTest, Lv2PreparationUsesSelectedRateWithoutAudio) {
     auto manifest = m_pEffectsManager->getBackendManager()->getManifest(
