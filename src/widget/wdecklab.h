@@ -52,6 +52,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void openSource();
     void openCollection();
     void releaseEffects(bool musical = false, bool mute = false);
+    void setAudioOutputConfigured(bool configured);
 
   signals:
     void advancedPreferencesRequested();
@@ -156,6 +157,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     unsigned int m_toolSerial = 0;
     qint64 m_lastToolsReady = -10000;
     bool m_toolsOnline = false;
+    bool m_outputConfigured = false;
     QList<QPushButton*> m_toolButtons;
     std::array<DeckLabTempoPresenter, 4> m_tempos{};
     std::array<int, 2> m_layers{1, 2};

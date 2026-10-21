@@ -591,7 +591,7 @@ void MixxxMainWindow::initializeWindow() {
 
 #ifndef __APPLE__
 void MixxxMainWindow::alwaysHideMenuBarDlg() {
-    if (m_pCoreServices->getSettings()->getValueString(ConfigKey("[Config]", "skin")) == "DeckLab") {
+    if (m_pCoreServices->getSettings()->getValueString(ConfigKey("[Config]", "ResizableSkin")) == "DeckLab") {
         m_pCoreServices->getSettings()->setValue(kHideMenuBarConfigKey, 1);
         return;
     }
@@ -1395,8 +1395,16 @@ bool MixxxMainWindow::loadConfiguredSkin() {
             &m_skinCreatedControls,
             m_pCoreServices.get());
     if (m_pCentralWidget) {
-        if (auto* native = m_pCentralWidget->findChild<WDeckLab*>())
+        if (auto* native = m_pCentralWidget->findChild<WDeckLab*>()) {
             connect(native, &WDeckLab::advancedPreferencesRequested, this, &MixxxMainWindow::slotOptionsPreferences);
+            auto sound = m_pCoreServices->getSoundManager();
+            const std::weak_ptr<SoundManager> weakSound(sound);
+            native->setAudioOutputConfigured(!sound->getConfig().getOutputs().isEmpty());
+            connect(sound.get(), &SoundManager::devicesSetup, native, [native, weakSound] {
+                if (auto current = weakSound.lock())
+                    native->setAudioOutputConfigured(!current->getConfig().getOutputs().isEmpty());
+            });
+        }
     }
     if (centralWidget() == m_pLaunchImage) {
         initializationProgressUpdate(100, "");

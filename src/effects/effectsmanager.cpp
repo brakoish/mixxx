@@ -91,7 +91,7 @@ void EffectsManager::setup() {
     // readEffectsXml() is running is also initialized.
     m_initializedFromEffectsXml = true;
     readEffectsXml();
-    if (m_pConfig->getValueString(ConfigKey("[Config]", "skin")) == QStringLiteral("DeckLab")) {
+    if (m_pConfig->getValueString(ConfigKey("[Config]", "ResizableSkin")) == QStringLiteral("DeckLab")) {
         ensureDeckLabEffects();
     }
 }

@@ -69,6 +69,7 @@ class NativeDeckLabTest : public BaseSignalPathTest {
         source = std::make_unique<TestSource>(config());
         model = std::make_unique<SidebarModel>(); model->addLibraryFeature(source.get());
         navigation = std::make_unique<LibraryControl>(nullptr);
+        soundStatus = std::make_unique<ControlObject>(ConfigKey("[SoundManager]", "status"));
         players = std::make_unique<TestPlayers>(); players->decks={m_pMixerDeck1.get(),m_pMixerDeck2.get(),m_pMixerDeck3.get()};
         panel = std::make_unique<WDeckLab>(config(), nullptr, players.get(), m_pEffectsManager.get());
         sidebar = new WLibrarySidebar(panel.get()); sidebar->setModel(model.get());
@@ -86,7 +87,7 @@ class NativeDeckLabTest : public BaseSignalPathTest {
         panel->resize(800, 480); panel->show(); QCoreApplication::processEvents();
     }
     void TearDown() override {
-        panel.reset(); players.reset(); navigation.reset(); model.reset(); source.reset();
+        panel.reset(); soundStatus.reset(); players.reset(); navigation.reset(); model.reset(); source.reset();
         WaveformWidgetFactory::destroy(); BaseSignalPathTest::TearDown();
     }
     std::unique_ptr<TestSource> source;
@@ -94,6 +95,7 @@ class NativeDeckLabTest : public BaseSignalPathTest {
     std::unique_ptr<WDeckLab> panel;
     std::unique_ptr<TestPlayers> players;
     std::unique_ptr<LibraryControl> navigation;
+    std::unique_ptr<ControlObject> soundStatus;
     WLibrarySidebar* sidebar = nullptr;
     WLibrary* library = nullptr;
 };
@@ -213,6 +215,15 @@ TEST_F(NativeDeckLabTest, ActiveNavigationCannotBeUncheckedByReselectingIt) {
     auto* category = panel->findChild<QPushButton*>("decklab-settings-category-2"); ASSERT_NE(nullptr, category);
     category->click(); category->click(); EXPECT_TRUE(category->isChecked());
     EXPECT_FALSE(panel->findChild<QPushButton*>("decklab-settings-category-0")->isChecked());
+}
+
+TEST_F(NativeDeckLabTest, InternalClockCannotClaimAConfiguredAudioOutput) {
+    auto* status = panel->findChild<QLabel*>("decklab-status"); ASSERT_NE(nullptr, status);
+    ControlObject::set(ConfigKey("[SoundManager]", "status"), 2); QCoreApplication::processEvents();
+    EXPECT_TRUE(status->text().contains("Audio disconnected"));
+    panel->setAudioOutputConfigured(true); EXPECT_FALSE(status->text().contains("Audio disconnected"));
+    ControlObject::set(ConfigKey("[SoundManager]", "status"), 0); QCoreApplication::processEvents();
+    EXPECT_TRUE(status->text().contains("Audio disconnected"));
 }
 
 TEST_F(NativeDeckLabTest, PagesFit800By480) {

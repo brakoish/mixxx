@@ -204,7 +204,7 @@ def build(work, jobs, lock):
     smoke_profile = scratch / "decklab-native-smoke-profile"
     smoke_profile.mkdir(exist_ok=True)
     (smoke_profile / "mixxx.cfg").write_text(
-        "[Config]\nskin DeckLab\nshow_menubar_hint 0\nhide_menubar 1\n"
+        "[Config]\nResizableSkin DeckLab\nshow_menubar_hint 0\nhide_menubar 1\n"
         "[Key]\nKeyNotation Lancelot\n[Library]\nRowHeight 44\n", encoding="utf-8")
     (smoke_profile / "soundconfig.xml").write_text(
         '<SoundManagerConfig api="None" samplerate="48000" latency="7" sync_buffers="2" deck_count="4"/>', encoding="utf-8")

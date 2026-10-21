@@ -643,7 +643,7 @@ void CoreServices::initialize(QApplication* pApp) {
     // A USB-first appliance can start with no internal music directory. Keep
     // desktop Mixxx's chooser, but let Deck Lab reach Sources/Settings directly.
     if (m_pTrackCollectionManager->internalCollection()->loadRootDirs().isEmpty() &&
-            pConfig->getValueString(ConfigKey("[Config]", "skin")) != QStringLiteral("DeckLab")) {
+            pConfig->getValueString(ConfigKey("[Config]", "ResizableSkin")) != QStringLiteral("DeckLab")) {
 #if defined(Q_OS_IOS) || defined(Q_OS_WASM)
         // On the web and iOS, we are running in a sandbox (a virtual file
         // system on the web). Since we are generally limited to paths within

@@ -203,6 +203,7 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     m_root->addWidget(m_pages);
     m_root->addWidget(m_deckControls);
     m_status = new QLabel(this);
+    m_status->setObjectName("decklab-status");
     m_status->setProperty("muted", true);
     m_status->setContentsMargins(9, 0, 9, 0);
     m_status->setFixedHeight(22);
@@ -1198,11 +1199,14 @@ void WDeckLab::setKeyNotation(int index) {
     set("[Library]", "key_notation", static_cast<double>(formats[index]));
     for (int deck = 1; deck <= 4; ++deck) refreshDeck(deck);
 }
+void WDeckLab::setAudioOutputConfigured(bool configured) {
+    m_outputConfigured = configured; updateStatus();
+}
 void WDeckLab::updateStatus() {
     int overloads = int(value("[App]", "audio_latency_overload_count"));
     int recording = int(value("[Recording]", "status"));
     QString text = recording == 2 ? tr("REC · Recording") : recording == 3 ? tr("Recording paused") : QString();
-    if (value("[SoundManager]", "status") != 2) text += tr("   Audio disconnected · Settings → Device");
+    if (!m_outputConfigured || value("[SoundManager]", "status") != 2) text += tr("   Audio disconnected · Settings → Device");
     if (!m_toolsOnline) text += tr("   System tools offline");
     if (overloads) text += tr("   Audio overloads: %1").arg(overloads);
     m_status->setText(text);
