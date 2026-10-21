@@ -31,6 +31,12 @@ workflows are disabled in this fork. The workflow has read-only repository
 permission, pinned action revisions and no deployment credentials or Pi access.
 Pushes to the integration branch and `decklab-pi-*` tags also build candidates.
 
+From a development computer, dispatch the same workflow without Pi access:
+
+```sh
+gh workflow run decklab-pi.yml --repo brakoish/mixxx --ref codex/decklab-pi
+```
+
 For a separate ARM64 Linux build machine, install `git`, Python 3, `flatpak`,
 `flatpak-builder`, D-Bus and `elfutils` using its normal package manager. Commit
 source changes, then run from this checkout:
