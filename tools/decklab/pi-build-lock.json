@@ -68,7 +68,7 @@
     "src/engine/enginebuffer.h": "ab4858c5ed12dc262fce4170ed768d56564ffc59920328df2b6c2345335155a1",
     "src/engine/enginemixer.cpp": "cf59b37937b626f18649a29f6cc4ae25d74a324e36896550a610a250a1caec5b",
     "src/engine/enginemixer.h": "a2e3ca8bf34015100d6f5ce12d858b803cf849d8becab584eaac3127da34db3c",
-    "src/library/librarycontrol.cpp": "2cfc3c893a98e35e9938f7c2f392fa22fb882123c946490c115db9ec3b54b25d",
+    "src/library/librarycontrol.cpp": "808df9ffcbb81ebe640594f21e6ef7b2a655edfb99f109f5861bc6dcdf5c53ba",
     "src/library/rekordbox/rekordboxfeature.cpp": "e353ff8401ca991f782cd79b6f63be6f88053bd2c1f3c819eede4e203946b43f",
     "src/library/rekordbox/rekordboxfeature.h": "d0e911063eee9c36447d64d260844c901e30d518ef62192794a728625e04a821",
     "src/mixxxmainwindow.cpp": "3bd5cc613bd9f5e444cfcfbc9bc497e75d4ae0cd9b6f5dfc6a4ce52923d246e1",

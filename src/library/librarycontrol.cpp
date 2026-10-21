@@ -1037,7 +1037,10 @@ void LibraryControl::setLibraryFocus(FocusWidget newFocusWidget) {
         VERIFY_OR_DEBUG_ASSERT(m_pLibraryWidget) {
             return;
         }
-        m_pLibraryWidget->getActiveView()->setFocus();
+        // A newly bound native browser may not have a track view yet (for
+        // example while a source is being populated). Keep its surface usable
+        // instead of dereferencing the absent view on an early focus request.
+        if (auto* view = m_pLibraryWidget->getActiveView()) view->setFocus();
         return;
     case FocusWidget::None:
         // What could be the goal, what are the consequences of manually
