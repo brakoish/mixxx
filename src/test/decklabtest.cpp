@@ -4,6 +4,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QStackedWidget>
 #include <QTest>
 
 #include "control/controlobject.h"
@@ -204,6 +205,16 @@ TEST_F(NativeDeckLabTest, TempoRangeReflectsControllerChanges) {
     EXPECT_EQ(3, range->count());
 }
 
+TEST_F(NativeDeckLabTest, ActiveNavigationCannotBeUncheckedByReselectingIt) {
+    auto* decks = panel->findChild<QPushButton*>("decklab-tab-0"); ASSERT_NE(nullptr, decks);
+    decks->click(); decks->click(); EXPECT_TRUE(decks->isChecked()); EXPECT_EQ(0, panel->currentPage());
+    auto* settings = panel->findChild<QPushButton*>("decklab-tab-4"); ASSERT_NE(nullptr, settings);
+    settings->click(); settings->click(); EXPECT_TRUE(settings->isChecked()); EXPECT_FALSE(decks->isChecked());
+    auto* category = panel->findChild<QPushButton*>("decklab-settings-category-2"); ASSERT_NE(nullptr, category);
+    category->click(); category->click(); EXPECT_TRUE(category->isChecked());
+    EXPECT_FALSE(panel->findChild<QPushButton*>("decklab-settings-category-0")->isChecked());
+}
+
 TEST_F(NativeDeckLabTest, PagesFit800By480) {
     const QString output = qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
     for (int page = 0; page < 5; ++page) {
@@ -295,6 +306,24 @@ TEST_F(NativeDeckLabTest, LatchedRmxFollowsTempoChangesWithoutAnotherTouch) {
     ControlObject::set(ConfigKey("[Channel1]", "bpm"), 140);
     QTest::qWait(150);
     EXPECT_DOUBLE_EQ(140, ControlObject::get(ConfigKey("[DeckLabEffectUnit1_Effect4]", "parameter11")));
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "play")));
+}
+
+TEST_F(NativeDeckLabTest, TransitionStartersApplyOwnedRmxAndOpenItsEditor) {
+    m_pEffectsManager->setup(); m_pEffectsManager->ensureDeckLabEffects();
+    m_pEngineMixer->prepareAudio(mixxx::audio::SampleRate(44100));
+    m_pMixerDeck1->loadFakeTrack(false, 128); ProcessBuffer(); QCoreApplication::processEvents();
+    panel->selectPage(3);
+    panel->findChild<QPushButton*>("decklab-fx-view-2")->click();
+    panel->findChild<QPushButton*>("decklab-transition-0")->click();
+    EXPECT_EQ(0, panel->findChild<QStackedWidget*>("decklab-fx-pages")->currentIndex());
+    for (int band = 1; band <= 3; ++band)
+        EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[DeckLabEffectUnit1_Effect4]", QStringLiteral("parameter%1").arg(band))));
+    panel->findChild<QPushButton*>("decklab-fx-view-2")->click();
+    panel->findChild<QPushButton*>("decklab-transition-3")->click();
+    EXPECT_EQ(1, panel->findChild<QStackedWidget*>("decklab-fx-pages")->currentIndex());
+    EXPECT_DOUBLE_EQ(4, ControlObject::get(ConfigKey("[DeckLabEffectUnit1_Effect4]", "parameter9")));
+    EXPECT_NEAR(.7, ControlObject::get(ConfigKey("[DeckLabEffectUnit1_Effect4]", "parameter6")), 1e-6);
     EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "play")));
 }
 

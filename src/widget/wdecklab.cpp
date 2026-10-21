@@ -170,11 +170,13 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     rail->addWidget(brand);
     const QStringList names = {tr("Decks"), tr("Browse"), tr("Sampler"), tr("FX"), tr("Settings")};
     const QStringList triggers = {"overview", "library", "samplers", "effects", "settings"};
+    auto* navigation = new QButtonGroup(this);
     for (int page = 0; page < 5; ++page) {
         m_tabs[page] = button(names[page], [this, page] { selectPage(page); }, this,
                 QStringLiteral("decklab-tab-%1").arg(page));
         m_tabs[page]->setProperty("rail", true);
         m_tabs[page]->setCheckable(true);
+        navigation->addButton(m_tabs[page], page);
         m_tabs[page]->setFixedHeight(40);
         rail->addWidget(m_tabs[page], 1);
         createControl(kTab, triggers[page]);
@@ -579,8 +581,24 @@ QWidget* WDeckLab::buildEffects() {
         });
         performLayout->addWidget(hold, 1, n);
     }
-    auto* holdHint = new QLabel(tr("HOLD pads · release to recover · 4 second safety limit"), perform);
-    holdHint->setProperty("muted", true); performLayout->addWidget(holdHint, 2, 0, 1, 4);
+    const QStringList starters{tr("Echo start"), tr("Bass cut"), tr("Reverb wash"), tr("Filter start")};
+    for (int n = 0; n < starters.size(); ++n) {
+        auto* starter = button(starters[n], [this, n] {
+            releaseEffects(); m_updating = true;
+            m_leverMode->setCurrentIndex(n == 2 ? 1 : 0);
+            m_isoMode->setCurrentIndex(n == 3 ? 3 : 0);
+            for (int band = 0; band < 3; ++band) {
+                m_levers[band]->setChecked(n == 0 || (n == 2 && band > 0));
+                m_isolates[band]->setValue(n == 1 && band == 0 ? -90 : n == 3 ? 70 : 0);
+            }
+            m_fxTime->setCurrentIndex(2); m_depth->setValue(70); m_updating = false;
+            findChild<QPushButton*>(QStringLiteral("decklab-fx-view-%1").arg(n == 1 || n == 3 ? 1 : 0))->click();
+            applyEffects();
+        }, perform, QStringLiteral("decklab-transition-%1").arg(n));
+        performLayout->addWidget(starter, 2, n);
+    }
+    auto* holdHint = new QLabel(tr("Hold pads: 4 sec max · Presets open RMX · Release dry to recover"), perform);
+    holdHint->setProperty("muted", true); performLayout->addWidget(holdHint, 3, 0, 1, 4);
     views->addWidget(perform);
     auto* xy = new DeckLabXY([this](double x, double y, bool on) {
         if (!on) { m_holdFx = false; releaseEffects(); return; }
@@ -654,6 +672,7 @@ QWidget* WDeckLab::buildSettings() {
     auto* links = column(categories);
     auto* pages = new QStackedWidget(page);
     pages->setObjectName("decklab-settings-pages");
+    auto* categorySelection = new QButtonGroup(pages);
     const QStringList names{tr("Deck"), tr("Levels / Cue"), tr("Display"), tr("Library"), tr("Device")};
     for (int index = 0; index < names.size(); ++index) {
         auto* scroll = new QScrollArea(pages);
@@ -798,7 +817,8 @@ QWidget* WDeckLab::buildSettings() {
         rows->addStretch(); scroll->setWidget(content); pages->addWidget(scroll);
         auto* link = button(names[index], [pages, index] { pages->setCurrentIndex(index); }, categories,
                 QStringLiteral("decklab-settings-category-%1").arg(index));
-        link->setCheckable(true); link->setChecked(index == 0); link->setProperty("rail", true);
+        link->setCheckable(true); categorySelection->addButton(link, index);
+        link->setChecked(index == 0); link->setProperty("rail", true);
         connect(pages, &QStackedWidget::currentChanged, link, [link, index](int page) { link->setChecked(page == index); });
         link->setFixedHeight(52); links->addWidget(link);
     }
@@ -1053,6 +1073,7 @@ void WDeckLab::refreshFx() {
     m_fxBody->setEnabled(ready);
     for(int n=0;n<3;++n) {m_levers[n]->setEnabled(source);m_isolates[n]->setEnabled(source);}
     for(int n=0;n<4;++n) if(auto* hold=findChild<QPushButton*>(QStringLiteral("decklab-hold-%1").arg(n))) hold->setEnabled(source);
+    for(int n=0;n<4;++n) if(auto* starter=findChild<QPushButton*>(QStringLiteral("decklab-transition-%1").arg(n))) starter->setEnabled(source);
     m_fxStatus->setText(!ready ? tr("RMX processor unavailable") : !source ? tr("Load a track / arm sample FX") : m_fxReleasing ? tr("Releasing tail") : m_fxActive ? tr("RMX active") : tr("RMX ready · Dry"));
     if (m_fxActive && (!ready || !source)) releaseEffects();
 }
