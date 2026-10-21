@@ -1,6 +1,7 @@
 name: chromaprint
 buildsystem: cmake-ninja
 config-opts:
+  - -DCMAKE_INSTALL_LIBDIR=lib
   - -DCMAKE_BUILD_TYPE=RelWithDebInfo
   - -DBUILD_TESTS=OFF
 sources:

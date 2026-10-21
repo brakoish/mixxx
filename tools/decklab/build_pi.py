@@ -45,6 +45,11 @@ def audit_sources(manifest):
         for module in modules:
             if not isinstance(module, dict):
                 raise ValueError("Manifest includes must be expanded first")
+            if module.get("buildsystem") in ("cmake", "cmake-ninja"):
+                libdirs = [option for option in module.get("config-opts", [])
+                           if option.startswith("-DCMAKE_INSTALL_LIBDIR=")]
+                if libdirs != ["-DCMAKE_INSTALL_LIBDIR=lib"]:
+                    raise ValueError("CMake libraries must use /app/lib: " + module["name"])
             for source in module.get("sources", []):
                 kind = source.get("type")
                 if kind in ("archive", "file"):

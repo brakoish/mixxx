@@ -63,8 +63,13 @@ Dirty tracked source is rejected and the source module uses the exact committed
 Git revision, excluding untracked files.
 
 The build retains optimization and uses `-g1` for Mixxx/protobuf, matching the
-memory-conscious packaging settings used for the tested repair. It builds
-`mixxx-test`, runs the engine/preparation/sync/mixer and beat/search regression
+memory-conscious packaging settings used for the tested repair. An explicit
+`CMAKE_INSTALL_LIBDIR=lib` for every CMake module keeps
+dependencies in the Flatpak runtime's `/app/lib` search directory on ARM64.
+The first hosted build passed 197 enabled native tests but its final runtime
+probe rejected the upstream manifests' automatic `lib64` layout. The corrected
+recipe and a build guard prevent publishing that incomplete package as verified.
+The recipe builds `mixxx-test`, runs the engine/preparation/sync/mixer and beat/search regression
 suites offscreen with audio devices, display sockets and networking denied, and
 requires the preparation regression to have actually run. Disabled upstream
 tests are reported separately. It then probes the packaged executable against

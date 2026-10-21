@@ -1,6 +1,7 @@
 name: protobuf
 buildsystem: cmake-ninja
 config-opts:
+  - -DCMAKE_INSTALL_LIBDIR=lib
   - -DCMAKE_BUILD_TYPE=RelWithDebInfo
   - "-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-O2 -g1 -DNDEBUG"
   - "-DCMAKE_C_FLAGS_RELWITHDEBINFO=-O2 -g1 -DNDEBUG"

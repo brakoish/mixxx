@@ -67,6 +67,7 @@ modules:
         CTEST_OUTPUT_ON_FAILURE: "1"
         CTEST_PARALLEL_LEVEL: "1"
     config-opts:
+      - -DCMAKE_INSTALL_LIBDIR=lib
       - -DCMAKE_BUILD_TYPE=RelWithDebInfo
       - "-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-O2 -g1 -DNDEBUG"
       - "-DCMAKE_C_FLAGS_RELWITHDEBINFO=-O2 -g1 -DNDEBUG"

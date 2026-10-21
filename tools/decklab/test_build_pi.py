@@ -43,6 +43,16 @@ class BuildGuards(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_pi.external_workdir(root, root / "nested")
 
+    def test_cmake_libdir_matches_flatpak_runtime(self):
+        module = {"name": "library", "buildsystem": "cmake-ninja",
+                  "config-opts": ["-DCMAKE_INSTALL_LIBDIR=lib"]}
+        build_pi.audit_sources({"modules": [module]})
+        for options in ([], ["-DCMAKE_INSTALL_LIBDIR=lib64"],
+                        ["-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_INSTALL_LIBDIR=lib64"]):
+            module["config-opts"] = options
+            with self.assertRaises(ValueError):
+                build_pi.audit_sources({"modules": [module]})
+
     def test_disabled_or_missing_preparation_regression_cannot_pass(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "tests.xml"

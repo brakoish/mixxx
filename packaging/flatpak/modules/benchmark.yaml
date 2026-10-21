@@ -1,6 +1,7 @@
 name: benchmark
 buildsystem: cmake-ninja
 config-opts:
+  - -DCMAKE_INSTALL_LIBDIR=lib
   - -DCMAKE_BUILD_TYPE=RelWithDebInfo
   - -DBENCHMARK_ENABLE_TESTING=OFF
   - -DBENCHMARK_ENABLE_GTEST_TESTS=OFF
