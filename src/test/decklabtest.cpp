@@ -200,6 +200,17 @@ TEST_F(NativeDeckLabTest, PagesFit800By480) {
     }
 }
 
+TEST_F(NativeDeckLabTest, SixteenSamplerPadsRemainNearSquareAndFullyVisible) {
+    panel->selectPage(2); QCoreApplication::processEvents();
+    for (int slot = 1; slot <= 16; ++slot) {
+        auto* pad = panel->findChild<QPushButton*>(QStringLiteral("decklab-sample-%1").arg(slot));
+        ASSERT_NE(nullptr, pad); EXPECT_TRUE(pad->isVisible());
+        EXPECT_GE(pad->width(), 110); EXPECT_GE(pad->height(), 110);
+        EXPECT_NEAR(1.0, pad->width() / double(pad->height()), .2);
+        EXPECT_TRUE(panel->rect().contains(QRect(pad->mapTo(panel.get(), QPoint()), pad->size())));
+    }
+}
+
 TEST_F(NativeDeckLabTest, IndependentRmxDoesNotBorrowControllerChains) {
     m_pEffectsManager->setup();
     auto standard = m_pEffectsManager->getEffectChain("[EffectRack1_EffectUnit3]");

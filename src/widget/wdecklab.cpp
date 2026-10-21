@@ -64,6 +64,7 @@ const QString kStyle = QStringLiteral(R"(
  WDeckLab QLabel[numbers="true"] {font-size:20px;font-weight:600;}
  WDeckLab QComboBox {background:#222;border:1px solid #484848;border-radius:2px;min-height:38px;padding-left:10px;}
  WDeckLab QComboBox QAbstractItemView {background:#181818;selection-background-color:#333;min-height:40px;}
+ WDeckLab QComboBox QAbstractItemView::item {min-height:40px;}
  WDeckLab QSlider::groove:horizontal {height:8px;background:#444;border-radius:2px;}
  WDeckLab QSlider::handle:horizontal {background:#eee;border:1px solid #777;width:24px;margin:-12px 0;border-radius:2px;}
  WDeckLab QProgressBar {border:0;background:#303030;}
@@ -190,13 +191,15 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     m_pages = new QStackedWidget(this);
     m_pages->setObjectName("decklab-pages");
     m_pages->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
-    m_pages->addWidget(buildDecks());
+    m_pages->addWidget(new QWidget(m_pages));
+    m_deckControls = buildDecks();
     m_pages->addWidget(buildBrowse());
     m_pages->addWidget(buildSampler());
     m_pages->addWidget(buildEffects());
     m_pages->addWidget(buildSettings());
     m_root->addWidget(m_waveforms, 1);
     m_root->addWidget(m_pages);
+    m_root->addWidget(m_deckControls);
     m_status = new QLabel(this);
     m_status->setProperty("muted", true);
     m_status->setContentsMargins(9, 0, 9, 0);
@@ -440,7 +443,7 @@ QWidget* WDeckLab::buildSampler() {
             menu->popup(pad->mapToGlobal(point));
         });
         m_samples[slot - 1] = pad;
-        grid->addWidget(pad, (slot - 1) / 4, (slot - 1) % 4);
+        grid->addWidget(pad, (slot - 1) / 6, (slot - 1) % 6);
         watch(group, "play", [pad](double v) { pad->setChecked(v > 0); });
         auto refresh = [this, group, slot, pad](double loaded) {
             auto* player = m_players ? m_players->getPlayer(group) : nullptr;
@@ -455,10 +458,18 @@ QWidget* WDeckLab::buildSampler() {
             connect(player, &BaseTrackPlayer::newTrackLoaded, this, [refresh](TrackPointer) { refresh(1); });
         refresh(0);
     }
-    layout->addLayout(grid, 1);
-    layout->addWidget(button(tr("Stop all samples"), [this] {
+    auto* tools = new QWidget(page); auto* toolsLayout = column(tools, 5);
+    auto* stop = button(tr("Stop all samples"), [this] {
         for (int slot = 1; slot <= 16; ++slot) pulse(QStringLiteral("[Sampler%1]").arg(slot), "stop");
-    }, page, "decklab-samples-stop"));
+    }, tools, "decklab-samples-stop");
+    stop->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    toolsLayout->addWidget(stop, 1);
+    auto* hint = new QLabel(tr("Hold a pad for Stop / Clear / Level"), tools);
+    hint->setProperty("muted", true); hint->setAlignment(Qt::AlignCenter); toolsLayout->addWidget(hint);
+    grid->addWidget(tools, 2, 4, 1, 2);
+    for (int col = 0; col < 6; ++col) grid->setColumnStretch(col, 1);
+    for (int row = 0; row < 3; ++row) grid->setRowStretch(row, 1);
+    layout->addLayout(grid, 1);
     return page;
 }
 
@@ -514,7 +525,9 @@ QWidget* WDeckLab::buildEffects() {
     leverLayout->addLayout(pads, 1); views->addWidget(lever);
     auto* isolate = new QWidget(views); auto* isolateLayout = column(isolate);
     m_isoMode = new QComboBox(isolate);
-    m_isoMode->addItems({tr("Isolate · Echo"), tr("Isolate · Reverb"), tr("Isolate · Drive"), tr("Isolate · Filter"), tr("Isolate · Ducker")});
+    m_isoMode->addItems({tr("Echo · left cuts / right sends"), tr("Reverb · left cuts / right sends"),
+            tr("Drive · left cuts / right drives"), tr("Filter · left low-pass / right high-pass"),
+            tr("Ducker · left on-beat / right off-beat")});
     isolateLayout->addWidget(m_isoMode);
     auto* channels = row(nullptr, 12);
     for (int n = 0; n < 3; ++n) {
@@ -852,9 +865,13 @@ void WDeckLab::selectPage(int page) {
     set(kTab, "current", page == 4 ? 5 : page);
     for (int n = 0; n < 5; ++n) m_tabs[n]->setChecked(n == page);
     m_pages->setCurrentIndex(page);
+    // Transport has a fixed place below the Decks waveforms. Keeping it out
+    // of the expanding page stack avoids sibling-page minimum sizes pushing
+    // the essential controls below a small display.
+    m_pages->setVisible(page != 0);
+    m_deckControls->setVisible(page == 0);
     m_root->removeWidget(m_waveforms);
     if (page == 0) {
-        m_pages->setFixedHeight(98);
         m_waveforms->setMinimumHeight(0); m_waveforms->setMaximumHeight(QWIDGETSIZE_MAX);
         m_root->insertWidget(1, m_waveforms, 1);
     } else {

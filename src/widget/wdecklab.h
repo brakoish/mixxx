@@ -102,6 +102,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     QHash<QString, ControlProxy*> m_controls;
     QVBoxLayout* m_root;
     QStackedWidget* m_pages;
+    QWidget* m_deckControls;
     QWidget* m_waveforms;
     QVBoxLayout* m_waveLayout;
     QWidget* m_browser;
