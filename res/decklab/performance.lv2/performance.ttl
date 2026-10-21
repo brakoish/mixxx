@@ -2,7 +2,7 @@
 @prefix doap: <http://usefulinc.com/ns/doap#> .
 @prefix foaf: <http://xmlns.com/foaf/0.1/> .
 
-<urn:decklab:threeband-performance>
+<urn:decklab:threeband-performance-native-v1>
     a lv2:Plugin ;
     doap:name "Deck Lab Three Band Performance" ;
     doap:maintainer [ foaf:name "Deck Lab" ] ;
