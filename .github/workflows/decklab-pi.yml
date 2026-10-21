@@ -1,0 +1,46 @@
+name: Deck Lab Pi ARM64
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/decklab-pi]
+    tags: [decklab-pi-*]
+  pull_request:
+    branches: [codex/decklab-pi]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: decklab-pi-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.repository == 'brakoish/mixxx'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 50
+          persist-credentials: false
+      - name: Validate build inputs and failure guards
+        run: |
+          python3 tools/decklab/build_pi.py --check-inputs
+          python3 tools/decklab/test_build_pi.py
+      - name: Install build tools on this disposable runner
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder dbus-user-session elfutils
+      - name: Build and test with pinned SDK and runtime
+        run: dbus-run-session -- python3 tools/decklab/build_pi.py --work-dir "$RUNNER_TEMP/decklab-pi" --jobs 4
+      - name: Upload candidate and verification records
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: decklab-mixxx-aarch64-${{ github.sha }}
+          path: ${{ runner.temp }}/decklab-pi/artifacts/
+          if-no-files-found: warn
+          retention-days: 3

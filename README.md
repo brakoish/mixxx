@@ -1,3 +1,5 @@
+> **Deck Lab fork:** pinned native repairs and ARM64 candidate builds. See [DECKLAB.md](DECKLAB.md). Production Pi deployment is manual.
+
 # Mixxx
 
 [![GitHub latest tag](https://img.shields.io/github/tag/mixxxdj/mixxx.svg)](https://mixxx.org/download)
