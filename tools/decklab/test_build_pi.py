@@ -63,10 +63,11 @@ class BuildGuards(unittest.TestCase):
                     build_pi.test_summary(path)
             required = '<testcase name="PrepareScalersPreservesDeckState" classname="EngineBufferE2ETest" status="run"/>'
             for name in ("FirstBrowsePressDoesNotOpenSource", "SingleTapOpensFolderAndBackRestoresSelection",
-                         "IndependentRmxDoesNotBorrowControllerChains", "PagesFit800By480"):
+                         "IndependentRmxDoesNotBorrowControllerChains", "PagesFit800By480",
+                         "Lv2PreparationUsesSelectedRateWithoutAudio", "TouchSearchUsesNativeKeyboardAndReturnsWaveforms"):
                 required += '<testcase name="%s" classname="NativeDeckLabTest" status="run"/>' % name
             path.write_text('<testsuites failures="0" errors="0"><testsuite>' + common + required + '</testsuite></testsuites>')
-            self.assertEqual(build_pi.test_summary(path)["enabled_passed"], 195)
+            self.assertEqual(build_pi.test_summary(path)["enabled_passed"], 197)
             path.write_text(path.read_text().replace('failures="0"', 'failures="1"'))
             with self.assertRaises(ValueError):
                 build_pi.test_summary(path)

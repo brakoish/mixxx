@@ -47,6 +47,13 @@ void LV2EffectProcessor::processChannel(
         const EffectEnableState enableState,
         const GroupFeatureState& groupFeatures) {
     Q_UNUSED(groupFeatures);
+    // An unexpected device-rate change must not run an instance at the wrong
+    // rate, nor allocate a replacement on the audio deadline. Reopen audio to
+    // run the main-thread preparation path.
+    if (channelState->sampleRate() != engineParameters.sampleRate()) {
+        SampleUtil::copy(pOutput, pInput, engineParameters.samplesPerBuffer());
+        return;
+    }
 
     for (int i = 0; i < m_engineEffectParameters.size(); i++) {
         m_LV2parameters[i] = static_cast<float>(m_engineEffectParameters[i]->value());
@@ -90,7 +97,18 @@ LV2EffectGroupState* LV2EffectProcessor::createSpecificState(
         qDebug() << this << "LV2EffectProcessor creating LV2EffectGroupState" << pState;
     }
 
-    if (pInstance) {
+    if (pInstance) connectPorts(pInstance);
+    return pState;
+}
+
+void LV2EffectProcessor::prepareSpecificState(LV2EffectGroupState* state,
+        const mixxx::EngineParameters& engineParameters) {
+    if (state->prepare(engineParameters.sampleRate())) {
+        if (auto* instance = state->lilvInstance(m_pPlugin, engineParameters)) connectPorts(instance);
+    }
+}
+
+void LV2EffectProcessor::connectPorts(LilvInstance* pInstance) {
         for (int i = 0; i < m_engineEffectParameters.size(); i++) {
             m_LV2parameters[i] = static_cast<float>(m_engineEffectParameters[i]->value());
             lilv_instance_connect_port(pInstance,
@@ -104,6 +122,4 @@ LV2EffectGroupState* LV2EffectProcessor::createSpecificState(
         lilv_instance_connect_port(pInstance, m_audioPortIndices[1], m_inputR);
         lilv_instance_connect_port(pInstance, m_audioPortIndices[2], m_outputL);
         lilv_instance_connect_port(pInstance, m_audioPortIndices[3], m_outputR);
-    }
-    return pState;
-};
+}

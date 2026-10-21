@@ -457,7 +457,8 @@ SoundDeviceStatus SoundManager::setupDevices() {
     // first set. Do that before any device starts its real-time callback, not
     // during the first audio deadline. Per-callback signal checks still handle
     // an actual device rate or channel count differing from the configuration.
-    m_pEngineMixer->prepareScalers(m_config.getSampleRate());
+    // LV2 instances also require the selected rate, fixed at instantiate time.
+    m_pEngineMixer->prepareAudio(m_config.getSampleRate());
 
     for (const auto& mode: toOpen) {
         SoundDevicePointer pDevice = mode.pDevice;

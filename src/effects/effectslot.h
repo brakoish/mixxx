@@ -1,4 +1,5 @@
 #pragma once
+#include "audio/types.h"
 
 #include <QObject>
 #include <QSharedPointer>
@@ -61,6 +62,7 @@ class EffectSlot : public QObject {
             EffectChain* pChainSlot,
             EngineEffectChain* pEngineEffectChain);
     virtual ~EffectSlot();
+    void prepare(mixxx::audio::SampleRate sampleRate);
 
     inline int getEffectSlotNumber() const {
         return m_iEffectNumber;

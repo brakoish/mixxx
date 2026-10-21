@@ -63,6 +63,8 @@
 #include "waveform/waveformwidgetfactory.h"
 #include "widget/wglwidget.h"
 #include "widget/wmainmenubar.h"
+#include "widget/wdecklab.h"
+#include "widget/decklabsmoke.h"
 
 #ifdef __VINYLCONTROL__
 #include "vinylcontrol/vinylcontrolmanager.h"
@@ -462,6 +464,7 @@ void MixxxMainWindow::initialize() {
         qDebug("Enabling Auto DJ from CLI flag.");
         ControlObject::set(ConfigKey("[AutoDJ]", "enabled"), 1.0);
     }
+    startDeckLabSmoke(m_pCentralWidget->findChild<WDeckLab*>(), m_pCoreServices->getSettings());
 }
 
 MixxxMainWindow::~MixxxMainWindow() {
@@ -588,6 +591,10 @@ void MixxxMainWindow::initializeWindow() {
 
 #ifndef __APPLE__
 void MixxxMainWindow::alwaysHideMenuBarDlg() {
+    if (m_pCoreServices->getSettings()->getValueString(ConfigKey("[Config]", "skin")) == "DeckLab") {
+        m_pCoreServices->getSettings()->setValue(kHideMenuBarConfigKey, 1);
+        return;
+    }
     // Don't show the dialog if the user unchecked "Ask me again"
     if (!m_pCoreServices->getSettings()->getValue<bool>(
                 kMenuBarHintConfigKey, true)) {
@@ -733,6 +740,12 @@ QDialog::DialogCode MixxxMainWindow::soundDeviceErrorMsgDlg(
 }
 
 QDialog::DialogCode MixxxMainWindow::noOutputDlg(bool* continueClicked) {
+    if (m_pCentralWidget && m_pCentralWidget->findChild<WDeckLab*>()) {
+        // Keep the appliance surface and controller setup reachable on a first
+        // boot without audio. Its persistent status explains the missing output.
+        *continueClicked = true;
+        return QDialog::Accepted;
+    }
     QMessageBox msgBox;
     msgBox.setIcon(QMessageBox::Warning);
     msgBox.setWindowTitle(tr("No Output Devices"));

@@ -6,20 +6,15 @@
 #include "util/defs.h"
 #include "util/sample.h"
 
-namespace {
-
-// Used during initialization where the SoundSevice is not set up
-constexpr auto kInitalSampleRate = mixxx::audio::SampleRate(96000);
-
-} // namespace
-
 EngineEffect::EngineEffect(EffectManifestPointer pManifest,
         EffectsBackendManagerPointer pBackendManager,
         const QSet<ChannelHandleAndGroup>& activeInputChannels,
         const QSet<ChannelHandleAndGroup>& registeredInputChannels,
-        const QSet<ChannelHandleAndGroup>& registeredOutputChannels)
+        const QSet<ChannelHandleAndGroup>& registeredOutputChannels,
+        mixxx::audio::SampleRate sampleRate)
         : m_pManifest(pManifest),
           m_pProcessor(pBackendManager->createProcessor(pManifest)),
+          m_sampleRate(sampleRate),
           m_parameters(pManifest->parameters().size()) {
     const QList<EffectManifestParameterPointer>& parameters = m_pManifest->parameters();
     for (int i = 0; i < parameters.size(); ++i) {
@@ -39,9 +34,9 @@ EngineEffect::EngineEffect(EffectManifestPointer pManifest,
 
     m_pProcessor->loadEngineEffectParameters(m_parametersById);
 
-    // At this point the SoundDevice is not set up so we use the kInitalSampleRate.
+    // Use the manager's prepared device rate, including effects loaded later.
     const mixxx::EngineParameters engineParameters(
-            kInitalSampleRate,
+            m_sampleRate,
             kMaxEngineFrames);
     m_pProcessor->initialize(activeInputChannels, registeredOutputChannels, engineParameters);
     m_effectRampsFromDry = pManifest->effectRampsFromDry();
@@ -59,11 +54,19 @@ void EngineEffect::initalizeInputChannel(ChannelHandle inputChannel) {
         return;
     }
 
-    // At this point the SoundDevice is not set up so we use the kInitalSampleRate.
+    // New routes must use the same prepared rate as the existing routes.
     const mixxx::EngineParameters engineParameters(
-            kInitalSampleRate,
+            m_sampleRate,
             kMaxEngineFrames);
     m_pProcessor->initializeInputChannel(inputChannel, engineParameters);
+}
+
+void EngineEffect::prepare(mixxx::audio::SampleRate sampleRate) {
+    if (sampleRate == m_sampleRate) return;
+    m_sampleRate = sampleRate;
+    m_pProcessor->prepare(mixxx::EngineParameters(sampleRate, kMaxEngineFrames));
+    for (auto& outputs : m_effectEnableStateForChannelMatrix)
+        for (auto& state : outputs) if (state != EffectEnableState::Disabled) state = EffectEnableState::Enabling;
 }
 
 bool EngineEffect::processEffectsRequest(const EffectsRequest& message,

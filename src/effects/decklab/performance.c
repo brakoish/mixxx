@@ -94,6 +94,14 @@ static float lever_result(int mode, float input, float lever, float echo,
     return input;
 }
 
+// Prefault delay pages during non-realtime instantiation. calloc alone may
+// defer page faults until the first callback writes each delay line.
+static float* allocate_delay(uint32_t capacity) {
+    float* data = calloc(capacity + 1u, sizeof(float));
+    if (data) for (uint32_t at = 0; at <= capacity; at += 1024u) ((volatile float*)data)[at] = 0;
+    return data;
+}
+
 static LV2_Handle instantiate(const LV2_Descriptor* descriptor, double rate,
                               const char* bundle, const LV2_Feature* const* features) {
     (void)descriptor; (void)bundle; (void)features;
@@ -109,11 +117,11 @@ static LV2_Handle instantiate(const LV2_Descriptor* descriptor, double rate,
     self->mode_fade_step = (float)(1.0 / (rate * .02));
     for (int channel = 0; channel < 2; ++channel) {
         for (int band = 0; band < 3; ++band) {
-            self->lever_delay[channel][band] = calloc(self->capacity + 1u, sizeof(float));
-            self->isolate_delay[channel][band] = calloc(self->capacity + 1u, sizeof(float));
+            self->lever_delay[channel][band] = allocate_delay(self->capacity);
+            self->isolate_delay[channel][band] = allocate_delay(self->capacity);
             if (!self->lever_delay[channel][band] || !self->isolate_delay[channel][band]) goto fail;
         }
-        self->release_delay[channel] = calloc(self->capacity + 1u, sizeof(float));
+        self->release_delay[channel] = allocate_delay(self->capacity);
         if (!self->release_delay[channel]) goto fail;
     }
     return self;

@@ -3,6 +3,7 @@
 #include <QHash>
 #include <QList>
 #include <QSet>
+#include "audio/types.h"
 
 #include "control/controlpotmeter.h"
 #include "effects/backends/effectsbackendmanager.h"
@@ -28,6 +29,9 @@ class EffectsManager {
     void setup();
     // Explicitly selected native Deck Lab surface; never reuses controller units.
     void ensureDeckLabEffects();
+    // Main thread, devices closed. New effects inherit this selected rate.
+    void prepare(mixxx::audio::SampleRate sampleRate);
+    mixxx::audio::SampleRate preparedSampleRate() const { return m_preparedSampleRate; }
     void addDeck(const ChannelHandleAndGroup& deckHandleGroup);
     void addStem(const ChannelHandleAndGroup& stemHandleGroup);
     void resetStemQuickFxKnob(const ChannelHandleAndGroup& stemHandleGroup);
@@ -102,6 +106,7 @@ class EffectsManager {
 
     QList<StandardEffectChainPointer> m_standardEffectChains;
     QList<EffectChainPointer> m_deckLabEffectChains;
+    mixxx::audio::SampleRate m_preparedSampleRate{96000};
     OutputEffectChainPointer m_outputEffectChain;
     // These two store <deck group, effect chain pointer>
     QHash<QString, EqualizerEffectChainPointer> m_equalizerEffectChains;

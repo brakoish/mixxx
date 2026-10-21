@@ -98,8 +98,11 @@ void EffectsManager::setup() {
 
 void EffectsManager::ensureDeckLabEffects() {
     if (!m_deckLabEffectChains.isEmpty()) return;
-    const auto manifest = m_pBackendManager->getManifest(
+    EffectManifestPointer manifest;
+#ifdef __LILV__
+    manifest = m_pBackendManager->getManifest(
             QStringLiteral("urn:decklab:threeband-performance"), EffectBackendType::LV2);
+#endif
     for (int side = 1; side <= 2; ++side) {
         EffectChainPointer chain(new DeckLabEffectChain(side, this, m_pMessenger));
         m_effectChainSlotsByGroup.insert(chain->group(), chain);
@@ -121,6 +124,21 @@ void EffectsManager::registerInputChannel(const ChannelHandleAndGroup& handle_gr
         pChainSlot->registerInputChannel(handle_group);
     }
     for (const auto& chain : std::as_const(m_deckLabEffectChains)) chain->registerInputChannel(handle_group);
+}
+
+void EffectsManager::prepare(mixxx::audio::SampleRate sampleRate) {
+    m_preparedSampleRate = sampleRate;
+    for (const auto& chain : std::as_const(m_effectChainSlotsByGroup))
+        for (const auto& slot : chain->getEffectSlots()) slot->prepare(sampleRate);
+    // Prepare native deck inputs before the first audio deadline/gesture. The
+    // optional sampler inputs stay lazy to avoid reserving hundreds of MiB.
+    for (int side = 0; side < m_deckLabEffectChains.size(); ++side) {
+        for (const auto& input : std::as_const(m_registeredInputChannels)) {
+            if (input.name() == QStringLiteral("[Channel%1]").arg(side + 1) ||
+                    input.name() == QStringLiteral("[Channel%1]").arg(side + 3))
+                m_deckLabEffectChains[side]->getEffectSlot(3)->initalizeInputChannel(input.handle());
+        }
+    }
 }
 
 void EffectsManager::registerOutputChannel(const ChannelHandleAndGroup& handle_group) {

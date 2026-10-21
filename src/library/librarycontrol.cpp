@@ -6,6 +6,8 @@
 #include <QModelIndex>
 #include <QWindow>
 #include <QtDebug>
+#include <algorithm>
+#include <cmath>
 
 #include "control/controlencoder.h"
 #include "control/controlobject.h"
@@ -23,6 +25,16 @@
 
 namespace {
 const QString kAppGroup = QStringLiteral("[App]");
+bool nativeBrowseActive() {
+    const auto* active = ControlObject::getControl(ConfigKey("[DeckLabNative]", "active"), ControlFlag::NoWarnIfMissing);
+    return active && active->toBool();
+}
+bool nativeBrowseAction(const char* action) {
+    if (!nativeBrowseActive()) return false;
+    ControlObject::set(ConfigKey("[DeckLabNative]", action), 1);
+    ControlObject::set(ConfigKey("[DeckLabNative]", action), 0);
+    return true;
+}
 } // namespace
 
 LoadToGroupController::LoadToGroupController(LibraryControl* pParent, const QString& group)
@@ -846,12 +858,14 @@ void LibraryControl::slotScrollVertical(double v) {
 
 void LibraryControl::slotMoveLeft(double v) {
     if (v > 0) {
+        if ((m_focusedWidget == FocusWidget::Sidebar || m_focusedWidget == FocusWidget::TracksTable) && nativeBrowseAction("browse_back")) return;
         slotMoveHorizontal(-1);
     }
 }
 
 void LibraryControl::slotMoveRight(double v) {
     if (v > 0) {
+        if (m_focusedWidget == FocusWidget::Sidebar && nativeBrowseAction("browse_press")) return;
         slotMoveHorizontal(1);
     }
 }
@@ -985,7 +999,7 @@ FocusWidget LibraryControl::getFocusedWidget() {
         return FocusWidget::Searchbar;
     } else if (m_pSidebarWidget && m_pSidebarWidget->hasFocus()) {
         return FocusWidget::Sidebar;
-    } else if (m_pLibraryWidget && m_pLibraryWidget->getActiveView()->hasFocus()) {
+    } else if (m_pLibraryWidget && m_pLibraryWidget->getActiveView() && m_pLibraryWidget->getActiveView()->hasFocus()) {
         return FocusWidget::TracksTable;
     } else {
         // Unknown widget, for example Clear button in WSearcLineEdit,
@@ -1070,6 +1084,20 @@ void LibraryControl::slotSelectSidebarItem(double v) {
     if (v == 0) {
         return;
     }
+    if (nativeBrowseActive()) {
+        // Selection must not activate/import each item passed by a fast knob.
+        // Stay inside the currently opened folder without replacing its model.
+        if (m_focusedWidget == FocusWidget::ContextMenu || m_focusedWidget == FocusWidget::Dialog || !std::isfinite(v)) return;
+        const auto root = m_pSidebarWidget->rootIndex();
+        const auto* model = m_pSidebarWidget->model();
+        const int count = model->rowCount(root);
+        if (!count) return;
+        const int row = std::clamp(m_pSidebarWidget->currentIndex().row() + int(std::clamp(v, -10000.0, 10000.0)), 0, count - 1);
+        const auto index = model->index(row, 0, root);
+        m_pSidebarWidget->setCurrentIndex(index);
+        m_pSidebarWidget->scrollTo(index);
+        return;
+    }
 
     const auto key = (v < 0) ? Qt::Key_Up : Qt::Key_Down;
     const auto times = static_cast<unsigned short>(std::abs(v));
@@ -1091,6 +1119,7 @@ void LibraryControl::slotSelectPrevSidebarItem(double v) {
 }
 
 void LibraryControl::slotToggleSelectedSidebarItem(double v) {
+    if (v > 0 && nativeBrowseAction("browse_press")) return;
     if (m_pSidebarWidget && v > 0) {
         m_pSidebarWidget->toggleSelectedItem();
     }
@@ -1123,6 +1152,8 @@ void LibraryControl::slotGoToItem(double v) {
     if (v <= 0) {
         return;
     }
+    if ((m_focusedWidget == FocusWidget::Sidebar || m_focusedWidget == FocusWidget::TracksTable ||
+                m_focusedWidget == FocusWidget::None) && nativeBrowseAction("browse_press")) return;
 
     switch (m_focusedWidget) {
     case FocusWidget::Sidebar:

@@ -1735,6 +1735,7 @@ add_library(
   src/widget/wlabel.cpp
   src/widget/wlibrary.cpp
   src/widget/wdecklab.cpp
+  src/widget/decklabsmoke.cpp
   src/widget/wlibrarysidebar.cpp
   src/widget/wlibrarytableview.cpp
   src/widget/wlibrarytextbrowser.cpp

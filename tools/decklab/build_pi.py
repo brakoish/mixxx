@@ -75,7 +75,8 @@ def test_summary(path):
     if (int(report.get("failures", 0)) or int(report.get("errors", 0))
             or len(enabled) < 190 or len(required) != 1
             or not {"FirstBrowsePressDoesNotOpenSource", "SingleTapOpensFolderAndBackRestoresSelection",
-                    "IndependentRmxDoesNotBorrowControllerChains", "PagesFit800By480"}.issubset(native_ui)
+                    "IndependentRmxDoesNotBorrowControllerChains", "PagesFit800By480",
+                    "Lv2PreparationUsesSelectedRateWithoutAudio", "TouchSearchUsesNativeKeyboardAndReturnsWaveforms"}.issubset(native_ui)
             or any(case.find("skipped") is not None for case in enabled)):
         raise ValueError("Native regression suite incomplete or failed")
     return {"enabled_passed": len(enabled),
@@ -102,10 +103,14 @@ def build(work, jobs, lock):
     work.mkdir(parents=True, exist_ok=True)
     out = work / "artifacts"
     out.mkdir(exist_ok=True)
+    compiler_cache = work / "compiler-cache"
+    compiler_cache.mkdir(exist_ok=True)
+    (compiler_cache / "ccache.conf").write_text("max_size = 2G\n")
     # Restrict SDK installs/updates and the optional candidate runtime probe to
     # this build workspace, not the host's normal Flatpak installation.
     env = dict(os.environ, FLATPAK_USER_DIR=str(work / "flatpak-user"),
                XDG_CACHE_HOME=str(work / "cache"), LC_ALL="C.UTF-8", TZ="UTC",
+               CCACHE_DIR=str(work / "compiler-cache"),
                SOURCE_DATE_EPOCH=command(["git", "show", "-s", "--format=%ct", "HEAD"], capture=True))
     for tool in ("flatpak", "flatpak-builder", "git"):
         if not shutil.which(tool):
@@ -180,11 +185,28 @@ def build(work, jobs, lock):
              "--settings-path=" + str(scratch / "runtime-profile"), "--resource-path=/app/share/mixxx", "--version"]
     version = command(probe, env=env, capture=True)
     (out / "runtime-version.txt").write_text(version + "\n")
+    smoke_profile = scratch / "decklab-native-smoke-profile"
+    smoke_profile.mkdir(exist_ok=True)
+    (smoke_profile / "mixxx.cfg").write_text(
+        "[Config]\nskin DeckLab\nshow_menubar_hint 0\nhide_menubar 1\n"
+        "[Key]\nKeyNotation Lancelot\n[Library]\nRowHeight 44\n", encoding="utf-8")
+    (smoke_profile / "soundconfig.xml").write_text(
+        '<SoundManagerConfig api="None" samplerate="48000" latency="7" sync_buffers="2" deck_count="4"/>', encoding="utf-8")
+    smoke = [arg.replace("--settings-path=" + str(scratch / "runtime-profile"),
+                         "--settings-path=" + str(smoke_profile)) for arg in probe if arg != "--version"]
+    smoke.insert(2, "--env=DECKLAB_SMOKE_DIR=" + str(out))
+    smoke.extend(["--safe-mode", "--developer"])
+    with (out / "native-smoke.log").open("w") as log:
+        subprocess.run(smoke, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=90)
+    smoke_result = json.loads((out / "native-smoke.json").read_text())
+    if smoke_result != {"audio_started": False, "failures": [], "screens": 14}:
+        raise RuntimeError("Native application smoke check failed")
     record = {"source_revision": revision, "upstream_source_revision": lock["upstream_source_revision"],
               "architecture": "aarch64", "flatpak_commits": actual, "tests": summary,
               "native_sha256": digest(out / "mixxx.bin"), "bundle_sha256": digest(bundle),
               "manifest_sha256": digest(generated), "input_sha256": lock["input_sha256"],
               "runtime_probe_passed": True, "deployed": False, "hardware_audio_tested": False,
+              "native_application_smoke": smoke_result,
               "tools": {name: command([name, "--version"], env=env, capture=True)
                         for name in ("flatpak", "flatpak-builder", "git")}}
     (out / "provenance.json").write_text(json.dumps(record, indent=2) + "\n")

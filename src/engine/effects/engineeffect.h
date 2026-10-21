@@ -24,13 +24,15 @@ class EngineEffect final : public EffectsRequestHandler {
             EffectsBackendManagerPointer pBackendManager,
             const QSet<ChannelHandleAndGroup>& activeInputChannels,
             const QSet<ChannelHandleAndGroup>& registeredInputChannels,
-            const QSet<ChannelHandleAndGroup>& registeredOutputChannels);
+            const QSet<ChannelHandleAndGroup>& registeredOutputChannels,
+            mixxx::audio::SampleRate sampleRate = mixxx::audio::SampleRate(96000));
     /// Called in main thread by EffectSlot
     // Doesn't deal with ownership; only for conditional debug output
     ~EngineEffect();
 
     /// Called from the main thread to make sure that the channel already has states
     void initalizeInputChannel(ChannelHandle inputChannel);
+    void prepare(mixxx::audio::SampleRate sampleRate);
 
     /// Called in audio thread
     bool processEffectsRequest(
@@ -66,6 +68,7 @@ class EngineEffect final : public EffectsRequestHandler {
 
     EffectManifestPointer m_pManifest;
     std::unique_ptr<EffectProcessor> m_pProcessor;
+    mixxx::audio::SampleRate m_sampleRate;
     ChannelHandleMap<ChannelHandleMap<EffectEnableState>> m_effectEnableStateForChannelMatrix;
     bool m_effectRampsFromDry;
     // Must not be modified after construction.

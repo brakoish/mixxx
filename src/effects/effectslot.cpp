@@ -164,7 +164,8 @@ void EffectSlot::addToEngine() {
             m_pBackendManager,
             m_pChain->getActiveChannels(),
             m_pEffectsManager->registeredInputChannels(),
-            m_pEffectsManager->registeredOutputChannels());
+            m_pEffectsManager->registeredOutputChannels(),
+            m_pEffectsManager->preparedSampleRate());
 
     EffectsRequest* request = new EffectsRequest();
     request->type = EffectsRequest::ADD_EFFECT_TO_CHAIN;
@@ -213,6 +214,10 @@ void EffectSlot::initalizeInputChannel(ChannelHandle inputChannel) {
     }
     m_pEngineEffect->initalizeInputChannel(inputChannel);
 };
+
+void EffectSlot::prepare(mixxx::audio::SampleRate sampleRate) {
+    if (m_pEngineEffect) m_pEngineEffect->prepare(sampleRate);
+}
 
 EffectManifestPointer EffectSlot::getManifest() const {
     return m_pManifest;

@@ -79,6 +79,8 @@ class EffectProcessor {
     virtual void loadEngineEffectParameters(
             const QMap<QString, EngineEffectParameterPointer>& parameters) = 0;
     virtual bool hasStatesForInputChannel(ChannelHandle inputChannel) const = 0;
+    // Main thread only, with every audio device closed.
+    virtual void prepare(const mixxx::EngineParameters& engineParameters) { Q_UNUSED(engineParameters); }
 
     /// Called from the audio thread
     /// This method takes a buffer of audio samples as pInput, processes the buffer
@@ -239,7 +241,14 @@ class EffectProcessorImpl : public EffectProcessor {
         return false;
     }
 
+    void prepare(const mixxx::EngineParameters& engineParameters) final {
+        for (auto& outputs : m_channelStateMatrix)
+            for (auto& state : outputs) if (state) prepareSpecificState(state.get(), engineParameters);
+    }
+
   protected:
+    virtual void prepareSpecificState(EffectSpecificState* state,
+            const mixxx::EngineParameters& engineParameters) { Q_UNUSED(state); Q_UNUSED(engineParameters); }
     /// Subclasses for external effects plugins may reimplement this, but
     /// subclasses for built-in effects should not.
     virtual EffectSpecificState* createSpecificState(

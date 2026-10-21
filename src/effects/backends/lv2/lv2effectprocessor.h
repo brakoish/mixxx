@@ -12,7 +12,7 @@ class LV2EffectGroupState final : public EffectState {
   public:
     LV2EffectGroupState(const mixxx::EngineParameters& engineParameters)
             : EffectState(engineParameters),
-              m_pInstance(nullptr) {
+              m_pInstance(nullptr), m_sampleRate(engineParameters.sampleRate()) {
     }
 
     ~LV2EffectGroupState() override {
@@ -31,8 +31,16 @@ class LV2EffectGroupState final : public EffectState {
         return m_pInstance;
     }
 
+    bool prepare(mixxx::audio::SampleRate rate) {
+        if (rate == m_sampleRate) return false;
+        if (m_pInstance) { lilv_instance_deactivate(m_pInstance); lilv_instance_free(m_pInstance); m_pInstance = nullptr; }
+        m_sampleRate = rate; return true;
+    }
+    mixxx::audio::SampleRate sampleRate() const { return m_sampleRate; }
+
   private:
     LilvInstance* m_pInstance;
+    mixxx::audio::SampleRate m_sampleRate;
 };
 
 class LV2EffectProcessor final : public EffectProcessorImpl<LV2EffectGroupState> {
@@ -52,6 +60,9 @@ class LV2EffectProcessor final : public EffectProcessorImpl<LV2EffectGroupState>
             const GroupFeatureState& groupFeatures) override;
 
   private:
+    void prepareSpecificState(LV2EffectGroupState* state,
+            const mixxx::EngineParameters& engineParameters) override;
+    void connectPorts(LilvInstance* instance);
     LV2EffectGroupState* createSpecificState(
             const mixxx::EngineParameters& engineParameters) override;
 

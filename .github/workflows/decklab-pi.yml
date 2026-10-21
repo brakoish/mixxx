@@ -35,8 +35,22 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends flatpak flatpak-builder dbus-user-session elfutils
+      - name: Restore compiler cache only
+        id: compiler-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/decklab-pi/compiler-cache
+          key: decklab-arm64-kde610-${{ hashFiles('packaging/flatpak/**/*.yaml') }}-${{ github.sha }}
+          restore-keys: |
+            decklab-arm64-kde610-${{ hashFiles('packaging/flatpak/**/*.yaml') }}-
       - name: Build and test with pinned SDK and runtime
         run: dbus-run-session -- python3 tools/decklab/build_pi.py --work-dir "$RUNNER_TEMP/decklab-pi" --jobs 4
+      - name: Save compiler cache after successful or failed checks
+        if: always()
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/decklab-pi/compiler-cache
+          key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
       - name: Upload candidate and verification records
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

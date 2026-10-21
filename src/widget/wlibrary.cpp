@@ -106,6 +106,7 @@ LibraryView* WLibrary::getActiveView() const {
 
 WTrackTableView* WLibrary::getCurrentTrackTableView() const {
     QWidget* pCurrent = currentWidget();
+    if (!pCurrent) return nullptr;
     WTrackTableView* pTracksView = qobject_cast<WTrackTableView*>(pCurrent);
     if (!pTracksView) {
         // This view is not a tracks view, but possibly a special library view

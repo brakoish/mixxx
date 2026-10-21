@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <QDir>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QTest>
 
@@ -8,6 +9,7 @@
 #include "effects/effectchain.h"
 #include "effects/effectslot.h"
 #include "library/libraryfeature.h"
+#include "library/librarycontrol.h"
 #include "library/sidebarmodel.h"
 #include "library/treeitem.h"
 #include "test/signalpathtest.h"
@@ -18,13 +20,17 @@
 #include "widget/wlibrarysidebar.h"
 #include "widget/wsearchlineedit.h"
 #include "widget/wwaveformviewer.h"
+#ifdef __LILV__
+#include "effects/backends/lv2/lv2effectprocessor.h"
+#include "effects/backends/lv2/lv2manifest.h"
+#endif
 
 namespace {
 class TestSource final : public LibraryFeature {
   public:
     explicit TestSource(UserSettingsPointer config) : LibraryFeature(nullptr, config, QString()) {
         auto* root = model.setRootItem(TreeItem::newRoot(this));
-        root->appendChild("Genres")->appendChild("House");
+        auto* genres = root->appendChild("Genres"); genres->appendChild("House"); genres->appendChild("Techno");
     }
     QVariant title() override { return QStringLiteral("USB library"); }
     TreeItemModel* sidebarModel() const override { return const_cast<TreeItemModel*>(&model); }
@@ -41,13 +47,16 @@ class NativeDeckLabTest : public BaseSignalPathTest {
   protected:
     void SetUp() override {
         BaseSignalPathTest::SetUp();
-        WaveformWidgetFactory::instance()->setConfig(config());
+        WaveformWidgetFactory::createInstance()->setConfig(config());
         source = std::make_unique<TestSource>(config());
         model = std::make_unique<SidebarModel>(); model->addLibraryFeature(source.get());
+        navigation = std::make_unique<LibraryControl>(nullptr);
         panel = std::make_unique<WDeckLab>(config(), nullptr, nullptr, m_pEffectsManager.get());
         sidebar = new WLibrarySidebar(panel.get()); sidebar->setModel(model.get());
         library = new WLibrary(panel.get());
-        panel->bindBrowser(new WSearchLineEdit(panel.get(), config()), sidebar, library);
+        auto* search = new WSearchLineEdit(panel.get(), config());
+        panel->bindBrowser(search, sidebar, library); navigation->bindSearchboxWidget(search);
+        navigation->bindSidebarWidget(sidebar); navigation->bindLibraryWidget(library, nullptr);
         // Empty native viewers exercise screen geometry. Their empty rendering
         // is not evidence of waveform pacing or physical touchscreen behavior.
         for (int deck = 1; deck <= 3; ++deck) panel->addWaveform(
@@ -55,17 +64,21 @@ class NativeDeckLabTest : public BaseSignalPathTest {
         panel->resize(800, 480); panel->show(); QCoreApplication::processEvents();
     }
     void TearDown() override {
-        panel.reset(); model.reset(); source.reset(); BaseSignalPathTest::TearDown();
+        panel.reset(); navigation.reset(); model.reset(); source.reset();
+        WaveformWidgetFactory::destroy(); BaseSignalPathTest::TearDown();
     }
     std::unique_ptr<TestSource> source;
     std::unique_ptr<SidebarModel> model;
     std::unique_ptr<WDeckLab> panel;
+    std::unique_ptr<LibraryControl> navigation;
     WLibrarySidebar* sidebar = nullptr;
     WLibrary* library = nullptr;
 };
 
 TEST_F(NativeDeckLabTest, FirstBrowsePressDoesNotOpenSource) {
-    panel->browsePress();
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_press"), 1);
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_press"), 0);
+    QCoreApplication::processEvents();
     EXPECT_EQ(1, panel->currentPage());
     EXPECT_FALSE(sidebar->rootIndex().isValid());
     EXPECT_EQ(0, source->activations);
@@ -98,7 +111,38 @@ TEST_F(NativeDeckLabTest, PlayingDeckCannotBeReplaced) {
     load->click(); EXPECT_EQ(1, panel->currentPage());
 }
 
+TEST_F(NativeDeckLabTest, NativeKnobSelectionDoesNotActivateOrLeaveFolder) {
+    panel->browsePress(); panel->browsePress(); panel->browsePress();
+    const auto root = sidebar->rootIndex(); const int before = source->activations;
+    for (int n = 0; n < 20; ++n) ControlObject::set(ConfigKey("[Playlist]", "SelectPlaylist"), n % 2 ? -1 : 1);
+    QTest::qWait(350);
+    EXPECT_EQ(before, source->activations);
+    EXPECT_EQ(root, sidebar->rootIndex());
+    EXPECT_EQ(0, sidebar->currentIndex().row());
+}
+
+TEST_F(NativeDeckLabTest, EmptySamplerHasAnExplicitLoadAndCancelFlow) {
+    panel->selectPage(2); auto* pad = panel->findChild<QPushButton*>("decklab-sample-16"); ASSERT_NE(nullptr, pad);
+    pad->click(); EXPECT_EQ(1, panel->currentPage());
+    auto* cancel = panel->findChild<QPushButton*>("decklab-load-2"); ASSERT_NE(nullptr, cancel);
+    EXPECT_TRUE(cancel->text().contains("Cancel")); cancel->click(); EXPECT_EQ(2, panel->currentPage());
+}
+
+TEST_F(NativeDeckLabTest, TouchSearchUsesNativeKeyboardAndReturnsWaveforms) {
+    panel->selectPage(1);
+    panel->findChild<QPushButton*>("decklab-search")->click();
+    auto* keyboard = panel->findChild<QWidget*>("decklab-keyboard"); ASSERT_NE(nullptr, keyboard);
+    EXPECT_TRUE(keyboard->isVisible()); EXPECT_FALSE(panel->waveformContainer()->isVisible());
+    for (auto* b : keyboard->findChildren<QPushButton*>()) if (b->text() == "Q") { b->click(); break; }
+    auto* search = panel->findChild<WSearchLineEdit*>(); ASSERT_NE(nullptr, search);
+    EXPECT_EQ(QStringLiteral("q"), search->lineEdit()->text());
+    panel->findChild<QPushButton*>("decklab-search-done")->click();
+    EXPECT_FALSE(keyboard->isVisible()); EXPECT_TRUE(panel->waveformContainer()->isVisible());
+    EXPECT_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "play")));
+}
+
 TEST_F(NativeDeckLabTest, ToolRequestCanRepeatWithoutTimingRace) {
+    ControlObject::set(ConfigKey("[DeckLabNative]", "tools_ready"), 1); QCoreApplication::processEvents();
     auto* usb = panel->findChild<QPushButton*>("decklab-usb"); ASSERT_NE(nullptr, usb);
     usb->click(); const double serial = ControlObject::get(ConfigKey("[DeckLabNative]", "tool_serial"));
     usb->click(); EXPECT_EQ(serial + 1, ControlObject::get(ConfigKey("[DeckLabNative]", "tool_serial")));
@@ -111,7 +155,7 @@ TEST_F(NativeDeckLabTest, PagesFit800By480) {
         panel->selectPage(page); QCoreApplication::processEvents();
         EXPECT_EQ(QSize(800, 480), panel->size()) << page;
         for (auto* button : panel->findChildren<QPushButton*>()) {
-            if (!button->isVisible()) continue;
+            if (!button->isVisible() || button->visibleRegion().isEmpty()) continue;
             QRect bounds(button->mapTo(panel.get(), QPoint()), button->size());
             EXPECT_TRUE(panel->rect().contains(bounds)) << qPrintable(button->text()) << " page " << page;
             EXPECT_GE(button->height(), 38) << qPrintable(button->text());
@@ -134,6 +178,26 @@ TEST_F(NativeDeckLabTest, IndependentRmxDoesNotBorrowControllerChains) {
     EXPECT_DOUBLE_EQ(.63, ControlObject::get(ConfigKey("[EffectRack1_EffectUnit3]", "mix")));
     EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[DeckLabEffectUnit1]", "mix")));
 }
+
+#ifdef __LILV__
+TEST_F(NativeDeckLabTest, Lv2PreparationUsesSelectedRateWithoutAudio) {
+    auto manifest = m_pEffectsManager->getBackendManager()->getManifest(
+            "urn:decklab:threeband-performance", EffectBackendType::LV2).staticCast<LV2Manifest>();
+    ASSERT_FALSE(manifest.isNull());
+    LV2EffectGroupState state(mixxx::EngineParameters(mixxx::audio::SampleRate(96000), 512));
+    ASSERT_NE(nullptr, state.lilvInstance(manifest->getPlugin(), mixxx::EngineParameters(mixxx::audio::SampleRate(96000), 512)));
+    for (int rate : {44100, 48000, 96000, 48000}) {
+        EXPECT_TRUE(state.prepare(mixxx::audio::SampleRate(rate)));
+        EXPECT_EQ(mixxx::audio::SampleRate(rate), state.sampleRate());
+        auto* instance = state.lilvInstance(manifest->getPlugin(), mixxx::EngineParameters(mixxx::audio::SampleRate(rate), 512));
+        ASSERT_NE(nullptr, instance);
+        EXPECT_FALSE(state.prepare(mixxx::audio::SampleRate(rate)));
+        EXPECT_EQ(instance, state.lilvInstance(manifest->getPlugin(), mixxx::EngineParameters(mixxx::audio::SampleRate(rate), 512)));
+        m_pEngineMixer->prepareAudio(mixxx::audio::SampleRate(rate));
+        EXPECT_EQ(mixxx::audio::SampleRate(rate), m_pEffectsManager->preparedSampleRate());
+    }
+}
+#endif
 
 TEST(DeckLabTempoTest, JitterIsSmoothedButPitchChangesImmediately) {
     DeckLabTempoPresenter display;

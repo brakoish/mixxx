@@ -76,6 +76,7 @@ class EngineMixer : public QObject, public AudioSource {
 
     // Called by SoundManager on the main thread with all devices closed.
     void prepareScalers(mixxx::audio::SampleRate sampleRate);
+    void prepareAudio(mixxx::audio::SampleRate sampleRate);
 
     void process(const std::size_t bufferSize);
 
@@ -272,6 +273,7 @@ class EngineMixer : public QObject, public AudioSource {
     bool sidechainMixRequired() const;
 
     // non-owning. lifetime bound to EffectsManager
+    EffectsManager* m_pHostEffectsManager; // Main-thread preparation only.
     EngineEffectsManager* m_pEngineEffectsManager;
 
     // The previous gain of each channel for each mixing output (main,

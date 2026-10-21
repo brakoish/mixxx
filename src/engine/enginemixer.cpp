@@ -52,6 +52,7 @@ EngineMixer::EngineMixer(UserSettingsPointer pConfig,
           m_pBoothEnabled(std::make_unique<ControlObject>(
                   ConfigKey(group, "booth_enabled"))),
           m_pChannelHandleFactory(pChannelHandleFactory),
+          m_pHostEffectsManager(pEffectsManager),
           m_pEngineEffectsManager(pEffectsManager->getEngineEffectsManager()),
           m_outputBusBuffers({mixxx::SampleBuffer(kMaxEngineSamples),
                   mixxx::SampleBuffer(kMaxEngineSamples),
@@ -365,6 +366,11 @@ void EngineMixer::prepareScalers(mixxx::audio::SampleRate sampleRate) {
             pBuffer->prepareScalers(sampleRate);
         }
     }
+}
+
+void EngineMixer::prepareAudio(mixxx::audio::SampleRate sampleRate) {
+    prepareScalers(sampleRate);
+    m_pHostEffectsManager->prepare(sampleRate);
 }
 
 void EngineMixer::process(const std::size_t bufferSize) {

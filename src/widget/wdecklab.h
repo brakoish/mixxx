@@ -82,6 +82,8 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void updateStatus();
     void updateBreadcrumb();
     void updateLayers();
+    void releaseTouchCue();
+    void setSearchOpen(bool open);
     int displayedDeck(int side) const;
     QString fxGroup() const;
     QString fxSlot() const;
@@ -103,6 +105,8 @@ class WDeckLab : public QWidget, public WBaseWidget {
     WLibrary* m_libraryWidget = nullptr;
     WSearchLineEdit* m_search = nullptr;
     QBoxLayout* m_searchRow;
+    QWidget* m_searchPanel = nullptr;
+    QWidget* m_keyboard = nullptr;
     QLabel* m_breadcrumb;
     QLabel* m_status;
     std::array<QPushButton*, 5> m_tabs{};
@@ -123,6 +127,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     bool m_hasBrowsed = false;
     bool m_updating = false;
     int m_fxDeck = 1;
+    int m_sampleTarget = 0;
     bool m_fxActive = false;
     bool m_fxReleasing = false;
     bool m_fxMute = false;
@@ -130,11 +135,15 @@ class WDeckLab : public QWidget, public WBaseWidget {
     qint64 m_releaseAt = 0;
     qint64 m_holdStarted = 0;
     QString m_heldRoll;
+    QString m_touchCue;
     QElapsedTimer m_clock;
     QTimer m_fxTimer;
     qint64 m_lastFxTick = 0;
     unsigned int m_heartbeat = 0;
     unsigned int m_toolSerial = 0;
+    qint64 m_lastToolsReady = -10000;
+    bool m_toolsOnline = false;
+    QList<QPushButton*> m_toolButtons;
     std::array<DeckLabTempoPresenter, 4> m_tempos{};
     std::array<int, 2> m_layers{1, 2};
     double m_measuredFps = 0;

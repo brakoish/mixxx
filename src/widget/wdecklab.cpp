@@ -4,18 +4,22 @@
 #include <QApplication>
 #include <QBoxLayout>
 #include <QComboBox>
+#include <QDir>
 #include <QEvent>
 #include <QGridLayout>
 #include <QHeaderView>
 #include <QKeyEvent>
+#include <QLineEdit>
 #include <QLabel>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPainter>
 #include <QMouseEvent>
 #include <QButtonGroup>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSlider>
+#include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QStyle>
 #include <algorithm>
@@ -120,9 +124,18 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     setAttribute(Qt::WA_StyledBackground);
     setMinimumSize(800, 480);
     m_clock.start();
-    for (const auto& name : {"active", "browse_press", "browse_back", "tool_request", "tool_serial"}) {
+    for (const auto& name : {"active", "browse_press", "browse_back", "tool_request", "tool_serial", "tools_ready"}) {
         createControl(kNative, QString::fromLatin1(name));
     }
+    m_toolSerial = static_cast<unsigned int>(value(kNative, "tool_serial"));
+    // A QA profile must not allow the host helper to edit the normal profile.
+    QString profilePath = QDir::cleanPath(m_config->getSettingsPath());
+    if (profilePath == QDir::homePath() + "/.mixxx")
+        profilePath = QDir::homePath() + "/.var/app/org.mixxx.Mixxx/.mixxx";
+    quint32 profileTag = 2166136261u;
+    for (unsigned char byte : profilePath.toUtf8()) { profileTag ^= byte; profileTag *= 16777619u; }
+    createControl(kNative, "profile_tag", profileTag);
+    set(kNative, "profile_tag", profileTag);
     createControl(kTab, QStringLiteral("current"));
     createControl(QStringLiteral("[Sidebar]"), QStringLiteral("sidebar_visible"), 1);
     m_root = column(this);
@@ -145,6 +158,7 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     }
     auto* usb = button(tr("USB"), [this] { tool(1); }, this, QStringLiteral("decklab-usb"));
     usb->setFixedHeight(40);
+    m_toolButtons.append(usb); usb->setEnabled(false);
     usb->setIcon(style()->standardIcon(QStyle::SP_ArrowDown));
     rail->addWidget(usb);
     m_root->addLayout(rail);
@@ -165,6 +179,9 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     m_root->addWidget(m_status);
     watch(kNative, "browse_press", [this](double v) { if (v > 0) browsePress(); });
     watch(kNative, "browse_back", [this](double v) { if (v > 0) browseBack(); });
+    watch(kNative, "tools_ready", [this](double v) {
+        if (v > 0) { const bool wasOnline = m_toolsOnline; m_lastToolsReady = m_clock.elapsed(); m_toolsOnline = true; for (auto* b : m_toolButtons) b->setEnabled(true); if (!wasOnline) updateStatus(); }
+    });
     watch(kTab, "current", [this](double v) {
         int page = int(v);
         selectPage(page == 5 ? 4 : page == 4 ? 1 : page);
@@ -199,6 +216,7 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
             this, [this](float fps, int dropped) { m_measuredFps = fps; m_droppedFrames = dropped; updateStatus(); });
     watch("[App]", "audio_latency_overload_count", [this](double) { updateStatus(); });
     watch("[Recording]", "status", [this](double) { updateStatus(); });
+    watch("[SoundManager]", "status", [this](double) { updateStatus(); });
     connect(&m_fxTimer, &QTimer::timeout, this, &WDeckLab::tickEffects);
     m_fxTimer.start(100);
     qApp->installEventFilter(this);
@@ -209,6 +227,7 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
 
 WDeckLab::~WDeckLab() {
     m_fxTimer.stop();
+    releaseTouchCue();
     releaseEffects();
     set(kNative, "active", 0);
     qApp->removeEventFilter(this);
@@ -266,8 +285,8 @@ QWidget* WDeckLab::buildDecks() {
                 else if (item != "cue_default") pulse(channel(deck), item);
             }, strip, QStringLiteral("decklab-%1-%2").arg(deck).arg(pair.second));
             if (pair.second == "cue_default") {
-                connect(b, &QPushButton::pressed, this, [this, side] { set(channel(displayedDeck(side)), "cue_default", 1); });
-                connect(b, &QPushButton::released, this, [this, side] { set(channel(displayedDeck(side)), "cue_default", 0); });
+                connect(b, &QPushButton::pressed, this, [this, side] { releaseTouchCue(); m_touchCue = channel(displayedDeck(side)); set(m_touchCue, "cue_default", 1); });
+                connect(b, &QPushButton::released, this, &WDeckLab::releaseTouchCue);
             }
             if (pair.second == "play") {
                 b->setCheckable(true);
@@ -294,14 +313,15 @@ QWidget* WDeckLab::buildBrowse() {
     m_breadcrumb = new QLabel(tr("Sources"), m_browser);
     m_breadcrumb->setContentsMargins(9, 0, 4, 0);
     heading->addWidget(m_breadcrumb, 1);
-    heading->addWidget(button(tr("Tracks"), [this] { showTracks(); }, m_browser, "decklab-view-tracks"));
+    heading->addWidget(button(tr("Search"), [this] { setSearchOpen(!m_keyboard || m_keyboard->isHidden()); }, m_browser, "decklab-search"));
     auto* more = button(tr("Tools"), [this] {
         auto* menu = new QMenu(this);
         menu->setAttribute(Qt::WA_DeleteOnClose);
+        menu->addAction(tr("All tracks"), this, [this] { if (m_library) m_library->searchTracksInCollection(QString()); showTracks(); });
         menu->addAction(tr("Preview selected track"), this, [this] { pulse("[PreviewDeck1]", "LoadSelectedTrackAndPlay"); });
         menu->addAction(tr("Stop preview"), this, [this] { pulse("[PreviewDeck1]", "stop"); });
-        menu->addAction(tr("Match playing deck"), this, [this] {
-            int deck = value(channel(1), "play") ? 1 : value(channel(2), "play") ? 2 : m_fxDeck;
+        const int matchDeck = value(channel(2), "play") && (!value(channel(1), "play") || value(channel(2), "sync_mode") == 2) ? 2 : 1;
+        auto* match = menu->addAction(tr("Match Deck %1").arg(matchDeck), this, [this, deck = matchDeck] {
             const double bpm = value(channel(deck), "bpm");
             if (bpm > 0 && m_search) {
                 m_search->slotRestoreSearch(QStringLiteral("~bpm:%1 ~key:%2")
@@ -309,6 +329,7 @@ QWidget* WDeckLab::buildBrowse() {
                 showTracks();
             }
         });
+        match->setEnabled(value(channel(matchDeck), "track_loaded") && value(channel(matchDeck), "bpm") > 0);
         menu->addAction(tr("Clear filter"), this, [this] { if (m_search) m_search->slotClearSearch(); });
         menu->addAction(tr("Track details"), this, [this] { set("[Library]", "show_track_menu", 1); });
         auto* loadSamples = menu->addMenu(tr("Load into sampler"));
@@ -316,6 +337,9 @@ QWidget* WDeckLab::buildBrowse() {
             auto* action = loadSamples->addAction(tr("Pad %1").arg(slot), this, [this, slot] {
                 const QString group = QStringLiteral("[Sampler%1]").arg(slot);
                 if (value(group, "play") || !m_libraryWidget) return;
+                if (value(group, "track_loaded") && QMessageBox::question(this, tr("Replace sample"),
+                        tr("Replace the sample on pad %1?").arg(slot), QMessageBox::Yes | QMessageBox::Cancel,
+                        QMessageBox::Cancel) != QMessageBox::Yes) return;
                 if (auto* table = m_libraryWidget->getCurrentTrackTableView()) {
                     table->loadSelectedTrackToGroup(group,
 #ifdef __STEM__
@@ -330,18 +354,16 @@ QWidget* WDeckLab::buildBrowse() {
     }, m_browser, "decklab-browse-tools");
     heading->addWidget(more);
     layout->addLayout(heading);
-    m_searchRow = row();
-    layout->addLayout(m_searchRow);
+    m_searchPanel = new QWidget(m_browser); m_searchRow = row(m_searchPanel);
+    layout->addWidget(m_searchPanel); m_searchPanel->hide();
     m_browseStack = new QStackedWidget(m_browser);
     layout->addWidget(m_browseStack, 1);
-    auto* loads = row();
     for (int deck = 1; deck <= 2; ++deck) {
         m_loadButtons[deck - 1] = button(tr("Load %1").arg(deck), [this, deck] { loadDeck(deck); }, m_browser,
                 QStringLiteral("decklab-load-%1").arg(deck));
         m_loadButtons[deck - 1]->setFixedHeight(44);
-        loads->addWidget(m_loadButtons[deck - 1], 1);
+        heading->addWidget(m_loadButtons[deck - 1]);
     }
-    layout->addLayout(loads);
     return m_browser;
 }
 
@@ -352,8 +374,9 @@ QWidget* WDeckLab::buildSampler() {
     grid->setSpacing(3);
     for (int slot = 1; slot <= 16; ++slot) {
         QString group = QStringLiteral("[Sampler%1]").arg(slot);
-        auto* pad = button(tr("%1\nEmpty").arg(slot), [this, group] {
+        auto* pad = button(tr("%1\nEmpty").arg(slot), [this, group, slot] {
             if (value(group, "track_loaded")) pulse(group, "play_stutter");
+            else { m_sampleTarget = slot; selectPage(1); refreshLoadButtons(); }
         }, page, QStringLiteral("decklab-sample-%1").arg(slot));
         pad->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         pad->setCheckable(true);
@@ -367,11 +390,12 @@ QWidget* WDeckLab::buildSampler() {
         m_samples[slot - 1] = pad;
         grid->addWidget(pad, (slot - 1) / 4, (slot - 1) % 4);
         watch(group, "play", [pad](double v) { pad->setChecked(v > 0); });
-        auto refresh = [this, group, slot, pad](double) {
+        auto refresh = [this, group, slot, pad](double loaded) {
             auto* player = m_players ? m_players->getPlayer(group) : nullptr;
             auto track = player ? player->getLoadedTrack() : TrackPointer();
             pad->setText(QStringLiteral("%1\n%2").arg(slot).arg(track ? track->getTitle().left(30) : tr("Empty")));
             pad->setToolTip(track ? track->getTitle() : tr("Browse → Tools → Load into sampler"));
+            if (loaded && m_sampleTarget == slot) { m_sampleTarget = 0; selectPage(2); }
         };
         watch(group, "track_loaded", refresh);
         refresh(0);
@@ -407,12 +431,13 @@ QWidget* WDeckLab::buildEffects() {
     auto* selection = new QButtonGroup(views);
     for (int n = 0; n < 4; ++n) {
         const QStringList names{tr("Levers"), tr("Isolate"), tr("Perform"), tr("XY")};
-        auto* tab = button(names[n], [views, n] { views->setCurrentIndex(n); }, m_fxBody,
+        auto* tab = button(names[n], [views, n] { views->setCurrentIndex(n); }, page,
                 QStringLiteral("decklab-fx-view-%1").arg(n));
         tab->setCheckable(true); tab->setChecked(n == 0); tab->setProperty("rail", true);
         selection->addButton(tab); tabs->addWidget(tab, 1);
     }
-    body->addLayout(tabs);
+    layout->addLayout(tabs);
+    views->setObjectName("decklab-fx-pages");
     const QStringList bands{tr("LOW"), tr("MID"), tr("HIGH")};
     auto* lever = new QWidget(views); auto* leverLayout = column(lever);
     m_leverMode = new QComboBox(lever);
@@ -475,6 +500,8 @@ QWidget* WDeckLab::buildEffects() {
         });
         performLayout->addWidget(hold, 1, n);
     }
+    auto* holdHint = new QLabel(tr("HOLD pads · release to recover · 4 second safety limit"), perform);
+    holdHint->setProperty("muted", true); performLayout->addWidget(holdHint, 2, 0, 1, 4);
     views->addWidget(perform);
     auto* xy = new DeckLabXY([this](double x, double y, bool on) {
         if (!on) { m_holdFx = false; releaseEffects(); return; }
@@ -506,6 +533,7 @@ QWidget* WDeckLab::buildSettings() {
     categories->setFixedWidth(150);
     auto* links = column(categories);
     auto* pages = new QStackedWidget(page);
+    pages->setObjectName("decklab-settings-pages");
     const QStringList names{tr("Deck"), tr("Levels / Cue"), tr("Display"), tr("Library"), tr("Device")};
     for (int index = 0; index < names.size(); ++index) {
         auto* scroll = new QScrollArea(pages);
@@ -559,6 +587,7 @@ QWidget* WDeckLab::buildSettings() {
             mix->setMinimumHeight(44); mix->setRange(0, 100);
             mix->setValue(int((value("[Master]", "headMix") + 1) * 50));
             connect(mix, &QSlider::valueChanged, this, [this](int v) { set("[Master]", "headMix", v / 50.0 - 1); });
+            watch("[Master]", "headMix", [mix](double v) { if (!mix->isSliderDown()) { const QSignalBlocker blocker(mix); mix->setValue(int((v + 1) * 50)); } });
             addRow(tr("Cue ← blend → Main"), mix);
         } else if (index == 2) {
             auto* keys = new QComboBox(content);
@@ -581,6 +610,21 @@ QWidget* WDeckLab::buildSettings() {
                 for (int deck = 1; deck <= 2; ++deck) set(channel(deck), "waveform_zoom", v);
             });
             addRow(tr("Waveform zoom"), zoom);
+            auto* grid = new QSlider(Qt::Horizontal, content);
+            grid->setRange(0, 100); grid->setMinimumHeight(44);
+            grid->setValue(WaveformWidgetFactory::instance()->getBeatGridAlpha());
+            connect(grid, &QSlider::valueChanged, this, [](int v) { WaveformWidgetFactory::instance()->setDisplayBeatGridAlpha(v); });
+            addRow(tr("Beatgrid brightness"), grid);
+            auto* appearance = new QComboBox(content);
+            auto* factory = WaveformWidgetFactory::instance();
+            const auto& types = factory->getAvailableTypes();
+            for (int n = 0; n < types.size(); ++n) {
+                if (types[n].getType() == WaveformWidgetType::Empty) continue;
+                appearance->addItem(types[n].getDisplayName(), n);
+                if (types[n].getType() == factory->getType()) appearance->setCurrentIndex(appearance->count() - 1);
+            }
+            connect(appearance, qOverload<int>(&QComboBox::activated), this, [appearance, factory](int n) { factory->setWidgetTypeFromHandle(appearance->itemData(n).toInt()); });
+            addRow(tr("Waveform colours"), appearance);
         } else if (index == 3) {
             auto* played = button(tr("Dim played tracks"), [this] {
                 bool next = !m_config->getValue(ConfigKey("[Library]", "ApplyPlayedTrackColor"), true);
@@ -593,13 +637,16 @@ QWidget* WDeckLab::buildSettings() {
             rows->addWidget(played);
             for (const auto& action : {qMakePair(tr("Get music"), 2), qMakePair(tr("Sample Maker"), 3),
                          qMakePair(tr("Record mix to USB"), 4), qMakePair(tr("Check Rekordbox USB"), 10)}) {
-                rows->addWidget(button(action.first, [this, id = action.second] { tool(id); }, content));
+                auto* b = button(action.first, [this, id = action.second] { tool(id); }, content);
+                b->setEnabled(false); m_toolButtons.append(b); rows->addWidget(b);
             }
         } else {
             rows->addWidget(new QLabel(tr("Controller audio is the normal main/cue route.\nChanges that interrupt audio are guarded by live playback state."), content));
+            m_performanceStatus = new QLabel(content); rows->addWidget(m_performanceStatus);
             for (const auto& action : {qMakePair(tr("Controller & audio setup"), 5), qMakePair(tr("Wi-Fi"), 6),
                          qMakePair(tr("Advanced Mixxx settings"), 8), qMakePair(tr("Desktop"), 9)}) {
-                rows->addWidget(button(action.first, [this, id = action.second] { tool(id); }, content));
+                auto* b = button(action.first, [this, id = action.second] { tool(id); }, content);
+                b->setEnabled(false); m_toolButtons.append(b); rows->addWidget(b);
             }
         }
         rows->addStretch(); scroll->setWidget(content); pages->addWidget(scroll);
@@ -636,6 +683,25 @@ void WDeckLab::bindBrowser(WSearchLineEdit* search, WLibrarySidebar* sidebar, WL
     search->setAccessibleName(tr("Search tracks"));
     m_searchRow->addWidget(search, 1);
     m_searchRow->addWidget(button(tr("Clear"), [search] { search->slotClearSearch(); }, m_browser));
+    m_keyboard = new QWidget(this); m_keyboard->setObjectName("decklab-keyboard");
+    auto* keys = column(m_keyboard); m_keyboard->setFixedHeight(200);
+    const QStringList rows{"1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"};
+    for (const QString& letters : rows) {
+        auto* line = row(nullptr, 2);
+        for (QChar letter : letters) {
+            auto* key = button(QString(letter), [search, letter] { if (search->lineEdit()) search->lineEdit()->insert(QString(letter).toLower()); }, m_keyboard);
+            key->setStyleSheet("min-height:0;padding:0;border-radius:0;"); key->setFixedHeight(40); line->addWidget(key, 1);
+        }
+        keys->addLayout(line);
+    }
+    auto* actions = row(nullptr, 2);
+    for (const QString& mark : {QStringLiteral("-"), QStringLiteral("."), QStringLiteral("/")})
+        actions->addWidget(button(mark, [search, mark] { if (search->lineEdit()) search->lineEdit()->insert(mark); }, m_keyboard));
+    actions->addWidget(button(tr("Space"), [search] { if (search->lineEdit()) search->lineEdit()->insert(" "); }, m_keyboard), 1);
+    auto* backspace = button(tr("Delete"), [search] { if (search->lineEdit()) search->lineEdit()->backspace(); }, m_keyboard);
+    backspace->setAutoRepeat(true); backspace->setAutoRepeatDelay(400); backspace->setAutoRepeatInterval(100); actions->addWidget(backspace);
+    actions->addWidget(button(tr("Done"), [this] { setSearchOpen(false); }, m_keyboard, "decklab-search-done"));
+    keys->addLayout(actions); m_root->addWidget(m_keyboard); m_keyboard->hide();
     m_browseStack->addWidget(sidebar); m_browseStack->addWidget(library);
     sidebar->setIndentation(0);
     sidebar->setRootIsDecorated(false);
@@ -650,6 +716,7 @@ void WDeckLab::bindBrowser(WSearchLineEdit* search, WLibrarySidebar* sidebar, WL
     connect(sidebar->selectionModel(), &QItemSelectionModel::currentChanged, this,
             [this](const QModelIndex&, const QModelIndex&) { updateBreadcrumb(); });
     connect(search, &WSearchLineEdit::search, this, [this](const QString&) { showTracks(); });
+    if (m_library) connect(m_library, &Library::trackSelected, this, [this](TrackPointer) { refreshLoadButtons(); });
     if (m_library) m_library->setRowHeight(44);
     showSources();
 }
@@ -657,6 +724,9 @@ void WDeckLab::bindBrowser(WSearchLineEdit* search, WLibrarySidebar* sidebar, WL
 void WDeckLab::selectPage(int page) {
     if (page < 0 || page > 4 || page == m_page) return;
     if (m_page == 3) releaseEffects();
+    setSearchOpen(false);
+    if (m_page == 1 && page != 1) m_sampleTarget = 0;
+    releaseTouchCue();
     m_page = page;
     // Keep the existing mapping's public page numbers: 4 = tools, 5 = settings.
     set(kTab, "current", page == 4 ? 5 : page);
@@ -664,9 +734,11 @@ void WDeckLab::selectPage(int page) {
     m_pages->setCurrentIndex(page);
     m_root->removeWidget(m_waveforms);
     if (page == 0) {
+        m_pages->setFixedHeight(98);
         m_waveforms->setMinimumHeight(0); m_waveforms->setMaximumHeight(QWIDGETSIZE_MAX);
         m_root->insertWidget(1, m_waveforms, 1);
     } else {
+        m_pages->setMinimumHeight(0); m_pages->setMaximumHeight(QWIDGETSIZE_MAX);
         m_waveforms->setFixedHeight(page == 1 ? 104 : 140);
         m_root->insertWidget(page == 1 ? 2 : 1, m_waveforms);
     }
@@ -686,7 +758,7 @@ void WDeckLab::showSources() {
     set("[Library]", "focused_widget", 2);
     m_sidebar->setFocus(Qt::OtherFocusReason);
     if (!m_sidebar->currentIndex().isValid() && m_sidebar->model()->rowCount(m_sidebar->rootIndex())) {
-        m_sidebar->selectIndex(m_sidebar->model()->index(0, 0, m_sidebar->rootIndex()));
+        m_sidebar->setCurrentIndex(m_sidebar->model()->index(0, 0, m_sidebar->rootIndex()));
     }
     updateBreadcrumb(); refreshLoadButtons();
 }
@@ -713,34 +785,46 @@ void WDeckLab::openSource() {
     if (!index.isValid()) return;
     model->clicked(index);
     if (!index.isValid()) return;
-    if (model->hasChildren(index) || (!index.parent().isValid() && !model->hasTrackTable(index))) {
+    if ((!model->hasTrackTable(index) && model->hasChildren(index)) || (!index.parent().isValid() && !model->hasTrackTable(index))) {
         m_sidebar->setRootIndex(index);
         const QModelIndex child = model->index(0, 0, index);
-        if (child.isValid()) m_sidebar->selectIndex(child);
+        if (child.isValid()) m_sidebar->setCurrentIndex(child);
         showSources();
     } else showTracks();
 }
 void WDeckLab::browseBack() {
+    if (m_keyboard && m_keyboard->isVisible()) { setSearchOpen(false); return; }
     if (m_page != 1) { selectPage(1); return; }
     if (!m_sidebar) return;
     if (m_browseStack->currentIndex() != 0) { showSources(); return; }
     const QPersistentModelIndex previous(m_sidebar->rootIndex());
     if (previous.isValid()) {
         m_sidebar->setRootIndex(previous.parent());
-        m_sidebar->selectIndex(previous);
+        m_sidebar->setCurrentIndex(previous);
         showSources();
     } else selectPage(0);
 }
 void WDeckLab::updateBreadcrumb() {
     if (!m_sidebar) return;
     QStringList path;
-    QModelIndex at = m_sidebar->rootIndex();
+    QModelIndex at = m_browseStack->currentWidget() == m_libraryWidget ? m_sidebar->currentIndex() : m_sidebar->rootIndex();
     while (at.isValid()) { path.prepend(at.data().toString()); at = at.parent(); }
     if (path.isEmpty()) path.append(tr("Sources"));
     m_breadcrumb->setText(path.join(QStringLiteral("  /  ")));
     m_breadcrumb->setToolTip(m_breadcrumb->text());
 }
 void WDeckLab::loadDeck(int deck) {
+    if (m_sampleTarget) {
+        if (deck == 2) { m_sampleTarget = 0; selectPage(2); return; }
+        const QString group = QStringLiteral("[Sampler%1]").arg(m_sampleTarget);
+        if (m_browseStack->currentWidget() != m_libraryWidget || value(group, "play")) return;
+        if (auto* table = m_libraryWidget->getCurrentTrackTableView()) table->loadSelectedTrackToGroup(group,
+#ifdef __STEM__
+                mixxx::StemChannelSelection(),
+#endif
+                false);
+        return;
+    }
     deck = displayedDeck(deck - 1);
     if (m_page != 1 || !m_libraryWidget || m_browseStack->currentWidget() != m_libraryWidget ||
             value(channel(deck), "play")) return;
@@ -752,10 +836,16 @@ void WDeckLab::refreshLoadButtons() {
     if (!m_loadButtons[0]) return;
     for (int deck = 1; deck <= 2; ++deck) {
         auto* load = m_loadButtons[deck - 1];
+        if (m_sampleTarget) {
+            load->setText(deck == 1 ? tr("Load pad %1").arg(m_sampleTarget) : tr("Cancel"));
+            load->setEnabled(deck == 2 || (m_libraryWidget && m_browseStack->currentWidget() == m_libraryWidget &&
+                    m_libraryWidget->getCurrentTrackTableView() && !value(QStringLiteral("[Sampler%1]").arg(m_sampleTarget), "play")));
+            continue;
+        }
         const int target = displayedDeck(deck - 1);
         const bool playing = value(channel(target), "play");
         load->setText(playing ? tr("Deck %1 · Playing").arg(target) : tr("Load %1").arg(target));
-        load->setEnabled(!playing && m_libraryWidget && m_browseStack->currentWidget() == m_libraryWidget);
+        load->setEnabled(!playing && m_libraryWidget && m_browseStack->currentWidget() == m_libraryWidget && m_libraryWidget->getCurrentTrackTableView());
     }
 }
 void WDeckLab::refreshDeck(int deck) {
@@ -783,9 +873,12 @@ void WDeckLab::refreshDeck(int deck) {
     }
 }
 
-QString WDeckLab::fxGroup() const { return QStringLiteral("[DeckLabEffectUnit%1]").arg(m_fxDeck); }
-QString WDeckLab::fxSlot() const { return QStringLiteral("[DeckLabEffectUnit%1_Effect4]").arg(m_fxDeck); }
+QString WDeckLab::fxGroup() const { return QStringLiteral("[DeckLabEffectUnit%1]").arg((m_fxDeck - 1) % 2 + 1); }
+QString WDeckLab::fxSlot() const { return QStringLiteral("[DeckLabEffectUnit%1_Effect4]").arg((m_fxDeck - 1) % 2 + 1); }
 void WDeckLab::refreshFx() {
+    auto* target = findChild<QComboBox*>("decklab-fx-target");
+    if (target && target->count() == 2 && (value(channel(3), "track_loaded") || value(channel(4), "track_loaded")))
+        target->addItems({tr("Deck 3"), tr("Deck 4")});
     auto chain = m_effects ? m_effects->getEffectChain(fxGroup()) : EffectChainPointer();
     const bool ready = chain && chain->getEffectSlot(3) && chain->getEffectSlot(3)->isLoaded();
     const bool loaded = value(channel(m_fxDeck), "track_loaded") > 0;
@@ -858,6 +951,9 @@ void WDeckLab::releaseEffects(bool musical, bool mute) {
 }
 void WDeckLab::tickEffects() {
     qint64 now = m_clock.elapsed();
+    if (m_toolsOnline && now - m_lastToolsReady > 2000) {
+        m_toolsOnline = false; for (auto* b : m_toolButtons) b->setEnabled(false); updateStatus();
+    }
     for (int deck = 1; deck <= 4; ++deck) refreshDeck(deck);
     if (m_holdFx && now - m_holdStarted >= 4000) { m_holdFx = false; releaseEffects(); }
     if (!m_heldRoll.isEmpty() && now - m_holdStarted >= 4000) {
@@ -879,7 +975,9 @@ void WDeckLab::tickEffects() {
     }
 }
 void WDeckLab::tool(int id) {
+    if (!m_toolsOnline || m_clock.elapsed() - m_lastToolsReady > 2000) return;
     releaseEffects();
+    if (id != 1) selectPage(4);
     // The host utility companion observes this explicit, bounded action only.
     // It owns OS integration; the native surface never gets a shell command API.
     set(kNative, "tool_request", id);
@@ -901,23 +999,41 @@ void WDeckLab::setKeyNotation(int index) {
 void WDeckLab::updateStatus() {
     int overloads = int(value("[App]", "audio_latency_overload_count"));
     int recording = int(value("[Recording]", "status"));
-    QString text = recording >= 2 ? tr("REC · USB recording") : tr("Deck Lab · Native");
+    QString text = recording == 2 ? tr("REC · Recording") : recording == 3 ? tr("Recording paused") : QString();
+    if (value("[SoundManager]", "status") != 2) text += tr("   Audio disconnected · Settings → Device");
+    if (!m_toolsOnline) text += tr("   System tools offline");
     if (overloads) text += tr("   Audio overloads: %1").arg(overloads);
     m_status->setText(text);
+    m_status->setVisible(!text.isEmpty());
     if (m_performanceStatus) m_performanceStatus->setText(tr("Waveforms: %1 FPS · %2 dropped\nAudio overload count: %3")
             .arg(m_measuredFps, 0, 'f', 1).arg(m_droppedFrames).arg(overloads));
 }
 bool WDeckLab::eventFilter(QObject* watched, QEvent* event) {
     if (watched == m_sidebar && event->type() == QEvent::KeyPress) {
         auto* key = static_cast<QKeyEvent*>(event);
+        if (key->key() == Qt::Key_Up || key->key() == Qt::Key_Down) {
+            set("[Playlist]", "SelectPlaylist", key->key() == Qt::Key_Up ? -key->count() : key->count()); return true;
+        }
         if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter || key->key() == Qt::Key_Right) { openSource(); return true; }
         if (key->key() == Qt::Key_Left || key->key() == Qt::Key_Escape) { browseBack(); return true; }
     }
     if ((event->type() == QEvent::ApplicationDeactivate) ||
-            event->type() == QEvent::TouchCancel) releaseEffects();
+            event->type() == QEvent::TouchCancel) { releaseTouchCue(); releaseEffects(); }
     return QWidget::eventFilter(watched, event);
 }
-void WDeckLab::hideEvent(QHideEvent* event) { releaseEffects(); QWidget::hideEvent(event); }
+void WDeckLab::hideEvent(QHideEvent* event) { releaseTouchCue(); releaseEffects(); QWidget::hideEvent(event); }
+
+void WDeckLab::releaseTouchCue() {
+    if (!m_touchCue.isEmpty()) { set(m_touchCue, "cue_default", 0); m_touchCue.clear(); }
+}
+
+void WDeckLab::setSearchOpen(bool open) {
+    if (!m_keyboard || !m_searchPanel) return;
+    m_keyboard->setVisible(open);
+    m_searchPanel->setVisible(open || (m_search && !m_search->currentText().isEmpty()));
+    if (m_page == 1) m_waveforms->setVisible(!open);
+    if (open && m_search && m_search->lineEdit()) m_search->lineEdit()->setFocus(Qt::OtherFocusReason);
+}
 
 int WDeckLab::displayedDeck(int side) const { return m_layers[side]; }
 void WDeckLab::updateLayers() {
