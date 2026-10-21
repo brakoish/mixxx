@@ -1,3 +1,4 @@
+# Candidate builds only. No appliance credentials or deployment jobs.
 name: Deck Lab Pi ARM64
 
 on:
