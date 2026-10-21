@@ -1,6 +1,8 @@
 #include "effects/backends/lv2/lv2backend.h"
 
 #include <lv2/units/units.h>
+#include <QCoreApplication>
+#include <QDir>
 
 #include "effects/backends/lv2/lv2effectprocessor.h"
 #include "effects/backends/lv2/lv2manifest.h"
@@ -9,6 +11,18 @@ LV2Backend::LV2Backend() {
     m_pWorld = lilv_world_new();
     initializeProperties();
     lilv_world_load_all(m_pWorld);
+#ifdef __LINUX__
+    // The appliance owns this processor. Locate its installed sibling bundle
+    // explicitly: a host/plugin search path need not include the app prefix.
+    const QDir bundled(QCoreApplication::applicationDirPath() + "/../lib/lv2/performance.lv2");
+    if (bundled.exists("manifest.ttl")) {
+        const QString bundlePath = bundled.canonicalPath() + QLatin1Char('/');
+        const QByteArray path = bundlePath.toUtf8();
+        LilvNode* uri = lilv_new_file_uri(m_pWorld, nullptr, path.constData());
+        lilv_world_load_bundle(m_pWorld, uri);
+        lilv_node_free(uri);
+    }
+#endif
     enumeratePlugins();
 }
 

@@ -35,6 +35,9 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
         // The smoke check may navigate/configure views, never start audio.
         for (int deck = 1; deck <= 4; ++deck) if (ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), "play"))) failures->append("Unexpected playing deck");
         for (int slot = 1; slot <= 16; ++slot) if (ControlObject::get(ConfigKey(QStringLiteral("[Sampler%1]").arg(slot), "play"))) failures->append("Unexpected playing sampler");
+        for (int unit = 1; unit <= 2; ++unit)
+            if (ControlObject::get(ConfigKey(QStringLiteral("[DeckLabEffectUnit%1_Effect4]").arg(unit), "loaded")) != 1)
+                failures->append("Bundled native RMX processor is unavailable");
     };
     QObject::connect(timer, &QTimer::timeout, surface, [=] {
         // Capture the real parser/Library/PlayerManager surface, including the
@@ -48,12 +51,21 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
             timer->stop();
             QFile file(QDir(output).filePath("native-smoke.json"));
             const bool opened = file.open(QIODevice::WriteOnly);
-            if (opened) file.write(QJsonDocument(QJsonObject{{"screens", *step}, {"failures", *failures}, {"audio_started", false}}).toJson());
+            int processors = 0;
+            for (int unit = 1; unit <= 2; ++unit)
+                processors += ControlObject::get(ConfigKey(QStringLiteral("[DeckLabEffectUnit%1_Effect4]").arg(unit), "loaded")) == 1;
+            if (opened) file.write(QJsonDocument(QJsonObject{{"screens", *step}, {"failures", *failures},
+                    {"audio_started", false}, {"native_rmx_units_loaded", processors}}).toJson());
             qApp->exit(opened && failures->isEmpty() ? 0 : 71); return;
         }
         surface->setFixedSize(800, 480);
         QTimer::singleShot(100, surface, [=] {
             check();
+            if (*step == 15 || *step == 16) {
+                for (int deck = 1; deck <= 2; ++deck)
+                    if (surface->findChild<QPushButton*>(QStringLiteral("decklab-load-%1").arg(deck))->isEnabled())
+                        failures->append("Empty collection offers Load without a track selection");
+            }
             if (!surface->grab().save(QDir(output).filePath(QStringLiteral("app-screen-%1.png").arg(*step, 2, 10, QLatin1Char('0'))))) failures->append("Screenshot failed");
             ++*step;
         });

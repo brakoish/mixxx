@@ -1021,18 +1021,20 @@ void WDeckLab::loadDeck(int deck) {
 }
 void WDeckLab::refreshLoadButtons() {
     if (!m_loadButtons[0]) return;
+    auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+    const bool selected = table && table->selectionModel() && !table->selectionModel()->selectedRows().isEmpty();
     for (int deck = 1; deck <= 2; ++deck) {
         auto* load = m_loadButtons[deck - 1];
         if (m_sampleTarget) {
             load->setText(deck == 1 ? tr("Load pad %1").arg(m_sampleTarget) : tr("Cancel"));
             load->setEnabled(deck == 2 || (m_libraryWidget && m_browseStack->currentWidget() == m_libraryWidget &&
-                    m_libraryWidget->getCurrentTrackTableView() && !value(QStringLiteral("[Sampler%1]").arg(m_sampleTarget), "play")));
+                    selected && !value(QStringLiteral("[Sampler%1]").arg(m_sampleTarget), "play")));
             continue;
         }
         const int target = displayedDeck(deck - 1);
         const bool playing = value(channel(target), "play");
         load->setText(playing ? tr("Deck %1 · Playing").arg(target) : tr("Load %1").arg(target));
-        load->setEnabled(!playing && m_libraryWidget && m_browseStack->currentWidget() == m_libraryWidget && m_libraryWidget->getCurrentTrackTableView());
+        load->setEnabled(!playing && m_libraryWidget && m_browseStack->currentWidget() == m_libraryWidget && selected);
     }
 }
 void WDeckLab::refreshDeck(int deck) {
