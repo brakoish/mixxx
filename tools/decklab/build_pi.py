@@ -138,7 +138,7 @@ def build(work, jobs, lock):
     test_filter = ":".join(lock["test_suites"])
     prefix = ["flatpak", "build", "--readonly", "--bind-mount=/run/build/mixxx=" + str(native.resolve()),
               "--filesystem=" + str(work), "--nodevice=all", "--nosocket=pulseaudio",
-              "--nosocket=x11", "--nosocket=wayland", "--nosocket=session-bus", "--unshare=network",
+              "--nosocket=x11", "--nosocket=fallback-x11", "--nosocket=wayland", "--nosocket=session-bus", "--unshare=network",
               "--env=QT_QPA_PLATFORM=offscreen", "--env=HOME=" + str(scratch),
               "--env=XDG_CONFIG_HOME=" + str(scratch / "config"), "--build-dir=/run/build/mixxx",
               tree, "/run/build/mixxx/mixxx-test", "--settings-path=" + str(scratch / "profile"),
@@ -156,8 +156,9 @@ def build(work, jobs, lock):
              repo, bundle, "org.mixxx.Mixxx", "decklab"], env=env)
     # Probe the packaged executable against the runtime, not just SDK libraries.
     command(["flatpak", "install", "--user", "--noninteractive", "--no-related", "--no-deps", bundle], env=env)
-    probe = ["flatpak", "run", "--nodevice=all", "--nosocket=pulseaudio", "--nosocket=x11",
+    probe = ["flatpak", "run", "--nodevice=all", "--nosocket=pulseaudio", "--nosocket=x11", "--nosocket=fallback-x11",
              "--nosocket=wayland", "--unshare=network", "--env=QT_QPA_PLATFORM=offscreen",
+             "--env=HOME=" + str(scratch), "--env=XDG_CONFIG_HOME=" + str(scratch / "runtime-config"),
              "--filesystem=" + str(work), "--command=/app/bin/mixxx.bin", "org.mixxx.Mixxx//decklab",
              "--settings-path=" + str(scratch / "runtime-profile"), "--resource-path=/app/share/mixxx", "--version"]
     version = command(probe, env=env, capture=True)
