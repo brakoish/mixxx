@@ -74,6 +74,9 @@ class EngineMixer : public QObject, public AudioSource {
     void onInputConnected(const AudioInput& input);
     void onInputDisconnected(const AudioInput& input);
 
+    // Called by SoundManager on the main thread with all devices closed.
+    void prepareScalers(mixxx::audio::SampleRate sampleRate);
+
     void process(const std::size_t bufferSize);
 
     // Add an EngineChannel to the mixing engine. This is not thread safe --

@@ -453,6 +453,12 @@ SoundDeviceStatus SoundManager::setupDevices() {
         }
     }
 
+    // Rubber Band constructs its filters and buffers when the output signal is
+    // first set. Do that before any device starts its real-time callback, not
+    // during the first audio deadline. Per-callback signal checks still handle
+    // an actual device rate or channel count differing from the configuration.
+    m_pEngineMixer->prepareScalers(m_config.getSampleRate());
+
     for (const auto& mode: toOpen) {
         SoundDevicePointer pDevice = mode.pDevice;
         m_pErrorDevice = pDevice;

@@ -359,6 +359,14 @@ void EngineMixer::processChannels(std::size_t bufferSize) {
             });
 }
 
+void EngineMixer::prepareScalers(mixxx::audio::SampleRate sampleRate) {
+    for (const auto& channel : std::as_const(m_channels)) {
+        if (auto* pBuffer = channel->m_pChannel->getEngineBuffer()) {
+            pBuffer->prepareScalers(sampleRate);
+        }
+    }
+}
+
 void EngineMixer::process(const std::size_t bufferSize) {
     DEBUG_ASSERT(bufferSize <= static_cast<int>(kMaxEngineSamples));
 
