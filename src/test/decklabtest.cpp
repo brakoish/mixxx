@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <QDir>
+#include <QComboBox>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -190,6 +191,17 @@ TEST_F(NativeDeckLabTest, SplitCueToggleReportsItsActualState) {
     EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Master]", "headSplit")));
     ControlObject::set(ConfigKey("[Master]", "headSplit"), 0); QCoreApplication::processEvents();
     EXPECT_EQ(QStringLiteral("Off"), split->text());
+}
+
+TEST_F(NativeDeckLabTest, TempoRangeReflectsControllerChanges) {
+    auto* range = panel->findChild<QComboBox*>("decklab-tempo-range-1"); ASSERT_NE(nullptr, range);
+    for (const auto& change : {std::pair{.16, 1}, std::pair{.50, 2}, std::pair{.06, 3}, std::pair{.08, 0}}) {
+        ControlObject::set(ConfigKey("[Channel1]", "rateRange"), change.first);
+        QCoreApplication::processEvents(); EXPECT_EQ(change.second, range->currentIndex());
+        EXPECT_DOUBLE_EQ(change.first, range->currentData().toDouble());
+        EXPECT_DOUBLE_EQ(change.first, ControlObject::get(ConfigKey("[Channel1]", "rateRange")));
+    }
+    EXPECT_EQ(3, range->count());
 }
 
 TEST_F(NativeDeckLabTest, PagesFit800By480) {

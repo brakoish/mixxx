@@ -293,7 +293,12 @@ ControlProxy* WDeckLab::control(const QString& group, const QString& item) {
     return m_controls.value(key);
 }
 double WDeckLab::value(const QString& group, const QString& item) { return control(group, item)->get(); }
-void WDeckLab::set(const QString& group, const QString& item, double v) { control(group, item)->set(v); }
+void WDeckLab::set(const QString& group, const QString& item, double v) {
+    // A ControlProxy filters notifications originating from itself. Native
+    // widgets also watch these values, so use the shared control write path
+    // to deliver queued feedback for both touch and controller changes.
+    ControlObject::set(ConfigKey(group, item), v);
+}
 void WDeckLab::pulse(const QString& group, const QString& item) { set(group, item, 1); set(group, item, 0); }
 void WDeckLab::watch(const QString& group, const QString& item, std::function<void(double)> callback) {
     control(group, item)->connectValueChanged(this, std::move(callback), Qt::QueuedConnection);
@@ -685,18 +690,34 @@ QWidget* WDeckLab::buildSettings() {
                 switches->addWidget(toggle(tr("Master tempo"), channel(deck), "keylock"));
                 rows->addLayout(switches);
                 auto* range = new QComboBox(content);
-                range->addItems({QStringLiteral("±8%"), QStringLiteral("±16%"), QStringLiteral("±50%")});
+                range->setObjectName(QStringLiteral("decklab-tempo-range-%1").arg(deck));
+                range->setAccessibleName(tr("Deck %1 tempo range").arg(deck));
                 const std::array<double, 3> ranges{0.08, 0.16, 0.50};
-                double current = value(channel(deck), "rateRange");
-                range->setCurrentIndex(current > .2 ? 2 : current > .1 ? 1 : 0);
+                for (double amount : ranges) range->addItem(QStringLiteral("±%1%").arg(amount * 100), amount);
+                auto showRange = [range](double v) {
+                    if (!std::isfinite(v) || v <= 0) return;
+                    const QSignalBlocker blocker(range);
+                    int index = -1;
+                    for (int n = 0; n < 3; ++n) if (std::abs(range->itemData(n).toDouble() - v) < 1e-6) index = n;
+                    if (range->count() > 3) range->removeItem(3);
+                    if (index < 0) {
+                        range->addItem(tr("±%1% · current").arg(v * 100, 0, 'g', 4), v);
+                        index = 3;
+                    }
+                    range->setCurrentIndex(index);
+                };
+                showRange(value(channel(deck), "rateRange"));
+                watch(channel(deck), "rateRange", showRange);
                 auto enableRange = [this, deck, range] {
                     range->setEnabled(!value(channel(deck), "play") && !value(channel(deck), "sync_enabled"));
                     range->setToolTip(range->isEnabled() ? tr("Tempo slider range") : tr("Stop this deck and release Sync to change range"));
                 };
                 watch(channel(deck), "play", [enableRange](double) { enableRange(); });
                 watch(channel(deck), "sync_enabled", [enableRange](double) { enableRange(); });
-                connect(range, qOverload<int>(&QComboBox::activated), this, [this, deck, ranges](int n) {
-                    if (!value(channel(deck), "play") && !value(channel(deck), "sync_enabled")) set(channel(deck), "rateRange", ranges[n]);
+                connect(range, qOverload<int>(&QComboBox::activated), this, [this, deck, range](int n) {
+                    const double amount = range->itemData(n).toDouble();
+                    if (std::isfinite(amount) && amount > 0 && !value(channel(deck), "play") && !value(channel(deck), "sync_enabled"))
+                        set(channel(deck), "rateRange", amount);
                 });
                 enableRange(); addRow(tr("Tempo range"), range);
             }
