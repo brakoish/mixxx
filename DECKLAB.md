@@ -1,6 +1,6 @@
 # Deck Lab native Mixxx fork
 
-This fork maintains two narrow native repairs on upstream commit
+The tested integration maintains two native repairs on upstream commit
 `9dedd4a80af435a10122eb38ba7dc34ad48773d6`:
 
 1. **Rekordbox worker ownership:** snapshot the device label/path and build a
@@ -18,10 +18,24 @@ from the pinned upstream revision. The integration branch contains both fixes
 as separate commits plus build tooling. Upstream `main` is retained separately.
 No upstream pull request or external message is sent automatically.
 
-The Deck Lab interface, controller overlays, custom LV2 effects and appliance
-setup remain in the separate Deck Lab repository. This public fork contains
-native Mixxx source/build tooling, not personal profiles, music, libraries or
-appliance access credentials. Original upstream licenses/notices remain intact.
+The `codex/native-appliance` candidate additionally owns the native Deck Lab
+surface (`res/skins/DeckLab`, `src/widget/wdecklab.*`) and the owned three-band
+LV2 processor. Browsing uses Mixxx's actual library models and controls, without
+desktop focus polling, accessibility scraping or an IPC server. Two dedicated
+`[DeckLabEffectUnit1/2]` chains are independent of all four controller chains.
+The processor fails back to dry if its native heartbeat disappears. The host
+companion retains focused OS/media tools; their explicit control handshake is
+versioned alongside the controller overlays in the separate Deck Lab repo.
+No personal profiles, music, libraries or appliance credentials belong here.
+Original upstream licenses/notices remain intact. Waveform skin markup is
+adapted from Pioneered by Sven Boekel (GPL-2.0-or-later); the new UI is native
+Qt Widgets, not a renamed copy of the desktop skin.
+
+The native candidate is not selected or installed automatically on the Pi.
+The tested rt1 installation remains the normal boot target. Scheduled analysis
+is deliberately excluded. CI checks generated audio signals and offscreen
+800×480 widget geometry; these do not certify touch, heard audio or long-set
+performance on the physical Pi.
 
 ## Build an ARM64 candidate
 

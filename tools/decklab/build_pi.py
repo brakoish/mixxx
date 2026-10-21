@@ -71,15 +71,18 @@ def test_summary(path):
     required = [case for case in enabled
                 if case.get("classname") == "EngineBufferE2ETest"
                 and case.get("name") == "PrepareScalersPreservesDeckState"]
+    native_ui = {case.get("name") for case in enabled if case.get("classname") == "NativeDeckLabTest"}
     if (int(report.get("failures", 0)) or int(report.get("errors", 0))
             or len(enabled) < 190 or len(required) != 1
+            or not {"FirstBrowsePressDoesNotOpenSource", "SingleTapOpensFolderAndBackRestoresSelection",
+                    "IndependentRmxDoesNotBorrowControllerChains", "PagesFit800By480"}.issubset(native_ui)
             or any(case.find("skipped") is not None for case in enabled)):
         raise ValueError("Native regression suite incomplete or failed")
     return {"enabled_passed": len(enabled),
             "disabled": len(cases) - len(enabled),
             "failures": int(report.get("failures", 0)),
             "errors": int(report.get("errors", 0)),
-            "preparation_regression_passed": True}
+            "preparation_regression_passed": True, "native_ui_regressions_passed": len(native_ui)}
 
 
 def external_workdir(root, path):
@@ -145,6 +148,7 @@ def build(work, jobs, lock):
               "--filesystem=" + str(work), "--nodevice=all", "--nosocket=pulseaudio",
               "--nosocket=x11", "--nosocket=fallback-x11", "--nosocket=wayland", "--nosocket=session-bus", "--unshare=network",
               "--env=QT_QPA_PLATFORM=offscreen", "--env=HOME=" + str(scratch),
+              "--env=LV2_PATH=/app/lib/lv2", "--env=DECKLAB_SCREENSHOT_DIR=" + str(out),
               "--env=XDG_CONFIG_HOME=" + str(scratch / "config"), "--build-dir=/run/build/mixxx",
               tree, "/run/build/mixxx/mixxx-test", "--settings-path=" + str(scratch / "profile"),
               "--resource-path=/run/build/mixxx/res", "--gtest_filter=" + test_filter,
@@ -152,6 +156,14 @@ def build(work, jobs, lock):
     with (out / "native-tests.log").open("w") as log:
         subprocess.run(list(map(str, prefix)), cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
     summary = test_summary(xml)
+    dsp_test = ["flatpak", "build", "--readonly", "--filesystem=" + str(work),
+                "--nodevice=all", "--nosocket=pulseaudio", "--nosocket=x11", "--nosocket=wayland",
+                "--unshare=network", tree, "python3", "/run/build/mixxx/tools/decklab/test_dsp.py",
+                "/app/lib/lv2/performance.lv2/performance.so"]
+    # Bind committed tests explicitly; these tests use generated signals only.
+    dsp_test.insert(3, "--bind-mount=/run/build/mixxx=" + str(native.resolve()))
+    with (out / "dsp-tests.log").open("w") as log:
+        subprocess.run(dsp_test, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
     binary = tree / "files/bin/mixxx.bin"
     if binary.read_bytes()[:4] != b"\x7fELF" or int.from_bytes(binary.read_bytes()[18:20], "little") != 183:
         raise RuntimeError("Expected an AArch64 ELF")

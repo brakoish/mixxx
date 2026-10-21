@@ -467,6 +467,16 @@ elseif(APPLE)
 endif()
 
 project(mixxx VERSION 2.6.0 LANGUAGES C CXX)
+
+# Owned Deck Lab DSP, packaged with the native appliance candidate.
+if(UNIX AND NOT APPLE)
+  add_library(decklab-performance MODULE src/effects/decklab/performance.c)
+  set_target_properties(decklab-performance PROPERTIES PREFIX "" OUTPUT_NAME "performance")
+  target_link_libraries(decklab-performance PRIVATE m)
+  install(TARGETS decklab-performance LIBRARY DESTINATION lib/lv2/performance.lv2)
+  install(FILES res/decklab/performance.lv2/manifest.ttl res/decklab/performance.lv2/performance.ttl
+    DESTINATION lib/lv2/performance.lv2)
+endif()
 # Work around missing version suffixes support https://gitlab.kitware.com/cmake/cmake/-/issues/16716
 set(MIXXX_VERSION_PRERELEASE "beta") # set to "alpha" "beta" or ""
 
@@ -1724,6 +1734,7 @@ add_library(
   src/widget/wknobcomposed.cpp
   src/widget/wlabel.cpp
   src/widget/wlibrary.cpp
+  src/widget/wdecklab.cpp
   src/widget/wlibrarysidebar.cpp
   src/widget/wlibrarytableview.cpp
   src/widget/wlibrarytextbrowser.cpp
@@ -2741,6 +2752,7 @@ if(BUILD_TESTING)
     #src/test/effectchainslottest.cpp
     src/test/enginebufferscalelineartest.cpp
     src/test/enginebuffertest.cpp
+    src/test/decklabtest.cpp
     src/test/enginefilterbiquadtest.cpp
     src/test/enginemixertest.cpp
     src/test/enginemicrophonetest.cpp

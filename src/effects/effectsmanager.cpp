@@ -19,6 +19,16 @@
 namespace {
 const unsigned int kEffectMessagePipeFifoSize = 2048;
 const QString kEffectsXmlFile = QStringLiteral("effects.xml");
+class DeckLabEffectChain final : public EffectChain {
+  public:
+    DeckLabEffectChain(int side, EffectsManager* manager, EffectsMessengerPointer messenger)
+            : EffectChain(QStringLiteral("[DeckLabEffectUnit%1]").arg(side), manager, messenger) {
+        for (int effect = 1; effect <= kNumEffectsPerUnit; ++effect) {
+            addEffectSlot(QStringLiteral("[DeckLabEffectUnit%1_Effect%2]").arg(side).arg(effect));
+        }
+        for (const auto& input : manager->registeredInputChannels()) registerInputChannel(input, 0.0);
+    }
+};
 } // anonymous namespace
 
 EffectsManager::EffectsManager(
@@ -62,6 +72,7 @@ EffectsManager::~EffectsManager() {
     m_quickStemEffectChains.clear();
     m_quickEffectChains.clear();
     m_standardEffectChains.clear();
+    m_deckLabEffectChains.clear();
     m_outputEffectChain.clear();
     m_effectChainSlotsByGroup.clear();
 
@@ -80,6 +91,21 @@ void EffectsManager::setup() {
     // readEffectsXml() is running is also initialized.
     m_initializedFromEffectsXml = true;
     readEffectsXml();
+    if (m_pConfig->getValueString(ConfigKey("[Config]", "skin")) == QStringLiteral("DeckLab")) {
+        ensureDeckLabEffects();
+    }
+}
+
+void EffectsManager::ensureDeckLabEffects() {
+    if (!m_deckLabEffectChains.isEmpty()) return;
+    const auto manifest = m_pBackendManager->getManifest(
+            QStringLiteral("urn:decklab:threeband-performance"), EffectBackendType::LV2);
+    for (int side = 1; side <= 2; ++side) {
+        EffectChainPointer chain(new DeckLabEffectChain(side, this, m_pMessenger));
+        m_effectChainSlotsByGroup.insert(chain->group(), chain);
+        m_deckLabEffectChains.append(chain);
+        if (manifest) chain->getEffectSlot(3)->loadEffectWithDefaults(manifest);
+    }
 }
 
 void EffectsManager::registerInputChannel(const ChannelHandleAndGroup& handle_group) {
@@ -94,6 +120,7 @@ void EffectsManager::registerInputChannel(const ChannelHandleAndGroup& handle_gr
     for (EffectChainPointer pChainSlot : std::as_const(m_standardEffectChains)) {
         pChainSlot->registerInputChannel(handle_group);
     }
+    for (const auto& chain : std::as_const(m_deckLabEffectChains)) chain->registerInputChannel(handle_group);
 }
 
 void EffectsManager::registerOutputChannel(const ChannelHandleAndGroup& handle_group) {

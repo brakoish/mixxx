@@ -18,6 +18,7 @@
 #include "library/basetracktablemodel.h"
 #include "library/library.h"
 #include "library/library_prefs.h"
+#include "effects/effectsmanager.h"
 #include "mixer/basetrackplayer.h"
 #include "mixer/playermanager.h"
 #include "moc_legacyskinparser.cpp"
@@ -40,6 +41,7 @@
 #include "widget/wcoverart.h"
 #include "widget/wcuebutton.h"
 #include "widget/wdisplay.h"
+#include "widget/wdecklab.h"
 #include "widget/weffectbuttonparametername.h"
 #include "widget/weffectchain.h"
 #include "widget/weffectchainpresetbutton.h"
@@ -631,6 +633,8 @@ QList<QWidget*> LegacySkinParser::parseNode(const QDomElement& node) {
         result = wrapWidget(parseSplitter(node));
     } else if (nodeName == "LibrarySidebar") {
         result = wrapWidget(parseLibrarySidebar(node));
+    } else if (nodeName == "DeckLab") {
+        result = wrapWidget(parseDeckLab(node));
     } else if (nodeName == "Library") {
         result = wrapWidget(parseLibrary(node));
     } else if (nodeName == "Key") {
@@ -1632,6 +1636,27 @@ void LegacySkinParser::parseSingletonDefinition(const QDomElement& node) {
     pChild->setObjectName(objectName);
     m_pContext->defineSingleton(objectName, pChild);
     pChild->hide();
+}
+
+QWidget* LegacySkinParser::parseDeckLab(const QDomElement& node) {
+    if (m_pEffectsManager) m_pEffectsManager->ensureDeckLabEffects();
+    auto* panel = new WDeckLab(m_pConfig, m_pLibrary, m_pPlayerManager, m_pEffectsManager, m_pParent);
+    auto* savedParent = m_pParent;
+    m_pParent = panel->waveformContainer();
+    const auto waveforms = node.firstChildElement(QStringLiteral("Waveforms"));
+    for (auto visual = waveforms.firstChildElement(QStringLiteral("Visual"));
+            !visual.isNull(); visual = visual.nextSiblingElement(QStringLiteral("Visual"))) {
+        const int deck = visual.firstChildElement(QStringLiteral("Channel")).text().toInt();
+        panel->addWaveform(parseVisual(visual), deck);
+    }
+    m_pParent = panel->browserContainer();
+    auto* sidebar = qobject_cast<WLibrarySidebar*>(parseLibrarySidebar(node.firstChildElement("LibrarySidebar")));
+    auto* library = qobject_cast<WLibrary*>(parseLibrary(node.firstChildElement("Library")));
+    auto* search = qobject_cast<WSearchLineEdit*>(parseSearchBox(node.firstChildElement("SearchBox")));
+    panel->bindBrowser(search, sidebar, library);
+    m_pParent = savedParent;
+    commonWidgetSetup(node, panel, false);
+    return panel;
 }
 
 QWidget* LegacySkinParser::parseLibrary(const QDomElement& node) {

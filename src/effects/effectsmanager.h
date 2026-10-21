@@ -26,6 +26,8 @@ class EffectsManager {
     virtual ~EffectsManager();
 
     void setup();
+    // Explicitly selected native Deck Lab surface; never reuses controller units.
+    void ensureDeckLabEffects();
     void addDeck(const ChannelHandleAndGroup& deckHandleGroup);
     void addStem(const ChannelHandleAndGroup& stemHandleGroup);
     void resetStemQuickFxKnob(const ChannelHandleAndGroup& stemHandleGroup);
@@ -99,6 +101,7 @@ class EffectsManager {
     QHash<QString, EffectChainPointer> m_effectChainSlotsByGroup;
 
     QList<StandardEffectChainPointer> m_standardEffectChains;
+    QList<EffectChainPointer> m_deckLabEffectChains;
     OutputEffectChainPointer m_outputEffectChain;
     // These two store <deck group, effect chain pointer>
     QHash<QString, EqualizerEffectChainPointer> m_equalizerEffectChains;
