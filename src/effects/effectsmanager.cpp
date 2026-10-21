@@ -101,7 +101,7 @@ void EffectsManager::ensureDeckLabEffects() {
     EffectManifestPointer manifest;
 #ifdef __LILV__
     manifest = m_pBackendManager->getManifest(
-            QStringLiteral("urn:decklab:threeband-performance"), EffectBackendType::LV2);
+            QStringLiteral("urn:decklab:threeband-performance-native-v1"), EffectBackendType::LV2);
 #endif
     for (int side = 1; side <= 2; ++side) {
         EffectChainPointer chain(new DeckLabEffectChain(side, this, m_pMessenger));

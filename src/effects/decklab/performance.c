@@ -404,7 +404,7 @@ static void cleanup(LV2_Handle handle) {
 }
 
 static const LV2_Descriptor descriptor = {
-    "urn:decklab:threeband-performance", instantiate, connect_port,
+    "urn:decklab:threeband-performance-native-v1", instantiate, connect_port,
     activate, run, NULL, cleanup, NULL
 };
 

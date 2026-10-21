@@ -29,7 +29,7 @@ library = c.CDLL(str(Path(sys.argv[1]).resolve()))
 library.lv2_descriptor.argtypes = [c.c_uint32]
 library.lv2_descriptor.restype = c.POINTER(Descriptor)
 desc = library.lv2_descriptor(0)
-assert desc and desc.contents.URI == b'urn:decklab:threeband-performance'
+assert desc and desc.contents.URI == b'urn:decklab:threeband-performance-native-v1'
 
 
 def render(freq=100, changes=None, seconds=1, rate=44100, signal_seconds=.1, amplitude=.25):

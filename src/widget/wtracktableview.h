@@ -45,6 +45,7 @@ class WTrackTableView : public WLibraryTableView {
     void resizeEvent(QResizeEvent* event) override;
     void editSelectedItem();
     void activateSelectedTrack();
+    void applyDeckLabLayout();
 #ifdef __STEM__
     void loadSelectedTrackToGroup(const QString& group,
             mixxx::StemChannelSelection stemMask,

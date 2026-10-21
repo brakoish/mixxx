@@ -6,6 +6,10 @@
 #include <QShortcut>
 #include <QStylePainter>
 #include <QUrl>
+#include <QScroller>
+#include <array>
+#include <algorithm>
+#include "library/tabledelegates/defaultdelegate.h"
 
 #include "control/controlobject.h"
 #include "library/dao/trackschema.h"
@@ -31,6 +35,20 @@
 #include "widget/wtracktableviewheader.h"
 
 namespace {
+
+class DeckLabBpmDelegate final : public DefaultDelegate {
+  public:
+    explicit DeckLabBpmDelegate(QTableView* table) : DefaultDelegate(table), m_table(table) {}
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        QStyleOptionViewItem opt = option; initStyleOption(&opt, index);
+        opt.features &= ~QStyleOptionViewItem::HasCheckIndicator;
+        if (opt.state & QStyle::State_Selected) setTextColor(opt, index);
+        m_table->style()->drawControl(QStyle::CE_ItemViewItem, &opt, painter, m_table);
+    }
+    bool editorEvent(QEvent*, QAbstractItemModel*, const QStyleOptionViewItem&, const QModelIndex&) override { return false; }
+  private:
+    QTableView* m_table;
+};
 
 // ConfigValue key for QTable vertical scrollbar position
 const ConfigKey kVScrollBarPosConfigKey{
@@ -214,6 +232,7 @@ void WTrackTableView::loadTrackModel(QAbstractItemModel* pNewModel, bool restore
         if (restoreState) {
             restoreCurrentViewState();
         }
+        applyDeckLabLayout();
         return;
     } else if (pCurrModel) {
         pCurrModel->maybeStopModelPopulation();
@@ -378,7 +397,40 @@ void WTrackTableView::loadTrackModel(QAbstractItemModel* pNewModel, bool restore
     if (restoreState) {
         restoreCurrentViewState();
     }
+    applyDeckLabLayout();
     initTrackMenu();
+}
+
+void WTrackTableView::applyDeckLabLayout() {
+    const auto* active = ControlObject::getControl(ConfigKey("[DeckLabNative]", "active"), ControlFlag::NoWarnIfMissing);
+    if (!active || !active->toBool()) return;
+    auto* tracks = getTrackModel(); if (!tracks || !model()) return;
+    auto* header = horizontalHeader();
+    header->setProperty("decklabLayout", true); // Preserve the original desktop header state.
+    const std::array<TrackModel::SortColumnId, 5> fields{TrackModel::SortColumnId::Title,
+        TrackModel::SortColumnId::Artist, TrackModel::SortColumnId::Bpm,
+        TrackModel::SortColumnId::Key, TrackModel::SortColumnId::Duration};
+    std::array<int, 5> columns{};
+    for (int n = 0; n < 5; ++n) columns[n] = tracks->columnIndexFromSortColumnId(fields[n]);
+    if (columns[0] < 0) return;
+    for (int column = 0; column < model()->columnCount(); ++column)
+        setColumnHidden(column, std::find(columns.begin(), columns.end(), column) == columns.end());
+    int position = 0;
+    const std::array<int, 5> widths{300, 180, 82, 64, 68};
+    for (int n = 0; n < 5; ++n) {
+        const int column = columns[n]; if (column < 0) continue;
+        header->moveSection(header->visualIndex(column), position++);
+        header->setSectionResizeMode(column, n == 0 ? QHeaderView::Stretch : QHeaderView::Fixed);
+        if (n) setColumnWidth(column, widths[n]);
+    }
+    if (columns[2] >= 0 && (!itemDelegateForColumn(columns[2]) || !itemDelegateForColumn(columns[2])->property("decklabBpm").toBool())) {
+        auto* old = itemDelegateForColumn(columns[2]);
+        auto* delegate = new DeckLabBpmDelegate(this); delegate->setProperty("decklabBpm", true);
+        setItemDelegateForColumn(columns[2], delegate); delete old;
+    }
+    setEditTriggers(QAbstractItemView::NoEditTriggers); setDragEnabled(false);
+    header->setSectionsMovable(false); verticalHeader()->hide(); setWordWrap(false);
+    QScroller::grabGesture(viewport(), QScroller::TouchGesture);
 }
 
 void WTrackTableView::initTrackMenu() {
@@ -415,6 +467,8 @@ void WTrackTableView::initTrackMenu() {
 
 // slot
 void WTrackTableView::slotMouseDoubleClicked(const QModelIndex& index) {
+    const auto* native = ControlObject::getControl(ConfigKey("[DeckLabNative]", "active"), ControlFlag::NoWarnIfMissing);
+    if (native && native->toBool()) return; // Only an explicit protected LOAD replaces a deck.
     // Read the current TrackDoubleClickAction setting
     // TODO simplify this casting madness
     int doubleClickActionConfigValue =

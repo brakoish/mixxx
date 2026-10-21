@@ -199,7 +199,7 @@ def build(work, jobs, lock):
     with (out / "native-smoke.log").open("w") as log:
         subprocess.run(smoke, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=90)
     smoke_result = json.loads((out / "native-smoke.json").read_text())
-    if smoke_result != {"audio_started": False, "failures": [], "screens": 14}:
+    if smoke_result != {"audio_started": False, "failures": [], "screens": 17}:
         raise RuntimeError("Native application smoke check failed")
     record = {"source_revision": revision, "upstream_source_revision": lock["upstream_source_revision"],
               "architecture": "aarch64", "flatpak_commits": actual, "tests": summary,

@@ -1394,6 +1394,10 @@ bool MixxxMainWindow::loadConfiguredSkin() {
     m_pCentralWidget = m_pSkinLoader->loadConfiguredSkin(this,
             &m_skinCreatedControls,
             m_pCoreServices.get());
+    if (m_pCentralWidget) {
+        if (auto* native = m_pCentralWidget->findChild<WDeckLab*>())
+            connect(native, &WDeckLab::advancedPreferencesRequested, this, &MixxxMainWindow::slotOptionsPreferences);
+    }
     if (centralWidget() == m_pLaunchImage) {
         initializationProgressUpdate(100, "");
     }

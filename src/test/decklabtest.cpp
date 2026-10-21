@@ -13,6 +13,7 @@
 #include "library/sidebarmodel.h"
 #include "library/treeitem.h"
 #include "test/signalpathtest.h"
+#include "mixer/playermanager.h"
 #include "waveform/waveformwidgetfactory.h"
 #include "widget/decklabtempopresenter.h"
 #include "widget/wdecklab.h"
@@ -26,6 +27,21 @@
 #endif
 
 namespace {
+class TestPlayers final : public PlayerManagerInterface {
+  public:
+    std::array<BaseTrackPlayer*,3> decks{};
+    BaseTrackPlayer* getPlayer(const QString& group) const override {
+        for(int n=0;n<3;++n)if(group==QStringLiteral("[Channel%1]").arg(n+1))return decks[n];
+        return nullptr;
+    }
+    BaseTrackPlayer* getPlayer(const ChannelHandle&) const override {return nullptr;}
+    BaseTrackPlayer* getDeckBase(int n) const override {return n>=0&&n<3?decks[n]:nullptr;}
+    int numberOfDecks() const override {return 3;}
+    PreviewDeck* getPreviewDeck(int) const override {return nullptr;}
+    int numberOfPreviewDecks() const override {return 0;}
+    Sampler* getSampler(int) const override {return nullptr;}
+    int numberOfSamplers() const override {return 0;}
+};
 class TestSource final : public LibraryFeature {
   public:
     explicit TestSource(UserSettingsPointer config) : LibraryFeature(nullptr, config, QString()) {
@@ -51,7 +67,8 @@ class NativeDeckLabTest : public BaseSignalPathTest {
         source = std::make_unique<TestSource>(config());
         model = std::make_unique<SidebarModel>(); model->addLibraryFeature(source.get());
         navigation = std::make_unique<LibraryControl>(nullptr);
-        panel = std::make_unique<WDeckLab>(config(), nullptr, nullptr, m_pEffectsManager.get());
+        players = std::make_unique<TestPlayers>(); players->decks={m_pMixerDeck1.get(),m_pMixerDeck2.get(),m_pMixerDeck3.get()};
+        panel = std::make_unique<WDeckLab>(config(), nullptr, players.get(), m_pEffectsManager.get());
         sidebar = new WLibrarySidebar(panel.get()); sidebar->setModel(model.get());
         library = new WLibrary(panel.get());
         auto* search = new WSearchLineEdit(panel.get(), config());
@@ -64,12 +81,13 @@ class NativeDeckLabTest : public BaseSignalPathTest {
         panel->resize(800, 480); panel->show(); QCoreApplication::processEvents();
     }
     void TearDown() override {
-        panel.reset(); navigation.reset(); model.reset(); source.reset();
+        panel.reset(); players.reset(); navigation.reset(); model.reset(); source.reset();
         WaveformWidgetFactory::destroy(); BaseSignalPathTest::TearDown();
     }
     std::unique_ptr<TestSource> source;
     std::unique_ptr<SidebarModel> model;
     std::unique_ptr<WDeckLab> panel;
+    std::unique_ptr<TestPlayers> players;
     std::unique_ptr<LibraryControl> navigation;
     WLibrarySidebar* sidebar = nullptr;
     WLibrary* library = nullptr;
@@ -173,16 +191,40 @@ TEST_F(NativeDeckLabTest, IndependentRmxDoesNotBorrowControllerChains) {
     auto native = m_pEffectsManager->getEffectChain("[DeckLabEffectUnit1]");
     ASSERT_FALSE(native.isNull()); EXPECT_NE(standard, native);
     ASSERT_TRUE(native->getEffectSlot(3)->isLoaded());
-    EXPECT_EQ(QStringLiteral("urn:decklab:threeband-performance"), native->getEffectSlot(3)->id());
+    EXPECT_EQ(QStringLiteral("urn:decklab:threeband-performance-native-v1"), native->getEffectSlot(3)->id());
     panel->releaseEffects();
     EXPECT_DOUBLE_EQ(.63, ControlObject::get(ConfigKey("[EffectRack1_EffectUnit3]", "mix")));
     EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[DeckLabEffectUnit1]", "mix")));
 }
 
+TEST_F(NativeDeckLabTest, ApplicationDeactivateReleasesRmxWithoutChangingControllerFx) {
+    m_pEffectsManager->setup(); m_pEffectsManager->ensureDeckLabEffects();
+    m_pEngineMixer->prepareAudio(mixxx::audio::SampleRate(44100));
+    m_pMixerDeck1->loadFakeTrack(false,128); ProcessBuffer(); QCoreApplication::processEvents();
+    ControlObject::set(ConfigKey("[EffectRack1_EffectUnit3]","mix"),.63);
+    panel->selectPage(3);
+    auto* low=panel->findChild<QPushButton*>("decklab-fx-band-0"); ASSERT_NE(nullptr,low); ASSERT_TRUE(low->isEnabled());
+    low->click(); EXPECT_DOUBLE_EQ(1,ControlObject::get(ConfigKey("[DeckLabEffectUnit1]","mix")));
+    EXPECT_GT(ControlObject::get(ConfigKey("[DeckLabEffectUnit1_Effect4]","parameter15")),0);
+    QEvent cancel(QEvent::ApplicationDeactivate); QCoreApplication::sendEvent(panel.get(),&cancel);
+    EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[DeckLabEffectUnit1]","mix")));
+    EXPECT_DOUBLE_EQ(.63,ControlObject::get(ConfigKey("[EffectRack1_EffectUnit3]","mix")));
+    EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel1]","play")));
+}
+
+TEST_F(NativeDeckLabTest, LongMetadataCannotHideTempoOrExpandSurface) {
+    auto track=m_pMixerDeck1->loadFakeTrack(false,128); track->setTitle(QString(200,QChar('W'))+"<b>Title</b>");
+    ProcessBuffer(); QTest::qWait(150); panel->selectPage(0); QCoreApplication::processEvents();
+    auto* title=panel->findChild<QLabel*>("decklab-wave-title-1");
+    auto* numbers=panel->findChild<QLabel*>("decklab-wave-metrics-1"); ASSERT_NE(nullptr,title); ASSERT_NE(nullptr,numbers);
+    EXPECT_EQ(Qt::PlainText,title->textFormat()); EXPECT_TRUE(numbers->isVisible());
+    EXPECT_TRUE(numbers->text().contains("128")); EXPECT_EQ(QSize(800,480),panel->size());
+}
+
 #ifdef __LILV__
 TEST_F(NativeDeckLabTest, Lv2PreparationUsesSelectedRateWithoutAudio) {
     auto manifest = m_pEffectsManager->getBackendManager()->getManifest(
-            "urn:decklab:threeband-performance", EffectBackendType::LV2).staticCast<LV2Manifest>();
+            "urn:decklab:threeband-performance-native-v1", EffectBackendType::LV2).staticCast<LV2Manifest>();
     ASSERT_FALSE(manifest.isNull());
     LV2EffectGroupState state(mixxx::EngineParameters(mixxx::audio::SampleRate(96000), 512));
     ASSERT_NE(nullptr, state.lilvInstance(manifest->getPlugin(), mixxx::EngineParameters(mixxx::audio::SampleRate(96000), 512)));

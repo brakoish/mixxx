@@ -29,6 +29,7 @@ class QComboBox;
 class QLabel;
 class QPushButton;
 class QSlider;
+class QProgressBar;
 class QStackedWidget;
 class QVBoxLayout;
 
@@ -49,7 +50,11 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void browsePress();
     void browseBack();
     void openSource();
+    void openCollection();
     void releaseEffects(bool musical = false, bool mute = false);
+
+  signals:
+    void advancedPreferencesRequested();
 
   protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -111,6 +116,8 @@ class WDeckLab : public QWidget, public WBaseWidget {
     QLabel* m_status;
     std::array<QPushButton*, 5> m_tabs{};
     std::array<QLabel*, 4> m_titles{};
+    std::array<QLabel*, 4> m_waveNumbers{};
+    std::array<QProgressBar*, 4> m_meters{};
     std::array<QLabel*, 4> m_numbers{};
     std::array<QPushButton*, 4> m_loadButtons{};
     std::array<QPushButton*, 16> m_samples{};
@@ -128,6 +135,11 @@ class WDeckLab : public QWidget, public WBaseWidget {
     bool m_updating = false;
     int m_fxDeck = 1;
     int m_sampleTarget = 0;
+    int m_sampleReturnPage = 2;
+    int m_fxSample = 1;
+    QString m_heldSamplerGroup;
+    QString m_heldSamplerRoll;
+    QLabel* m_sampleRollHint = nullptr;
     bool m_fxActive = false;
     bool m_fxReleasing = false;
     bool m_fxMute = false;

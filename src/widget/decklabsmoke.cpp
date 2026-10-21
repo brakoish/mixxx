@@ -30,7 +30,7 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
         for (auto* b : surface->findChildren<QPushButton*>()) {
             if (!b->isVisible() || b->visibleRegion().isEmpty()) continue;
             const QRect rect(b->mapTo(surface, QPoint()), b->size());
-            if (!surface->rect().contains(rect)) failures->append("Clipped button: " + b->text());
+            if (!surface->rect().contains(rect)) failures->append(QString(QStringLiteral("Clipped button: ") + b->text()));
         }
         // The smoke check may navigate/configure views, never start audio.
         for (int deck = 1; deck <= 4; ++deck) if (ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), "play"))) failures->append("Unexpected playing deck");
@@ -40,8 +40,10 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
         // Capture the real parser/Library/PlayerManager surface, including the
         // empty native waveform viewers. These are not moving-audio evidence.
         if (*step < 5) surface->selectPage(*step);
-        else if (*step < 9) { surface->selectPage(3); surface->findChild<QStackedWidget*>("decklab-fx-pages")->setCurrentIndex(*step - 5); }
-        else if (*step < 14) { surface->selectPage(4); surface->findChild<QStackedWidget*>("decklab-settings-pages")->setCurrentIndex(*step - 9); }
+        else if (*step < 10) { surface->selectPage(3); surface->findChild<QStackedWidget*>("decklab-fx-pages")->setCurrentIndex(*step - 5); }
+        else if (*step < 15) { surface->selectPage(4); surface->findChild<QStackedWidget*>("decklab-settings-pages")->setCurrentIndex(*step - 10); }
+        else if (*step == 15) surface->openCollection();
+        else if (*step == 16) surface->findChild<QPushButton*>("decklab-search")->click();
         else {
             timer->stop();
             QFile file(QDir(output).filePath("native-smoke.json"));

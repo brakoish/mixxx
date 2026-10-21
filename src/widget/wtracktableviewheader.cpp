@@ -270,6 +270,7 @@ void WTrackTableViewHeader::setModel(QAbstractItemModel* pModel) {
 }
 
 void WTrackTableViewHeader::saveHeaderState() {
+    if (count() == 0 || property("decklabLayout").toBool()) return;
     TrackModel* pTrackModel = getTrackModel();
     if (!pTrackModel) {
         return;

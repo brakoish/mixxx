@@ -28,7 +28,7 @@ companion retains focused OS/media tools; their explicit control handshake is
 versioned alongside the controller overlays in the separate Deck Lab repo.
 No personal profiles, music, libraries or appliance credentials belong here.
 Original upstream licenses/notices remain intact. Waveform skin markup is
-adapted from Pioneered by Sven Boekel (GPL-2.0-or-later); the new UI is native
+adapted from Pioneered by Sven Boekelder (GPL-2.0-or-later); the new UI is native
 Qt Widgets, not a renamed copy of the desktop skin.
 
 The native candidate is not selected or installed automatically on the Pi.
@@ -36,6 +36,27 @@ The tested rt1 installation remains the normal boot target. Scheduled analysis
 is deliberately excluded. CI checks generated audio signals and offscreen
 800×480 widget geometry; these do not certify touch, heard audio or long-set
 performance on the physical Pi.
+
+Native browsing uses a small set of readable columns and an internal touch
+keyboard. Original desktop header state is retained. All sixteen sampler pads
+remain visible; the RMX's A–D sample triggers/rolls use the first four slots.
+This keeps optional sample-FX routing bounded rather than creating sixteen
+simultaneous copies of the heavy processor. The selected LV2 rate is prepared
+with devices closed, including deck-state allocation and delay-page warmup.
+
+The optional host tool handshake uses numbered requests with serial-matched
+acknowledgements and a matching-profile heartbeat. A mismatched QA profile does
+not enable these tools. Advanced preferences is a native signal to the main
+window and does not require the companion. A fresh appliance without outputs
+keeps its UI available with a persistent Audio disconnected message.
+
+Candidate CI also launches the real packaged application in a dedicated
+`decklab-native-smoke*` profile, safe mode, without audio/display/network access.
+`--developer` plus `DECKLAB_SMOKE_DIR` opt into the screenshot check. Seventeen
+page/subview captures and JSON/logs are retained; unexpected playback, missing
+captures or clipped controls fail the gate. Ordinary launches ignore this check.
+Compiler cache reuse accelerates edits but does not bypass source locks, native
+tests, DSP checks or the runtime gate.
 
 ## Build an ARM64 candidate
 
