@@ -181,6 +181,17 @@ TEST_F(NativeDeckLabTest, ToolRequestCanRepeatWithoutTimingRace) {
     EXPECT_EQ(1, ControlObject::get(ConfigKey("[DeckLabNative]", "tool_request")));
 }
 
+TEST_F(NativeDeckLabTest, SplitCueToggleReportsItsActualState) {
+    auto* split = panel->findChild<QPushButton*>("decklab-head-split"); ASSERT_NE(nullptr, split);
+    ControlObject::set(ConfigKey("[Master]", "headSplit"), 0); QCoreApplication::processEvents();
+    EXPECT_EQ(QStringLiteral("Off"), split->text()); EXPECT_FALSE(split->isChecked());
+    split->click(); QCoreApplication::processEvents();
+    EXPECT_EQ(QStringLiteral("On"), split->text()); EXPECT_TRUE(split->isChecked());
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Master]", "headSplit")));
+    ControlObject::set(ConfigKey("[Master]", "headSplit"), 0); QCoreApplication::processEvents();
+    EXPECT_EQ(QStringLiteral("Off"), split->text());
+}
+
 TEST_F(NativeDeckLabTest, PagesFit800By480) {
     const QString output = qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
     for (int page = 0; page < 5; ++page) {

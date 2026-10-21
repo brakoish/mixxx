@@ -667,7 +667,12 @@ QWidget* WDeckLab::buildSettings() {
         auto toggle = [this, content](const QString& label, const QString& group, const QString& item) {
             auto* b = button(label, [this, group, item] { set(group, item, !value(group, item)); }, content);
             b->setCheckable(true); b->setChecked(value(group, item) > 0);
-            watch(group, item, [b](double v) { b->setChecked(v > 0); });
+            const bool onOff = label == tr("On");
+            if (onOff) b->setText(b->isChecked() ? tr("On") : tr("Off"));
+            watch(group, item, [b, onOff](double v) {
+                b->setChecked(v > 0);
+                if (onOff) b->setText(v > 0 ? tr("On") : tr("Off"));
+            });
             return b;
         };
         if (index == 0) {
@@ -697,7 +702,9 @@ QWidget* WDeckLab::buildSettings() {
             }
         } else if (index == 1) {
             for (int deck = 1; deck <= 2; ++deck) addRow(tr("Deck %1 headphones").arg(deck), toggle(tr("Cue"), channel(deck), "pfl"));
-            addRow(tr("Split cue"), toggle(tr("On"), "[Master]", "headSplit"));
+            auto* split = toggle(tr("On"), "[Master]", "headSplit");
+            split->setObjectName("decklab-head-split"); split->setAccessibleName(tr("Split cue"));
+            addRow(tr("Split cue"), split);
             auto* mix = new QSlider(Qt::Horizontal, content);
             mix->setMinimumHeight(44); mix->setRange(0, 100);
             mix->setValue(int((value("[Master]", "headMix") + 1) * 50));
