@@ -451,16 +451,19 @@ void buildPlaylistTree(
         const QString& playlistPath,
         const QString& device);
 
-QString parseDeviceDB(mixxx::DbConnectionPoolPtr dbConnectionPool, TreeItem* deviceItem) {
-    QString device = deviceItem->getLabel();
-    QString devicePath = deviceItem->getData().toList().at(0).toString();
+std::shared_ptr<TreeItem> parseDeviceDB(mixxx::DbConnectionPoolPtr dbConnectionPool,
+        const QString& device,
+        const QString& devicePath) {
+    // This tree belongs only to the worker. Never read or append to GUI items here.
+    auto deviceTree = std::make_shared<TreeItem>(device,
+            QVariant(QList<QString>{devicePath, IS_NOT_RECORDBOX_DEVICE}));
 
     qDebug() << "parseDeviceDB device: " << device << " devicePath: " << devicePath;
 
     const QString dbPath = findRekordboxPdbPath(devicePath);
 
     if (dbPath.isEmpty()) {
-        return devicePath;
+        return {};
     }
 
     // The pooler limits the lifetime all thread-local connections,
@@ -472,7 +475,7 @@ QString parseDeviceDB(mixxx::DbConnectionPoolPtr dbConnectionPool, TreeItem* dev
     VERIFY_OR_DEBUG_ASSERT(database.isOpen()) {
         qDebug() << "Failed to open database for Rekordbox parser."
                  << database.lastError();
-        return QString();
+        return {};
     }
 
     //Give thread a low priority
@@ -505,7 +508,7 @@ QString parseDeviceDB(mixxx::DbConnectionPoolPtr dbConnectionPool, TreeItem* dev
 
     mixxx::FileInfo fileInfo(dbPath);
     if (!Sandbox::askForAccess(&fileInfo)) {
-        return QString();
+        return {};
     }
     std::ifstream ifs(dbPath.toStdString(), std::ifstream::binary);
     kaitai::kstream ks(&ifs);
@@ -644,10 +647,9 @@ QString parseDeviceDB(mixxx::DbConnectionPoolPtr dbConnectionPool, TreeItem* dev
     }
 
     if (audioFilesCount > 0 || folderOrPlaylistFound) {
-        // If we have found anything, recursively build playlist/folder TreeItem children
-        // for the original device TreeItem
+        // Build detached playlist/folder children; the GUI installs copies on completion.
         buildPlaylistTree(database,
-                deviceItem,
+                deviceTree.get(),
                 0,
                 playlistNameMap,
                 playlistIsFolderMap,
@@ -661,7 +663,7 @@ QString parseDeviceDB(mixxx::DbConnectionPoolPtr dbConnectionPool, TreeItem* dev
 
     transaction.commit();
 
-    return devicePath;
+    return deviceTree;
 }
 
 void buildPlaylistTree(
@@ -777,6 +779,16 @@ void buildPlaylistTree(
                     device);
         }
     }
+}
+
+std::vector<std::unique_ptr<TreeItem>> copyPlaylistChildren(const TreeItem& parent) {
+    std::vector<std::unique_ptr<TreeItem>> children;
+    for (const TreeItem* child : parent.children()) {
+        auto copy = std::make_unique<TreeItem>(child->getLabel(), child->getData());
+        copy->insertChildren(0, copyPlaylistChildren(*child));
+        children.push_back(std::move(copy));
+    }
+    return children;
 }
 
 void clearDeviceTables(QSqlDatabase& database, TreeItem* child) {
@@ -1384,7 +1396,7 @@ RekordboxFeature::RekordboxFeature(
             this,
             &RekordboxFeature::onRekordboxDevicesFound);
     connect(&m_tracksFutureWatcher,
-            &QFutureWatcher<QString>::finished,
+            &QFutureWatcher<std::shared_ptr<TreeItem>>::finished,
             this,
             &RekordboxFeature::onTracksFound);
     // initialize the model
@@ -1535,16 +1547,21 @@ void RekordboxFeature::activateChild(const QModelIndex& index) {
              << " playlist: " << playlist << " doParseDeviceDB: " << doParseDeviceDB;
 
     if (doParseDeviceDB) {
+        // A single watcher/result pair must not be replaced by another device import.
+        if (m_tracksLoading) {
+            return;
+        }
+        m_tracksDeviceIndex = m_pSidebarModel->index(item->parentRow(), 0);
+        m_tracksLoading = true;
         qDebug() << "Parse Rekordbox Device DB: " << playlist;
 
-        // Let a worker thread do the XML parsing
-        m_tracksFuture = QtConcurrent::run(parseDeviceDB, static_cast<Library*>(parent())->dbConnectionPool(), item);
+        // Only value snapshots cross into the worker. GUI items stay on this thread.
+        m_tracksFuture = QtConcurrent::run(parseDeviceDB,
+                static_cast<Library*>(parent())->dbConnectionPool(),
+                item->getLabel(),
+                playlist);
         m_tracksFutureWatcher.setFuture(m_tracksFuture);
 
-        // This device is now a playlist element, future activations should treat is
-        // as such
-        data[1] = QVariant(IS_NOT_RECORDBOX_DEVICE);
-        item->setData(QVariant(data));
     } else {
         qDebug() << "Activate Rekordbox Playlist: " << playlist;
         m_pRekordboxPlaylistModel->setPlaylist(playlist);
@@ -1630,15 +1647,34 @@ void RekordboxFeature::onRekordboxDevicesFound() {
 
 void RekordboxFeature::onTracksFound() {
     qDebug() << "onTracksFound";
-    m_pSidebarModel->triggerRepaint();
+    const QPersistentModelIndex deviceIndex = m_tracksDeviceIndex;
+    m_tracksDeviceIndex = QPersistentModelIndex();
+    m_tracksLoading = false;
 
-    QString devicePlaylist;
+    std::shared_ptr<TreeItem> deviceTree;
     try {
-        devicePlaylist = m_tracksFuture.result();
+        deviceTree = m_tracksFuture.result();
     } catch (const std::exception& e) {
         qWarning() << "Failed to load Rekordbox database:" << e.what();
         return;
     }
+
+    // Removing a device invalidates the persistent index. Its old worker result
+    // must never be attached to a replacement device or a deleted GUI TreeItem.
+    if (!deviceTree || !deviceIndex.isValid()) {
+        return;
+    }
+    TreeItem* item = m_pSidebarModel->getItem(deviceIndex);
+    const QString devicePlaylist = deviceTree->getData().toList().value(0).toString();
+    auto data = item->getData().toList();
+    if (data.size() < 2 || data[0].toString() != devicePlaylist) {
+        return;
+    }
+    data[1] = QVariant(IS_NOT_RECORDBOX_DEVICE);
+    item->setData(QVariant(data));
+    // Model notifications and all GUI-tree mutations happen on the GUI thread.
+    m_pSidebarModel->insertTreeItemRows(copyPlaylistChildren(*deviceTree), 0, deviceIndex);
+    m_pSidebarModel->triggerRepaint();
 
     qDebug() << "Show Rekordbox Device Playlist: " << devicePlaylist;
 

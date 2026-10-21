@@ -26,9 +26,11 @@
 
 #include <QFuture>
 #include <QFutureWatcher>
+#include <QPersistentModelIndex>
 #include <QStringListModel>
 #include <QtConcurrentRun>
 #include <fstream>
+#include <memory>
 
 #include "library/baseexternallibraryfeature.h"
 #include "library/baseexternalplaylistmodel.h"
@@ -86,8 +88,10 @@ class RekordboxFeature : public BaseExternalLibraryFeature {
 
     QFutureWatcher<QList<TreeItem*>> m_devicesFutureWatcher;
     QFuture<QList<TreeItem*>> m_devicesFuture;
-    QFutureWatcher<QString> m_tracksFutureWatcher;
-    QFuture<QString> m_tracksFuture;
+    QFutureWatcher<std::shared_ptr<TreeItem>> m_tracksFutureWatcher;
+    QFuture<std::shared_ptr<TreeItem>> m_tracksFuture;
+    QPersistentModelIndex m_tracksDeviceIndex;
+    bool m_tracksLoading = false;
     QString m_title;
 
     QSharedPointer<BaseTrackCache> m_trackSource;
