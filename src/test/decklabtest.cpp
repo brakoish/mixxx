@@ -221,6 +221,30 @@ TEST_F(NativeDeckLabTest, LongMetadataCannotHideTempoOrExpandSurface) {
     EXPECT_TRUE(numbers->text().contains("128")); EXPECT_EQ(QSize(800,480),panel->size());
 }
 
+TEST_F(NativeDeckLabTest, ControllerLayerChangeRefreshesPlayState) {
+    ControlObject::set(ConfigKey("[Channel1]", "play"), 1);
+    ControlObject::set(ConfigKey("[Channel3]", "play"), 0);
+    QCoreApplication::processEvents();
+    auto* play = panel->findChild<QPushButton*>("decklab-1-play"); ASSERT_NE(nullptr, play);
+    EXPECT_TRUE(play->isChecked());
+    ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 1);
+    QCoreApplication::processEvents();
+    EXPECT_FALSE(play->isChecked());
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel1]", "play")));
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel3]", "play")));
+}
+
+TEST_F(NativeDeckLabTest, LatchedRmxFollowsTempoChangesWithoutAnotherTouch) {
+    m_pEffectsManager->setup(); m_pEffectsManager->ensureDeckLabEffects();
+    m_pEngineMixer->prepareAudio(mixxx::audio::SampleRate(44100));
+    m_pMixerDeck1->loadFakeTrack(false, 128); ProcessBuffer(); QCoreApplication::processEvents();
+    panel->selectPage(3); panel->findChild<QPushButton*>("decklab-fx-band-0")->click();
+    ControlObject::set(ConfigKey("[Channel1]", "bpm"), 140);
+    QTest::qWait(150);
+    EXPECT_DOUBLE_EQ(140, ControlObject::get(ConfigKey("[DeckLabEffectUnit1_Effect4]", "parameter11")));
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "play")));
+}
+
 #ifdef __LILV__
 TEST_F(NativeDeckLabTest, Lv2PreparationUsesSelectedRateWithoutAudio) {
     auto manifest = m_pEffectsManager->getBackendManager()->getManifest(

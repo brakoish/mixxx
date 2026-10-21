@@ -158,6 +158,8 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     set(kNative, "profile_tag", profileTag);
     createControl(kTab, QStringLiteral("current"));
     createControl(QStringLiteral("[Sidebar]"), QStringLiteral("sidebar_visible"), 1);
+    createControl(QStringLiteral("[DeckLabLeft]"), QStringLiteral("current"));
+    createControl(QStringLiteral("[DeckLabRight]"), QStringLiteral("current"));
     m_root = column(this);
     auto* rail = row();
     auto* brand = new QLabel(QStringLiteral("DECK LAB"), this);
@@ -252,10 +254,15 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
 
 WDeckLab::~WDeckLab() {
     m_fxTimer.stop();
+    qApp->removeEventFilter(this);
+    // QWidget closes focus after derived members have been destroyed. Search
+    // emits on focus-out, so detach its callback and hide while our controls
+    // and page state are still alive (including during a skin replacement).
+    if (m_search) disconnect(m_search, nullptr, this, nullptr);
+    hide();
     releaseTouchCue();
     releaseEffects();
     set(kNative, "active", 0);
-    qApp->removeEventFilter(this);
 }
 
 QString WDeckLab::channel(int deck) const { return QStringLiteral("[Channel%1]").arg(deck); }
@@ -1078,6 +1085,10 @@ void WDeckLab::tickEffects() {
     if (m_page != 3 || now - m_lastFxTick > 550 || !isVisible()) { releaseEffects(); return; }
     m_lastFxTick = now;
     control(fxSlot(), "parameter15")->setParameter((++m_heartbeat % 65535 + 1) / 65535.0);
+    // A latched delay follows pitch/Sync changes without needing another touch.
+    const double rawBpm = value(channel(m_fxDeck), "bpm");
+    const double bpm = rawBpm > 0 ? std::clamp(rawBpm, 40.0, 240.0) : 120;
+    control(fxSlot(), "parameter11")->setParameter((bpm - 40) / 200);
     double phase = value(channel(m_fxDeck), "beat_distance");
     control(fxSlot(), "parameter14")->setParameter(std::isfinite(phase) && phase >= 0 && phase <= 1 ? (phase + 1) / 2 : 0);
     if (m_fxReleasing && now >= m_releaseAt) {
@@ -1168,6 +1179,8 @@ void WDeckLab::updateLayers() {
     }
     refreshLoadButtons();
     for (int side = 0; side < 2; ++side) {
+        if (auto* play = findChild<QPushButton*>(QStringLiteral("decklab-%1-play").arg(side + 1)))
+            play->setChecked(value(channel(displayedDeck(side)), "play") > 0);
         if (auto* frame = m_deckWaveforms[m_layers[side] - 1]) m_waveLayout->addWidget(frame, 1);
     }
 }
