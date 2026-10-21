@@ -109,6 +109,10 @@ class EngineBuffer : public EngineObject {
             mixxx::audio::ChannelCount maxSupportedChannel);
     virtual ~EngineBuffer();
 
+    // Allocate time-stretching resources off the audio thread. Call only while
+    // every sound device is closed; this does not process or advance a track.
+    void prepareScalers(mixxx::audio::SampleRate sampleRate);
+
     void bindWorkers(EngineWorkerScheduler* pWorkerScheduler);
 
     QString getGroup() const;
@@ -325,6 +329,7 @@ class EngineBuffer : public EngineObject {
 
     UserSettingsPointer m_pConfig;
 
+    FRIEND_TEST(EngineBufferE2ETest, PrepareScalersPreservesDeckState);
     friend class CueControlTest;
     friend class HotcueControlTest;
     friend class LoopingControlTest;

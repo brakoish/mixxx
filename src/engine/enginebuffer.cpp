@@ -342,6 +342,15 @@ EngineBuffer::~EngineBuffer() {
     SampleUtil::free(m_pCrossfadeBuffer);
 }
 
+void EngineBuffer::prepareScalers(mixxx::audio::SampleRate sampleRate) {
+    DEBUG_ASSERT(sampleRate.isValid());
+    m_pScaleLinear->setSignal(sampleRate, m_channelCount);
+    m_pScaleST->setSignal(sampleRate, m_channelCount);
+#ifdef __RUBBERBAND__
+    m_pScaleRB->setSignal(sampleRate, m_channelCount);
+#endif
+}
+
 void EngineBuffer::bindWorkers(EngineWorkerScheduler* pWorkerScheduler) {
     m_pReader->setScheduler(pWorkerScheduler);
 }

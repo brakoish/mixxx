@@ -8,6 +8,8 @@
 #include <QtDebug>
 
 #include "control/controlobject.h"
+#include "engine/bufferscalers/enginebufferscalelinear.h"
+#include "engine/bufferscalers/enginebufferscalest.h"
 #include "engine/controls/ratecontrol.h"
 #include "engine/defs_keylock.h"
 #include "mixer/basetrackplayer.h"
@@ -27,6 +29,36 @@ const QString kAppGroup = QStringLiteral("[App]");
 class EngineBufferTest : public MockedEngineBackendTest {};
 
 class EngineBufferE2ETest : public SignalPathTest {};
+
+TEST_F(EngineBufferE2ETest, PrepareScalersPreservesDeckState) {
+    auto* pBuffer = m_pChannel1->getEngineBuffer();
+    // Preparation must preserve meaningful deck state without rendering audio.
+    ControlObject::set(ConfigKey(m_sGroup1, "play"), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup1, "rate"), 0.125);
+    ControlObject::set(ConfigKey(m_sGroup1, "keylock"), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup1, "pitch"), 0.15);
+    const auto play = ControlObject::get(ConfigKey(m_sGroup1, "play"));
+    const auto position = ControlObject::get(ConfigKey(m_sGroup1, "playposition"));
+    const auto rate = ControlObject::get(ConfigKey(m_sGroup1, "rate"));
+    const auto keylock = ControlObject::get(ConfigKey(m_sGroup1, "keylock"));
+    const auto pitch = ControlObject::get(ConfigKey(m_sGroup1, "pitch"));
+    for (const auto sampleRate : {44100, 48000, 96000, 44100}) {
+        m_pEngineMixer->prepareScalers(mixxx::audio::SampleRate(sampleRate));
+        EXPECT_EQ(pBuffer->m_pScaleLinear->getOutputSignal().getSampleRate(),
+                mixxx::audio::SampleRate(sampleRate));
+        EXPECT_EQ(pBuffer->m_pScaleST->getOutputSignal().getSampleRate(),
+                mixxx::audio::SampleRate(sampleRate));
+#ifdef __RUBBERBAND__
+        EXPECT_EQ(pBuffer->m_pScaleRB->getOutputSignal().getSampleRate(),
+                mixxx::audio::SampleRate(sampleRate));
+#endif
+        EXPECT_EQ(play, ControlObject::get(ConfigKey(m_sGroup1, "play")));
+        EXPECT_EQ(position, ControlObject::get(ConfigKey(m_sGroup1, "playposition")));
+        EXPECT_EQ(rate, ControlObject::get(ConfigKey(m_sGroup1, "rate")));
+        EXPECT_EQ(keylock, ControlObject::get(ConfigKey(m_sGroup1, "keylock")));
+        EXPECT_EQ(pitch, ControlObject::get(ConfigKey(m_sGroup1, "pitch")));
+    }
+}
 
 TEST_F(EngineBufferTest, DisableKeylockResetsPitch) {
     // To prevent one-slider users from getting stuck on a key,
