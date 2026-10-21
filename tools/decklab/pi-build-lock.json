@@ -86,7 +86,7 @@
     "src/widget/wtracktableview.cpp": "ef3dd56a8e69d7f13322b153b7869b419ea6b81f54261a3cd89561d7756a4c27",
     "src/widget/wtracktableview.h": "7beedabaf6c3591bdc0395a5fbec5ceafbe0373b6bdfb5f01a298c455795e196",
     "src/widget/wtracktableviewheader.cpp": "f3df34a95f92674a17d51c18de32e354b9174e1e717a1f51339237fd883398b5",
-    "tools/decklab/build_pi.py": "921ffa85f3e66d2b7b48173a862b762615ef40df9c63c8bbec75ebc3d3fc2e1a",
+    "tools/decklab/build_pi.py": "24820ecd114fa126769248acee8cfcc2e4720fe98100fcb24dfbaa67dc23a001",
     "tools/decklab/test_build_pi.py": "99746475e7bf79f402b9eb3c97c4ab95a0c3cd7dc969dd4bfa4a268660a3462f",
     "tools/decklab/test_dsp.py": "a3984f1da819c3820d4b1c4a9d79c90c4b2e5d4c07583427f22c0059acb05367"
   },

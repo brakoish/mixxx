@@ -159,7 +159,23 @@ def build(work, jobs, lock):
               "--resource-path=/run/build/mixxx/res", "--gtest_filter=" + test_filter,
               "--gtest_output=xml:" + str(xml)]
     with (out / "native-tests.log").open("w") as log:
-        subprocess.run(list(map(str, prefix)), cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
+        try:
+            subprocess.run(list(map(str, prefix)), cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
+        except subprocess.CalledProcessError:
+            # Preserve an actionable native stack for crashes. This diagnostic
+            # still has no audio devices, desktop sockets or network, and never
+            # turns a failed test run into an accepted candidate.
+            boundary = prefix.index(tree)
+            debug = prefix[:boundary] + ["--allow=devel", tree, "gdb", "--batch",
+                    "-ex", "set pagination off", "-ex", "run", "-ex", "thread apply all bt",
+                    "--args"] + prefix[boundary + 1:]
+            with (out / "native-test-backtrace.log").open("w") as trace:
+                try:
+                    subprocess.run(list(map(str, debug)), cwd=ROOT, env=env,
+                            stdout=trace, stderr=subprocess.STDOUT, timeout=90)
+                except (OSError, subprocess.TimeoutExpired) as error:
+                    trace.write(str(error) + "\n")
+            raise
     summary = test_summary(xml)
     dsp_test = ["flatpak", "build", "--readonly", "--filesystem=" + str(work),
                 "--nodevice=all", "--nosocket=pulseaudio", "--nosocket=x11", "--nosocket=wayland",
