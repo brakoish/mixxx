@@ -239,9 +239,9 @@ Workflow `decklab-pi.yml` (ARM64 Flatpak build, native tests, DSP tests, package
 
 | Run | Commit | Result |
 |---|---|---|
-| [39798990472](https://github.com/brakoish/mixxx/actions/runs/39798990472) | 0f06d18fc5 | Failure before building. The checkout used `fetch-depth: 50`, and `codex/native-appliance` is already 47 commits past the pinned upstream revision, so `build_pi.py`'s ancestry check failed. Fixed in 375429e8b1 (`fetch-depth: 0`). **This affects every workstream branch with more than 3 commits.** |
-| [39799771383](https://github.com/brakoish/mixxx/actions/runs/39799771383) | 375429e8b1 | **Success.** 277 native tests, 0 failures. All 14 new perf-engine tests passed. DSP regression worst 3.97e-7 on ARM64. Smoke check passed. |
-| see the coordinator report | this note's commit | Final run, including `DECKLAB_AUDIO_PRIO` |
+| 39798990472 | 0f06d18fc5 | Failure before building. The checkout used `fetch-depth: 50`, and `codex/native-appliance` is already 47 commits past the pinned upstream revision, so `build_pi.py`'s ancestry check failed. Fixed in 375429e8b1 (`fetch-depth: 0`). **This affects every workstream branch with more than 3 commits.** |
+| 39799771383 | 375429e8b1 | **Success.** 277 native tests, 0 failures. All 14 new perf-engine tests passed. DSP regression worst 3.97e-7 on ARM64. Smoke check passed. |
+| 39805032822 | 6b2d285f2e | Final run, including `DECKLAB_AUDIO_PRIO` (result in the coordinator report) |
 
 ## Risks
 
