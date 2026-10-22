@@ -23,7 +23,7 @@ const QColor kPanelPressed(0x20, 0x24, 0x2b);
 const QColor kMiniPanel(0x16, 0x19, 0x1e);
 const QColor kHairline(0x2c, 0x31, 0x3a);
 const QColor kText(0xf2, 0xf4, 0xf7);
-const QColor kSecondary(0x9a, 0xa3, 0xaf);
+const QColor kMuted(0x9a, 0xa3, 0xaf);
 const QColor kDim(0x6b, 0x73, 0x80);
 const QColor kLampOff(0x2c, 0x31, 0x3a);
 const QColor kLampLit(0xf2, 0xf4, 0xf7);
@@ -163,15 +163,15 @@ void DeckLabStripRenderer::layout() {
                                 readout.horizontalAdvance(QStringLiteral("F#m"))) +
                 20;
         const QRect time(width - 10 - clock, 36, clock + 10, 40);
-        const QRect keyArea(time.left() - 8 - key, 36, key, 40);
+        const QRect keyArea(time.left() - 6 - key, 36, key, 40);
         const QRect bpmArea(12, 36, bpm, 40);
         set(Part::Identity, QRect(12, 6, 72, 28));
         set(Part::Title, QRect(86, 6, std::max(0, width - 96), 28));
         set(Part::Bpm, bpmArea);
         set(Part::Time, time);
         set(Part::Key, keyArea);
-        set(Part::Tempo, QRect(bpmArea.right() + 10, 36,
-                                 std::max(0, keyArea.left() - 8 - bpmArea.right() - 10), 40));
+        set(Part::Tempo, QRect(bpmArea.right() + 7, 36,
+                                 std::max(0, keyArea.left() - 6 - bpmArea.right() - 7), 40));
         const int phase = std::clamp(width * 30 / 100, 110, 200);
         set(Part::Phase, QRect(width - 10 - phase, 88, phase, 8));
         set(Part::Chips, QRect(12, 80, std::max(0, width - 22 - phase - 10), 22));
@@ -202,8 +202,8 @@ void DeckLabStripRenderer::layout() {
         const QRect time(width - 8 - clock, 0, clock + 8, height);
         const QRect bpmArea(time.left() - 12 - bpm, 0, bpm, height);
         const QRect keyArea(bpmArea.left() - 12 - key, 0, key, height);
-        set(Part::Identity, QRect(4, 0, 50, height));
-        set(Part::Title, QRect(58, 0, std::max(0, keyArea.left() - 12 - 58), height));
+        set(Part::Identity, QRect(4, 0, 58, height));
+        set(Part::Title, QRect(66, 0, std::max(0, keyArea.left() - 12 - 66), height));
         set(Part::Key, keyArea);
         set(Part::Bpm, bpmArea);
         set(Part::Time, time);
@@ -255,6 +255,9 @@ QRegion DeckLabStripRenderer::setState(const DeckLabStripState& next) {
     }
     if (previous.tempo != next.tempo || previous.tempoCentered != next.tempoCentered) {
         add(Part::Tempo);
+        if (m_mode == Mode::Full) {
+            add(Part::Chips); // the tempo-center lamp
+        }
     }
     if (previous.key != next.key || previous.keyColor != next.keyColor || previous.keyMatch != next.keyMatch) {
         add(Part::Key);
@@ -427,7 +430,7 @@ void DeckLabStripRenderer::paintTitle(QPainter& painter, const QRect& area) cons
     const int baseline = baselineFor(area, titleMetrics);
     if (!m_state.loaded) {
         painter.setFont(artistFont);
-        painter.setPen(kSecondary);
+        painter.setPen(kMuted);
         painter.drawText(QPoint(area.left(), baseline),
                 artistMetrics.elidedText(m_mode == Mode::Compact ? tr("Tap to browse") : tr("No track loaded"),
                         Qt::ElideRight, area.width()));
@@ -447,7 +450,7 @@ void DeckLabStripRenderer::paintTitle(QPainter& painter, const QRect& area) cons
     const int remaining = area.width() - titleWidth;
     if (remaining > artistMetrics.horizontalAdvance(QStringLiteral("  ·  W…"))) {
         painter.setFont(artistFont);
-        painter.setPen(kSecondary);
+        painter.setPen(kMuted);
         painter.drawText(QPoint(area.left() + titleWidth, baseline),
                 artistMetrics.elidedText(artist, Qt::ElideRight, remaining));
     }
@@ -491,12 +494,22 @@ void DeckLabStripRenderer::paintLamps(QPainter& painter) const {
         if (m_state.slip && x + chipWidth(tr("SLIP")) <= area.right()) {
             x += paintChip(painter, x, top, tr("SLIP"), true, kLampLit) + 4;
         }
+        // Tempo range, then the tempo-center lamp (lit at 0.00%), sit under
+        // the tempo readout so the value row keeps its full size.
         const QFont rangeFont = uiFont(kSecondary, QFont::Medium);
         const QFontMetrics metrics(rangeFont);
-        if (!m_state.range.isEmpty() && x + 4 + metrics.horizontalAdvance(m_state.range) <= area.right()) {
+        x += 4;
+        if (!m_state.range.isEmpty() && x + metrics.horizontalAdvance(m_state.range) <= area.right()) {
             painter.setFont(rangeFont);
-            painter.setPen(kSecondary);
-            painter.drawText(QPoint(x + 4, baselineFor(area, metrics)), m_state.range);
+            painter.setPen(kMuted);
+            painter.drawText(QPoint(x, baselineFor(area, metrics)), m_state.range);
+            x += metrics.horizontalAdvance(m_state.range) + 6;
+        }
+        if (x + 8 <= area.right()) {
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(m_state.tempoCentered ? kPlay : kLampOff);
+            painter.drawEllipse(QRectF(x, area.center().y() - 3.5, 8, 8));
+            painter.setBrush(Qt::NoBrush);
         }
         return;
     }
@@ -513,7 +526,7 @@ void DeckLabStripRenderer::paintLamps(QPainter& painter) const {
             {tr("HP"), m_state.pfl, kLampLit, false},
             {tr("LOOP %1").arg(m_state.loopSize), m_state.looping, kLampLit, false},
             {tr("KEY"), m_state.keylock, kLampLit, false},
-            {tr("Q"), m_state.quantize, kLampLit, false},
+            {tr("QNT"), m_state.quantize, kLampLit, false},
             {tr("SLIP"), m_state.slip, kLampLit, false}}};
     for (const auto& lamp : lamps) {
         if (!lamp.on) {
@@ -588,7 +601,7 @@ void DeckLabStripRenderer::paintValues(QPainter& painter, const QRect& dirty) co
                 painter.setPen(QPen(kPlay, 2.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
                 painter.drawPath(check);
             } else {
-                painter.setPen(QPen(kSecondary, 2));
+                painter.setPen(QPen(kMuted, 2));
                 painter.drawLine(QPointF(kx, baseline - 11), QPointF(kx + 9, baseline - 2));
                 painter.drawLine(QPointF(kx + 9, baseline - 11), QPointF(kx, baseline - 2));
             }
@@ -597,8 +610,9 @@ void DeckLabStripRenderer::paintValues(QPainter& painter, const QRect& dirty) co
     if (mini) {
         return;
     }
-    // Tempo: readout size with the tempo-center lamp (lit at 0.00%). It is
-    // dropped, never shrunk, if a very long clock takes its room.
+    // Tempo: readout size. Compact readouts put the tempo-center lamp after
+    // it; full readouts show it in the lamp row. The value is dropped, never
+    // shrunk, if a very long clock takes its room.
     QRect tempoArea = rect(Part::Tempo);
     if (!compact) {
         tempoArea.setRight(tempoArea.right() - excess);
@@ -608,10 +622,10 @@ void DeckLabStripRenderer::paintValues(QPainter& painter, const QRect& dirty) co
         if (width <= tempoArea.width()) {
             const int baseline = compact ? baselineFor(tempoArea, readoutMetrics) : heroBaseline;
             painter.setFont(readout);
-            painter.setPen(m_state.tempoCentered ? kSecondary : kDecimals);
+            painter.setPen(m_state.tempoCentered ? kMuted : kDecimals);
             drawTabular(painter, tempoArea.left() + 2, baseline, m_state.tempo);
             const int x = tempoArea.left() + 2 + width + 6;
-            if (x + 8 <= tempoArea.right()) {
+            if (compact && x + 8 <= tempoArea.right()) {
                 painter.setPen(Qt::NoPen);
                 painter.setBrush(m_state.tempoCentered ? kPlay : kLampOff);
                 painter.drawEllipse(QRectF(x, baseline - 9, 8, 8));
@@ -635,7 +649,7 @@ void DeckLabStripRenderer::paint(QPainter& painter, const QRect& dirty, bool pre
     };
     if (needs(Part::Identity)) {
         paintBadge(painter);
-        const QRect transport = mini ? QRect(36, 0, 20, m_size.height())
+        const QRect transport = mini ? QRect(36, 0, 28, m_size.height())
                 : m_mode == Mode::Compact ? QRect(42, 6, 30, 28)
                                           : QRect(50, 6, 34, 28);
         paintTransport(painter, transport);
@@ -646,7 +660,7 @@ void DeckLabStripRenderer::paint(QPainter& painter, const QRect& dirty, bool pre
     if (!m_state.loaded) {
         if (m_mode == Mode::Full) {
             painter.setFont(uiFont(kBody, QFont::Medium));
-            painter.setPen(kSecondary);
+            painter.setPen(kMuted);
             painter.drawText(QRect(14, 36, m_size.width() - 24, m_size.height() - 40),
                     Qt::AlignCenter, tr("Tap to browse and load a track"));
         }
@@ -839,7 +853,7 @@ void DeckLabChipButton::paintEvent(QPaintEvent*) {
     const int contentWidth = sizeHint().width() - 6;
     int x = std::max(6, (width() - contentWidth) / 2 + 4);
     if (!m_caption.isEmpty()) {
-        painter.setPen(isEnabled() ? kSecondary : kDim);
+        painter.setPen(isEnabled() ? kMuted : kDim);
         painter.drawText(QRect(x, 0, metrics.horizontalAdvance(m_caption), height()),
                 Qt::AlignVCenter | Qt::AlignLeft, m_caption);
         x += metrics.horizontalAdvance(m_caption) + 8;
