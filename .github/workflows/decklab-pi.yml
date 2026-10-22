@@ -3,6 +3,11 @@ name: Deck Lab Pi ARM64
 
 on:
   workflow_dispatch:
+    inputs:
+      qml:
+        description: "Also build the experimental QML/EGLFS candidate (DECKLAB_QML=1) in a separate job"
+        type: boolean
+        default: false
   push:
     branches: [codex/decklab-pi]
     tags: [decklab-pi-*]
@@ -60,5 +65,53 @@ jobs:
         with:
           name: decklab-mixxx-aarch64-${{ github.sha }}
           path: ${{ runner.temp }}/decklab-pi/artifacts/
+          if-no-files-found: warn
+          retention-days: 3
+
+  # Experimental gpu-screen spike. Runs only when dispatched with qml=true, beside (never instead
+  # of) the product job above, and uploads its own artifact. Not a product candidate; never deployed.
+  build-qml:
+    if: github.repository == 'brakoish/mixxx' && github.event_name == 'workflow_dispatch' && inputs.qml
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate build inputs and failure guards
+        run: |
+          python3 tools/decklab/build_pi.py --check-inputs
+          python3 tools/decklab/test_build_pi.py
+      - name: Install build tools on this disposable runner
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder dbus-user-session elfutils xvfb xauth
+      - name: Restore compiler cache only
+        id: compiler-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/decklab-pi-qml/compiler-cache
+          key: decklab-arm64-qml-kde610-${{ hashFiles('packaging/flatpak/**/*.yaml') }}-${{ github.sha }}
+          restore-keys: |
+            decklab-arm64-qml-kde610-${{ hashFiles('packaging/flatpak/**/*.yaml') }}-
+            decklab-arm64-kde610-${{ hashFiles('packaging/flatpak/**/*.yaml') }}-
+      - name: Build the QML candidate and capture the QML smoke screens
+        env:
+          DECKLAB_QML: "1"
+        run: dbus-run-session -- python3 tools/decklab/build_pi.py --work-dir "$RUNNER_TEMP/decklab-pi-qml" --jobs 4
+      - name: Save compiler cache after successful or failed checks
+        if: always()
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/decklab-pi-qml/compiler-cache
+          key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
+      - name: Upload QML candidate, smoke screens and records
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: decklab-mixxx-qml-aarch64-${{ github.sha }}
+          path: ${{ runner.temp }}/decklab-pi-qml/artifacts/
           if-no-files-found: warn
           retention-days: 3

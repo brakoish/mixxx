@@ -14,6 +14,48 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[2]
 LOCK = Path(__file__).with_name("pi-build-lock.json")
 MANIFEST = ROOT / "packaging/flatpak/org.mixxx.Mixxx.yaml"
+# Experimental gpu-screen spike (DECKLAB_QML=1): a QML-enabled candidate on its
+# own Flatpak branch, so it installs beside the product and never replaces it.
+QML_BRANCH = "decklab-qml"
+QML_MAIN = "qml/DeckLab/main.qml"
+
+
+def qml_requested(environ=None):
+    """DECKLAB_QML=1 builds the QML candidate. Unset, empty or 0 is the product build."""
+    value = (os.environ if environ is None else environ).get("DECKLAB_QML", "")
+    if value not in ("", "0", "1"):
+        raise ValueError("DECKLAB_QML must be 0 or 1")
+    return value == "1"
+
+
+def configure_qml(module):
+    """Enable Mixxx's QML UI. No test binary: the product job runs the gates."""
+    options = [option for option in module.get("config-opts", [])
+               if not option.startswith(("-DQML=", "-DBUILD_TESTING="))]
+    module["config-opts"] = options + ["-DQML=ON", "-DBUILD_TESTING=OFF"]
+
+
+def gl_extension_ref(metadata):
+    """The GL driver extension the runtime expects, e.g. org.freedesktop.Platform.GL.default//25.08."""
+    section = False
+    for line in metadata.splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            section = line == "[Extension org.freedesktop.Platform.GL]"
+        elif section and line.startswith("versions="):
+            version = line.split("=", 1)[1].split(";")[0].strip()
+            if version:
+                return "org.freedesktop.Platform.GL.default//" + version
+    raise ValueError("Runtime metadata names no GL extension version")
+
+
+def check_qml_smoke(result):
+    if (result.get("failures") != [] or result.get("qml_errors") != [] or result.get("screens", 0) < 3
+            or result.get("waveform_items") != 2 or result.get("scratch_engaged") is not True
+            or result.get("scratch_released") is not True or result.get("play_tap") is not True
+            or result.get("audio_started") is not False):
+        raise RuntimeError("QML smoke check failed: " + json.dumps(result, sort_keys=True))
+    return result
 
 
 def digest(path):
@@ -159,9 +201,69 @@ def external_workdir(root, path):
     return work
 
 
+def build_qml_candidate(env, work, out, tree, repo, generated, revision, lock, actual):
+    """Bundle the QML build and capture its Decks screen under Xvfb (Mesa llvmpipe).
+
+    No product gates run here; the default job owns them. Never deployed."""
+    binary = tree / "files/bin/mixxx.bin"
+    if binary.read_bytes()[:4] != b"\x7fELF" or int.from_bytes(binary.read_bytes()[18:20], "little") != 183:
+        raise RuntimeError("Expected an AArch64 ELF")
+    shutil.copy2(binary, out / "mixxx-qml.bin")
+    bundle = out / ("decklab-mixxx-qml-aarch64-" + revision[:12] + ".flatpak")
+    command(["flatpak", "build-bundle", "--arch=aarch64", "--runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo",
+             repo, bundle, "org.mixxx.Mixxx", QML_BRANCH], env=env)
+    command(["flatpak", "install", "--user", "--noninteractive", "--no-related", "--no-deps", bundle], env=env)
+    # Qt Quick needs a real GL driver; the product smoke runs widgets in safe mode without one.
+    gl = gl_extension_ref(command(["flatpak", "info", "--user", "--show-metadata", "org.kde.Platform//6.10"],
+                                  env=env, capture=True))
+    command(["flatpak", "install", "--user", "--noninteractive", "--no-related", "flathub", gl], env=env)
+    gl_commit = command(["flatpak", "info", "--user", "--show-commit", gl], env=env, capture=True)
+    if not shutil.which("xvfb-run"):
+        raise RuntimeError("Missing build tool: xvfb-run")
+    scratch = work / "test-home"
+    scratch.mkdir(exist_ok=True)
+    profile = scratch / "decklab-qml-smoke-profile"
+    profile.mkdir(exist_ok=True)
+    (profile / "mixxx.cfg").write_text(
+        "[Config]\nResizableSkin DeckLab\nshow_menubar_hint 0\nhide_menubar 1\n"
+        "[Key]\nKeyNotation Lancelot\n", encoding="utf-8")
+    (profile / "soundconfig.xml").write_text(
+        '<SoundManagerConfig api="None" samplerate="48000" latency="7" sync_buffers="2" deck_count="4"/>', encoding="utf-8")
+    sandbox = ["--nodevice=all", "--nosocket=pulseaudio", "--nosocket=wayland", "--nosocket=fallback-x11",
+               "--unshare=network", "--env=HOME=" + str(scratch), "--env=XDG_CONFIG_HOME=" + str(scratch / "qml-config"),
+               "--filesystem=" + str(work), "--command=/app/bin/mixxx.bin"]
+    ref = "org.mixxx.Mixxx//" + QML_BRANCH
+    app = ["--settings-path=" + str(profile), "--resource-path=/app/share/mixxx"]
+    version = command(["flatpak", "run", "--nosocket=x11", "--env=QT_QPA_PLATFORM=offscreen"] + sandbox
+                      + [ref] + app + ["--version"], env=env, capture=True)
+    (out / "runtime-version.txt").write_text(version + "\n")
+    smoke = (["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1280x800x24 -ac +extension GLX -nolisten tcp",
+              "flatpak", "run", "--socket=x11", "--env=QT_QPA_PLATFORM=xcb", "--env=LIBGL_ALWAYS_SOFTWARE=1",
+              "--env=QSG_INFO=1", "--env=DECKLAB_PERF_LOG=1", "--env=DECKLAB_QML_MAIN=" + QML_MAIN,
+              "--env=DECKLAB_QML_SMOKE_DIR=" + str(out)] + sandbox + [ref] + app + ["--qml"])
+    with (out / "qml-smoke.log").open("w") as log:
+        print("+", " ".join(smoke), flush=True)
+        subprocess.run(smoke, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=300)
+    smoke_result = check_qml_smoke(json.loads((out / "qml-smoke.json").read_text()))
+    record = {"source_revision": revision, "upstream_source_revision": lock["upstream_source_revision"],
+              "architecture": "aarch64", "experimental": "gpu-screen QML/EGLFS spike, not a product candidate",
+              "flatpak_branch": QML_BRANCH, "flatpak_commits": actual, "gl_extension": {gl: gl_commit},
+              "native_sha256": digest(out / "mixxx-qml.bin"), "bundle_sha256": digest(bundle),
+              "manifest_sha256": digest(generated), "runtime_probe_passed": True, "deployed": False,
+              "hardware_audio_tested": False, "qml_smoke": smoke_result,
+              "tools": {name: command([name, "--version"], env=env, capture=True)
+                        for name in ("flatpak", "flatpak-builder", "git")}}
+    (out / "provenance.json").write_text(json.dumps(record, indent=2) + "\n")
+    shutil.copy2(generated, out / "resolved-manifest.json")
+    sums = [digest(p) + "  " + p.name for p in sorted(out.iterdir()) if p.is_file() and p.name != "SHA256SUMS"]
+    (out / "SHA256SUMS").write_text("\n".join(sums) + "\n")
+    print(json.dumps(record, indent=2), flush=True)
+
+
 def build(work, jobs, lock):
     if sys.platform != "linux" or platform.machine().lower() not in ("aarch64", "arm64"):
         raise RuntimeError("Use a native ARM64 Linux build host")
+    qml = qml_requested()
     if command(["git", "status", "--porcelain", "--untracked-files=no"], capture=True):
         raise RuntimeError("Commit tracked changes before building")
     command(["git", "merge-base", "--is-ancestor", lock["upstream_source_revision"], "HEAD"])
@@ -198,6 +300,8 @@ def build(work, jobs, lock):
         raise ValueError("Expected exactly one native Mixxx module")
     # Build committed source only, excluding all untracked local files.
     modules[0]["sources"][0] = {"type": "git", "url": str(ROOT), "commit": revision}
+    if qml:
+        configure_qml(modules[0])
     audit_sources(manifest)
     generated = work / "manifest.json"
     generated.write_text(json.dumps(manifest, indent=2) + "\n")
@@ -206,8 +310,12 @@ def build(work, jobs, lock):
     repo = work / "repo"
     command(["flatpak-builder", "--user", "--disable-rofiles-fuse", "--force-clean",
              "--keep-build-dirs", "--disable-tests", "--ccache", "--jobs=" + str(jobs),
-             "--state-dir=" + str(state), "--repo=" + str(repo), "--default-branch=decklab",
+             "--state-dir=" + str(state), "--repo=" + str(repo),
+             "--default-branch=" + (QML_BRANCH if qml else "decklab"),
              tree, generated], env=env)
+    if qml:
+        build_qml_candidate(env, work, out, tree, repo, generated, revision, lock, actual)
+        return
     native = state / "build/mixxx"
     if not (native / "mixxx-test").is_file():
         raise RuntimeError("Native test executable was not retained")

@@ -8,6 +8,38 @@ import build_pi
 
 
 class BuildGuards(unittest.TestCase):
+    def test_qml_candidate_is_opt_in_and_keeps_product_options(self):
+        self.assertFalse(build_pi.qml_requested({}))
+        self.assertFalse(build_pi.qml_requested({"DECKLAB_QML": ""}))
+        self.assertFalse(build_pi.qml_requested({"DECKLAB_QML": "0"}))
+        self.assertTrue(build_pi.qml_requested({"DECKLAB_QML": "1"}))
+        with self.assertRaises(ValueError):
+            build_pi.qml_requested({"DECKLAB_QML": "yes"})
+        product = ["-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=RelWithDebInfo", "-DBUILD_TESTING=ON"]
+        module = {"name": "mixxx", "config-opts": list(product)}
+        build_pi.configure_qml(module)
+        self.assertEqual(module["config-opts"],
+                         ["-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+                          "-DQML=ON", "-DBUILD_TESTING=OFF"])
+        self.assertNotEqual(build_pi.QML_BRANCH, "decklab")
+
+    def test_gl_extension_follows_runtime_metadata(self):
+        metadata = ("[Runtime]\nname=org.kde.Platform\n\n[Extension org.freedesktop.Platform.GL]\n"
+                    "versions=25.08;25.08-extra;1.4\nversion=1.4\ndirectory=lib/aarch64-linux-gnu/GL\n")
+        self.assertEqual(build_pi.gl_extension_ref(metadata), "org.freedesktop.Platform.GL.default//25.08")
+        with self.assertRaises(ValueError):
+            build_pi.gl_extension_ref("[Extension org.freedesktop.Platform.Locale]\nversions=6.10\n")
+
+    def test_qml_smoke_requires_every_check(self):
+        good = {"failures": [], "qml_errors": [], "screens": 4, "waveform_items": 2, "scratch_engaged": True,
+                "scratch_released": True, "play_tap": True, "audio_started": False}
+        self.assertEqual(build_pi.check_qml_smoke(dict(good)), good)
+        for key, value in (("failures", ["x"]), ("qml_errors", ["main.qml:1"]), ("screens", 2),
+                           ("waveform_items", 1), ("scratch_engaged", False), ("scratch_released", False),
+                           ("play_tap", False), ("audio_started", True)):
+            with self.assertRaises(RuntimeError):
+                build_pi.check_qml_smoke(dict(good, **{key: value}))
+
     def test_diagnostic_run_preserves_original_test_output_and_safety_boundary(self):
         tree = Path("/scratch/build")
         original = ["flatpak", "build", "--nodevice=all", "--unshare=network",
