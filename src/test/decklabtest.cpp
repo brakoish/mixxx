@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include <QAction>
 #include <QDir>
 #include <QComboBox>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QStackedWidget>
 #include <QTest>
 #include <QTextDocument>
@@ -242,10 +246,25 @@ TEST_F(NativeDeckLabTest, PagesFit800By480) {
         EXPECT_EQ(QSize(800, 480), panel->size()) << page;
         for (auto* button : panel->findChildren<QPushButton*>()) {
             if (!button->isVisible()) continue;
+            // Settings deliberately scrolls. Every control must be reachable
+            // in full, rather than every content child fitting simultaneously.
+            QScrollArea* scroll = nullptr;
+            for (auto* parent = button->parentWidget(); parent; parent = parent->parentWidget())
+                if ((scroll = qobject_cast<QScrollArea*>(parent))) break;
+            if (scroll) {
+                scroll->ensureWidgetVisible(button, 0, 0); QCoreApplication::processEvents();
+                EXPECT_TRUE(scroll->viewport()->rect().contains(
+                        QRect(button->mapTo(scroll->viewport(), QPoint()), button->size())))
+                        << qPrintable(button->text()) << " page " << page;
+            }
             QRect bounds(button->mapTo(panel.get(), QPoint()), button->size());
             EXPECT_TRUE(panel->rect().contains(bounds)) << qPrintable(button->text()) << " page " << page;
             EXPECT_GE(button->height(), 38) << qPrintable(button->text());
         }
+        for (auto* scroll : panel->findChildren<QScrollArea*>()) {
+            scroll->verticalScrollBar()->setValue(0); scroll->horizontalScrollBar()->setValue(0);
+        }
+        QCoreApplication::processEvents();
         if (page == 0) {
             auto* cue = panel->findChild<QPushButton*>("decklab-1-cue_default");
             EXPECT_TRUE(cue->isVisible()); EXPECT_FALSE(cue->visibleRegion().isEmpty());
@@ -499,10 +518,15 @@ TEST_F(NativeDeckLabTest, AutoLayoutShowsFourRealDecksAndRetainsLoadedUpperDecks
     QMetaObject::invokeMethod(choice, "activated", Q_ARG(int, 0));
     panel->setAudioOutputConfigured(true); ControlObject::set(ConfigKey("[SoundManager]", "status"), 2);
     ControlObject::set(ConfigKey("[DeckLabNative]", "tools_ready"), 1);
+    ControlObject::set(ConfigKey("[DeckLabNative]", "layout_decks"), 2);
+    auto track = fourthDeck->loadFakeTrack(false, 134); track->setTitle("Fourth deck — actual target"); ProcessBuffer();
+    QTest::qWait(150);
+    // A known two-channel controller's software layers do not open four cards.
+    EXPECT_FALSE(panel->findChild<QPushButton*>("decklab-card-4-play")->isVisible());
+    EXPECT_TRUE(panel->findChild<QPushButton*>("decklab-1-play")->isVisible());
     ControlObject::set(ConfigKey("[DeckLabNative]", "layout_decks"), 4); QCoreApplication::processEvents();
     EXPECT_TRUE(panel->findChild<QPushButton*>("decklab-card-4-play")->isVisible());
     EXPECT_FALSE(panel->findChild<QPushButton*>("decklab-1-play")->isVisible());
-    auto track = fourthDeck->loadFakeTrack(false, 134); track->setTitle("Fourth deck — actual target"); ProcessBuffer();
     ControlObject::set(ConfigKey("[DeckLabNative]", "layout_decks"), 2); QTest::qWait(150);
     EXPECT_TRUE(panel->findChild<QPushButton*>("decklab-card-4-play")->isVisible());
     auto* play = panel->findChild<QPushButton*>("decklab-card-4-play"); ASSERT_TRUE(play->isEnabled());
@@ -547,20 +571,84 @@ TEST_F(NativeDeckLabTest, BrowseLoadCancelsChangedTargetAndOffersFourDirectDesti
     if (!ControlObject::getControl(ConfigKey("[Channel4]", "LoadSelectedTrack"))) missing4 = std::make_unique<ControlObject>(ConfigKey("[Channel4]", "LoadSelectedTrack"));
     ControlProxy third("[Channel3]", "LoadSelectedTrack"), fourth("[Channel4]", "LoadSelectedTrack");
     int thirdRequests=0, fourthRequests=0;
-    QObject::connect(&third, &ControlProxy::valueChanged, [&thirdRequests](double v) { if (v > 0) ++thirdRequests; });
-    QObject::connect(&fourth, &ControlProxy::valueChanged, [&fourthRequests](double v) { if (v > 0) ++fourthRequests; });
+    ASSERT_TRUE(third.connectValueChanged(panel.get(), [&thirdRequests](double v) { if (v > 0) ++thirdRequests; }, Qt::DirectConnection));
+    ASSERT_TRUE(fourth.connectValueChanged(panel.get(), [&fourthRequests](double v) { if (v > 0) ++fourthRequests; }, Qt::DirectConnection));
+    // Prove these observers receive dispatch before relying on a zero count.
+    for (const auto& group : {"[Channel3]", "[Channel4]"}) {
+        ControlObject::set(ConfigKey(group, "LoadSelectedTrack"), 1);
+        ControlObject::set(ConfigKey(group, "LoadSelectedTrack"), 0);
+    }
+    ASSERT_EQ(1, thirdRequests); ASSERT_EQ(1, fourthRequests);
+    thirdRequests = 0; fourthRequests = 0;
     panel->openCollection(); auto* load = panel->findChild<QPushButton*>("decklab-load-1");
     // The fixture has no collection table. Enable the button to model a valid
     // selection on both paused targets and inspect only destination dispatch.
     load->setEnabled(true); QTest::mousePress(load, Qt::LeftButton);
     ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 1); QCoreApplication::processEvents();
     load->setEnabled(true); QTest::mouseRelease(load, Qt::LeftButton);
-    EXPECT_EQ(0, thirdRequests);
+    EXPECT_EQ(0, thirdRequests); EXPECT_EQ(0, fourthRequests);
     auto* choice=panel->findChild<QComboBox*>("decklab-deck-layout");
     QMetaObject::invokeMethod(choice, "activated", Q_ARG(int,2)); QCoreApplication::processEvents();
     auto* load4=panel->findChild<QPushButton*>("decklab-load-4"); ASSERT_TRUE(load4->isVisible());
     EXPECT_EQ(QStringLiteral("Load 4"),load4->text()); load4->setEnabled(true); load4->click();
+    QCoreApplication::processEvents();
     EXPECT_EQ(1,fourthRequests); EXPECT_EQ(0,thirdRequests);
+}
+
+TEST_F(NativeDeckLabTest, BrowseToolsMatchPlayingFourthDeckAndGuardStaleUnload) {
+    m_pMixerDeck1->loadFakeTrack(false, 128);
+    fourthDeck->loadFakeTrack(false, 134); ProcessBuffer(); QCoreApplication::processEvents();
+    panel->openCollection();
+    auto* tools = panel->findChild<QPushButton*>("decklab-browse-tools"); ASSERT_NE(nullptr, tools);
+    auto openTools = [this, tools]() -> QMenu* {
+        tools->click(); QCoreApplication::processEvents();
+        for (auto* menu : panel->findChildren<QMenu*>(QString(), Qt::FindDirectChildrenOnly))
+            if (menu->isVisible()) return menu;
+        return nullptr;
+    };
+    ControlProxy eject("[Channel4]", "eject");
+    int ejectRequests = 0;
+    ASSERT_TRUE(eject.connectValueChanged(panel.get(), [&ejectRequests](double v) {
+        if (v > 0) ++ejectRequests;
+    }, Qt::DirectConnection));
+
+    ControlObject::set(ConfigKey("[Channel4]", "play"), 1); ProcessBuffer(); QCoreApplication::processEvents();
+    auto* menu = openTools(); ASSERT_NE(nullptr, menu);
+    QAction* match = nullptr;
+    for (auto* action : menu->actions())
+        if (action->text() == QStringLiteral("Match Deck 4")) match = action;
+    ASSERT_NE(nullptr, match); ASSERT_TRUE(match->isEnabled()); match->trigger();
+    auto* search = panel->findChild<WSearchLineEdit*>(); ASSERT_NE(nullptr, search);
+    EXPECT_TRUE(search->currentText().contains(QStringLiteral("~bpm:134.00")));
+    auto* unload = menu->findChild<QAction*>("decklab-unload-4"); ASSERT_NE(nullptr, unload);
+    EXPECT_FALSE(unload->isEnabled());
+    EXPECT_TRUE(fourthDeck->getEngineDeck()->getEngineBuffer()->isTrackLoaded());
+    menu->close(); QCoreApplication::processEvents();
+
+    ControlObject::set(ConfigKey("[Channel4]", "play"), 0); ProcessBuffer(); QCoreApplication::processEvents();
+    menu = openTools(); ASSERT_NE(nullptr, menu);
+    unload = menu->findChild<QAction*>("decklab-unload-4"); ASSERT_NE(nullptr, unload);
+    ASSERT_TRUE(unload->isEnabled());
+    ControlObject::set(ConfigKey("[Channel4]", "play"), 1); ProcessBuffer(); QCoreApplication::processEvents();
+    unload->trigger(); ProcessBuffer(); QCoreApplication::processEvents();
+    // The UI must refuse the request itself, beyond the engine's own guard.
+    EXPECT_EQ(0, ejectRequests);
+    EXPECT_TRUE(fourthDeck->getEngineDeck()->getEngineBuffer()->isTrackLoaded());
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel4]", "play")));
+    menu->close(); QCoreApplication::processEvents();
+
+    ControlObject::set(ConfigKey("[Channel4]", "play"), 0); ProcessBuffer(); QCoreApplication::processEvents();
+    // Treat the fresh action as one eject, outside Mixxx's double-eject window.
+    QTest::qWait(kUnreplaceDelay + 1);
+    menu = openTools(); ASSERT_NE(nullptr, menu);
+    unload = menu->findChild<QAction*>("decklab-unload-4"); ASSERT_NE(nullptr, unload);
+    ASSERT_TRUE(unload->isEnabled()); unload->trigger(); ProcessBuffer(); QCoreApplication::processEvents();
+    EXPECT_EQ(1, ejectRequests);
+    EXPECT_FALSE(fourthDeck->getEngineDeck()->getEngineBuffer()->isTrackLoaded());
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel4]", "track_loaded")));
+    EXPECT_FALSE(fourthDeck->getLoadedTrack());
+    EXPECT_TRUE(m_pMixerDeck1->getEngineDeck()->getEngineBuffer()->isTrackLoaded());
+    menu->close();
 }
 
 TEST_F(NativeDeckLabTest, LayoutRoundTripsKeepModeAndPitchReadoutsInsideEachDeck) {
@@ -585,6 +673,25 @@ TEST_F(NativeDeckLabTest, LayoutRoundTripsKeepModeAndPitchReadoutsInsideEachDeck
             EXPECT_TRUE(modes->text().contains("LOOP")); EXPECT_TRUE(modes->text().contains("KEYLOCK"));
             EXPECT_LE(modes->fontMetrics().horizontalAdvance(modes->text()),modes->width());
             EXPECT_TRUE(panel->rect().contains(QRect(pitch->mapTo(panel.get(),QPoint()),pitch->size())));
+            QList<QLabel*> readouts;
+            for (const auto& name : {"numbers", "key", "remaining"}) {
+                auto* label = panel->findChild<QLabel*>(QStringLiteral("decklab-%1-%2").arg(name).arg(deck));
+                ASSERT_NE(nullptr, label); ASSERT_TRUE(label->isVisible()); readouts.append(label);
+                EXPECT_TRUE(label->parentWidget()->rect().contains(label->geometry()))
+                        << label->objectName().toStdString() << " layout " << index;
+                QTextDocument document; document.setDocumentMargin(0); document.setDefaultFont(label->font());
+                document.setHtml(label->text()); document.adjustSize(); document.setTextWidth(-1);
+                EXPECT_LE(document.idealWidth(), label->contentsRect().width())
+                        << label->objectName().toStdString() << " layout " << index;
+            }
+            for (int first = 0; first < readouts.size(); ++first) {
+                for (int second = first + 1; second < readouts.size(); ++second) {
+                    ASSERT_EQ(readouts[first]->parentWidget(), readouts[second]->parentWidget());
+                    EXPECT_FALSE(readouts[first]->geometry().intersects(readouts[second]->geometry()))
+                            << readouts[first]->objectName().toStdString() << " / "
+                            << readouts[second]->objectName().toStdString() << " layout " << index;
+                }
+            }
         }
     }
     const QString output=qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");

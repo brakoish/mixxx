@@ -401,7 +401,14 @@ QWidget* WDeckLab::buildBrowse() {
         menu->addAction(tr("All tracks"), this, &WDeckLab::openCollection);
         menu->addAction(tr("Preview selected track"), this, [this] { pulse("[PreviewDeck1]", "LoadSelectedTrackAndPlay"); });
         menu->addAction(tr("Stop preview"), this, [this] { pulse("[PreviewDeck1]", "stop"); });
-        const int matchDeck = value(channel(2), "play") && (!value(channel(1), "play") || value(channel(2), "sync_mode") == 2) ? 2 : 1;
+        int matchDeck = displayedDeck(0);
+        bool foundPlaying = false;
+        for (int deck = 1; deck <= 4; ++deck) {
+            if (!value(channel(deck), "track_loaded")) continue;
+            if (value(channel(deck), "play") && (!foundPlaying || value(channel(deck), "sync_leader") > 0)) {
+                matchDeck = deck; foundPlaying = true;
+            } else if (!foundPlaying && !value(channel(matchDeck), "track_loaded")) matchDeck = deck;
+        }
         auto* match = menu->addAction(tr("Match Deck %1").arg(matchDeck), this, [this, deck = matchDeck] {
             const double bpm = value(channel(deck), "bpm");
             if (bpm > 0 && m_search) {
@@ -416,6 +423,14 @@ QWidget* WDeckLab::buildBrowse() {
         match->setEnabled(value(channel(matchDeck), "track_loaded") && value(channel(matchDeck), "bpm") > 0);
         menu->addAction(tr("Clear filter"), this, [this] { if (m_search) m_search->slotClearSearch(); });
         menu->addAction(tr("Track details"), this, [this] { set("[Library]", "show_track_menu", 1); });
+        auto* unload = menu->addMenu(tr("Unload stopped deck"));
+        for (int deck = 1; deck <= 4; ++deck) {
+            auto* action = unload->addAction(tr("Deck %1").arg(deck), this, [this, deck] {
+                if (value(channel(deck), "track_loaded") && !value(channel(deck), "play")) pulse(channel(deck), "eject");
+            });
+            action->setObjectName(QStringLiteral("decklab-unload-%1").arg(deck));
+            action->setEnabled(value(channel(deck), "track_loaded") && !value(channel(deck), "play"));
+        }
         auto* loadSamples = menu->addMenu(tr("Load into sampler"));
         for (int slot = 1; slot <= 16; ++slot) {
             auto* action = loadSamples->addAction(tr("Pad %1").arg(slot), this, [this, slot] {
@@ -792,7 +807,7 @@ QWidget* WDeckLab::buildSettings() {
                 enableRange(); addRow(tr("Tempo range"), range);
             }
         } else if (index == 1) {
-            for (int deck = 1; deck <= 2; ++deck) addRow(tr("Deck %1 headphones").arg(deck), toggle(tr("Cue"), channel(deck), "pfl"));
+            for (int deck = 1; deck <= 4; ++deck) addRow(tr("Deck %1 headphones").arg(deck), toggle(tr("Cue"), channel(deck), "pfl"));
             auto* split = toggle(tr("On"), "[Master]", "headSplit");
             split->setObjectName("decklab-head-split"); split->setAccessibleName(tr("Split cue"));
             addRow(tr("Split cue"), split);
@@ -1187,6 +1202,10 @@ void WDeckLab::refreshDeck(int deck) {
         if (!std::isfinite(pitch) || std::abs(pitch) < .005) pitch = 0;
         const QString pitchText = (pitch >= 0 ? QStringLiteral("+") : QString()) + QString::number(pitch, 'f', 2) + QLatin1Char('%');
         const bool compact = m_page == 0 && m_fourDeckLayout;
+        const bool presentationChanged = m_numbers[deck - 1]->minimumWidth() != (compact ? 125 : 150) ||
+                m_modes[deck - 1]->parentWidget() != (compact ? m_deckSecondary[deck - 1] : m_deckMetrics[deck - 1]) ||
+                m_deckMetrics[deck - 1]->isHidden() != (m_page != 0) ||
+                m_deckSecondary[deck - 1]->isHidden() != !compact;
         m_waveHeaders[deck - 1]->setFixedHeight(m_page == 0 ? (compact ? 66 : 48) : 24);
         m_titles[deck - 1]->setFixedHeight(m_page == 0 ? 20 : 24);
         m_deckMetrics[deck - 1]->setVisible(m_page == 0);
@@ -1215,10 +1234,19 @@ void WDeckLab::refreshDeck(int deck) {
         }
         m_numbers[deck - 1]->setFixedWidth(compact ? 125 : 150);
         m_keys[deck - 1]->setFixedWidth(compact ? 85 : 105);
-        m_remaining[deck - 1]->setFixedWidth(compact ? 134 : 165);
+        m_remaining[deck - 1]->setFixedWidth(compact ? 134 : 160);
         m_pitch[deck - 1]->setFixedWidth(120);
         m_deckSecondary[deck - 1]->setVisible(compact);
         if (m_overviews[deck - 1]) m_overviews[deck - 1]->setVisible(m_page == 0);
+        if (presentationChanged) {
+            // Reparenting plus changed fixed columns must settle together,
+            // including cards that were hidden in the previous presentation.
+            values->invalidate(); utility->invalidate();
+            auto* lines = m_deckMetrics[deck - 1]->parentWidget()->layout();
+            lines->invalidate(); m_waveHeaders[deck - 1]->layout()->invalidate();
+            m_waveHeaders[deck - 1]->layout()->activate(); lines->activate();
+            values->activate(); utility->activate();
+        }
     }
     if (displayedDeck(side) == deck) {
         m_deckIdentifiers[side]->setText(QString::number(deck));
@@ -1457,7 +1485,10 @@ void WDeckLab::setDisplayedDeck(int side, int deck) {
 void WDeckLab::updateLayers() {
     const int mode = m_config->getValue(ConfigKey("[DeckLab]", "DeckLayout"), 0);
     bool upper = false; for (int deck = 3; deck <= 4; ++deck) upper |= value(channel(deck), "track_loaded") > 0 || value(channel(deck), "play") > 0;
-    const bool four = mode == 4 || (mode == 0 && (m_autoDeckLayout == 4 || upper));
+    // Software layers on a two-channel controller do not imply a four-deck UI.
+    // Retain an existing four-deck session across disconnect while upper decks
+    // are loaded, rather than concealing its working decks unexpectedly.
+    const bool four = mode == 4 || (mode == 0 && (m_autoDeckLayout == 4 || (m_fourDeckLayout && upper)));
     if (four != m_fourDeckLayout) { releaseTouchCue(); ++m_interactionEpoch; m_fourDeckLayout = four; }
     m_deckControls->setVisible(m_page == 0 && !four);
     for (auto* frame : m_deckWaveforms) if (frame) m_waveLayout->removeWidget(frame);

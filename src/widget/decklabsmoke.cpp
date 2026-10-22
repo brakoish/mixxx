@@ -8,6 +8,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QStackedWidget>
 #include <QTimer>
 #include <memory>
@@ -30,9 +32,21 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
         if (surface->size() != QSize(800, 480)) failures->append("Surface is not 800x480");
         for (auto* b : surface->findChildren<QPushButton*>()) {
             if (!b->isVisible()) continue;
+            QScrollArea* scroll = nullptr;
+            for (auto* parent = b->parentWidget(); parent; parent = parent->parentWidget())
+                if ((scroll = qobject_cast<QScrollArea*>(parent))) break;
+            if (scroll) {
+                scroll->ensureWidgetVisible(b, 0, 0); QCoreApplication::processEvents();
+                if (!scroll->viewport()->rect().contains(QRect(b->mapTo(scroll->viewport(), QPoint()), b->size())))
+                    failures->append(QString(QStringLiteral("Unreachable scroll control: ") + b->text()));
+            }
             const QRect rect(b->mapTo(surface, QPoint()), b->size());
             if (!surface->rect().contains(rect)) failures->append(QString(QStringLiteral("Clipped button: ") + b->text()));
         }
+        for (auto* scroll : surface->findChildren<QScrollArea*>()) {
+            scroll->verticalScrollBar()->setValue(0); scroll->horizontalScrollBar()->setValue(0);
+        }
+        QCoreApplication::processEvents();
         // The smoke check may navigate/configure views, never start audio.
         for (int deck = 1; deck <= 4; ++deck) if (ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), "play"))) failures->append("Unexpected playing deck");
         for (int slot = 1; slot <= 16; ++slot) if (ControlObject::get(ConfigKey(QStringLiteral("[Sampler%1]").arg(slot), "play"))) failures->append("Unexpected playing sampler");
