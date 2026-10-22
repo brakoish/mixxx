@@ -43,6 +43,25 @@ void clickVisible(QWidget* root, const QString& name, const QString& text = QStr
     }
 }
 
+// Every control on the system pages and in Deck Setup is a 44 px+ target in
+// the real surface style, not just in unit tests.
+void checkSystemTouchTargets(QWidget* surface, QJsonArray& failures) {
+    for (const auto& name : {QStringLiteral("decklab-system-page"), QStringLiteral("decklab-setup-wizard")}) {
+        for (auto* root : surface->findChildren<QWidget*>(name)) {
+            if (!root->isVisible()) {
+                continue;
+            }
+            for (auto* button : root->findChildren<QPushButton*>()) {
+                if (button->isVisible() && button->height() < 44) {
+                    failures.append(QStringLiteral("Small touch target %1 (%2 px)")
+                                            .arg(button->objectName().isEmpty() ? button->text() : button->objectName())
+                                            .arg(button->height()));
+                }
+            }
+        }
+    }
+}
+
 void systemSmokeStep(int index, WDeckLab* surface) {
     using Section = DeckLabSystemPage::Section;
     using Step = DeckLabSetupWizard::Step;
@@ -240,6 +259,7 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
         surface->setFixedSize(large ? QSize(1024, 600) : QSize(800, 480));
         QTimer::singleShot(*step >= kSystemFirst ? 600 : 100, surface, [=] {
             if (!large) check();
+            if (*step >= kSystemFirst) checkSystemTouchTargets(surface, *failures);
             if (*step == 15 || *step == 16) {
                 for (int deck = 1; deck <= 2; ++deck)
                     if (surface->findChild<QPushButton*>(QStringLiteral("decklab-load-%1").arg(deck))->isEnabled())

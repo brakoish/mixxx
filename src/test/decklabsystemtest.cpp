@@ -13,6 +13,7 @@
 #include <QPushButton>
 #include <QElapsedTimer>
 #include <QSlider>
+#include <QComboBox>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
@@ -476,6 +477,9 @@ TEST_F(DeckLabSystemTest, SystemPagesShowServiceStateAndRefuseUnsafeEject) {
         return QList<decklab::LoadedTrack>{{QStringLiteral("[Channel1]"), mount + QStringLiteral("/generated.wav")}};
     });
     QWidget host;
+    // The surface style sets min-height on every button and combo box.
+    host.setStyleSheet(QStringLiteral("QPushButton {min-height:28px;padding:5px 9px;} "
+                                      "QComboBox {min-height:38px;}"));
     host.resize(650, 440);
     auto* page = new DeckLabSystemPage(&host);
     page->resize(650, 440);
@@ -518,7 +522,8 @@ TEST_F(DeckLabSystemTest, SystemPagesShowServiceStateAndRefuseUnsafeEject) {
     ASSERT_TRUE(QTest::qWaitFor([&] { return fake.calls.contains(QStringLiteral("display.set")); }, 2000));
     EXPECT_EQ(5, fake.display.value("brightness").toInt());
     // Every visible control on these pages is a touch target.
-    for (auto section : {DeckLabSystemPage::Section::Home, DeckLabSystemPage::Section::Bluetooth,
+    for (auto section : {DeckLabSystemPage::Section::Home, DeckLabSystemPage::Section::Wifi,
+                 DeckLabSystemPage::Section::Bluetooth, DeckLabSystemPage::Section::Storage,
                  DeckLabSystemPage::Section::Power, DeckLabSystemPage::Section::Maintenance}) {
         page->showSection(section);
         QTest::qWait(50);
@@ -543,6 +548,9 @@ TEST_F(DeckLabSystemTest, FirstRunFlowCompletesWithoutAControllerAndSetsTheFlag)
     ASSERT_TRUE(QTest::qWaitFor([&] { return system.isReady() && !system.devices().isEmpty(); }, 3000));
     EXPECT_FALSE(system.firstRunDone());
     QWidget host;
+    // The surface style sets min-height on every button and combo box.
+    host.setStyleSheet(QStringLiteral("QPushButton {min-height:28px;padding:5px 9px;} "
+                                      "QComboBox {min-height:38px;}"));
     host.resize(800, 480);
     host.show();
     auto* wizard = new DeckLabSetupWizard(&system, &host);
@@ -564,8 +572,11 @@ TEST_F(DeckLabSystemTest, FirstRunFlowCompletesWithoutAControllerAndSetsTheFlag)
             << qPrintable(wizard->chosenMapping());
     next->click();
     EXPECT_EQ(Step::Controller, wizard->step());
-    // Audio policy for a 4-output controller.
+    // Audio policy for a 4-output controller; combo boxes keep touch height.
     wizard->start(Step::Audio);
+    auto* main = wizard->findChild<QComboBox*>(QStringLiteral("decklab-setup-main"));
+    ASSERT_NE(nullptr, main);
+    EXPECT_GE(main->height(), 44);
     EXPECT_EQ((decklab::AudioRoute{QStringLiteral("Controller: USB Audio"), 0}), wizard->chosenAudio().main);
     EXPECT_EQ((decklab::AudioRoute{QStringLiteral("Controller: USB Audio"), 2}), wizard->chosenAudio().headphones);
     // "Skip – set up later" finishes the first run without a controller.

@@ -8,6 +8,7 @@
 #include <QWidget>
 #include <functional>
 
+class QComboBox;
 class QFrame;
 class QLabel;
 class QLineEdit;
@@ -35,9 +36,11 @@ enum class Icon {
     Warning,
     Lock,
     Decks,
+    Restart,
 };
 
-extern const char* const kAccent; // "#d74448"
+extern const char* const kAccent; // "#d74448": alerts and errors only
+extern const char* const kSelect; // "#f2f4f7": selection and focus (white, per brand)
 
 /// Draws a simple line icon in `rect`.
 void paintIcon(QPainter& painter, const QRectF& rect, Icon icon, const QColor& color);
@@ -61,8 +64,29 @@ QFrame* card(QWidget* parent);
 void applyStyle(QWidget* widget);
 QString formatMegabytes(double megabytes);
 
+/// A push button that keeps its touch height. The surface style sheet's
+/// min-height would otherwise replace setFixedHeight() when it polishes.
+class TouchButton : public QPushButton {
+    Q_OBJECT
+  public:
+    TouchButton(const QString& text, QWidget* parent, int height);
+    void setTouchHeight(int height);
+    int touchHeight() const {
+        return m_touchHeight;
+    }
+
+  protected:
+    bool event(QEvent* event) override;
+
+  private:
+    int m_touchHeight;
+};
+
+/// Combo box with the same guaranteed touch height and 44 px popup rows.
+QComboBox* touchCombo(QWidget* parent, const QString& objectName, int height = 48);
+
 /// Large two-line tile with an icon, e.g. "Wi-Fi / Connected · Home".
-class Tile : public QPushButton {
+class Tile : public TouchButton {
     Q_OBJECT
   public:
     Tile(Icon icon, const QString& title, QWidget* parent, const QString& objectName);
@@ -84,7 +108,7 @@ class Tile : public QPushButton {
 
 /// Painted list row for a choice: icon, two lines of text, optional tags and
 /// a trailing chevron or signal bars. Taps behave like a button.
-class Row : public QPushButton {
+class Row : public TouchButton {
     Q_OBJECT
   public:
     Row(const QString& title, const QString& subtitle, QWidget* parent, const QString& objectName = QString());
@@ -95,6 +119,8 @@ class Row : public QPushButton {
     void setChevron(bool chevron);
     void setSelectedRow(bool selected);
     void setTexts(const QString& title, const QString& subtitle);
+    /// Display-only row: full contrast, ignores touches.
+    void setStatic(bool isStatic);
     QString titleText() const {
         return m_title;
     }

@@ -21,7 +21,6 @@
 #include "decklab/decklabsystempages.h"
 #include "decklab/decklabui.h"
 #include "moc_decklabsetupwizard.cpp"
-#include "widget/decklabcombodelegate.h"
 
 using namespace decklab::ui;
 using Step = DeckLabSetupWizard::Step;
@@ -90,7 +89,7 @@ class LayoutChoice : public QPushButton {
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
         const QRectF frame = QRectF(rect()).adjusted(1, 1, -1, -1);
-        painter.setPen(QPen(QColor(isChecked() ? kAccent : (isDown() ? "#5a5a5a" : "#303030")), isChecked() ? 2 : 1));
+        painter.setPen(QPen(QColor(isChecked() ? kSelect : (isDown() ? "#5a5a5a" : "#303030")), isChecked() ? 2 : 1));
         painter.setBrush(QColor(isChecked() ? "#1f1f1f" : isDown() ? "#262626" : "#171717"));
         painter.drawRoundedRect(frame, 4, 4);
         const int columns = m_decks;
@@ -130,8 +129,8 @@ class LayoutChoice : public QPushButton {
             const QString tag = DeckLabSetupWizard::tr("Suggested");
             const double tagWidth = QFontMetrics(tagFont).horizontalAdvance(tag) + 16;
             const QRectF pill(width() - tagWidth - 10, 8, tagWidth, 20);
-            painter.setPen(QColor(kAccent));
-            painter.setBrush(QColor("#2a1516"));
+            painter.setPen(QColor(kSelect));
+            painter.setBrush(QColor("#20242b"));
             painter.drawRoundedRect(pill, 3, 3);
             painter.setPen(Qt::white);
             painter.drawText(pill, Qt::AlignCenter, tag);
@@ -145,15 +144,6 @@ class LayoutChoice : public QPushButton {
     bool m_suggested = false;
 };
 
-QComboBox* touchCombo(QWidget* parent, const QString& name) {
-    auto* combo = new QComboBox(parent);
-    combo->setObjectName(name);
-    combo->setFocusPolicy(Qt::NoFocus);
-    combo->setMinimumHeight(48);
-    combo->setItemDelegate(new DeckLabComboDelegate(combo));
-    combo->setMaxVisibleItems(6);
-    return combo;
-}
 } // namespace
 
 DeckLabSetupWizard::DeckLabSetupWizard(DeckLabSystem* system, QWidget* host)
@@ -374,7 +364,7 @@ void DeckLabSetupWizard::goTo(Step step) {
         QString style;
         if (index == current) {
             style = QStringLiteral("color:#ffffff;font-weight:600;border-bottom:2px solid %1;")
-                            .arg(QLatin1String(kAccent));
+                            .arg(QLatin1String(kSelect));
         } else if (index < current) {
             style = QStringLiteral("color:#bdbdbd;");
         } else {
@@ -575,7 +565,7 @@ void DeckLabSetupWizard::buildWelcome(QWidget* page) {
     for (const auto& step : steps) {
         auto* row = new Row(step.second, QString(), list);
         row->setRowIcon(step.first);
-        row->setEnabled(false);
+        row->setStatic(true);
         listLayout->addWidget(row);
     }
     layout->addWidget(list);
@@ -921,7 +911,7 @@ void DeckLabSetupWizard::buildAudio(QWidget* page) {
         panel->setLayout(row);
         auto* label = new Row(name, QString(), panel);
         label->setRowIcon(icon);
-        label->setEnabled(false);
+        label->setStatic(true);
         label->setFixedWidth(170);
         row->addWidget(label);
         auto* combo = touchCombo(panel, objectName);
@@ -1118,7 +1108,7 @@ void DeckLabSetupWizard::renderDone() {
         auto* row = new Row(heading, detail, m_summary, QStringLiteral("decklab-setup-summary"));
         row->setRowIcon(ok ? icon : Icon::Warning);
         row->setTags(ok ? QStringList{tr("Done")} : QStringList{tr("Skipped")});
-        row->setEnabled(false);
+        row->setStatic(true);
         m_summaryLayout->addWidget(row);
     };
     if (info && m_mappingApplied) {

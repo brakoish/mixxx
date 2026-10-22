@@ -31,17 +31,16 @@ enum class BannerKind {
 
 // Compact pill over the top of the surface. Informational banners pass
 // touches through to the controls beneath; only actionable ones take taps.
-class Banner : public QPushButton {
+class Banner : public TouchButton {
   public:
     Banner(BannerKind kind, Icon icon, bool actionable, QWidget* parent, const QString& name)
-            : QPushButton(parent),
+            : TouchButton(QString(), parent, 44),
               m_kind(kind),
               m_icon(icon),
               m_actionable(actionable) {
         setObjectName(name);
         setFocusPolicy(Qt::NoFocus);
         setAttribute(Qt::WA_TransparentForMouseEvents, !actionable);
-        setFixedHeight(40);
         hide();
     }
     void setMessage(const QString& text) {
@@ -274,7 +273,7 @@ void DeckLabSystemUi::updateAudioBanner() {
     const bool working = m_outputConfigured && m_soundStatus->get() == 2;
     // Browse needs its full height for search; Settings → Setup has the
     // same action inline. Everywhere else the banner stays until fixed.
-    const bool show = m_system && !working && page != 1 && page != 5 && !m_wizard;
+    const bool show = m_system && !working && page != 1 && page != 5 && !(m_wizard && m_wizard->isVisible());
     m_audioBanner->setVisible(show);
     layoutBanners();
 }
@@ -286,7 +285,7 @@ void DeckLabSystemUi::layoutBanners() {
     const QString thermal = m_system ? m_system->thermalWarning() : QString();
     asBanner(m_thermalBanner)->setMessage(thermal);
     m_thermalBanner->setVisible(!thermal.isEmpty());
-    if (m_wizard) {
+    if (m_wizard && m_wizard->isVisible()) {
         m_audioBanner->hide();
         m_offerBanner->hide();
     }
@@ -333,6 +332,7 @@ DeckLabSetupWizard* DeckLabSystemUi::openWizard(int step, const QString& control
     if (!m_wizard) {
         m_wizard = new DeckLabSetupWizard(m_system, m_surface);
         connect(m_wizard.data(), &DeckLabSetupWizard::finished, this, [this](bool) {
+            m_wizard = nullptr;
             QTimer::singleShot(0, this, [this] {
                 updateAudioBanner();
                 updateSetupPanel();

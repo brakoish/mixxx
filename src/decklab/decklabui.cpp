@@ -3,6 +3,7 @@
 
 #include <QAbstractItemView>
 #include <QBoxLayout>
+#include <QComboBox>
 #include <QCoreApplication>
 #include <QEvent>
 #include <QFrame>
@@ -18,20 +19,22 @@
 #include <cmath>
 
 #include "moc_decklabui.cpp"
+#include "widget/decklabcombodelegate.h"
 
 namespace decklab::ui {
 
 const char* const kAccent = "#d74448";
+const char* const kSelect = "#f2f4f7";
 
 namespace {
 const QString kExtraStyle = QStringLiteral(R"(
- WDeckLab QPushButton[primary="true"] {background:#2a1516;border:1px solid #d74448;color:#ffffff;font-weight:600;}
- WDeckLab QPushButton[primary="true"]:pressed {background:#40191b;}
- WDeckLab QPushButton[primary="true"]:disabled {background:#1a1a1a;border-color:#3b2b2c;color:#6f6f6f;}
+ WDeckLab QPushButton[primary="true"] {background:#f2f4f7;border:1px solid #f2f4f7;color:#0d0f12;font-weight:600;}
+ WDeckLab QPushButton[primary="true"]:pressed {background:#c9ced6;}
+ WDeckLab QPushButton[primary="true"]:disabled {background:#1c1f24;border-color:#2c313a;color:#6f6f6f;}
  WDeckLab QPushButton[quiet="true"] {background:transparent;border:0;color:#bbbbbb;font-weight:600;}
  WDeckLab QPushButton[quiet="true"]:pressed {color:#ffffff;}
  WDeckLab QPushButton[key="true"] {min-height:0;padding:0;border-radius:0;font-size:15px;}
- WDeckLab QPushButton[key="true"]:checked {background:#303030;border-color:#d74448;}
+ WDeckLab QPushButton[key="true"]:checked {background:#20242b;border-color:#f2f4f7;}
  WDeckLab QLabel[role="title"] {font-size:17px;font-weight:600;color:#f4f4f4;}
  WDeckLab QLabel[role="muted"] {font-size:12px;color:#9c9c9c;}
  WDeckLab QLabel[role="body"] {font-size:13px;color:#dddddd;}
@@ -39,12 +42,14 @@ const QString kExtraStyle = QStringLiteral(R"(
  WDeckLab QLabel[role="value"] {font-size:13px;color:#ffffff;font-weight:600;}
  WDeckLab QFrame[card="true"] {background:#171717;border:1px solid #2c2c2c;border-radius:3px;}
  WDeckLab QFrame[card="true"] QLabel {background:transparent;border:0;}
- WDeckLab QFrame[warning="true"] {background:#221516;border:1px solid #6b2d30;border-radius:3px;}
- WDeckLab QFrame[warning="true"] QLabel {background:transparent;border:0;color:#ffd0d1;}
- WDeckLab QLineEdit {background:#141414;border:1px solid #555555;border-radius:2px;min-height:42px;padding:0 10px;font-size:16px;color:#ffffff;selection-background-color:#d74448;}
- WDeckLab QLineEdit:focus {border-color:#d74448;}
+ WDeckLab QFrame[warning="true"] {background:#2a2312;border:1px solid #a07a22;border-radius:3px;}
+ WDeckLab QFrame[warning="true"] QLabel {background:transparent;border:0;color:#ffe2a8;}
+ WDeckLab QScrollBar::add-line:vertical, WDeckLab QScrollBar::sub-line:vertical {height:0px;border:0;}
+ WDeckLab QScrollBar::add-line:horizontal, WDeckLab QScrollBar::sub-line:horizontal {width:0px;border:0;}
+ WDeckLab QLineEdit {background:#141414;border:1px solid #555555;border-radius:2px;min-height:42px;padding:0 10px;font-size:16px;color:#ffffff;selection-background-color:#4a5160;}
+ WDeckLab QLineEdit:focus {border-color:#f2f4f7;}
  WDeckLab QSlider::groove:horizontal {height:10px;background:#333333;border-radius:3px;}
- WDeckLab QSlider::sub-page:horizontal {background:#d74448;border-radius:3px;}
+ WDeckLab QSlider::sub-page:horizontal {background:#f2f4f7;border-radius:3px;}
  WDeckLab QSlider::handle:horizontal {background:#eeeeee;border:1px solid #777777;width:34px;margin:-16px 0;border-radius:3px;}
  )");
 
@@ -276,6 +281,18 @@ void paintIcon(QPainter& painter, const QRectF& area, Icon icon, const QColor& c
         strokePath(painter, path, color, w);
         break;
     }
+    case Icon::Restart: {
+        QRectF arc(at(0.18, 0.18), at(0.82, 0.82));
+        path.arcMoveTo(arc, 90);
+        path.arcTo(arc, 90, -300);
+        const QPointF tip = at(0.5, 0.18);
+        path.moveTo(tip);
+        path.lineTo(tip + QPointF(-size * 0.14, -size * 0.1));
+        path.moveTo(tip);
+        path.lineTo(tip + QPointF(-size * 0.12, size * 0.13));
+        strokePath(painter, path, color, w);
+        break;
+    }
     case Icon::Decks:
         path.addRoundedRect(QRectF(at(0.06, 0.22), at(0.46, 0.78)), w, w);
         path.addRoundedRect(QRectF(at(0.54, 0.22), at(0.94, 0.78)), w, w);
@@ -303,14 +320,66 @@ void paintSignalBars(QPainter& painter, const QRectF& rect, int percent, const Q
     painter.restore();
 }
 
+TouchButton::TouchButton(const QString& text, QWidget* parent, int height)
+        : QPushButton(text, parent),
+          m_touchHeight(height) {
+    setFocusPolicy(Qt::NoFocus);
+    setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    setFixedHeight(height);
+}
+
+void TouchButton::setTouchHeight(int height) {
+    m_touchHeight = height;
+    setFixedHeight(height);
+}
+
+bool TouchButton::event(QEvent* event) {
+    const bool handled = QPushButton::event(event);
+    // Style sheets apply min-height while polishing: restore the target.
+    if (m_touchHeight > 0 && (event->type() == QEvent::Polish || event->type() == QEvent::StyleChange)) {
+        setMinimumHeight(m_touchHeight);
+        setMaximumHeight(m_touchHeight);
+    }
+    return handled;
+}
+
+namespace {
+class TouchComboBox : public QComboBox {
+  public:
+    TouchComboBox(QWidget* parent, int height)
+            : QComboBox(parent),
+              m_touchHeight(height) {
+        setFixedHeight(height);
+    }
+
+  protected:
+    bool event(QEvent* event) override {
+        const bool handled = QComboBox::event(event);
+        if (event->type() == QEvent::Polish || event->type() == QEvent::StyleChange) {
+            setMinimumHeight(m_touchHeight);
+            setMaximumHeight(m_touchHeight);
+        }
+        return handled;
+    }
+
+  private:
+    int m_touchHeight;
+};
+} // namespace
+
+QComboBox* touchCombo(QWidget* parent, const QString& objectName, int height) {
+    auto* combo = new TouchComboBox(parent, height);
+    combo->setObjectName(objectName);
+    combo->setFocusPolicy(Qt::NoFocus);
+    combo->setItemDelegate(new DeckLabComboDelegate(combo));
+    combo->setMaxVisibleItems(6);
+    return combo;
+}
+
 QPushButton* button(const QString& text, QWidget* parent, const QString& objectName, int height) {
-    auto* result = new QPushButton(text, parent);
+    auto* result = new TouchButton(text, parent, height);
     result->setObjectName(objectName);
-    result->setFocusPolicy(Qt::NoFocus);
     result->setAccessibleName(text);
-    result->setMinimumHeight(height);
-    result->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    result->setFixedHeight(height);
     return result;
 }
 
@@ -384,13 +453,11 @@ QString formatMegabytes(double megabytes) {
 }
 
 Tile::Tile(Icon icon, const QString& title, QWidget* parent, const QString& objectName)
-        : QPushButton(title, parent),
+        : TouchButton(title, parent, 76),
           m_icon(icon),
           m_title(title) {
     setObjectName(objectName);
-    setFocusPolicy(Qt::NoFocus);
     setAccessibleName(title);
-    setFixedHeight(76);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 }
 
@@ -443,14 +510,16 @@ void Tile::paintEvent(QPaintEvent*) {
 }
 
 Row::Row(const QString& title, const QString& subtitle, QWidget* parent, const QString& objectName)
-        : QPushButton(title, parent),
+        : TouchButton(title, parent, subtitle.isEmpty() ? 48 : 56),
           m_title(title),
           m_subtitle(subtitle) {
     setObjectName(objectName);
-    setFocusPolicy(Qt::NoFocus);
     setAccessibleName(title);
-    setFixedHeight(subtitle.isEmpty() ? 48 : 56);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+}
+
+void Row::setStatic(bool isStatic) {
+    setAttribute(Qt::WA_TransparentForMouseEvents, isStatic);
 }
 
 void Row::setRowIcon(Icon icon) {
@@ -483,17 +552,17 @@ void Row::setTexts(const QString& title, const QString& subtitle) {
     m_subtitle = subtitle;
     setText(title);
     setAccessibleName(title);
-    setFixedHeight(subtitle.isEmpty() ? 48 : 56);
+    setTouchHeight(subtitle.isEmpty() ? 48 : 56);
     update();
 }
 
 void Row::paintEvent(QPaintEvent*) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-    painter.fillRect(rect(), QColor(isDown() ? "#272727" : m_selected ? "#222222" : "#171717"));
+    painter.fillRect(rect(), QColor(isDown() ? "#272727" : m_selected ? "#20242b" : "#171717"));
     painter.fillRect(QRect(0, height() - 1, width(), 1), QColor("#2a2a2a"));
     if (m_selected) {
-        painter.fillRect(QRect(0, 0, 3, height()), QColor(kAccent));
+        painter.fillRect(QRect(0, 0, 3, height()), QColor(kSelect));
     }
     int left = 14;
     if (m_hasIcon) {
@@ -531,8 +600,8 @@ void Row::paintEvent(QPaintEvent*) {
         }
         const QRectF pill(right - tagWidth, (height() - 20) / 2.0, tagWidth, 20);
         const bool strong = index == 0;
-        painter.setPen(QColor(strong ? kAccent : "#3f3f3f"));
-        painter.setBrush(QColor(strong ? "#2a1516" : "#222222"));
+        painter.setPen(QColor(strong ? kSelect : "#3f3f3f"));
+        painter.setBrush(QColor(strong ? "#20242b" : "#222222"));
         painter.drawRoundedRect(pill, 3, 3);
         painter.setPen(QColor(strong ? "#ffffff" : "#c8c8c8"));
         painter.drawText(pill, Qt::AlignCenter, tag);

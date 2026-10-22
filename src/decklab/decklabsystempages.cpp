@@ -900,7 +900,7 @@ class TimePage : public SectionPage {
         m_layout->addWidget(m_zoneRow);
         m_ntpRow = new Row(tr("Internet time"), QString(), m_content, QStringLiteral("decklab-time-ntp"));
         m_ntpRow->setRowIcon(Icon::Wifi);
-        m_ntpRow->setEnabled(false);
+        m_ntpRow->setStatic(true);
         m_layout->addWidget(m_ntpRow);
         m_layout->addStretch(1);
         m_tick.setInterval(1000);
@@ -1191,7 +1191,7 @@ class StoragePage : public SectionPage {
                     panel,
                     QStringLiteral("decklab-drive-row"));
             row->setRowIcon(Icon::Usb);
-            row->setEnabled(false);
+            row->setStatic(true);
             QStringList tags;
             if (recordingHere) {
                 tags.append(tr("Recordings"));
@@ -1255,7 +1255,7 @@ class PowerPage : public SectionPage {
   public:
     explicit PowerPage(DeckLabSystemPage* owner)
             : SectionPage(owner, Section::Power, tr("Power")) {
-        m_restart = addPowerAction(Icon::Decks, tr("Restart Deck Lab"),
+        m_restart = addPowerAction(Icon::Restart, tr("Restart Deck Lab"),
                 tr("Reload the DJ software. Takes about 15 seconds."), QStringLiteral("decklab-power-restart"),
                 [this] {
                     ask(tr("Restart Deck Lab?"), tr("The DJ software closes and opens again. Your settings are saved."),
