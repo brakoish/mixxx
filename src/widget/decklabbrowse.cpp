@@ -185,7 +185,7 @@ void paintChip(QPainter& painter,
     painter.setPen(QPen(tone.isValid() ? tone : colors::edge, tone.isValid() ? 1.5 : 1));
     painter.setBrush(fill);
     painter.drawRoundedRect(frame, 3, 3);
-    const QFont valueFont = numberFont(base, box.height() >= 48 ? 20 : 17);
+    const QFont valueFont = numberFont(base, box.height() >= 48 ? 18 : 16);
     const QFont captionFont = labelFont(base);
     const QFontMetrics valueMetrics(valueFont);
     const QFontMetrics captionMetrics(captionFont);
@@ -896,14 +896,15 @@ QString DeckLabTrackCard::matchSummary() const {
     if (m_itemMode || !reference.active()) {
         return {};
     }
+    // The reference deck is named on the Match button; keep this short.
     QStringList parts;
     const HarmonicMatch harmonic = harmonicMatch(m_key, reference.key);
     if (harmonic == HarmonicMatch::Same) {
-        parts << tr("same key");
+        parts << tr("Same key");
     } else if (harmonic == HarmonicMatch::Relative) {
-        parts << tr("relative key");
+        parts << tr("Relative key");
     } else if (harmonic == HarmonicMatch::Adjacent) {
-        parts << tr("key ±1");
+        parts << tr("Key ±1");
     }
     const double difference = tempoDifferencePercent(m_bpm, reference.bpm);
     if (std::isfinite(difference)) {
@@ -913,7 +914,7 @@ QString DeckLabTrackCard::matchSummary() const {
     if (parts.isEmpty()) {
         return {};
     }
-    return tr("vs Deck %1 · %2").arg(reference.deck).arg(parts.join(QStringLiteral(" · ")));
+    return parts.join(QStringLiteral(" · "));
 }
 
 void DeckLabTrackCard::requestCover() {

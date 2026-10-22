@@ -158,8 +158,6 @@ class DeckLabBpmDelegate final : public DeckLabCellDelegate {
         if (match.tempo) {
             if (!selected) {
                 painter->fillRect(option.rect.adjusted(3, 8, -3, -8), decklab::colors::raise);
-                painter->fillRect(QRect(option.rect.right() - 4, option.rect.top() + 8, 2, option.rect.height() - 16),
-                        decklab::colors::tempoMatch);
             }
             ink = decklab::colors::tempoMatch;
         }
