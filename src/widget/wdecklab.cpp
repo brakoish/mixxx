@@ -1905,7 +1905,7 @@ QWidget* WDeckLab::buildSettings() {
             });
             addRow(tr("Deck layout"), layout);
             // Stems workstream: play stem files as stems or as a normal track.
-            if (auto* stems = DeckLabStemPads::createPlaybackSetting(m_config, content)) addRow(tr("Stem tracks"), stems);
+            if (auto* stems = DeckLabStemPads::createPlaybackSetting(m_config, content)) rows->addWidget(stems);
             for (int deck = 1; deck <= 4; ++deck) {
                 auto* title = new QLabel(tr("DECK %1").arg(deck), content);
                 title->setProperty("muted", true); rows->addWidget(title);

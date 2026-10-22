@@ -280,11 +280,23 @@ bool DeckLabStemPads::rowWanted(const std::array<DeckLabStemPads*, 4>& pads,
 
 QWidget* DeckLabStemPads::createPlaybackSetting(UserSettingsPointer config, QWidget* parent) {
 #ifdef __STEM__
+    // One full settings row: caption on the left (top-aligned with the
+    // choice, like the other rows), the choice and a one-line explanation on
+    // the right. Touch screens show no tool tips.
     auto* setting = new QWidget(parent);
     setting->setObjectName(QStringLiteral("decklab-stem-playback-setting"));
-    auto* rows = new QVBoxLayout(setting);
-    rows->setContentsMargins(0, 0, 0, 0);
-    rows->setSpacing(4);
+    auto* line = new QHBoxLayout(setting);
+    line->setContentsMargins(0, 0, 0, 0);
+    line->setSpacing(12);
+    auto* caption = new QLabel(tr("Stem tracks"), setting);
+    caption->setObjectName(QStringLiteral("decklab-stem-playback-caption"));
+    caption->setMinimumWidth(160);
+    caption->setFixedHeight(kPadHeight);
+    caption->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    line->addWidget(caption, 1, Qt::AlignTop);
+    auto* choice = new QVBoxLayout();
+    choice->setContentsMargins(0, 0, 0, 0);
+    choice->setSpacing(4);
     auto* combo = new QComboBox(setting);
     combo->setObjectName(QStringLiteral("decklab-stem-playback"));
     combo->addItem(tr("Play as stems"), static_cast<int>(decklab::StemPlayback::Stems));
@@ -301,17 +313,16 @@ QWidget* DeckLabStemPads::createPlaybackSetting(UserSettingsPointer config, QWid
                 config->setValue(decklab::stemPlaybackConfigKey(),
                         combo->itemData(index).toInt());
             });
-    rows->addWidget(combo);
-    // Touch screens show no tool tips: say what it does under the choice.
-    auto* hint = new QLabel(tr("Applies to the next stem track you load. As a normal track the four "
-                               "stems play as one stereo mix, with no stem pads and less "
-                               "processing per deck."),
+    choice->addWidget(combo);
+    auto* hint = new QLabel(tr("From the next load. As a normal track the stems play as one "
+                               "stereo mix: no stem pads, lighter on the processor."),
             setting);
     hint->setObjectName(QStringLiteral("decklab-stem-playback-hint"));
     hint->setWordWrap(true);
     hint->setStyleSheet(QStringLiteral("font-size:15px;font-weight:500;color:#9AA3AF;"));
     combo->setAccessibleDescription(hint->text());
-    rows->addWidget(hint);
+    choice->addWidget(hint);
+    line->addLayout(choice, 1);
     return setting;
 #else
     Q_UNUSED(config);

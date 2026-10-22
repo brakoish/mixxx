@@ -265,8 +265,10 @@ class DeckLabStemsTest : public BaseSignalPathTest {
                 &BaseTrackPlayer::newTrackLoaded,
                 [&loaded](TrackPointer newTrack) { loaded = newTrack; });
         loadTrack(deckPlayer(deck), track);
-        for (int i = 0; i < 10000 && loaded != track; ++i) {
-            QCoreApplication::processEvents(QEventLoop::WaitForMoreEvents, 1);
+        QElapsedTimer waited;
+        waited.start();
+        while (loaded != track && waited.elapsed() < 10000) {
+            QTest::qWait(5);
         }
         QObject::disconnect(connection);
         EXPECT_EQ(track, loaded) << "timed out loading the stem fixture";
@@ -322,8 +324,26 @@ class DeckLabStemsTest : public BaseSignalPathTest {
         }
         return buffer.empty() ? 0 : std::sqrt(sum / buffer.size());
     }
-    // RMS of the main mix after a few buffers from the start of deck 1's
-    // track (its first cache chunk is read when the track loads).
+    // Plays deck 1 from the start until audio arrives. The caching reader
+    // decodes on its own thread, so the first buffers after a load or seek
+    // can be silent; the engine keeps asking, as it does on the device.
+    double rmsWhenFlowing() {
+        m_pChannel1->getEngineBuffer()->queueNewPlaypos(
+                mixxx::audio::FramePos{0}, EngineBuffer::SEEK_STANDARD);
+        double rms = 0;
+        QElapsedTimer waited;
+        waited.start();
+        for (int n = 0; waited.elapsed() < 5000; ++n) {
+            ProcessBuffer();
+            rms = mainRms();
+            if (n >= 4 && rms > 1e-3) {
+                break;
+            }
+            QTest::qWait(2);
+        }
+        return rms;
+    }
+    // RMS after a few buffers from the start, once the start is cached.
     double rmsAfter(int buffers) {
         m_pChannel1->getEngineBuffer()->queueNewPlaypos(
                 mixxx::audio::FramePos{0}, EngineBuffer::SEEK_STANDARD);
@@ -622,17 +642,17 @@ TEST_F(DeckLabStemsTest, StemFileShowsManifestNamesAndColoursAndMutesTheEngine) 
     // The pads drive the engine's own stem mix: all four muted is silence,
     // a double tap brings the mix back.
     ControlObject::set(ConfigKey("[Channel1]", "play"), 1);
-    const double playing = rmsAfter(4);
-    EXPECT_GT(playing, 1e-3);
+    const double playing = rmsWhenFlowing();
+    ASSERT_GT(playing, 1e-3) << "the stem mix plays";
     for (int stem = 1; stem <= 4; ++stem) {
         tap(pad(1, stem));
     }
     EXPECT_EQ((std::array<double, 4>{1, 1, 1, 1}), mutes(1));
-    EXPECT_LT(rmsAfter(4), 1e-5);
+    EXPECT_LT(rmsAfter(6), 1e-5) << "all four stems muted";
     tap(pad(1, 1));
     tap(pad(1, 1));
     EXPECT_EQ((std::array<double, 4>{0, 0, 0, 0}), mutes(1));
-    EXPECT_GT(rmsAfter(4), 1e-3);
+    EXPECT_GT(rmsAfter(6), 1e-3) << "a double tap brings the mix back";
     ControlObject::set(ConfigKey("[Channel1]", "play"), 0);
     ProcessBuffer();
     settle();
@@ -671,6 +691,11 @@ TEST_F(DeckLabStemsTest, StemTracksCanPlayAsANormalTrack) {
     auto* hint = panel->findChild<QLabel*>("decklab-stem-playback-hint");
     ASSERT_NE(nullptr, hint);
     EXPECT_GE(QFontInfo(hint->font()).pixelSize(), 14);
+    auto* caption = panel->findChild<QLabel*>("decklab-stem-playback-caption");
+    ASSERT_NE(nullptr, caption);
+    EXPECT_EQ(caption->mapTo(panel.get(), QPoint()).y() + caption->height() / 2,
+            combo->mapTo(panel.get(), QPoint()).y() + combo->height() / 2)
+            << "the caption lines up with the choice, not the hint";
     capture(QStringLiteral("stems-settings-deck.png"));
     QMetaObject::invokeMethod(combo, "activated", Q_ARG(int, 1));
     EXPECT_EQ(decklab::StemPlayback::StereoMix, decklab::stemPlayback(config()));
@@ -688,7 +713,7 @@ TEST_F(DeckLabStemsTest, StemTracksCanPlayAsANormalTrack) {
     EXPECT_FALSE(rowPads(1)->isVisible());
     EXPECT_EQ(104 + 44 + 48 + 48, deckRow()->height());
     ControlObject::set(ConfigKey("[Channel1]", "play"), 1);
-    EXPECT_GT(rmsAfter(4), 1e-3) << "the stereo mix plays";
+    EXPECT_GT(rmsWhenFlowing(), 1e-3) << "the stereo mix plays";
     ControlObject::set(ConfigKey("[Channel1]", "play"), 0);
     ProcessBuffer();
     // An explicit request (Mixxx's single-stem load) is kept as asked.
