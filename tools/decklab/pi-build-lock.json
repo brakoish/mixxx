@@ -78,7 +78,7 @@
     "src/skin/legacy/legacyskinparser.cpp": "254c50570df8b039f87bd16c2d178a20f31858df960f15a2c6c267a9d9041f7f",
     "src/skin/legacy/legacyskinparser.h": "1e8e11e088f90d8002364f9aaf9319fd7efcb1f89a78cb5db404bd055bf4b98d",
     "src/soundio/soundmanager.cpp": "1958fb8e472e772ab631aa38abe999e854fa258324d49190286896120adbf9f1",
-    "src/test/decklabtest.cpp": "e39c4278f7e949531c6293c87c507df074d81fdbb47b14be632ce51476e94c9c",
+    "src/test/decklabtest.cpp": "df68c700bb48732b2f076d9ead787094fa7de9790c6898975de87331e68752b3",
     "src/test/enginebuffertest.cpp": "660b2189396c9fd611d350350fa9745c3cea11701291d63ef3fef5b4b3dc05f4",
     "src/test/waveformmarklabeltest.cpp": "f4c2d07d5f191ca9b99a3e8dc903c9ea5d84b9bf866995ba569153a3f872a6b5",
     "src/waveform/renderers/allshader/waveformrendererpreroll.cpp": "d966b850e37735d39e36de1ac18c0fca97f94723d43610c9ce40913274f80b3f",
@@ -100,8 +100,8 @@
     "src/widget/wtracktableview.cpp": "ef3dd56a8e69d7f13322b153b7869b419ea6b81f54261a3cd89561d7756a4c27",
     "src/widget/wtracktableview.h": "7beedabaf6c3591bdc0395a5fbec5ceafbe0373b6bdfb5f01a298c455795e196",
     "src/widget/wtracktableviewheader.cpp": "f3df34a95f92674a17d51c18de32e354b9174e1e717a1f51339237fd883398b5",
-    "tools/decklab/build_pi.py": "a389df3124cf85138d96418f81f4a97834aed2b8a0432e916ce295d7f9077e2c",
-    "tools/decklab/test_build_pi.py": "9f9341933096334304456b1458e41e0eaa544e7e3a1cd3d6bd5f9698a9068bf3",
+    "tools/decklab/build_pi.py": "2f309c861ad3bf0d7fcb238d962fcd06e6f272cb9bc3ff0e3b3dde3ea28e6f82",
+    "tools/decklab/test_build_pi.py": "8002cee0c9144f1a6aa4c8ad07f3abc7c0db84aeeb2e2c70f6b8e88cb5bf1671",
     "tools/decklab/test_dsp.py": "a3984f1da819c3820d4b1c4a9d79c90c4b2e5d4c07583427f22c0059acb05367"
   },
   "input_hash_format": "sha256 of UTF-8 source bytes with CRLF normalized to LF"

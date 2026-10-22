@@ -8,6 +8,21 @@ import build_pi
 
 
 class BuildGuards(unittest.TestCase):
+    def test_diagnostic_run_preserves_original_test_output_and_safety_boundary(self):
+        tree = Path("/scratch/build")
+        original = ["flatpak", "build", "--nodevice=all", "--unshare=network",
+                    "--nosocket=pulseaudio", tree, "/run/build/mixxx/mixxx-test",
+                    "--gtest_filter=NativeDeckLabTest.*", "--gtest_output=xml:/scratch/native-tests.xml"]
+        snapshot = original[:]
+        debug = build_pi.diagnostic_arguments(original, tree, Path("/scratch"))
+        self.assertEqual(original, snapshot)
+        self.assertIn("--gtest_output=xml:" + str(Path("/scratch") / "native-test-backtrace.xml"), debug)
+        self.assertNotIn("--gtest_output=xml:/scratch/native-tests.xml", debug)
+        for option in ("--nodevice=all", "--unshare=network", "--nosocket=pulseaudio",
+                       "--gtest_filter=NativeDeckLabTest.*"):
+            self.assertIn(option, debug)
+        self.assertEqual(debug[debug.index("--args") + 1], "/run/build/mixxx/mixxx-test")
+
     def test_windows_and_linux_checkout_hashes_agree(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

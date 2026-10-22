@@ -118,6 +118,17 @@ def test_summary(path):
             "waveform_edge_regressions_passed": len(edge_labels)}
 
 
+def diagnostic_arguments(prefix, tree, output):
+    # A diagnostic rerun is never acceptance evidence and must not overwrite
+    # the original failing XML with a later successful timing run.
+    boundary = prefix.index(tree)
+    debug = prefix[:boundary] + ["--allow=devel", tree, "gdb", "--batch",
+            "-ex", "set pagination off", "-ex", "run", "-ex", "thread apply all bt",
+            "--args"] + prefix[boundary + 1:]
+    return ["--gtest_output=xml:" + str(output / "native-test-backtrace.xml")
+            if str(arg).startswith("--gtest_output=xml:") else arg for arg in debug]
+
+
 def external_workdir(root, path):
     work = path.expanduser().resolve()
     if work == root.resolve() or work.is_relative_to(root.resolve()):
@@ -197,10 +208,7 @@ def build(work, jobs, lock):
             # Preserve an actionable native stack for crashes. This diagnostic
             # still has no audio devices, desktop sockets or network, and never
             # turns a failed test run into an accepted candidate.
-            boundary = prefix.index(tree)
-            debug = prefix[:boundary] + ["--allow=devel", tree, "gdb", "--batch",
-                    "-ex", "set pagination off", "-ex", "run", "-ex", "thread apply all bt",
-                    "--args"] + prefix[boundary + 1:]
+            debug = diagnostic_arguments(prefix, tree, out)
             with (out / "native-test-backtrace.log").open("w") as trace:
                 try:
                     subprocess.run(list(map(str, debug)), cwd=ROOT, env=env,

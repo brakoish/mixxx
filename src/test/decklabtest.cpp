@@ -471,7 +471,11 @@ TEST_F(NativeDeckLabTest, DecksTransportHasTruthfulStatesAndLargerTargets) {
     sync->click(); QCoreApplication::processEvents();
     EXPECT_TRUE(sync->property("actionFeedback").toBool());
     EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "sync_enabled")));
-    QTest::qWait(700); EXPECT_FALSE(sync->property("actionFeedback").toBool());
+    // The 600ms feedback deadline is repainted by a 100ms UI timer. Wait for
+    // its actual expiry rather than assuming CI dispatches that timer within
+    // the single remaining tick of a fixed 700ms sleep.
+    EXPECT_TRUE(QTest::qWaitFor([sync] { return !sync->property("actionFeedback").toBool(); }, 1500));
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "sync_enabled")));
     EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "play")));
     panel->selectPage(1); QCoreApplication::processEvents();
     EXPECT_EQ(40, panel->findChild<QPushButton*>("decklab-tab-0")->height());
