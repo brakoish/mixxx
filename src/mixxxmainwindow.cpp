@@ -64,6 +64,8 @@
 #include "widget/wglwidget.h"
 #include "widget/wmainmenubar.h"
 #include "widget/wdecklab.h"
+#include "decklab/decklabsignals.h"
+#include "decklab/decklabsystem.h"
 #include "widget/decklabsmoke.h"
 
 #ifdef __VINYLCONTROL__
@@ -1404,6 +1406,19 @@ bool MixxxMainWindow::loadConfiguredSkin() {
                 if (auto current = weakSound.lock())
                     native->setAudioOutputConfigured(!current->getConfig().getOutputs().isEmpty());
             });
+            // One decklabd connection and Deck Setup service for the whole
+            // session; it survives skin reloads and is never required to DJ.
+            auto* system = findChild<DeckLabSystem*>(QString(), Qt::FindDirectChildrenOnly);
+            if (!system) {
+                DeckLabSystem::Services services;
+                services.config = m_pCoreServices->getSettings();
+                services.sound = sound;
+                services.controllers = m_pCoreServices->getControllerManager();
+                services.players = m_pCoreServices->getPlayerManager().get();
+                system = new DeckLabSystem(services, this);
+                system->start();
+            }
+            native->attachSystem(system);
         }
     }
     if (centralWidget() == m_pLaunchImage) {
@@ -1514,7 +1529,13 @@ void MixxxMainWindow::closeEvent(QCloseEvent *event) {
     // WARNING: We can receive a CloseEvent while only partially
     // initialized. This is because we call QApplication::processEvents to
     // render LaunchImage progress in the constructor.
-    if (!confirmExit()) {
+    if (DeckLabTerminationSignals::requested()) {
+        // SIGTERM/SIGINT (service stop/restart, OS shutdown): close normally,
+        // saving settings, without asking anyone.
+        if (m_pPrefDlg && m_pPrefDlg->isVisible()) {
+            m_pPrefDlg->close();
+        }
+    } else if (!confirmExit()) {
         event->ignore();
         return;
     }

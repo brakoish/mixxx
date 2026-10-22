@@ -64,6 +64,23 @@ def audit_sources(manifest):
     visit(manifest["modules"])
 
 
+# Deck Lab system integration (decklabd client, Deck Setup, first run).
+SYSTEM_SETUP_TESTS = frozenset({
+    "ClientHandshakesSubscribesAndParsesSplitAndCoalescedFrames",
+    "ClientDropsOverlongLinesAndReconnectsWithBackoff",
+    "ClientTimesOutUnansweredRequestsAndFailsFastWhenOffline",
+    "SocketPathComesFromEnvironmentThenRuntimeDirectory",
+    "MidiPortNamesMatchTheirBundledMappings",
+    "HidControllersMatchByProductIdsAndUsbOverridesApply",
+    "AudioPolicyRoutesFourTwoAndNoControllerOutputs",
+    "EjectIsRefusedWhileALoadedTrackLivesOnThatDrive",
+    "ControllerSetupPersistsPerDeviceKeyAcrossRestart",
+    "TerminationSignalBecomesOneGracefulQtRequest",
+    "SystemPagesShowServiceStateAndRefuseUnsafeEject",
+    "FirstRunFlowCompletesWithoutAControllerAndSetsTheFlag",
+})
+
+
 def test_summary(path):
     report = ET.parse(path).getroot()
     cases = report.findall(".//testcase")
@@ -73,6 +90,7 @@ def test_summary(path):
                 and case.get("name") == "PrepareScalersPreservesDeckState"]
     native_ui = {case.get("name") for case in enabled if case.get("classname") == "NativeDeckLabTest"}
     edge_labels = {case.get("name") for case in enabled if case.get("classname") == "WaveformMarkLabelTest"}
+    system_setup = {case.get("name") for case in enabled if case.get("classname") == "DeckLabSystemTest"}
     if (int(report.get("failures", 0)) or int(report.get("errors", 0))
             or len(enabled) < 190 or len(required) != 1
             or not {"FirstBrowsePressDoesNotOpenSource", "SingleTapOpensFolderAndBackRestoresSelection",
@@ -109,6 +127,7 @@ def test_summary(path):
                     "HotcueIdentifiersPreserveNumericDefaultAndSavedLabels", "LetterIdentifiersRequireExplicitSkinOptIn",
                     "CompactMarkerLanesRequireOptInAndPreserveTwoDeckImages",
                     "CompactMarkerOverflowOmitsOnlyLabelAndKeepsExactLine"}.issubset(edge_labels)
+            or not SYSTEM_SETUP_TESTS.issubset(system_setup)
             or any(case.find("skipped") is not None for case in enabled)):
         raise ValueError("Native regression suite incomplete or failed")
     return {"enabled_passed": len(enabled),
@@ -116,7 +135,8 @@ def test_summary(path):
             "failures": int(report.get("failures", 0)),
             "errors": int(report.get("errors", 0)),
             "preparation_regression_passed": True, "native_ui_regressions_passed": len(native_ui),
-            "waveform_edge_regressions_passed": len(edge_labels)}
+            "waveform_edge_regressions_passed": len(edge_labels),
+            "system_setup_regressions_passed": len(system_setup)}
 
 
 def diagnostic_arguments(prefix, tree, output):
@@ -256,7 +276,8 @@ def build(work, jobs, lock):
     with (out / "native-smoke.log").open("w") as log:
         subprocess.run(smoke, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=90)
     smoke_result = json.loads((out / "native-smoke.json").read_text())
-    if smoke_result != {"audio_started": False, "failures": [], "screens": 21, "native_rmx_units_loaded": 2}:
+    # 21 surface captures plus 22 Deck Lab system/first-run captures (two at 1024x600).
+    if smoke_result != {"audio_started": False, "failures": [], "screens": 43, "native_rmx_units_loaded": 2}:
         raise RuntimeError("Native application smoke check failed")
     record = {"source_revision": revision, "upstream_source_revision": lock["upstream_source_revision"],
               "architecture": "aarch64", "flatpak_commits": actual, "tests": summary,

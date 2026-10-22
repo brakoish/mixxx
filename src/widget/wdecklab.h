@@ -18,6 +18,8 @@
 
 class ControlObject;
 class ControlProxy;
+class DeckLabSystem;
+class DeckLabSystemUi;
 class Library;
 class PlayerManagerInterface;
 class EffectsManager;
@@ -55,6 +57,8 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void openCollection();
     void releaseEffects(bool musical = false, bool mute = false);
     void setAudioOutputConfigured(bool configured);
+    /// Deck Lab system integration (decklabd, Deck Setup, System pages).
+    void attachSystem(DeckLabSystem* system);
 
   signals:
     void advancedPreferencesRequested();
@@ -207,6 +211,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     bool m_toolsOnline = false;
     bool m_outputConfigured = false;
     QList<QPushButton*> m_toolButtons;
+    DeckLabSystemUi* m_systemUi = nullptr;
     std::array<DeckLabTempoPresenter, 4> m_tempos{};
     std::array<int, 2> m_layers{1, 2};
     int m_autoDeckLayout = 2;
