@@ -109,11 +109,11 @@ QRect DeckLabStripRenderer::rect(Part part) const {
     const int height = m_size.height();
     // Full-mode value columns scale with the card width so wider screens
     // keep the same proportions as the 400 px design.
-    const int bpmWidth = width * 345 / 1000;
+    const int bpmWidth = width * 370 / 1000;
     const int tempoLeft = 12 + bpmWidth + 4;
-    const int tempoWidth = width * 205 / 1000;
+    const int tempoWidth = width * 190 / 1000;
     const int keyLeft = tempoLeft + tempoWidth + 2;
-    const int keyWidth = width * 150 / 1000;
+    const int keyWidth = width * 140 / 1000;
     const int timeLeft = keyLeft + keyWidth;
     switch (m_mode) {
     case Mode::Full:
@@ -143,22 +143,23 @@ QRect DeckLabStripRenderer::rect(Part part) const {
         switch (part) {
         case Part::Phase:
             return QRect(12, 4, width - 20, 5);
+        // Badge, state and title; big BPM and clock; tempo and key; lamps.
         case Part::Identity:
             return QRect(10, 11, 60, 24);
-        case Part::Captions:
-            return QRect(width - 116, 11, 112, 24);
         case Part::Title:
-            return QRect(10, 36, width - 16, 20);
+            return QRect(72, 11, std::max(0, width - 80), 24);
         case Part::Bpm:
-            return QRect(10, 57, half + 2, 32);
+            return QRect(10, 37, half + 2, 32);
         case Part::Time:
-            return QRect(12 + half, 57, width - 12 - half, 32);
+            return QRect(12 + half, 37, width - 12 - half, 32);
         case Part::Tempo:
-            return QRect(10, 90, 78, height - 90);
+            return QRect(10, 70, 96, 20);
         case Part::Key:
-            return QRect(width - 56, 90, 56, height - 90);
+            return QRect(width - 64, 70, 64, 20);
         case Part::Chips:
-            return QRect(88, 90, std::max(0, width - 56 - 88), height - 90);
+            return QRect(10, 92, width - 18, std::max(0, height - 92));
+        case Part::Captions:
+            return QRect();
         }
         break;
     }
@@ -214,6 +215,7 @@ QRegion DeckLabStripRenderer::setState(const DeckLabStripState& next) {
         add(Part::Captions);
         add(Part::Tempo);
         add(Part::Key);
+        add(Part::Chips);
     }
     if (previous.bpm != next.bpm) {
         add(Part::Bpm);
@@ -365,8 +367,8 @@ void DeckLabStripRenderer::paintTitle(QPainter& painter, const QRect& area, int 
         painter.setFont(artistFont);
         painter.setPen(kSecondary);
         painter.drawText(QPoint(area.left(), baseline),
-                artistMetrics.elidedText(m_mode == Mode::Full ? QCoreApplication::translate("DeckLabDeckStrip", "No track loaded")
-                                                              : QCoreApplication::translate("DeckLabDeckStrip", "Tap to browse"),
+                artistMetrics.elidedText(m_mode != Mode::Compact ? QCoreApplication::translate("DeckLabDeckStrip", "No track loaded")
+                                                                 : QCoreApplication::translate("DeckLabDeckStrip", "Tap to browse"),
                         Qt::ElideRight, area.width()));
         return;
     }
@@ -412,7 +414,7 @@ int DeckLabStripRenderer::paintChip(QPainter& painter, int x, int y, int height,
         const QString& text, bool on, const QColor& lit, bool alignRight) const {
     const QFont chipFont = font(12, QFont::Bold, true);
     const QFontMetrics metrics(chipFont);
-    const int width = metrics.horizontalAdvance(text) + 12;
+    const int width = metrics.horizontalAdvance(text) + (height < 17 ? 8 : 12);
     const QRectF chip(alignRight ? x - width : x, y, width, height);
     QPainterPath path;
     path.addRoundedRect(chip.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3);
@@ -469,13 +471,8 @@ void DeckLabStripRenderer::paint(QPainter& painter, const QRect& dirty, bool pre
         return;
     }
     // Lamps and captions.
-    if (!mini && needs(Part::Captions)) {
-        if (compact) {
-            const QRect area = rect(Part::Captions);
-            int x = area.right();
-            x -= paintChip(painter, x, area.top() + 3, 18, QCoreApplication::translate("DeckLabDeckStrip", "MASTER"), m_state.master, kMaster, true) + 4;
-            paintChip(painter, x, area.top() + 3, 18, QCoreApplication::translate("DeckLabDeckStrip", "SYNC"), m_state.sync, kSync, true);
-        } else {
+    if (!mini && !compact && needs(Part::Captions)) {
+        {
             const QRect area = rect(Part::Captions);
             const QFont captionFont = font(12, QFont::DemiBold, true);
             const QFontMetrics metrics(captionFont);
@@ -527,7 +524,10 @@ void DeckLabStripRenderer::paint(QPainter& painter, const QRect& dirty, bool pre
         const QRect area = rect(Part::Chips);
         if (compact) {
             int x = area.left();
+            // Only lit lamps, in order of importance, as many as fit.
             const QList<std::pair<QString, std::pair<bool, QColor>>> lamps{
+                    {QCoreApplication::translate("DeckLabDeckStrip", "MASTER"), {m_state.master, kMaster}},
+                    {QCoreApplication::translate("DeckLabDeckStrip", "SYNC"), {m_state.sync, kSync}},
                     {QCoreApplication::translate("DeckLabDeckStrip", "HP"), {m_state.pfl, kHeadphones}},
                     {QCoreApplication::translate("DeckLabDeckStrip", "LOOP %1").arg(m_state.loopSize), {m_state.looping, kLoop}},
                     {QCoreApplication::translate("DeckLabDeckStrip", "KEY"), {m_state.keylock, QColor(0xd7, 0x44, 0x48)}},
@@ -553,7 +553,7 @@ void DeckLabStripRenderer::paint(QPainter& painter, const QRect& dirty, bool pre
         }
     }
     // Values.
-    const int valueBaseline = mini ? (m_size.height() + 10) / 2 : compact ? 84 : 81;
+    const int valueBaseline = mini ? (m_size.height() + 10) / 2 : compact ? 63 : 81;
     if (needs(Part::Bpm)) {
         const QRect area = rect(Part::Bpm);
         if (mini) {
@@ -596,6 +596,12 @@ void DeckLabStripRenderer::paint(QPainter& painter, const QRect& dirty, bool pre
             painter.setBrush(m_state.tempoCentered ? kPlay : kLampOff);
             painter.drawEllipse(QRectF(x, baseline - 7, 6, 6));
             painter.setBrush(Qt::NoBrush);
+            const QFont rangeFont = font(12, QFont::DemiBold);
+            if (x + 11 + QFontMetrics(rangeFont).horizontalAdvance(m_state.range) <= area.right()) {
+                painter.setFont(rangeFont);
+                painter.setPen(kSecondary);
+                painter.drawText(QPoint(x + 11, baseline), m_state.range);
+            }
         } else {
             painter.setFont(font(18, QFont::DemiBold));
             painter.setPen(m_state.tempoCentered ? kSecondary : kText);
