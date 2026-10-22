@@ -399,6 +399,8 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
             // checks and do not change the reported screen count.
             timer->stop();
             surface->setFixedSize(800, 480);
+            // The system captures end on the first-run flow; close it so Browse is what gets captured.
+            clickVisible(surface, QStringLiteral("decklab-setup-close"));
             seedDemoLibrary(surface->library(), QDir(config->getSettingsPath()).filePath("decklab-demo-music"));
             const auto press = [surface] { surface->browsePress(); return true; };
             auto captures = std::make_shared<QList<BrowseCapture>>(QList<BrowseCapture>{
