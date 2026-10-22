@@ -312,4 +312,4 @@ print('period_us %.3f  rate_Hz %.5f  vblanks %d' % (per, 1e6 / per, n))
 | Run | Commit | Result |
 |---|---|---|
 | 39869841989 | 91804c028f | **Success.** 331 native tests passed (316 before + 15 `DeckLabVSyncTest`), 0 failures, 4 disabled; smoke check passed (43 screens). |
-| (next) | settle time, Expose timing, this note | (pending) |
+| 39873595712 | ddfa602d95 | **Success.** 332 native tests passed (316 before + 16 `DeckLabVSyncTest`), 0 failures, 4 disabled; smoke check passed (43 screens). This is the candidate for the Pi checks. |
