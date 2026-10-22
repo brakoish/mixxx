@@ -268,8 +268,16 @@ class DeckLabListDelegate : public QStyledItemDelegate {
         CategoryRole,
     };
     explicit DeckLabListDelegate(QObject* parent = nullptr);
+    // Source lists (the native sidebar) supply a glyph per row; every row
+    // opens something, so it gets a chevron. Item roles above are not read.
+    void setGlyphProvider(std::function<decklab::Glyph(const QModelIndex&)> provider) {
+        m_glyphProvider = std::move(provider);
+    }
     void paint(QPainter* painter,
             const QStyleOptionViewItem& option,
             const QModelIndex& index) const override;
     QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override;
+
+  private:
+    std::function<decklab::Glyph(const QModelIndex&)> m_glyphProvider;
 };

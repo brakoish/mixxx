@@ -912,11 +912,11 @@ QWidget* WDeckLab::buildBrowse() {
     heading->addWidget(b.breadcrumb, 1);
     b.match = browseButton(m_browser, tr("Match"), QStringLiteral("decklab-browse-match"),
             tr("Highlight tracks that mix with the playing deck"), decklab::Glyph::None, 116);
-    b.match->setCheckable(true);
-    b.match->setChecked(b.matchEnabled);
-    connect(b.match, &QPushButton::clicked, this, [this](bool checked) {
-        m_browseState->matchEnabled = checked;
-        m_config->setValue(ConfigKey("[DeckLab]", "BrowseMatch"), checked ? 1 : 0);
+    connect(b.match, &QPushButton::clicked, this, [this] {
+        // Toggle; the button's tone and state line show on/off and the deck.
+        auto& state = *m_browseState;
+        state.matchEnabled = !state.matchEnabled;
+        m_config->setValue(ConfigKey("[DeckLab]", "BrowseMatch"), state.matchEnabled ? 1 : 0);
         refreshMatchReference();
     });
     heading->addWidget(b.match);
@@ -1851,6 +1851,9 @@ void WDeckLab::bindBrowser(WSearchLineEdit* search, WLibrarySidebar* sidebar, WL
     sidebar->setRootIsDecorated(false);
     sidebar->setItemsExpandable(false);
     sidebar->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    auto* sourceRows = new DeckLabListDelegate(sidebar);
+    sourceRows->setGlyphProvider(sourceGlyph);
+    sidebar->setItemDelegate(sourceRows);
     new DeckLabTouchScrollGuard(sidebar->viewport(), sidebar->viewport());
     sidebar->installEventFilter(this);
     sidebar->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -1930,8 +1933,12 @@ void WDeckLab::showSources() {
     if (b.list == DeckLabList::Sources) {
         m_sidebar->setFocusProxy(nullptr);
         b.listStack->setCurrentWidget(m_sidebar);
+        // WLibrarySidebar clears its current index when it gains focus; keep
+        // the highlighted source (for example after Back from categories).
+        const QPersistentModelIndex highlighted(m_sidebar->currentIndex());
         set("[Library]", "focused_widget", 2);
         if (m_page == 1) m_sidebar->setFocus(Qt::OtherFocusReason);
+        if (highlighted.isValid() && m_sidebar->currentIndex() != highlighted) m_sidebar->setCurrentIndex(highlighted);
         if (!m_sidebar->currentIndex().isValid() && m_sidebar->model()->rowCount(m_sidebar->rootIndex())) {
             m_sidebar->setCurrentIndex(m_sidebar->model()->index(0, 0, m_sidebar->rootIndex()));
         }
@@ -2343,6 +2350,7 @@ void WDeckLab::refreshBrowseCard() {
     if (isCollectionSource(index)) subtitle = tr("All music on this unit · by artist, album, BPM or key");
     else if (isRekordboxDevice(index)) subtitle = rekordboxImported(index) ? tr("USB drive · rekordbox export") : tr("USB drive · reads its rekordbox export when opened");
     else if (!index.parent().isValid() && icon == QStringLiteral("rekordbox")) subtitle = tr("USB drives with a rekordbox export");
+    else if (children == 1) subtitle = tr("1 item");
     else if (children > 0) subtitle = tr("%1 items").arg(children);
     else if (icon == QStringLiteral("history")) subtitle = tr("Played in an earlier session");
     else if (icon == QStringLiteral("crates")) subtitle = tr("Crate");
@@ -2406,7 +2414,6 @@ void WDeckLab::refreshMatchReference() {
         reference.bpm = value(channel(reference.deck), "bpm");
     }
     if (b.match) {
-        if (b.match->isChecked() != b.matchEnabled) b.match->setChecked(b.matchEnabled);
         QString detail = tr("Off");
         if (b.matchEnabled) {
             detail = tr("No deck");
@@ -2419,7 +2426,9 @@ void WDeckLab::refreshMatchReference() {
             }
         }
         b.match->setDetail(detail);
-        b.match->setTone(b.matchEnabled && reference.deck ? DeckLabActionButton::Tone::Active : DeckLabActionButton::Tone::Neutral);
+        b.match->setTone(b.matchEnabled ? DeckLabActionButton::Tone::Active : DeckLabActionButton::Tone::Neutral);
+        b.match->setAccessibleName(b.matchEnabled ? tr("Harmonic match highlighting on, %1").arg(detail)
+                                                  : tr("Harmonic match highlighting off"));
     }
     if (reference.sameAs(decklab::matchReference())) return;
     decklab::setMatchReference(reference);

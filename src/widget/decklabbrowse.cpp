@@ -1059,7 +1059,7 @@ void DeckLabTrackCard::paintTrack(QPainter& painter) {
 
 void DeckLabTrackCard::paintItem(QPainter& painter) {
     const int pad = 12;
-    const int tile = height() < 150 ? 48 : 64;
+    const int tile = std::clamp(height() / 3, 48, 84);
     const QRect tileBox(pad, pad, tile, tile);
     QColor base = m_accent.isValid() ? m_accent : QColor(0x2a, 0x2a, 0x2a);
     QLinearGradient gradient(tileBox.topLeft(), tileBox.bottomRight());
@@ -1127,7 +1127,7 @@ void DeckLabToast::showMessage(const QString& text, int milliseconds) {
     if (surface) {
         const int width = std::min(this->width(), surface->width() - 32);
         resize(width, height());
-        move((surface->width() - width) / 2, 52);
+        move((surface->width() - width) / 2, 96);
     }
     raise();
     show();
@@ -1158,19 +1158,20 @@ void DeckLabListDelegate::paint(QPainter* painter,
     }
     int x = r.left() + 16;
     const QColor textColor = enabled ? colors::ink : colors::dim;
-    const auto glyph = static_cast<Glyph>(index.data(GlyphRole).toInt());
+    const bool sources = static_cast<bool>(m_glyphProvider);
+    const auto glyph = sources ? m_glyphProvider(index) : static_cast<Glyph>(index.data(GlyphRole).toInt());
     if (glyph != Glyph::None) {
         paintGlyph(*painter, QRectF(x, r.center().y() - 10, 20, 20), glyph, selected ? colors::ink : colors::muted);
         x += 34;
     }
-    const QColor accent = index.data(AccentRole).value<QColor>();
+    const QColor accent = sources ? QColor() : index.data(AccentRole).value<QColor>();
     if (accent.isValid()) {
         painter->setPen(Qt::NoPen);
         painter->setBrush(accent);
         painter->drawRoundedRect(QRectF(x, r.center().y() - 9, 6, 18), 2, 2);
         x += 16;
     }
-    const bool chevron = index.data(ChevronRole).toBool();
+    const bool chevron = sources || index.data(ChevronRole).toBool();
     int right = r.right() - (chevron ? 30 : 14);
     if (chevron) {
         paintGlyph(*painter,
@@ -1178,7 +1179,7 @@ void DeckLabListDelegate::paint(QPainter* painter,
                 Glyph::Chevron,
                 QColor(0x5c, 0x5c, 0x5c));
     }
-    const QString count = index.data(CountRole).toString();
+    const QString count = sources ? QString() : index.data(CountRole).toString();
     QFont countFont = option.font;
     countFont.setPixelSize(13);
     if (!count.isEmpty()) {
