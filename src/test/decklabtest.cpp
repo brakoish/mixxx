@@ -2001,7 +2001,7 @@ TEST_F(NativeDeckLabTest, BrowseScalesCleanlyTo1024x600And1280x800) {
             if (!button->isVisible()) continue;
             const QRect bounds(button->mapTo(panel.get(), QPoint()), button->size());
             EXPECT_TRUE(panel->rect().contains(bounds)) << button->objectName().toStdString() << " " << size.width();
-            EXPECT_GE(button->height(), 38) << button->objectName().toStdString();
+            EXPECT_GE(button->height(), 44) << button->objectName().toStdString();
         }
         auto* card = panel->findChild<QWidget*>("decklab-track-card");
         EXPECT_TRUE(card->isVisible()); EXPECT_GE(card->height(), 96);

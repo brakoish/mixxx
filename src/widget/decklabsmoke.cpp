@@ -311,6 +311,16 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                 if (!capture.action()) failures->append(QString(QStringLiteral("Browse capture could not reach: ") + capture.name));
                 QTimer::singleShot(capture.waitMs, surface, [=] {
                     check();
+                    // Browse touch targets keep 44 px in the real surface style.
+                    if (auto* browse = surface->findChild<QWidget*>(QStringLiteral("decklab-browse"))) {
+                        for (auto* button : browse->findChildren<QPushButton*>()) {
+                            if (button->isVisible() && button->height() < 44) {
+                                failures->append(QStringLiteral("Small Browse touch target %1 (%2 px)")
+                                                         .arg(button->objectName())
+                                                         .arg(button->height()));
+                            }
+                        }
+                    }
                     const QString file = QStringLiteral("app-browse-%1-%2.png").arg(*index + 1, 2, 10, QLatin1Char('0')).arg(capture.name);
                     if (!surface->grab().save(QDir(output).filePath(file))) failures->append("Screenshot failed");
                     ++*index;

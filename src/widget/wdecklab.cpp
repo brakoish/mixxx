@@ -874,13 +874,23 @@ decklab::Glyph categoryGlyph(decklab::Category category) {
     }
     return decklab::Glyph::None;
 }
+// The surface style sheet's QPushButton min-height wins over setFixedHeight()
+// in the real application. Pin the height in the button's own style sheet too
+// (1 px border, no vertical padding) so touch targets keep their size.
+void holdHeight(QPushButton* button, int height, const QString& extra = QString()) {
+    button->setFixedHeight(height);
+    button->setStyleSheet(QStringLiteral("min-height:%1px;max-height:%1px;padding-top:0px;padding-bottom:0px;%2")
+                                  .arg(height - 2)
+                                  .arg(extra));
+}
+
 DeckLabActionButton* browseButton(QWidget* parent, const QString& text, const QString& name,
         const QString& accessible, decklab::Glyph glyph, int width) {
     auto* b = new DeckLabActionButton(text, parent);
     b->setObjectName(name);
     b->setAccessibleName(accessible);
     b->setGlyph(glyph);
-    b->setFixedHeight(44);
+    holdHeight(b, 44);
     if (width > 0) b->setFixedWidth(width);
     return b;
 }
@@ -1078,7 +1088,7 @@ QWidget* WDeckLab::buildBrowse() {
         auto* load = new DeckLabActionButton(tr("Load %1").arg(deck), pane);
         load->setObjectName(QStringLiteral("decklab-load-%1").arg(deck));
         load->setAccessibleName(tr("Load deck %1").arg(deck));
-        load->setFixedHeight(52);
+        holdHeight(load, 52);
         m_loadButtons[deck - 1] = load;
         connect(load, &QPushButton::clicked, this, [this, deck, pressed, selection] {
             auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
@@ -1835,28 +1845,36 @@ void WDeckLab::bindBrowser(WSearchLineEdit* search, WLibrarySidebar* sidebar, WL
     search->setMaxVisibleItems(6);
     search->setAccessibleName(tr("Search tracks"));
     m_searchRow->addWidget(search, 1);
-    m_searchRow->addWidget(button(tr("Clear"), [search] { search->slotClearSearch(); }, m_browser));
+    auto* clear = button(tr("Clear"), [search] { search->slotClearSearch(); }, m_browser);
+    holdHeight(clear, 44);
+    m_searchRow->addWidget(clear);
     m_keyboard = new QWidget(this); m_keyboard->setObjectName("decklab-keyboard");
     m_keyboard->setStyleSheet(QStringLiteral("QPushButton{font-size:16px;font-weight:600;}"));
     m_searchPanel->setStyleSheet(QStringLiteral(
             "QPushButton{font-size:16px;font-weight:600;} QComboBox,QLineEdit{font-size:16px;font-weight:500;}"));
-    auto* keys = column(m_keyboard); m_keyboard->setFixedHeight(200);
+    // Five rows of 44 px touch targets.
+    auto* keys = column(m_keyboard); m_keyboard->setFixedHeight(220);
     const QStringList rows{"1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"};
     for (const QString& letters : rows) {
         auto* line = row(nullptr, 2);
         for (QChar letter : letters) {
             auto* key = button(QString(letter), [search, letter] { if (search->lineEdit()) search->lineEdit()->insert(QString(letter).toLower()); }, m_keyboard);
-            key->setStyleSheet("min-height:0;padding:0;border-radius:0;"); key->setFixedHeight(40); line->addWidget(key, 1);
+            holdHeight(key, 44, QStringLiteral("padding:0px;border-radius:0px;")); line->addWidget(key, 1);
         }
         keys->addLayout(line);
     }
     auto* actions = row(nullptr, 2);
-    for (const QString& mark : {QStringLiteral("-"), QStringLiteral("."), QStringLiteral("/")})
-        actions->addWidget(button(mark, [search, mark] { if (search->lineEdit()) search->lineEdit()->insert(mark); }, m_keyboard));
-    actions->addWidget(button(tr("Space"), [search] { if (search->lineEdit()) search->lineEdit()->insert(" "); }, m_keyboard), 1);
+    for (const QString& mark : {QStringLiteral("-"), QStringLiteral("."), QStringLiteral("/")}) {
+        auto* key = button(mark, [search, mark] { if (search->lineEdit()) search->lineEdit()->insert(mark); }, m_keyboard);
+        holdHeight(key, 44); key->setMinimumWidth(56); actions->addWidget(key);
+    }
+    auto* space = button(tr("Space"), [search] { if (search->lineEdit()) search->lineEdit()->insert(" "); }, m_keyboard);
+    holdHeight(space, 44); actions->addWidget(space, 1);
     auto* backspace = button(tr("Delete"), [search] { if (search->lineEdit()) search->lineEdit()->backspace(); }, m_keyboard);
-    backspace->setAutoRepeat(true); backspace->setAutoRepeatDelay(400); backspace->setAutoRepeatInterval(100); actions->addWidget(backspace);
-    actions->addWidget(button(tr("Done"), [this] { setSearchOpen(false); }, m_keyboard, "decklab-search-done"));
+    backspace->setAutoRepeat(true); backspace->setAutoRepeatDelay(400); backspace->setAutoRepeatInterval(100);
+    holdHeight(backspace, 44); actions->addWidget(backspace);
+    auto* done = button(tr("Done"), [this] { setSearchOpen(false); }, m_keyboard, "decklab-search-done");
+    holdHeight(done, 44); done->setMinimumWidth(88); actions->addWidget(done);
     keys->addLayout(actions); m_root->addWidget(m_keyboard); m_keyboard->hide();
     auto& b = *m_browseState;
     b.listStack->insertWidget(0, sidebar); b.listStack->setCurrentWidget(sidebar);
