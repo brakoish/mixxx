@@ -79,7 +79,9 @@ real client and `DeckLabSystem` through `DeckLabFakeService` events and checks:
 
 ## CI
 
-See the run table in the appliance notes (`docs/next/getmusic-plus.md`).
+| Run | Result |
+|---|---|
+| 39825361403 | Passed on the first run: 304 native tests, including 13 system-setup regressions with the new one. ARM64 Flatpak and offscreen captures built. |
 
 ## Follow-ups
 
