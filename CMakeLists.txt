@@ -1428,6 +1428,10 @@ add_library(
   src/library/recording/dlgrecording.ui
   src/library/recording/recordingfeature.cpp
   src/library/rekordbox/rekordboxfeature.cpp
+  src/library/rekordbox/rekordboxanlz.cpp
+  src/decklab/decklabphrase.cpp
+  src/decklab/decklabphraseview.cpp
+  src/decklab/decklabusbrelink.cpp
   src/library/rhythmbox/rhythmboxfeature.cpp
   src/library/scanner/importfilestask.cpp
   src/library/scanner/libraryscanner.cpp
@@ -2786,6 +2790,7 @@ if(BUILD_TESTING)
     src/test/decklabtest.cpp
     src/test/decklabperfenginetest.cpp
     src/test/decklabsystemtest.cpp
+    src/test/decklabusbfirsttest.cpp
     src/test/waveformmarklabeltest.cpp
     src/test/enginefilterbiquadtest.cpp
     src/test/enginemixertest.cpp

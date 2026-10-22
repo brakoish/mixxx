@@ -552,7 +552,7 @@ bool rekordbox_anlz_t::song_structure_tag_t::is_masked() {
     if (f_is_masked)
         return m_is_masked;
     f_is_masked = true;
-    m_is_masked = raw_mood() > 20;
+    m_is_masked = raw_mood() > 3;
     return m_is_masked;
 }
 

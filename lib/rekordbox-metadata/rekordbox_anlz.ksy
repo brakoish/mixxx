@@ -472,7 +472,10 @@ types:
           This is a way to tell whether the rest of the tag has been masked. The value is supposed
           to range from 1 to 3, but in masked files it will be much larger.
       is_masked:
-        value: 'raw_mood > 20'  # This is almost certainly not true for an unmasked file.
+        # Valid moods are 1-3. The masked value's high byte is 0xCB + len_entries,
+        # which is zero for 53 phrases; a mid-mood track then reads 0x0014 (20),
+        # so the original 'raw_mood > 20' left it masked. '> 3' is exact.
+        value: 'raw_mood > 3'
     -webide-representation: '{body.mood}'
 
 

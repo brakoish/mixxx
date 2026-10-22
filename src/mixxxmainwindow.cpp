@@ -66,6 +66,7 @@
 #include "widget/wdecklab.h"
 #include "decklab/decklabsignals.h"
 #include "decklab/decklabsystem.h"
+#include "decklab/decklabusbrelink.h"
 #include "widget/decklabsmoke.h"
 
 #ifdef __VINYLCONTROL__
@@ -1421,6 +1422,10 @@ bool MixxxMainWindow::loadConfiguredSkin() {
                 services.players = m_pCoreServices->getPlayerManager().get();
                 services.library = m_pCoreServices->getTrackCollectionManager();
                 system = new DeckLabSystem(services, this);
+                // usb-first: library rows of a known stick follow it to its
+                // current mount path (FS-UUID + relative path). Read-only.
+                auto* relinker = new decklab::UsbRelinker(services.library, system);
+                connect(system, &DeckLabSystem::usbChanged, relinker, &decklab::UsbRelinker::relinkDrives);
                 system->start();
             }
             native->attachSystem(system);
