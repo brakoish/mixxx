@@ -25,7 +25,10 @@ jobs:
       - name: Check out exact source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 50
+          # build_pi.py checks that the pinned upstream revision is an ancestor
+          # of HEAD; a fixed shallow depth breaks as soon as a branch has more
+          # commits on top of it than the depth allows.
+          fetch-depth: 0
           persist-credentials: false
       - name: Validate build inputs and failure guards
         run: |
