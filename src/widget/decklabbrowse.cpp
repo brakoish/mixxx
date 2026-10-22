@@ -25,16 +25,60 @@
 namespace decklab {
 
 namespace colors {
-const QColor ink(0xf2, 0xf2, 0xf2);
-const QColor muted(0xa8, 0xa8, 0xa8);
-const QColor dim(0x70, 0x70, 0x70);
-const QColor panel(0x17, 0x17, 0x17);
-const QColor edge(0x2e, 0x2e, 0x2e);
-const QColor accent(0xd7, 0x44, 0x48);
+const QColor ground(0x0d, 0x0f, 0x12);
+const QColor panel(0x16, 0x19, 0x1e);
+const QColor raise(0x20, 0x24, 0x2b);
+const QColor edge(0x2c, 0x31, 0x3a);
+const QColor ink(0xf2, 0xf4, 0xf7);
+const QColor muted(0x9a, 0xa3, 0xaf);
+const QColor dim(0x5d, 0x64, 0x70);
+const QColor accent(0xf2, 0xf4, 0xf7);
 const QColor keyMatch(0x3e, 0xcf, 0x8e);
-const QColor tempoMatch(0x5a, 0xb0, 0xff);
-const QColor onAir(0xff, 0x5a, 0x5f);
+const QColor tempoMatch(0xf2, 0xf4, 0xf7);
+const QColor onAir(0xff, 0x3d, 0x2e);
 } // namespace colors
+
+namespace {
+QFont brandFont(const QFont& base, const QStringList& families, int pixels, QFont::Weight weight) {
+    QFont font = base;
+    QStringList all = families;
+    all << base.family();
+    font.setFamilies(all);
+    font.setPixelSize(pixels);
+    font.setWeight(weight);
+    font.setItalic(false);
+    return font;
+}
+} // namespace
+
+QFont titleFont(const QFont& base) {
+    return brandFont(base, {QStringLiteral("Barlow")}, 18, QFont::DemiBold);
+}
+QFont bodyFont(const QFont& base) {
+    return brandFont(base, {QStringLiteral("Barlow")}, 16, QFont::Medium);
+}
+QFont strongFont(const QFont& base) {
+    return brandFont(base, {QStringLiteral("Barlow")}, 16, QFont::DemiBold);
+}
+QFont secondaryFont(const QFont& base) {
+    return brandFont(base, {QStringLiteral("Barlow")}, 15, QFont::Medium);
+}
+QFont labelFont(const QFont& base) {
+    QFont font = brandFont(base, {QStringLiteral("Barlow")}, 14, QFont::DemiBold);
+    font.setCapitalization(QFont::AllUppercase);
+    font.setLetterSpacing(QFont::PercentageSpacing, 106);
+    return font;
+}
+QFont numberFont(const QFont& base, int pixels) {
+    QFont font = brandFont(base,
+            {QStringLiteral("Barlow Semi Condensed"), QStringLiteral("Barlow")},
+            std::max(14, pixels),
+            QFont::DemiBold);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
+    font.setFeature(QFont::Tag("tnum"), 1);
+#endif
+    return font;
+}
 
 namespace {
 constexpr double kPi = 3.14159265358979323846;
@@ -46,13 +90,6 @@ QString translate(const char* text) {
 MatchReference& mutableReference() {
     static MatchReference reference;
     return reference;
-}
-
-QFont pixelFont(const QFont& base, int pixels, bool bold = false) {
-    QFont font = base;
-    font.setPixelSize(pixels);
-    font.setBold(bold);
-    return font;
 }
 
 // Wraps text into at most maxLines lines inside box, eliding the last line.
@@ -140,26 +177,29 @@ void paintChip(QPainter& painter,
         const QColor& tone,
         const QFont& base) {
     const QRectF frame = QRectF(box).adjusted(0.5, 0.5, -0.5, -0.5);
-    QColor fill(0x22, 0x22, 0x22);
+    QColor fill = colors::raise;
     if (tone.isValid()) {
         fill = tone;
-        fill.setAlpha(46);
+        fill.setAlpha(40);
     }
     painter.setPen(QPen(tone.isValid() ? tone : colors::edge, tone.isValid() ? 1.5 : 1));
     painter.setBrush(fill);
     painter.drawRoundedRect(frame, 3, 3);
-    const QFont valueFont = pixelFont(base, box.height() >= 38 ? 16 : 14, true);
-    const QFont captionFont = pixelFont(base, 9, true);
-    const int captionHeight = QFontMetrics(captionFont).height();
-    const QRect valueBox = box.adjusted(3, 2, -3, -captionHeight);
+    const QFont valueFont = numberFont(base, box.height() >= 48 ? 20 : 17);
+    const QFont captionFont = labelFont(base);
+    const QFontMetrics valueMetrics(valueFont);
+    const QFontMetrics captionMetrics(captionFont);
+    const int top = box.top() + std::max(1, (box.height() - valueMetrics.height() - captionMetrics.height()) / 2);
     painter.setFont(valueFont);
-    painter.setPen(tone.isValid() ? tone.lighter(125) : colors::ink);
-    painter.drawText(valueBox,
+    painter.setPen(tone.isValid() ? tone.lighter(115) : colors::ink);
+    painter.drawText(QRect(box.left() + 3, top, box.width() - 6, valueMetrics.height()),
             Qt::AlignCenter,
-            QFontMetrics(valueFont).elidedText(value, Qt::ElideRight, valueBox.width()));
+            valueMetrics.elidedText(value, Qt::ElideRight, box.width() - 6));
     painter.setFont(captionFont);
-    painter.setPen(tone.isValid() ? tone : colors::dim);
-    painter.drawText(box.adjusted(2, 0, -2, -3), Qt::AlignHCenter | Qt::AlignBottom, caption);
+    painter.setPen(tone.isValid() ? tone : colors::ink);
+    painter.drawText(QRect(box.left() + 2, top + valueMetrics.height() - 2, box.width() - 4, captionMetrics.height()),
+            Qt::AlignCenter,
+            captionMetrics.elidedText(caption, Qt::ElideRight, box.width() - 4));
 }
 } // namespace
 
@@ -603,7 +643,7 @@ void DeckLabActionButton::paintEvent(QPaintEvent*) {
     style()->drawControl(QStyle::CE_PushButton, &option, &painter, this);
     painter.setRenderHint(QPainter::Antialiasing);
     const bool enabled = isEnabled();
-    QColor primary = enabled ? colors::ink : QColor(0x8a, 0x8a, 0x8a);
+    QColor primary = enabled ? colors::ink : colors::dim;
     QColor secondary = enabled ? colors::muted : colors::dim;
     const QRectF inner = QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5);
     switch (m_tone) {
@@ -619,7 +659,7 @@ void DeckLabActionButton::paintEvent(QPaintEvent*) {
     }
     case Tone::Active: {
         QColor fill = colors::keyMatch;
-        fill.setAlpha(36);
+        fill.setAlpha(30);
         painter.setPen(QPen(colors::keyMatch, 2));
         painter.setBrush(fill);
         painter.drawRoundedRect(inner, 2, 2);
@@ -627,6 +667,7 @@ void DeckLabActionButton::paintEvent(QPaintEvent*) {
         break;
     }
     case Tone::Ready:
+        // Ready to load: white edge (selection), never red.
         painter.setPen(Qt::NoPen);
         painter.setBrush(enabled ? colors::accent : colors::edge);
         painter.drawRect(QRectF(inner.left(), inner.top(), 3, inner.height()));
@@ -634,8 +675,8 @@ void DeckLabActionButton::paintEvent(QPaintEvent*) {
     case Tone::Neutral:
         break;
     }
-    const QFont primaryFont = pixelFont(font(), height() >= 48 ? 16 : 14, true);
-    const QFont detailFont = pixelFont(font(), 10, true);
+    const QFont primaryFont = strongFont(font());
+    const QFont detailFont = secondaryFont(font());
     const QFontMetrics primaryMetrics(primaryFont);
     const QFontMetrics detailMetrics(detailFont);
     const QRect content = rect().adjusted(8, 2, -8, -2);
@@ -653,9 +694,9 @@ void DeckLabActionButton::paintEvent(QPaintEvent*) {
     const QString label = primaryMetrics.elidedText(text().toUpper(), Qt::ElideRight, textWidth);
     const int labelWidth = primaryMetrics.horizontalAdvance(label);
     const int blockLeft = content.left() + (content.width() - labelWidth - glyphSpace) / 2;
-    const bool twoLines = !m_detail.isEmpty() && content.height() >= primaryMetrics.height() + detailMetrics.height() - 2;
+    const bool twoLines = !m_detail.isEmpty() && content.height() >= primaryMetrics.height() + detailMetrics.height() - 4;
     const int primaryTop = twoLines
-            ? content.top() + (content.height() - primaryMetrics.height() - detailMetrics.height() + 2) / 2
+            ? content.top() + (content.height() - primaryMetrics.height() - detailMetrics.height() + 4) / 2
             : content.top() + (content.height() - primaryMetrics.height()) / 2;
     if (glyphSpace) {
         paintGlyph(painter,
@@ -672,11 +713,11 @@ void DeckLabActionButton::paintEvent(QPaintEvent*) {
         painter.setFont(detailFont);
         painter.setPen(secondary);
         painter.drawText(QRect(content.left(),
-                                 primaryTop + primaryMetrics.height() - 2,
+                                 primaryTop + primaryMetrics.height() - 4,
                                  content.width(),
                                  detailMetrics.height()),
                 Qt::AlignHCenter | Qt::AlignVCenter,
-                detailMetrics.elidedText(m_detail.toUpper(), Qt::ElideRight, content.width()));
+                detailMetrics.elidedText(m_detail, Qt::ElideRight, content.width()));
     }
 }
 
@@ -705,8 +746,8 @@ void DeckLabBreadcrumb::setSegments(const QStringList& segments) {
 QStringList DeckLabBreadcrumb::displayedSegments() const {
     // Path segments use the regular font; reserve the extra width of the
     // bold deepest level, which is always shown.
-    const QFontMetrics pathMetrics(pixelFont(font(), 14));
-    const QFontMetrics lastMetrics(pixelFont(font(), 15, true));
+    const QFontMetrics pathMetrics(secondaryFont(font()));
+    const QFontMetrics lastMetrics(titleFont(font()));
     const QString last = m_segments.isEmpty() ? QString() : m_segments.last();
     const int boldExtra = std::max(0, lastMetrics.horizontalAdvance(last) - pathMetrics.horizontalAdvance(last));
     return elideBreadcrumb(m_segments,
@@ -721,8 +762,8 @@ void DeckLabBreadcrumb::paintEvent(QPaintEvent*) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::TextAntialiasing);
     const QStringList shown = displayedSegments();
-    const QFont lastFont = pixelFont(font(), 15, true);
-    const QFont pathFont = pixelFont(font(), 14);
+    const QFont lastFont = titleFont(font());
+    const QFont pathFont = secondaryFont(font());
     const QString separator = QStringLiteral(" › ");
     int x = 10;
     const int available = width() - 10;
@@ -738,7 +779,7 @@ void DeckLabBreadcrumb::paintEvent(QPaintEvent*) {
         if (!last) {
             const QFontMetrics separatorMetrics(pathFont);
             painter.setFont(pathFont);
-            painter.setPen(colors::dim);
+            painter.setPen(colors::muted);
             painter.drawText(QRect(x, 0, available - x, height()), Qt::AlignLeft | Qt::AlignVCenter, separator);
             x += separatorMetrics.horizontalAdvance(separator);
         }
@@ -900,7 +941,7 @@ void DeckLabTrackCard::resizeEvent(QResizeEvent* event) {
 void DeckLabTrackCard::paintEvent(QPaintEvent*) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-    painter.fillRect(rect(), QColor(0x10, 0x10, 0x10));
+    painter.fillRect(rect(), colors::ground);
     painter.setPen(QPen(colors::edge, 1));
     painter.setBrush(colors::panel);
     painter.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 4, 4);
@@ -964,20 +1005,20 @@ void DeckLabTrackCard::paintTrack(QPainter& painter) {
 
     const int textLeft = artBox.right() + 10;
     const int textWidth = width() - textLeft - pad;
-    const QFont titleFont = pixelFont(font(), 15, true);
-    const QFont bodyFont = pixelFont(font(), 13);
-    const QFont smallFont = pixelFont(font(), 11);
+    const QFont trackTitleFont = titleFont(font());
+    const QFont artistFont = secondaryFont(font());
+    const QFont smallFont = secondaryFont(font());
     int y = drawWrapped(painter,
-            QRect(textLeft, pad - 2, textWidth, art - 14),
+            QRect(textLeft, pad - 2, textWidth, art - 18),
             m_title,
-            titleFont,
+            trackTitleFont,
             colors::ink,
             compact ? 2 : 3);
     drawWrapped(painter,
             QRect(textLeft, y + 1, textWidth, artBox.bottom() - y),
             m_artist.isEmpty() ? tr("Unknown artist") : m_artist,
-            bodyFont,
-            m_artist.isEmpty() ? colors::dim : colors::muted,
+            artistFont,
+            colors::muted,
             2);
 
     const MatchReference& reference = matchReference();
@@ -986,7 +1027,7 @@ void DeckLabTrackCard::paintTrack(QPainter& painter) {
             : HarmonicMatch::None;
     const bool tempo = reference.active() && tempoMatches(m_bpm, reference.bpm);
     const int chipTop = artBox.bottom() + 9;
-    const int chipHeight = compact ? 34 : 40;
+    const int chipHeight = compact ? 44 : 50;
     const int gap = 6;
     const int chipWidth = (width() - 2 * pad - 2 * gap) / 3;
     paintChip(painter,
@@ -1028,13 +1069,15 @@ void DeckLabTrackCard::paintTrack(QPainter& painter) {
         y += 20;
     }
     const QString summary = matchSummary();
-    if (!summary.isEmpty() && y + smallMetrics.height() <= bottom) {
-        painter.setFont(pixelFont(font(), 11, true));
+    const QFont summaryFont = strongFont(font());
+    const QFontMetrics summaryMetrics(summaryFont);
+    if (!summary.isEmpty() && y + summaryMetrics.height() <= bottom) {
+        painter.setFont(summaryFont);
         painter.setPen(harmonic != HarmonicMatch::None || tempo ? colors::keyMatch : colors::muted);
-        painter.drawText(QRect(pad, y, width() - 2 * pad, smallMetrics.height()),
+        painter.drawText(QRect(pad, y, width() - 2 * pad, summaryMetrics.height()),
                 Qt::AlignLeft | Qt::AlignVCenter,
-                smallMetrics.elidedText(summary, Qt::ElideRight, width() - 2 * pad));
-        y += smallMetrics.height() + 4;
+                summaryMetrics.elidedText(summary, Qt::ElideRight, width() - 2 * pad));
+        y += summaryMetrics.height() + 4;
     }
     QStringList about;
     if (!m_album.isEmpty()) {
@@ -1052,13 +1095,11 @@ void DeckLabTrackCard::paintTrack(QPainter& painter) {
         y += smallMetrics.height() + 2;
     }
     if (!m_comment.isEmpty() && y + smallMetrics.height() <= bottom) {
-        QFont commentFont = smallFont;
-        commentFont.setItalic(true);
         drawWrapped(painter,
                 QRect(pad, y, width() - 2 * pad, bottom - y),
                 m_comment,
-                commentFont,
-                colors::dim,
+                smallFont,
+                colors::muted,
                 2);
     }
 }
@@ -1067,10 +1108,10 @@ void DeckLabTrackCard::paintItem(QPainter& painter) {
     const int pad = 12;
     const int tile = std::clamp(height() / 3, 48, 84);
     const QRect tileBox(pad, pad, tile, tile);
-    QColor base = m_accent.isValid() ? m_accent : QColor(0x2a, 0x2a, 0x2a);
+    QColor base = m_accent.isValid() ? m_accent : colors::raise;
     QLinearGradient gradient(tileBox.topLeft(), tileBox.bottomRight());
-    gradient.setColorAt(0, m_accent.isValid() ? base.darker(160) : QColor(0x2e, 0x2e, 0x2e));
-    gradient.setColorAt(1, QColor(0x18, 0x18, 0x18));
+    gradient.setColorAt(0, m_accent.isValid() ? base.darker(160) : colors::raise);
+    gradient.setColorAt(1, colors::ground);
     painter.setPen(QPen(QColor(255, 255, 255, 22), 1));
     painter.setBrush(gradient);
     painter.drawRoundedRect(QRectF(tileBox).adjusted(0.5, 0.5, -0.5, -0.5), 4, 4);
@@ -1083,17 +1124,17 @@ void DeckLabTrackCard::paintItem(QPainter& painter) {
     int y = drawWrapped(painter,
             QRect(textLeft, pad - 1, textWidth, tile + 20),
             m_title,
-            pixelFont(font(), 16, true),
+            titleFont(font()),
             colors::ink,
             3);
     drawWrapped(painter,
             QRect(textLeft, y + 2, textWidth, std::max(tile + pad - y, 34)),
             m_subtitle,
-            pixelFont(font(), 13),
+            secondaryFont(font()),
             colors::muted,
             2);
     if (!m_hint.isEmpty()) {
-        const QFont hintFont = pixelFont(font(), 12);
+        const QFont hintFont = secondaryFont(font());
         const QFontMetrics metrics(hintFont);
         const int lines = height() - tileBox.bottom() - 2 * pad >= 2 * metrics.height() ? 2 : 1;
         const int top = height() - pad - lines * metrics.height();
@@ -1104,7 +1145,7 @@ void DeckLabTrackCard::paintItem(QPainter& painter) {
                     QRect(pad, top, width() - 2 * pad, lines * metrics.height()),
                     m_hint,
                     hintFont,
-                    colors::dim,
+                    colors::muted,
                     lines);
         }
     }
@@ -1116,16 +1157,17 @@ DeckLabToast::DeckLabToast(QWidget* parent)
     setAttribute(Qt::WA_TransparentForMouseEvents);
     setAlignment(Qt::AlignCenter);
     setWordWrap(false);
-    setStyleSheet(QStringLiteral(
-            "QLabel#decklab-toast{background:rgba(24,24,24,245);color:#ffffff;"
-            "border:2px solid #ff5a5f;border-radius:4px;padding:10px 18px;"
-            "font-size:16px;font-weight:600;}"));
     m_timer.setSingleShot(true);
     QObject::connect(&m_timer, &QTimer::timeout, this, &QWidget::hide);
     hide();
 }
 
-void DeckLabToast::showMessage(const QString& text, int milliseconds) {
+void DeckLabToast::showMessage(const QString& text, int milliseconds, bool live) {
+    setFont(strongFont(font()));
+    setStyleSheet(QStringLiteral(
+            "QLabel#decklab-toast{background:#20242B;color:#F2F4F7;border:2px solid %1;"
+            "border-radius:4px;padding:10px 18px;font-size:16px;font-weight:600;}")
+                          .arg(live ? QStringLiteral("#FF3D2E") : QStringLiteral("#F2F4F7")));
     setText(text);
     setAccessibleName(text);
     adjustSize();
@@ -1156,8 +1198,8 @@ void DeckLabListDelegate::paint(QPainter* painter,
     const QRect r = option.rect;
     const bool selected = option.state & QStyle::State_Selected;
     const bool enabled = index.flags() & Qt::ItemIsEnabled;
-    painter->fillRect(r, selected ? QColor(0x2a, 0x2a, 0x2a) : (index.row() % 2 ? QColor(0x16, 0x16, 0x16) : QColor(0x11, 0x11, 0x11)));
-    painter->setPen(QColor(0x24, 0x24, 0x24));
+    painter->fillRect(r, selected ? colors::raise : (index.row() % 2 ? QColor(0x12, 0x15, 0x19) : colors::ground));
+    painter->setPen(QColor(0x1c, 0x20, 0x26));
     painter->drawLine(r.bottomLeft(), r.bottomRight());
     if (selected) {
         painter->fillRect(QRect(r.left(), r.top(), 3, r.height()), colors::accent);
@@ -1186,23 +1228,20 @@ void DeckLabListDelegate::paint(QPainter* painter,
                 QColor(0x5c, 0x5c, 0x5c));
     }
     const QString count = sources ? QString() : index.data(CountRole).toString();
-    QFont countFont = option.font;
-    countFont.setPixelSize(13);
+    const QFont countFont = numberFont(option.font, 15);
     if (!count.isEmpty()) {
         const QFontMetrics metrics(countFont);
         const int countWidth = metrics.horizontalAdvance(count) + 4;
         painter->setFont(countFont);
-        painter->setPen(enabled ? colors::muted : colors::dim);
+        painter->setPen(colors::muted);
         painter->drawText(QRect(right - countWidth, r.top(), countWidth, r.height()),
                 Qt::AlignRight | Qt::AlignVCenter,
                 count);
         right -= countWidth + 12;
     }
-    QFont labelFont = option.font;
-    labelFont.setPixelSize(15);
-    labelFont.setBold(selected);
-    const QFontMetrics labelMetrics(labelFont);
-    painter->setFont(labelFont);
+    const QFont rowFont = selected ? strongFont(option.font) : bodyFont(option.font);
+    const QFontMetrics labelMetrics(rowFont);
+    painter->setFont(rowFont);
     painter->setPen(textColor);
     painter->drawText(QRect(x, r.top(), std::max(0, right - x), r.height()),
             Qt::AlignLeft | Qt::AlignVCenter,

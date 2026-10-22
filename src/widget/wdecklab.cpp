@@ -912,7 +912,7 @@ QWidget* WDeckLab::buildBrowse() {
     b.breadcrumb->setSegments({tr("Sources")});
     heading->addWidget(b.breadcrumb, 1);
     b.match = browseButton(m_browser, tr("Match"), QStringLiteral("decklab-browse-match"),
-            tr("Highlight tracks that mix with the playing deck"), decklab::Glyph::None, 116);
+            tr("Highlight tracks that mix with the playing deck"), decklab::Glyph::None, 128);
     connect(b.match, &QPushButton::clicked, this, [this] {
         // Toggle; the button's tone and state line show on/off and the deck.
         auto& state = *m_browseState;
@@ -930,6 +930,7 @@ QWidget* WDeckLab::buildBrowse() {
     connect(tools, &QPushButton::clicked, this, [this, tools] {
         auto* menu = new QMenu(this);
         menu->setAttribute(Qt::WA_DeleteOnClose);
+        menu->setStyleSheet(QStringLiteral("QMenu{font-size:16px;font-weight:500;}"));
         menu->addAction(tr("All tracks"), this, &WDeckLab::openCollection);
         menu->addAction(tr("Preview selected track"), this, [this] { togglePreview(); });
         menu->addAction(tr("Stop preview"), this, [this] { stopPreview(); });
@@ -1011,7 +1012,7 @@ QWidget* WDeckLab::buildBrowse() {
     m_browseStack->addWidget(b.listStack);
     b.items = new QListWidget(b.listStack);
     b.items->setObjectName(QStringLiteral("decklab-browse-categories"));
-    b.items->setStyleSheet(QStringLiteral("QListWidget{background:#101010;border:0;outline:0;}"));
+    b.items->setStyleSheet(QStringLiteral("QListWidget{background:#0D0F12;border:0;outline:0;}"));
     b.items->setItemDelegate(new DeckLabListDelegate(b.items));
     b.items->setUniformItemSizes(true);
     b.items->setFrameShape(QFrame::NoFrame);
@@ -1046,11 +1047,17 @@ QWidget* WDeckLab::buildBrowse() {
     auto* pane = new QWidget(m_browser);
     pane->setObjectName(QStringLiteral("decklab-browse-pane"));
     pane->setAttribute(Qt::WA_StyledBackground);
-    pane->setStyleSheet(QStringLiteral("QWidget#decklab-browse-pane{background:#0c0c0c;border-left:1px solid #262626;}"));
+    pane->setStyleSheet(QStringLiteral("QWidget#decklab-browse-pane{background:#0D0F12;border-left:1px solid #2C313A;}"));
     pane->setFixedWidth(236);
-    // No arrow buttons on the thin touch scroll bars of the lists.
+    // Browse-scoped brand styling: no arrow stubs on the thin touch scroll
+    // bars, 14 px SemiBold column headers, white-on-raise selection.
     m_browser->setStyleSheet(QStringLiteral(
-            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0px;border:0;background:transparent;}"));
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0px;border:0;background:transparent;}"
+            "QHeaderView{font-size:14px;font-weight:600;}"
+            "QHeaderView::section{background:#16191E;color:#F2F4F7;border:0;border-right:1px solid #2C313A;"
+            "border-bottom:1px solid #2C313A;padding:4px 8px;}"
+            "QTableView{background:#0D0F12;alternate-background-color:#121519;"
+            "selection-background-color:#20242B;selection-color:#F2F4F7;}"));
     auto* paneLayout = column(pane);
     paneLayout->setContentsMargins(6, 6, 6, 6);
     paneLayout->setSpacing(6);
@@ -1830,6 +1837,9 @@ void WDeckLab::bindBrowser(WSearchLineEdit* search, WLibrarySidebar* sidebar, WL
     m_searchRow->addWidget(search, 1);
     m_searchRow->addWidget(button(tr("Clear"), [search] { search->slotClearSearch(); }, m_browser));
     m_keyboard = new QWidget(this); m_keyboard->setObjectName("decklab-keyboard");
+    m_keyboard->setStyleSheet(QStringLiteral("QPushButton{font-size:16px;font-weight:600;}"));
+    m_searchPanel->setStyleSheet(QStringLiteral(
+            "QPushButton{font-size:16px;font-weight:600;} QComboBox,QLineEdit{font-size:16px;font-weight:500;}"));
     auto* keys = column(m_keyboard); m_keyboard->setFixedHeight(200);
     const QStringList rows{"1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"};
     for (const QString& letters : rows) {
@@ -2450,7 +2460,7 @@ void WDeckLab::refreshMatchReference() {
 }
 void WDeckLab::showLoadRefused(int deck) {
     if (m_browseState && m_browseState->toast) {
-        m_browseState->toast->showMessage(tr("Deck %1 is playing – pause it to load").arg(deck));
+        m_browseState->toast->showMessage(tr("Deck %1 is playing – pause it to load").arg(deck), 2600, true);
     }
 }
 void WDeckLab::showLoadUnavailable(int slot) {

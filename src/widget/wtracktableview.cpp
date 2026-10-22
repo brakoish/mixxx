@@ -89,16 +89,24 @@ void paintDeckLabRowTint(QPainter* painter,
 // Base class for Deck Lab cells: knows where the row's key and BPM live.
 class DeckLabCellDelegate : public DefaultDelegate {
   public:
-    DeckLabCellDelegate(QTableView* table, int keyColumn, int bpmColumn)
+    DeckLabCellDelegate(QTableView* table, int keyColumn, int bpmColumn, bool secondary = false)
             : DefaultDelegate(table),
               m_table(table),
               m_keyColumn(keyColumn),
-              m_bpmColumn(bpmColumn) {
+              m_bpmColumn(bpmColumn),
+              m_secondary(secondary) {
         setProperty("decklabCell", true);
     }
     void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
         paintDeckLabRowTint(painter, option, deckLabRowMatch(index, m_keyColumn, m_bpmColumn));
-        DefaultDelegate::paint(painter, option, index);
+        // On-device scale: rows 16 px Medium; artist and similar 15 px muted.
+        QStyleOptionViewItem opt = option;
+        opt.font = m_secondary ? decklab::secondaryFont(option.font) : decklab::bodyFont(option.font);
+        opt.fontMetrics = QFontMetrics(opt.font);
+        if (m_secondary) {
+            opt.palette.setColor(QPalette::Text, decklab::colors::muted);
+        }
+        DefaultDelegate::paint(painter, opt, index);
     }
     bool editorEvent(QEvent*, QAbstractItemModel*, const QStyleOptionViewItem&, const QModelIndex&) override {
         return false;
@@ -109,6 +117,8 @@ class DeckLabCellDelegate : public DefaultDelegate {
     QStyleOptionViewItem drawBase(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const {
         QStyleOptionViewItem opt = option;
         initStyleOption(&opt, index);
+        opt.font = decklab::numberFont(option.font, 16);
+        opt.fontMetrics = QFontMetrics(opt.font);
         opt.features &= ~(QStyleOptionViewItem::HasCheckIndicator | QStyleOptionViewItem::HasDecoration);
         if (opt.state & QStyle::State_Selected) {
             setTextColor(opt, index);
@@ -128,6 +138,7 @@ class DeckLabCellDelegate : public DefaultDelegate {
     QTableView* m_table;
     int m_keyColumn;
     int m_bpmColumn;
+    bool m_secondary;
 };
 
 class DeckLabBpmDelegate final : public DeckLabCellDelegate {
@@ -140,14 +151,17 @@ class DeckLabBpmDelegate final : public DeckLabCellDelegate {
         const DeckLabRowMatch match = deckLabRowMatch(index, m_keyColumn, m_bpmColumn);
         paintDeckLabRowTint(painter, option, match);
         const QStyleOptionViewItem opt = drawBase(painter, option, index);
-        QColor ink = textColor(opt);
+        // Secondary (muted) unless within +/-6% of the reference deck, which
+        // gets bright text on a raised fill.
+        const bool selected = opt.state & QStyle::State_Selected;
+        QColor ink = selected ? textColor(opt) : decklab::colors::muted;
         if (match.tempo) {
-            if (!(opt.state & QStyle::State_Selected)) {
-                QColor fill = decklab::colors::tempoMatch;
-                fill.setAlpha(34);
-                painter->fillRect(option.rect.adjusted(2, 6, -2, -6), fill);
+            if (!selected) {
+                painter->fillRect(option.rect.adjusted(3, 8, -3, -8), decklab::colors::raise);
+                painter->fillRect(QRect(option.rect.right() - 4, option.rect.top() + 8, 2, option.rect.height() - 16),
+                        decklab::colors::tempoMatch);
             }
-            ink = decklab::colors::tempoMatch.lighter(115);
+            ink = decklab::colors::tempoMatch;
         }
         painter->save();
         painter->setFont(opt.font);
@@ -171,7 +185,8 @@ class DeckLabKeyDelegate final : public DeckLabCellDelegate {
         const QStyleOptionViewItem opt = drawBase(painter, option, index);
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing);
-        QColor ink = textColor(opt);
+        const bool selected = opt.state & QStyle::State_Selected;
+        QColor ink = selected ? textColor(opt) : decklab::colors::muted;
         const QFontMetrics& metrics = opt.fontMetrics;
         const QString text = metrics.elidedText(opt.text, Qt::ElideRight, option.rect.width() - 14);
         if (match.harmonic != decklab::HarmonicMatch::None && !text.isEmpty()) {
@@ -661,7 +676,8 @@ void WTrackTableView::applyDeckLabLayout() {
         DefaultDelegate* delegate = nullptr;
         if (key) delegate = new DeckLabKeyDelegate(this, keyColumn, bpmColumn);
         else if (bpm) delegate = new DeckLabBpmDelegate(this, keyColumn, bpmColumn);
-        else delegate = new DeckLabCellDelegate(this, keyColumn, bpmColumn);
+        else delegate = new DeckLabCellDelegate(this, keyColumn, bpmColumn,
+                id != TrackModel::SortColumnId::Title && id != TrackModel::SortColumnId::Position);
         delegate->setProperty("decklabKeyColumn", keyColumn);
         delegate->setProperty("decklabBpmColumn", bpmColumn);
         setItemDelegateForColumn(column, delegate); delete old;
@@ -669,6 +685,12 @@ void WTrackTableView::applyDeckLabLayout() {
     setEditTriggers(QAbstractItemView::NoEditTriggers); setDragEnabled(false);
     // Reordering by dragging a header and Mixxx's column menu stay available.
     header->setSectionsMovable(true);
+    // Column headers are labels: uppercase (size and weight come from the
+    // Browse style sheet, 14 px SemiBold).
+    QFont headerFont = header->font();
+    headerFont.setCapitalization(QFont::AllUppercase);
+    headerFont.setLetterSpacing(QFont::PercentageSpacing, 106);
+    header->setFont(headerFont);
     verticalHeader()->hide(); setWordWrap(false);
     connect(header, &QHeaderView::sectionMoved, this, &WTrackTableView::saveDeckLabColumns, Qt::UniqueConnection);
     connect(header, &QHeaderView::sectionResized, this, &WTrackTableView::slotDeckLabSectionResized, Qt::UniqueConnection);

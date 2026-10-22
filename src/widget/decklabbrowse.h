@@ -127,17 +127,31 @@ enum class Glyph {
 };
 void paintGlyph(QPainter& painter, const QRectF& box, Glyph glyph, const QColor& color);
 
+// Deck Lab brand tokens (brand/README.md).
 namespace colors {
-extern const QColor ink;
-extern const QColor muted;
-extern const QColor dim;
-extern const QColor panel;
-extern const QColor edge;
-extern const QColor accent;
+extern const QColor ground; // background
+extern const QColor panel;  // panels and cards
+extern const QColor raise;  // pressed and selected fills
+extern const QColor edge;   // dividers and outlines ("line")
+extern const QColor ink;    // primary text ("text")
+extern const QColor muted;  // secondary text, 15 px and larger only
+extern const QColor dim;    // disabled text, 16 px and larger
+extern const QColor accent; // selection edge: white, never red
 extern const QColor keyMatch;
 extern const QColor tempoMatch;
-extern const QColor onAir;
+extern const QColor onAir; // "live": on air, playing, refused loads
 } // namespace colors
+
+// On-device type scale for the 800x480 panel: nothing below 14 px, no 400
+// weight below 18 px, no muted text below 15 px, no italics. Barlow when it
+// is installed, otherwise the surface font.
+QFont titleFont(const QFont& base);     // 18 px SemiBold
+QFont bodyFont(const QFont& base);      // 16 px Medium
+QFont strongFont(const QFont& base);    // 16 px SemiBold
+QFont secondaryFont(const QFont& base); // 15 px Medium (muted)
+QFont labelFont(const QFont& base);     // 14 px SemiBold uppercase
+// Barlow Semi Condensed SemiBold, tabular figures: BPM, key, time.
+QFont numberFont(const QFont& base, int pixels);
 
 } // namespace decklab
 
@@ -250,7 +264,8 @@ class DeckLabTrackCard : public QWidget {
 class DeckLabToast : public QLabel {
   public:
     explicit DeckLabToast(QWidget* parent);
-    void showMessage(const QString& text, int milliseconds = 2600);
+    // live: the message concerns something on air (red edge, brand "live").
+    void showMessage(const QString& text, int milliseconds = 2600, bool live = false);
 
   private:
     QTimer m_timer;
