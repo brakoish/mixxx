@@ -176,7 +176,7 @@ Fixtures are generated; nothing personal is used. The fake service uses document
 | 39807286053 | Passed: 271 tests, 12 of them system-setup, and 43 smoke screens. Screenshots showed squashed rows and keys under the real surface style. |
 | 39810328603 | Passed: touch heights hold (56 px rows, 44 px keys), white selection, banners return after Deck Setup. |
 | 39811868158 | Passed: brand type scale (18/16/15/14 px, nothing smaller); About wordmark, credit and source line. |
-| (run 6) | Final copy polish: short footer messages, no clipped labels, real plurals. |
+| 39813071025 | Passed (final): 271 tests (12 system-setup), 43 smoke screens, touch-target gate clean. Copy polish. |
 
 After run 2, every changed source was compiled locally before pushing: zig clang with Qt 6.8 Linux headers, generated
 protobuf and uic headers, and the real third-party headers. This was a syntax check only; tests still run in CI.
