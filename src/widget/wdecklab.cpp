@@ -22,6 +22,7 @@
 #include <QProgressBar>
 #include <QWidgetAction>
 #include <QScrollArea>
+#include <QScroller>
 #include <QSlider>
 #include <QSignalBlocker>
 #include <QStackedWidget>
@@ -476,6 +477,52 @@ void WDeckLab::showTrackInfo(int actual) {
     auto* close = button(tr("Close"), [dialog] { dialog->close(); }, dialog, QStringLiteral("decklab-track-info-close"));
     close->setFixedHeight(44); content->addWidget(close);
     dialog->resize(760, 420); dialog->move(mapToGlobal(QPoint((width() - 760) / 2, (height() - 420) / 2)));
+    dialog->setWindowModality(Qt::WindowModal); dialog->open();
+}
+
+void WDeckLab::showControllerFxInfo() {
+    auto* dialog = new QDialog(this, Qt::Dialog | Qt::FramelessWindowHint);
+    dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->setObjectName(QStringLiteral("decklab-controller-fx-info"));
+    dialog->setWindowTitle(tr("Controller effects details"));
+    dialog->setStyleSheet(QStringLiteral("QDialog{background:#101010;color:#eee;border:1px solid #555;} QLabel{color:#eee;} QTextBrowser{background:#111;color:#eee;border:1px solid #333;font-size:13px;} QPushButton{background:#202020;color:#eee;border:1px solid #555;min-height:38px;max-height:38px;padding:2px;}"));
+    auto* content = column(dialog, 8); content->setSpacing(8);
+    auto* heading = new QLabel(tr("DECK LAB · CONTROLLER FX DETAILS"), dialog); heading->setFixedHeight(24); content->addWidget(heading);
+    auto* ownership = new QLabel(tr("Ownership: standard/controller FX units 1–4. Deck Lab RMX uses separate dedicated chains.\nRead only; use the controller or standard Mixxx setup to change these units."), dialog);
+    ownership->setObjectName(QStringLiteral("decklab-controller-fx-ownership")); ownership->setWordWrap(true); content->addWidget(ownership);
+    auto* text = new QTextBrowser(dialog); text->setReadOnly(true); text->setOpenExternalLinks(false);
+    text->setObjectName(QStringLiteral("decklab-controller-fx-text")); content->addWidget(text, 1);
+    text->setTextInteractionFlags(Qt::NoTextInteraction);
+    QScroller::grabGesture(text->viewport(), QScroller::TouchGesture);
+    const auto update = [this, text] {
+        QStringList blocks;
+        for (int unit = 1; unit <= 4; ++unit) {
+            const QString group = QStringLiteral("[EffectRack1_EffectUnit%1]").arg(unit);
+            const auto chain = m_effects ? m_effects->getEffectChain(group) : EffectChainPointer();
+            if (!chain) { blocks << tr("Unit %1 · unavailable").arg(unit).toHtmlEscaped(); continue; }
+            const double mix = value(group, "mix");
+            QString block = tr("Unit %1 · %2 · Mix %3").arg(unit).arg(value(group, "enabled") > 0 ? tr("ON") : tr("OFF"),
+                    std::isfinite(mix) ? QString::number(mix * 100, 'f', 0) + QLatin1Char('%') : tr("unavailable")).toHtmlEscaped();
+            QStringList routes;
+            for (int deck = 1; deck <= 4; ++deck)
+                if (value(group, QStringLiteral("group_[Channel%1]_enable").arg(deck)) > 0) routes << QString::number(deck);
+            block += QStringLiteral("<br>") + tr("Routed decks: %1").arg(routes.isEmpty() ? tr("none") : routes.join(QStringLiteral(", "))).toHtmlEscaped();
+            const auto& slots = chain->getEffectSlots();
+            for (int slot = 0; slot < slots.size(); ++slot) {
+                const auto effect = slots[slot];
+                const bool loaded = effect && effect->isLoaded() && effect->getManifest();
+                const QString state = loaded ? (value(QStringLiteral("[EffectRack1_EffectUnit%1_Effect%2]").arg(unit).arg(slot + 1), "enabled") > 0 ? tr("ON") : tr("OFF")) : tr("EMPTY");
+                block += QStringLiteral("<br>") + tr("Slot %1: %2 [%3]").arg(slot + 1)
+                        .arg(loaded ? effect->getManifest()->name() : tr("No effect"), state).toHtmlEscaped();
+            }
+            blocks << block;
+        }
+        text->setHtml(QStringLiteral("<table width='100%' cellspacing='8'><tr><td width='50%' valign='top'>%1</td><td width='50%' valign='top'>%2</td></tr><tr><td valign='top'>%3</td><td valign='top'>%4</td></tr></table>")
+                              .arg(blocks[0], blocks[1], blocks[2], blocks[3]));
+    };
+    auto* actions = row(nullptr, 8);
+    auto* refresh = button(tr("Refresh"), update, dialog, QStringLiteral("decklab-controller-fx-refresh")); refresh->setFixedHeight(44); actions->addWidget(refresh, 1);
+    auto* close = button(tr("Close"), [dialog] { dialog->close(); }, dialog, QStringLiteral("decklab-controller-fx-close")); close->setFixedHeight(44); actions->addWidget(close, 1); content->addLayout(actions);
+    update(); dialog->resize(760, 420); dialog->move(mapToGlobal(QPoint((width() - 760) / 2, (height() - 420) / 2)));
     dialog->setWindowModality(Qt::WindowModal); dialog->open();
 }
 
@@ -1191,7 +1238,7 @@ void WDeckLab::addWaveform(QWidget* widget, int deck) {
         m_pairCue->setObjectName(QStringLiteral("decklab-headphone-context"));
         m_pairCue->setFixedHeight(20); m_pairCue->setAlignment(Qt::AlignCenter);
         m_pairCue->setStyleSheet(QStringLiteral("font-size:11px;")); feedbackRows->addWidget(m_pairCue);
-        auto* boardFX = button(QString(), [this] { selectPage(3); }, feedback, QStringLiteral("decklab-performance-board-fx"));
+        auto* boardFX = button(QString(), [this] { showControllerFxInfo(); }, feedback, QStringLiteral("decklab-performance-board-fx"));
         boardFX->setFixedHeight(44); boardFX->setProperty("transport", true);
         boardFX->setStyleSheet(QStringLiteral("padding:1px 2px;"));
         auto* boardLayout = column(boardFX, 1); feedbackRows->addWidget(boardFX);
@@ -1200,7 +1247,7 @@ void WDeckLab::addWaveform(QWidget* widget, int deck) {
         m_pairEffects->setObjectName(QStringLiteral("decklab-performance-effects"));
         m_pairEffects->setProperty("muted", true); m_pairEffects->setStyleSheet(QStringLiteral("font-size:11px;"));
         m_pairEffects->setAttribute(Qt::WA_TransparentForMouseEvents); boardLayout->addWidget(m_pairEffects);
-        boardFX->setAccessibleName(tr("Board effects summary; open FX"));
+        boardFX->setAccessibleName(tr("Controller effects summary; read all unit and routing details"));
         auto* rmxFX = button(QString(), [this] { selectPage(3); }, feedback, QStringLiteral("decklab-performance-rmx-fx"));
         rmxFX->setFixedHeight(44); rmxFX->setProperty("transport", true);
         rmxFX->setStyleSheet(QStringLiteral("padding:1px 2px;"));

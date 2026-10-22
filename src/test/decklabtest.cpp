@@ -14,6 +14,7 @@
 #include <QProgressBar>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QScroller>
 #include <QStackedWidget>
 #include <QStyle>
 #include <QStyleOptionViewItem>
@@ -902,13 +903,84 @@ TEST_F(NativeDeckLabTest, DeckAndMasterFeedbackFollowRealControlsInBothLayouts) 
         ControlObject::set(ConfigKey("[Channel1]","peak_indicator"),0); QCoreApplication::processEvents();
         EXPECT_EQ(QStringLiteral("MASTER"),master->text());
         EXPECT_EQ(QStringLiteral("LVL"),panel->findChild<QLabel*>("decklab-level-label-1")->text());
-        for(const auto& name:{"decklab-performance-board-fx","decklab-performance-rmx-fx"}) {
-            auto* action=panel->findChild<QPushButton*>(QString::fromLatin1(name)); ASSERT_NE(nullptr,action);
-            ASSERT_TRUE(action->isVisible()); EXPECT_GE(action->height(),44); action->click(); QCoreApplication::processEvents();
-            EXPECT_TRUE(panel->findChild<QPushButton*>("decklab-tab-3")->isChecked());
-            panel->selectPage(0); QCoreApplication::processEvents();
-        }
+        auto* board=panel->findChild<QPushButton*>("decklab-performance-board-fx"); ASSERT_NE(nullptr,board);
+        ASSERT_TRUE(board->isVisible()); EXPECT_GE(board->height(),44); board->click(); QCoreApplication::processEvents();
+        auto* details=panel->findChild<QDialog*>("decklab-controller-fx-info"); ASSERT_NE(nullptr,details);
+        EXPECT_TRUE(details->isVisible()); EXPECT_EQ(0,panel->currentPage());
+        details->findChild<QPushButton*>("decklab-controller-fx-close")->click(); QCoreApplication::processEvents();
+        auto* rmx=panel->findChild<QPushButton*>("decklab-performance-rmx-fx"); ASSERT_NE(nullptr,rmx);
+        ASSERT_TRUE(rmx->isVisible()); EXPECT_GE(rmx->height(),44); rmx->click(); QCoreApplication::processEvents();
+        EXPECT_TRUE(panel->findChild<QPushButton*>("decklab-tab-3")->isChecked());
+        panel->selectPage(0); QCoreApplication::processEvents();
     }
+}
+
+TEST_F(NativeDeckLabTest, ControllerFxDetailsReadAllRealUnitsWithoutControlWrites) {
+    m_pEffectsManager->setup();
+    const auto manifests=m_pEffectsManager->getBackendManager()->getManifestsForBackend(EffectBackendType::BuiltIn);
+    ASSERT_GE(manifests.size(),3);
+    std::vector<ConfigKey> keys;
+    for(int unit=1;unit<=4;++unit) {
+        const QString group=QStringLiteral("[EffectRack1_EffectUnit%1]").arg(unit);
+        auto chain=m_pEffectsManager->getEffectChain(group); ASSERT_FALSE(chain.isNull());
+        ASSERT_GE(chain->getEffectSlots().size(),3);
+        for(const auto& item:{"enabled","mix"}) keys.emplace_back(group,QString::fromLatin1(item));
+        ControlObject::set(ConfigKey(group,"enabled"),unit%2);
+        ControlObject::set(ConfigKey(group,"mix"),.1*unit);
+        for(int deck=1;deck<=4;++deck) {
+            const ConfigKey key(group,QStringLiteral("group_[Channel%1]_enable").arg(deck));
+            ASSERT_NE(nullptr,ControlObject::getControl(key)); keys.push_back(key);
+            ControlObject::set(key,deck==unit ? 1 : 0);
+        }
+        for(int slot=0;slot<3;++slot) {
+            chain->getEffectSlot(slot)->loadEffectWithDefaults(manifests[slot]);
+            const QString effect=QStringLiteral("[EffectRack1_EffectUnit%1_Effect%2]").arg(unit).arg(slot+1);
+            const ConfigKey enabled(effect,"enabled"); keys.push_back(enabled);
+            ControlObject::set(enabled,slot%2 ? 0 : 1);
+        }
+        ControlObject::set(ConfigKey(group,"enabled"),unit%2);
+        ControlObject::set(ConfigKey(group,"mix"),.1*unit);
+    }
+    QCoreApplication::processEvents();
+    std::vector<double> snapshot;
+    std::vector<std::unique_ptr<ControlProxy>> observed;
+    int writes=0;
+    for(const auto& key:keys) {
+        snapshot.push_back(ControlObject::get(key));
+        observed.emplace_back(std::make_unique<ControlProxy>(key.group,key.item));
+        ASSERT_TRUE(observed.back()->connectValueChanged(panel.get(),[&writes](double){++writes;},Qt::DirectConnection));
+    }
+    auto* board=panel->findChild<QPushButton*>("decklab-performance-board-fx"); ASSERT_NE(nullptr,board);
+    board->click(); QCoreApplication::processEvents(); QTest::qWait(20);
+    auto* dialog=panel->findChild<QDialog*>("decklab-controller-fx-info"); ASSERT_NE(nullptr,dialog); ASSERT_TRUE(dialog->isVisible());
+    EXPECT_TRUE(dialog->windowFlags().testFlag(Qt::FramelessWindowHint)); EXPECT_EQ(0,panel->currentPage());
+    auto* text=dialog->findChild<QTextBrowser*>("decklab-controller-fx-text"); ASSERT_NE(nullptr,text); EXPECT_TRUE(text->isReadOnly());
+    EXPECT_EQ(Qt::NoTextInteraction,text->textInteractionFlags());
+    EXPECT_TRUE(QScroller::hasScroller(text->viewport()));
+    EXPECT_NE(static_cast<Qt::GestureType>(0),QScroller::grabbedGesture(text->viewport()));
+    const QString detail=text->toPlainText();
+    for(int unit=1;unit<=4;++unit) {
+        EXPECT_TRUE(detail.contains(QStringLiteral("Unit %1 · %2 · Mix %3%").arg(unit).arg(unit%2 ? "ON" : "OFF").arg(unit*10)));
+        EXPECT_TRUE(detail.contains(QStringLiteral("Routed decks: %1").arg(unit)));
+    }
+    for(int slot=0;slot<3;++slot)
+        EXPECT_TRUE(detail.contains(QStringLiteral("Slot %1: %2 [%3]").arg(slot+1).arg(manifests[slot]->name(),slot%2 ? "OFF" : "ON")));
+    auto* ownership=dialog->findChild<QLabel*>("decklab-controller-fx-ownership"); ASSERT_NE(nullptr,ownership);
+    EXPECT_TRUE(ownership->text().contains("separate dedicated chains"));
+    auto* refresh=dialog->findChild<QPushButton*>("decklab-controller-fx-refresh"); ASSERT_NE(nullptr,refresh);
+    auto* close=dialog->findChild<QPushButton*>("decklab-controller-fx-close"); ASSERT_NE(nullptr,close);
+    for(auto* action:{refresh,close}) { action->style()->unpolish(action); action->style()->polish(action); }
+    QCoreApplication::processEvents(); EXPECT_EQ(44,refresh->height()); EXPECT_EQ(44,close->height());
+    refresh->click(); QCoreApplication::processEvents(); EXPECT_EQ(0,writes);
+    for(size_t index=0;index<keys.size();++index) EXPECT_DOUBLE_EQ(snapshot[index],ControlObject::get(keys[index]));
+    // An external controller change is reflected by Refresh, without the view
+    // writing that control back or changing any neighbouring unit.
+    ControlObject::set(ConfigKey("[EffectRack1_EffectUnit4]","mix"),.73); const int externalWrites=writes;
+    refresh->click(); QCoreApplication::processEvents(); EXPECT_EQ(externalWrites,writes);
+    EXPECT_TRUE(text->toPlainText().contains("Unit 4 · OFF · Mix 73%"));
+    const QString output=qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
+    if(!output.isEmpty()) EXPECT_TRUE(dialog->grab().save(QDir(output).filePath("controller-fx-details.png")));
+    close->click(); QCoreApplication::processEvents(); EXPECT_EQ(externalWrites,writes);
 }
 
 TEST_F(NativeDeckLabTest, LinkedZoomFollowsTheLastStableExternalChangeWithoutFeedback) {

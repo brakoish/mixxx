@@ -78,6 +78,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void refreshHotcues(int deck, const QString& prefix);
     void showBeatgrid(int deck, bool followsLayer);
     void showTrackInfo(int actualDeck);
+    void showControllerFxInfo();
     void refreshTransport(int deck, const QString& prefix);
     QWidget* buildBrowse();
     QWidget* buildSampler();

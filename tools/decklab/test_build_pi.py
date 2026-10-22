@@ -80,6 +80,7 @@ class BuildGuards(unittest.TestCase):
                          "CompactDeckShowsActualFractionalLoopLength",
                          "DeckAndMasterFeedbackFollowRealControlsInBothLayouts",
                          "EmptyDeckReadoutReturnsToBrowseWithoutRetargetingChangedTrack",
+                         "ControllerFxDetailsReadAllRealUnitsWithoutControlWrites",
                          "LinkedZoomFollowsTheLastStableExternalChangeWithoutFeedback",
                          "MasterLockMissingBeatGridAndSavedLoopIndicatorsUseRealState",
                          "NativeComboPopupRowsHaveTouchHeight",
@@ -92,7 +93,7 @@ class BuildGuards(unittest.TestCase):
                          "HotcueIdentifiersPreserveNumericDefaultAndSavedLabels", "LetterIdentifiersRequireExplicitSkinOptIn"):
                 required += '<testcase name="%s" classname="WaveformMarkLabelTest" status="run"/>' % name
             path.write_text('<testsuites failures="0" errors="0"><testsuite>' + common + required + '</testsuite></testsuites>')
-            self.assertEqual(build_pi.test_summary(path)["enabled_passed"], 227)
+            self.assertEqual(build_pi.test_summary(path)["enabled_passed"], 228)
             path.write_text(path.read_text().replace('failures="0"', 'failures="1"'))
             with self.assertRaises(ValueError):
                 build_pi.test_summary(path)

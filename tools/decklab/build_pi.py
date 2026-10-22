@@ -93,6 +93,7 @@ def test_summary(path):
                     "CompactDeckShowsActualFractionalLoopLength",
                     "DeckAndMasterFeedbackFollowRealControlsInBothLayouts",
                     "EmptyDeckReadoutReturnsToBrowseWithoutRetargetingChangedTrack",
+                    "ControllerFxDetailsReadAllRealUnitsWithoutControlWrites",
                     "LinkedZoomFollowsTheLastStableExternalChangeWithoutFeedback",
                     "MasterLockMissingBeatGridAndSavedLoopIndicatorsUseRealState",
                     "NativeComboPopupRowsHaveTouchHeight",
