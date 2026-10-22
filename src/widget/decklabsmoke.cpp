@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "widget/decklabsmoke.h"
 #include <QApplication>
+#include <QComboBox>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
@@ -47,6 +48,11 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
         else if (*step < 15) { surface->selectPage(4); surface->findChild<QPushButton*>(QStringLiteral("decklab-settings-category-%1").arg(*step - 10))->click(); }
         else if (*step == 15) surface->openCollection();
         else if (*step == 16) surface->findChild<QPushButton*>("decklab-search")->click();
+        else if (*step == 17 || *step == 18) {
+            auto* layout=surface->findChild<QComboBox*>("decklab-deck-layout");
+            QMetaObject::invokeMethod(layout,"activated",Q_ARG(int,*step==17?2:0));
+            surface->selectPage(0);
+        }
         else {
             timer->stop();
             QFile file(QDir(output).filePath("native-smoke.json"));

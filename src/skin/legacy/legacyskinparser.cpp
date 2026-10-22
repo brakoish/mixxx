@@ -1649,6 +1649,11 @@ QWidget* LegacySkinParser::parseDeckLab(const QDomElement& node) {
         const int deck = visual.firstChildElement(QStringLiteral("Channel")).text().toInt();
         panel->addWaveform(parseVisual(visual), deck);
     }
+    const auto overviews = node.firstChildElement(QStringLiteral("Overviews"));
+    for (auto overview = overviews.firstChildElement(QStringLiteral("Overview"));
+            !overview.isNull(); overview = overview.nextSiblingElement(QStringLiteral("Overview"))) {
+        panel->addOverview(parseOverview(overview), overview.firstChildElement(QStringLiteral("Channel")).text().toInt());
+    }
     m_pParent = panel->browserContainer();
     auto* sidebar = qobject_cast<WLibrarySidebar*>(parseLibrarySidebar(node.firstChildElement("LibrarySidebar")));
     auto* library = qobject_cast<WLibrary*>(parseLibrary(node.firstChildElement("Library")));

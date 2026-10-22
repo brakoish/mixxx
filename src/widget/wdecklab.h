@@ -32,6 +32,7 @@ class QSlider;
 class QProgressBar;
 class QStackedWidget;
 class QVBoxLayout;
+class QGridLayout;
 
 // A native appliance surface. All audio remains in Mixxx's existing engine.
 // No window coordinates, injected keys, desktop focus polling or MIDI IPC.
@@ -44,6 +45,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     QWidget* waveformContainer() const { return m_waveforms; }
     QWidget* browserContainer() const { return m_browser; }
     void addWaveform(QWidget* widget, int deck);
+    void addOverview(QWidget* widget, int deck);
     void bindBrowser(WSearchLineEdit* search, WLibrarySidebar* sidebar, WLibrary* library);
     void selectPage(int page);
     int currentPage() const { return m_page; }
@@ -71,6 +73,8 @@ class WDeckLab : public QWidget, public WBaseWidget {
     QPushButton* button(const QString& text, std::function<void()> action,
             QWidget* parent = nullptr, const QString& name = {});
     QWidget* buildDecks();
+    QWidget* buildTransport(int deck, bool followsLayer, QWidget* parent);
+    void refreshTransport(int deck, const QString& prefix);
     QWidget* buildBrowse();
     QWidget* buildSampler();
     QWidget* buildEffects();
@@ -106,7 +110,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     QStackedWidget* m_pages;
     QWidget* m_deckControls;
     QWidget* m_waveforms;
-    QVBoxLayout* m_waveLayout;
+    QGridLayout* m_waveLayout;
     QWidget* m_browser;
     QStackedWidget* m_browseStack;
     WLibrarySidebar* m_sidebar = nullptr;
@@ -128,8 +132,12 @@ class WDeckLab : public QWidget, public WBaseWidget {
     std::array<QLabel*, 4> m_playStates{};
     std::array<QWidget*, 4> m_waveHeaders{};
     std::array<QWidget*, 4> m_deckMetrics{};
+    std::array<QWidget*, 4> m_deckSecondary{};
+    std::array<QLabel*, 4> m_modes{};
+    std::array<QWidget*, 4> m_cardTransports{};
+    std::array<QWidget*, 4> m_overviews{};
     std::array<QLabel*, 2> m_deckIdentifiers{};
-    std::array<qint64, 2> m_syncFeedbackUntil{};
+    std::array<qint64, 4> m_syncFeedbackUntil{};
     std::array<QPushButton*, 4> m_loadButtons{};
     std::array<QPushButton*, 16> m_samples{};
     std::array<QWidget*, 4> m_deckWaveforms{};
@@ -170,6 +178,9 @@ class WDeckLab : public QWidget, public WBaseWidget {
     QList<QPushButton*> m_toolButtons;
     std::array<DeckLabTempoPresenter, 4> m_tempos{};
     std::array<int, 2> m_layers{1, 2};
+    int m_autoDeckLayout = 2;
+    bool m_fourDeckLayout = false;
+    quint64 m_interactionEpoch = 0;
     double m_measuredFps = 0;
     int m_droppedFrames = 0;
     QLabel* m_performanceStatus = nullptr;

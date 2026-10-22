@@ -9,6 +9,7 @@
 #include <QTextDocument>
 
 #include "control/controlobject.h"
+#include "control/controlproxy.h"
 #include "effects/effectchain.h"
 #include "effects/effectslot.h"
 #include "library/libraryfeature.h"
@@ -66,6 +67,7 @@ class NativeDeckLabTest : public BaseSignalPathTest {
   protected:
     void SetUp() override {
         BaseSignalPathTest::SetUp();
+        config()->setValue(ConfigKey("[DeckLab]", "DeckLayout"), 2);
         fourthDeck = std::make_unique<Deck>(nullptr, config(), m_pEngineMixer.get(), m_pEffectsManager.get(),
                 EngineChannel::CENTER, m_pEngineMixer->registerChannelGroup(QStringLiteral("[Channel4]")));
         addDeck(fourthDeck->getEngineDeck());
@@ -87,6 +89,8 @@ class NativeDeckLabTest : public BaseSignalPathTest {
         for (int deck = 1; deck <= 4; ++deck) {
             auto* slot = new QWidget(panel.get()); slot->setStyleSheet("background:#000");
             panel->addWaveform(slot, deck);
+            auto* overview = new QWidget(panel.get()); overview->setStyleSheet("background:#181818");
+            panel->addOverview(overview, deck);
         }
         panel->resize(800, 480); panel->show(); QCoreApplication::processEvents();
     }
@@ -401,6 +405,8 @@ TEST_F(NativeDeckLabTest, DeckIdentityAndLabelledReadoutsFitWithoutStealingWavef
     ControlObject::set(ConfigKey("[Channel1]", "duration"), 7200);
     QTest::qWait(150);
     auto* numbers = panel->findChild<QLabel*>("decklab-numbers-1"); ASSERT_NE(nullptr, numbers);
+    // These fixtures have no running DeckVisuals render loop to mirror key -> visual_key.
+    ControlObject::set(ConfigKey("[Channel1]", "visual_key"), 5);
     QComboBox* format = nullptr;
     for (auto* combo : panel->findChildren<QComboBox*>())
         if (combo->itemText(0).startsWith("Camelot")) format = combo;
@@ -486,6 +492,103 @@ TEST_F(NativeDeckLabTest, TouchBeatSyncMatchesTempoAndPhaseOnceWithoutStopping) 
     for (int n = 0; n < 8; ++n) ProcessBuffer();
     EXPECT_NEAR(132.6, ControlObject::get(ConfigKey("[Channel2]", "bpm")), 1e-6);
     EXPECT_NEAR(130, ControlObject::get(ConfigKey("[Channel1]", "bpm")), 1e-6);
+}
+
+TEST_F(NativeDeckLabTest, AutoLayoutShowsFourRealDecksAndRetainsLoadedUpperDecks) {
+    auto* choice = panel->findChild<QComboBox*>("decklab-deck-layout"); ASSERT_NE(nullptr, choice);
+    QMetaObject::invokeMethod(choice, "activated", Q_ARG(int, 0));
+    panel->setAudioOutputConfigured(true); ControlObject::set(ConfigKey("[SoundManager]", "status"), 2);
+    ControlObject::set(ConfigKey("[DeckLabNative]", "tools_ready"), 1);
+    ControlObject::set(ConfigKey("[DeckLabNative]", "layout_decks"), 4); QCoreApplication::processEvents();
+    EXPECT_TRUE(panel->findChild<QPushButton*>("decklab-card-4-play")->isVisible());
+    EXPECT_FALSE(panel->findChild<QPushButton*>("decklab-1-play")->isVisible());
+    auto track = fourthDeck->loadFakeTrack(false, 134); track->setTitle("Fourth deck — actual target"); ProcessBuffer();
+    ControlObject::set(ConfigKey("[DeckLabNative]", "layout_decks"), 2); QTest::qWait(150);
+    EXPECT_TRUE(panel->findChild<QPushButton*>("decklab-card-4-play")->isVisible());
+    auto* play = panel->findChild<QPushButton*>("decklab-card-4-play"); ASSERT_TRUE(play->isEnabled());
+    play->click(); QTest::qWait(150);
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel4]", "play")));
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel2]", "play")));
+    EXPECT_EQ(QStringLiteral("Pause"), play->text());
+    const QString output = qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
+    if (!output.isEmpty()) EXPECT_TRUE(panel->grab().save(QDir(output).filePath("decks-fixture-four.png")));
+    for (int deck = 1; deck <= 4; ++deck) {
+        auto* cue = panel->findChild<QPushButton*>(QStringLiteral("decklab-card-%1-cue_default").arg(deck));
+        EXPECT_EQ(48, cue->height()); EXPECT_GE(cue->width(), 100);
+        auto* overview = panel->findChild<QWidget*>(QStringLiteral("decklab-overview-%1").arg(deck));
+        ASSERT_NE(nullptr, overview); EXPECT_TRUE(overview->isVisible()); EXPECT_EQ(24, overview->height());
+        EXPECT_TRUE(overview->testAttribute(Qt::WA_TransparentForMouseEvents)); EXPECT_FALSE(overview->acceptDrops());
+        EXPECT_TRUE(panel->rect().contains(QRect(cue->mapTo(panel.get(), QPoint()), cue->size())));
+    }
+    EXPECT_EQ(QSize(800,480), panel->size());
+}
+
+TEST_F(NativeDeckLabTest, LayerOrLayoutChangeCancelsPendingTransportPress) {
+    m_pMixerDeck1->loadFakeTrack(false, 128); m_pMixerDeck3->loadFakeTrack(false, 132); ProcessBuffer();
+    auto* play = panel->findChild<QPushButton*>("decklab-1-play");
+    QTest::mousePress(play, Qt::LeftButton);
+    ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 1); QCoreApplication::processEvents();
+    QTest::mouseRelease(play, Qt::LeftButton);
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "play")));
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel3]", "play")));
+    ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 0); QCoreApplication::processEvents();
+    QTest::mousePress(play, Qt::LeftButton);
+    auto* choice = panel->findChild<QComboBox*>("decklab-deck-layout");
+    QMetaObject::invokeMethod(choice, "activated", Q_ARG(int, 2)); QCoreApplication::processEvents();
+    QTest::mouseRelease(play, Qt::LeftButton);
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "play")));
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel3]", "play")));
+}
+
+TEST_F(NativeDeckLabTest, BrowseLoadCancelsChangedTargetAndOffersFourDirectDestinations) {
+    m_pMixerDeck1->loadFakeTrack(false,128); m_pMixerDeck3->loadFakeTrack(false,132); ProcessBuffer();
+    std::unique_ptr<ControlObject> missing3, missing4;
+    if (!ControlObject::getControl(ConfigKey("[Channel3]", "LoadSelectedTrack"))) missing3 = std::make_unique<ControlObject>(ConfigKey("[Channel3]", "LoadSelectedTrack"));
+    if (!ControlObject::getControl(ConfigKey("[Channel4]", "LoadSelectedTrack"))) missing4 = std::make_unique<ControlObject>(ConfigKey("[Channel4]", "LoadSelectedTrack"));
+    ControlProxy third("[Channel3]", "LoadSelectedTrack"), fourth("[Channel4]", "LoadSelectedTrack");
+    int thirdRequests=0, fourthRequests=0;
+    QObject::connect(&third, &ControlProxy::valueChanged, [&thirdRequests](double v) { if (v > 0) ++thirdRequests; });
+    QObject::connect(&fourth, &ControlProxy::valueChanged, [&fourthRequests](double v) { if (v > 0) ++fourthRequests; });
+    panel->openCollection(); auto* load = panel->findChild<QPushButton*>("decklab-load-1");
+    // The fixture has no collection table. Enable the button to model a valid
+    // selection on both paused targets and inspect only destination dispatch.
+    load->setEnabled(true); QTest::mousePress(load, Qt::LeftButton);
+    ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 1); QCoreApplication::processEvents();
+    load->setEnabled(true); QTest::mouseRelease(load, Qt::LeftButton);
+    EXPECT_EQ(0, thirdRequests);
+    auto* choice=panel->findChild<QComboBox*>("decklab-deck-layout");
+    QMetaObject::invokeMethod(choice, "activated", Q_ARG(int,2)); QCoreApplication::processEvents();
+    auto* load4=panel->findChild<QPushButton*>("decklab-load-4"); ASSERT_TRUE(load4->isVisible());
+    EXPECT_EQ(QStringLiteral("Load 4"),load4->text()); load4->setEnabled(true); load4->click();
+    EXPECT_EQ(1,fourthRequests); EXPECT_EQ(0,thirdRequests);
+}
+
+TEST_F(NativeDeckLabTest, LayoutRoundTripsKeepModeAndPitchReadoutsInsideEachDeck) {
+    m_pMixerDeck1->loadFakeTrack(false,128); m_pMixerDeck2->loadFakeTrack(false,130);
+    m_pMixerDeck3->loadFakeTrack(false,132); fourthDeck->loadFakeTrack(false,134); ProcessBuffer();
+    auto* choice=panel->findChild<QComboBox*>("decklab-deck-layout");
+    for(int index : {2,1,2,1,2}) {
+        QMetaObject::invokeMethod(choice,"activated",Q_ARG(int,index));
+        panel->selectPage(1); panel->selectPage(0); QCoreApplication::processEvents();
+        for(int deck=1;deck<=4;++deck) {
+            const QString group=QStringLiteral("[Channel%1]").arg(deck);
+            ControlObject::set(ConfigKey(group,"loop_start_position"),0);
+            ControlObject::set(ConfigKey(group,"loop_end_position"),44100);
+            for(const auto& key:{"loop_enabled","keylock","quantize","sync_enabled"}) ControlObject::set(ConfigKey(group,key),1);
+        }
+        QTest::qWait(150);
+        for(int deck=1;deck<=4;++deck) {
+            auto* pitch=panel->findChild<QLabel*>(QStringLiteral("decklab-pitch-%1").arg(deck));
+            auto* modes=panel->findChild<QLabel*>(QStringLiteral("decklab-modes-%1").arg(deck));
+            if(!pitch->isVisible()) continue;
+            EXPECT_TRUE(modes->isVisible()); EXPECT_TRUE(pitch->text().contains("PITCH"));
+            EXPECT_TRUE(modes->text().contains("LOOP")); EXPECT_TRUE(modes->text().contains("KEYLOCK"));
+            EXPECT_LE(modes->fontMetrics().horizontalAdvance(modes->text()),modes->width());
+            EXPECT_TRUE(panel->rect().contains(QRect(pitch->mapTo(panel.get(),QPoint()),pitch->size())));
+        }
+    }
+    const QString output=qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
+    if(!output.isEmpty()) EXPECT_TRUE(panel->grab().save(QDir(output).filePath("decks-fixture-four-modes.png")));
 }
 
 TEST_F(NativeDeckLabTest, LatchedRmxFollowsTempoChangesWithoutAnotherTouch) {
