@@ -3,6 +3,7 @@
 
 #include <QCoreApplication>
 #include <QEvent>
+#include <QFocusEvent>
 #include <QFontMetrics>
 #include <QPaintEvent>
 #include <QPainter>
@@ -13,25 +14,22 @@
 #include "moc_decklabdeckwidgets.cpp"
 
 namespace {
-// Matte black / graphite with white type. Color only carries state.
-const QColor kPanel(0x13, 0x13, 0x13);
-const QColor kPanelPressed(0x1e, 0x1e, 0x1e);
-const QColor kMiniPanel(0x0e, 0x0e, 0x0e);
-const QColor kHairline(0x2a, 0x2a, 0x2a);
-const QColor kText(0xf2, 0xf2, 0xf2);
-const QColor kSecondary(0xa6, 0xa6, 0xa6);
-const QColor kCaption(0x80, 0x80, 0x80);
-const QColor kDim(0x5e, 0x5e, 0x5e);
-const QColor kLampOff(0x34, 0x34, 0x34);
-const QColor kPlay(0x3d, 0xdc, 0x84);
-const QColor kCue(0xff, 0x9f, 0x1a);
-const QColor kMaster(0xf5, 0xa6, 0x23);
-const QColor kSync(0x4c, 0xc2, 0xff);
-const QColor kHeadphones(0xe9, 0xe9, 0xe9);
-const QColor kSlip(0xc0, 0x84, 0xfc);
-const QColor kLoop(0x6e, 0xe1, 0x28);
-const QColor kWarning(0xff, 0x4d, 0x4d);
-const QColor kWarningDim(0x7c, 0x22, 0x22);
+// Brand neutrals (ground, panel, raise, line, muted, text). Deck colors
+// carry identity; live red is only for the end-of-track warning and clip.
+const QColor kPanel(0x0d, 0x0f, 0x12);
+const QColor kPanelPressed(0x20, 0x24, 0x2b);
+const QColor kMiniPanel(0x16, 0x19, 0x1e);
+const QColor kHairline(0x2c, 0x31, 0x3a);
+const QColor kText(0xf2, 0xf4, 0xf7);
+const QColor kSecondary(0x9a, 0xa3, 0xaf);
+const QColor kDim(0x59, 0x60, 0x6b);
+const QColor kLampOff(0x2c, 0x31, 0x3a);
+const QColor kLampLit(0xf2, 0xf4, 0xf7);
+const QColor kDecimals(0xc9, 0xce, 0xd6);
+const QColor kPlay(0x2f, 0xd2, 0x7a);
+const QColor kCue(0xff, 0x7a, 0x1a);
+const QColor kWarning(0xff, 0x3d, 0x2e);
+const QColor kWarningDim(0x5c, 0x1a, 0x15);
 
 int digitCell(const QFontMetrics& metrics) {
     int cell = 0;
@@ -107,35 +105,37 @@ int DeckLabStripRenderer::left() const {
 QRect DeckLabStripRenderer::rect(Part part) const {
     const int width = m_size.width();
     const int height = m_size.height();
-    // Full-mode value columns scale with the card width so wider screens
-    // keep the same proportions as the 400 px design.
-    const int bpmWidth = width * 370 / 1000;
+    // Full-mode columns scale with the card width so wider screens keep the
+    // proportions of the 400 px design: badge, state and title; BPM, tempo,
+    // key and clock; lamps with the beat meter on the right.
+    const int bpmWidth = width * 250 / 1000;
     const int tempoLeft = 12 + bpmWidth + 4;
-    const int tempoWidth = width * 190 / 1000;
-    const int keyLeft = tempoLeft + tempoWidth + 2;
-    const int keyWidth = width * 140 / 1000;
+    const int tempoWidth = width * 240 / 1000;
+    const int keyLeft = tempoLeft + tempoWidth + 4;
+    const int keyWidth = width * 150 / 1000;
     const int timeLeft = keyLeft + keyWidth;
+    const int phaseWidth = std::clamp(width * 31 / 100, 110, 200);
     switch (m_mode) {
     case Mode::Full:
         switch (part) {
-        case Part::Phase:
-            return QRect(14, 4, width - 24, 6);
         case Part::Identity:
-            return QRect(12, 12, 66, 24);
-        case Part::Chips:
-            return QRect(width - 112, 12, 104, 24);
+            return QRect(12, 6, 72, 26);
         case Part::Title:
-            return QRect(78, 12, std::max(0, width - 112 - 4 - 78), 24);
-        case Part::Captions:
-            return QRect(12, 36, width - 20, 17);
+            return QRect(86, 6, std::max(0, width - 96), 26);
         case Part::Bpm:
-            return QRect(12, 53, bpmWidth, height - 53);
+            return QRect(12, 34, bpmWidth, 32);
         case Part::Tempo:
-            return QRect(tempoLeft, 53, tempoWidth, height - 53);
+            return QRect(tempoLeft, 34, tempoWidth, 32);
         case Part::Key:
-            return QRect(keyLeft, 53, keyWidth, height - 53);
+            return QRect(keyLeft, 34, keyWidth, 32);
         case Part::Time:
-            return QRect(timeLeft, 53, width - timeLeft, height - 53);
+            return QRect(timeLeft, 34, width - timeLeft, 32);
+        case Part::Chips:
+            return QRect(12, 67, std::max(0, width - 24 - phaseWidth - 8), 18);
+        case Part::Phase:
+            return QRect(width - 10 - phaseWidth, 72, phaseWidth, 8);
+        case Part::Captions:
+            return QRect();
         }
         break;
     case Mode::Compact: {
@@ -147,7 +147,7 @@ QRect DeckLabStripRenderer::rect(Part part) const {
         case Part::Identity:
             return QRect(10, 11, 60, 24);
         case Part::Title:
-            return QRect(72, 11, std::max(0, width - 80), 24);
+            return QRect(76, 11, std::max(0, width - 84), 24);
         case Part::Bpm:
             return QRect(10, 37, half + 2, 32);
         case Part::Time:
@@ -290,7 +290,9 @@ QStringList DeckLabStripRenderer::overflowingParts() const {
     if (bpmWidth > rect(Part::Bpm).width() - 4) {
         overflowing << QStringLiteral("bpm");
     }
-    if (tabularWidth(whole, m_state.remaining) > rect(Part::Time).width() - (mini ? 8 : 10)) {
+    // Long mixes (100+ minutes) may shrink the clock down to 20 px.
+    const QFontMetrics clock(font(mini ? 14 : 20, mini ? QFont::DemiBold : QFont::Bold));
+    if (tabularWidth(clock, m_state.remaining) > rect(Part::Time).width() - (mini ? 8 : 10)) {
         overflowing << QStringLiteral("time");
     }
     const QFontMetrics key(font(mini ? 14 : 16, QFont::Bold));
@@ -310,7 +312,7 @@ void DeckLabStripRenderer::paintBadge(QPainter& painter) const {
     const bool mini = m_mode == Mode::Mini;
     const QRect badge = mini ? QRect(6, (m_size.height() - 16) / 2, 22, 16)
             : m_mode == Mode::Compact ? QRect(12, 13, 24, 20)
-                                      : QRect(14, 14, 26, 20);
+                                      : QRect(14, 8, 26, 22);
     QColor color = deckLabDeckColor(m_state.deck);
     if (!m_state.loaded) {
         color = color.darker(170);
@@ -326,9 +328,11 @@ void DeckLabStripRenderer::paintBadge(QPainter& painter) const {
 void DeckLabStripRenderer::paintTransport(QPainter& painter, const QRect& area) const {
     const QPoint center = area.center();
     if (!m_state.loaded) {
-        painter.setFont(font(12, QFont::DemiBold, true));
-        painter.setPen(kDim);
-        painter.drawText(area, Qt::AlignVCenter | Qt::AlignLeft, QCoreApplication::translate("DeckLabDeckStrip", "EMPTY"));
+        // Empty deck: a dim stop square.
+        const int size = m_mode == Mode::Mini ? 8 : 10;
+        painter.setPen(QPen(kDim, 1.5));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(QRectF(area.left() + 3, center.y() - size / 2.0, size, size));
         return;
     }
     if (m_state.playing) {
@@ -349,8 +353,8 @@ void DeckLabStripRenderer::paintTransport(QPainter& painter, const QRect& area) 
         // PAUSE: two bars.
         const int size = m_mode == Mode::Mini ? 10 : 13;
         const int top = center.y() - size / 2;
-        painter.fillRect(QRect(area.left() + 2, top, 4, size), QColor(0xd4, 0xd4, 0xd4));
-        painter.fillRect(QRect(area.left() + 9, top, 4, size), QColor(0xd4, 0xd4, 0xd4));
+        painter.fillRect(QRect(area.left() + 2, top, 4, size), kDecimals);
+        painter.fillRect(QRect(area.left() + 9, top, 4, size), kDecimals);
     }
 }
 
@@ -400,25 +404,30 @@ void DeckLabStripRenderer::paintPhase(QPainter& painter) const {
     const int segment = (area.width() - 3 * gap) / 4;
     for (int index = 0; index < 4; ++index) {
         const QRect cell(area.left() + index * (segment + gap), area.top(), segment, area.height());
-        QColor color(0x22, 0x22, 0x22);
+        // The current beat lights in the deck's color, dimmer while paused.
+        QColor color = kLampOff;
         if (m_state.loaded && m_state.phase < 0) {
-            color = QColor(0x1a, 0x1a, 0x1a);
+            color = kMiniPanel;
         } else if (m_state.loaded && index == m_state.phase) {
-            color = m_state.playing ? kText : QColor(0x8c, 0x8c, 0x8c);
+            color = m_state.playing ? deckLabDeckColor(m_state.deck) : deckLabDeckColor(m_state.deck).darker(170);
         }
         painter.fillRect(cell, color);
     }
 }
 
 int DeckLabStripRenderer::paintChip(QPainter& painter, int x, int y, int height,
-        const QString& text, bool on, const QColor& lit, bool alignRight) const {
+        const QString& text, bool on, const QColor& lit, bool alignRight, bool outlined) const {
     const QFont chipFont = font(12, QFont::Bold, true);
     const QFontMetrics metrics(chipFont);
     const int width = metrics.horizontalAdvance(text) + (height < 17 ? 8 : 12);
     const QRectF chip(alignRight ? x - width : x, y, width, height);
     QPainterPath path;
     path.addRoundedRect(chip.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3);
-    if (on) {
+    if (on && outlined) {
+        painter.setPen(QPen(lit, 1));
+        painter.drawPath(path);
+        painter.setPen(lit);
+    } else if (on) {
         painter.fillPath(path, lit);
         painter.setPen(inkOn(lit));
     } else {
@@ -450,18 +459,18 @@ void DeckLabStripRenderer::paint(QPainter& painter, const QRect& dirty, bool pre
     if (needs(Part::Identity)) {
         paintBadge(painter);
         const QRect transport = mini ? QRect(32, 0, 20, m_size.height())
-                : compact            ? QRect(40, 11, 30, 24)
-                                     : QRect(46, 12, 32, 24);
+                : compact            ? QRect(40, 11, 32, 24)
+                                     : QRect(46, 6, 38, 26);
         paintTransport(painter, transport);
     }
     if (needs(Part::Title)) {
-        paintTitle(painter, rect(Part::Title).adjusted(0, 0, -2, 0), 14);
+        paintTitle(painter, rect(Part::Title).adjusted(0, 0, -2, 0), m_mode == Mode::Full ? 15 : 14);
     }
     if (!m_state.loaded) {
         if (!mini && !compact && needs(Part::Bpm)) {
             painter.setFont(font(14, QFont::Normal));
             painter.setPen(kSecondary);
-            painter.drawText(QRect(14, 40, m_size.width() - 24, m_size.height() - 44),
+            painter.drawText(QRect(14, 34, m_size.width() - 24, m_size.height() - 38),
                     Qt::AlignCenter, QCoreApplication::translate("DeckLabDeckStrip", "Tap to browse and load a track"));
         }
         if (focused) {
@@ -470,90 +479,54 @@ void DeckLabStripRenderer::paint(QPainter& painter, const QRect& dirty, bool pre
         }
         return;
     }
-    // Lamps and captions.
-    if (!mini && !compact && needs(Part::Captions)) {
-        {
-            const QRect area = rect(Part::Captions);
-            const QFont captionFont = font(12, QFont::DemiBold, true);
-            const QFontMetrics metrics(captionFont);
-            const int baseline = area.top() + 12;
-            painter.setFont(captionFont);
-            painter.setPen(kCaption);
-            painter.drawText(QPoint(14, baseline), QCoreApplication::translate("DeckLabDeckStrip", "BPM"));
-            int x = 14 + metrics.horizontalAdvance(QCoreApplication::translate("DeckLabDeckStrip", "BPM")) + 8;
-            x += paintChip(painter, x, area.top() + 1, 15, QCoreApplication::translate("DeckLabDeckStrip", "SYNC"), m_state.sync, kSync, false) + 4;
-            paintChip(painter, x, area.top() + 1, 15, QCoreApplication::translate("DeckLabDeckStrip", "MASTER"), m_state.master, kMaster, false);
-            painter.setFont(captionFont);
-            painter.setPen(kCaption);
-            const QRect tempo = rect(Part::Tempo);
-            painter.drawText(QPoint(tempo.left() + 2, baseline), QCoreApplication::translate("DeckLabDeckStrip", "TEMPO"));
-            int tx = tempo.left() + 2 + metrics.horizontalAdvance(QCoreApplication::translate("DeckLabDeckStrip", "TEMPO")) + 6;
-            painter.setPen(kSecondary);
-            painter.drawText(QPoint(tx, baseline), m_state.range);
-            tx += metrics.horizontalAdvance(m_state.range) + 6;
-            // Tempo-center lamp: lit at 0.00%.
-            painter.setPen(Qt::NoPen);
-            painter.setBrush(m_state.tempoCentered ? kPlay : kLampOff);
-            painter.drawEllipse(QRectF(tx, baseline - 7, 7, 7));
-            painter.setBrush(Qt::NoBrush);
-            const QRect key = rect(Part::Key);
-            painter.setPen(kCaption);
-            painter.drawText(QPoint(key.left() + 2, baseline), QCoreApplication::translate("DeckLabDeckStrip", "KEY"));
-            if (m_state.keyMatch != 0) {
-                const int kx = key.left() + 2 + metrics.horizontalAdvance(QCoreApplication::translate("DeckLabDeckStrip", "KEY")) + 6;
-                if (m_state.keyMatch > 0) {
-                    // Compatible with the reference deck: a small check.
-                    QPainterPath check;
-                    check.moveTo(kx, baseline - 4);
-                    check.lineTo(kx + 3, baseline - 1);
-                    check.lineTo(kx + 9, baseline - 8);
-                    painter.setPen(QPen(kPlay, 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-                    painter.drawPath(check);
-                } else {
-                    painter.setPen(QPen(QColor(0x9a, 0x4a, 0x4a), 1.5));
-                    painter.drawLine(QPointF(kx, baseline - 8), QPointF(kx + 7, baseline - 1));
-                    painter.drawLine(QPointF(kx + 7, baseline - 8), QPointF(kx, baseline - 1));
-                }
-            }
-            painter.setPen(kCaption);
-            const QString remain = QCoreApplication::translate("DeckLabDeckStrip", "REMAIN");
-            painter.drawText(QPoint(m_size.width() - 10 - metrics.horizontalAdvance(remain), baseline), remain);
-        }
-    }
+    // Lamps.
     if (!mini && needs(Part::Chips)) {
         const QRect area = rect(Part::Chips);
         if (compact) {
             int x = area.left();
             // Only lit lamps, in order of importance, as many as fit.
-            const QList<std::pair<QString, std::pair<bool, QColor>>> lamps{
-                    {QCoreApplication::translate("DeckLabDeckStrip", "MASTER"), {m_state.master, kMaster}},
-                    {QCoreApplication::translate("DeckLabDeckStrip", "SYNC"), {m_state.sync, kSync}},
-                    {QCoreApplication::translate("DeckLabDeckStrip", "HP"), {m_state.pfl, kHeadphones}},
-                    {QCoreApplication::translate("DeckLabDeckStrip", "LOOP %1").arg(m_state.loopSize), {m_state.looping, kLoop}},
-                    {QCoreApplication::translate("DeckLabDeckStrip", "KEY"), {m_state.keylock, QColor(0xd7, 0x44, 0x48)}},
-                    {QCoreApplication::translate("DeckLabDeckStrip", "Q"), {m_state.quantize, QColor(0xd7, 0x44, 0x48)}},
-                    {QCoreApplication::translate("DeckLabDeckStrip", "SLIP"), {m_state.slip, kSlip}}};
+            struct Lamp {
+                QString text;
+                bool on;
+                QColor color;
+                bool outlined;
+            };
+            const QColor deckColor = deckLabDeckColor(m_state.deck);
+            const std::array<Lamp, 7> lamps{{
+                    {QCoreApplication::translate("DeckLabDeckStrip", "MASTER"), m_state.master, deckColor, false},
+                    {QCoreApplication::translate("DeckLabDeckStrip", "SYNC"), m_state.sync, deckColor, true},
+                    {QCoreApplication::translate("DeckLabDeckStrip", "HP"), m_state.pfl, kLampLit, false},
+                    {QCoreApplication::translate("DeckLabDeckStrip", "LOOP %1").arg(m_state.loopSize), m_state.looping, kLampLit, false},
+                    {QCoreApplication::translate("DeckLabDeckStrip", "KEY"), m_state.keylock, kLampLit, false},
+                    {QCoreApplication::translate("DeckLabDeckStrip", "Q"), m_state.quantize, kLampLit, false},
+                    {QCoreApplication::translate("DeckLabDeckStrip", "SLIP"), m_state.slip, kLampLit, false}}};
             const QFontMetrics metrics(font(12, QFont::Bold, true));
             for (const auto& lamp : lamps) {
-                if (!lamp.second.first) {
+                if (!lamp.on) {
                     continue;
                 }
-                const int width = metrics.horizontalAdvance(lamp.first) + 12;
+                const int width = metrics.horizontalAdvance(lamp.text) + 12;
                 if (x + width > area.right()) {
                     break;
                 }
-                x += paintChip(painter, x, area.top() + 3, 18, lamp.first, true, lamp.second.second, false) + 3;
+                x += paintChip(painter, x, area.top() + 3, 18, lamp.text, true, lamp.color, false, lamp.outlined) + 3;
             }
         } else {
-            int x = area.right();
-            x -= paintChip(painter, x, area.top() + 3, 18, QCoreApplication::translate("DeckLabDeckStrip", "HP"), m_state.pfl, kHeadphones, true) + 4;
+            // MASTER fills and SYNC outlines in the deck's color; HP and
+            // SLIP light white.
+            const QColor deckColor = deckLabDeckColor(m_state.deck);
+            int x = area.left() + 2;
+            const int top = area.top() + 1;
+            x += paintChip(painter, x, top, 16, QCoreApplication::translate("DeckLabDeckStrip", "MASTER"), m_state.master, deckColor, false) + 4;
+            x += paintChip(painter, x, top, 16, QCoreApplication::translate("DeckLabDeckStrip", "SYNC"), m_state.sync, deckColor, false, true) + 4;
+            x += paintChip(painter, x, top, 16, QCoreApplication::translate("DeckLabDeckStrip", "HP"), m_state.pfl, kLampLit, false) + 4;
             if (m_state.slip) {
-                paintChip(painter, x, area.top() + 3, 18, QCoreApplication::translate("DeckLabDeckStrip", "SLIP"), true, kSlip, true);
+                paintChip(painter, x, top, 16, QCoreApplication::translate("DeckLabDeckStrip", "SLIP"), true, kLampLit, false);
             }
         }
     }
     // Values.
-    const int valueBaseline = mini ? (m_size.height() + 10) / 2 : compact ? 63 : 81;
+    const int valueBaseline = mini ? (m_size.height() + 10) / 2 : compact ? 63 : 60;
     if (needs(Part::Bpm)) {
         const QRect area = rect(Part::Bpm);
         if (mini) {
@@ -579,7 +552,7 @@ void DeckLabStripRenderer::paint(QPainter& painter, const QRect& dirty, bool pre
             painter.setPen(kText);
             drawTabular(painter, area.left() + 2, valueBaseline, whole);
             painter.setFont(font(pixels * 3 / 5, QFont::DemiBold));
-            painter.setPen(QColor(0xc4, 0xc4, 0xc4));
+            painter.setPen(kDecimals);
             drawTabular(painter, area.left() + 2 + wholeWidth, valueBaseline, fraction);
         }
     }
@@ -603,9 +576,30 @@ void DeckLabStripRenderer::paint(QPainter& painter, const QRect& dirty, bool pre
                 painter.drawText(QPoint(x + 11, baseline), m_state.range);
             }
         } else {
-            painter.setFont(font(18, QFont::DemiBold));
-            painter.setPen(m_state.tempoCentered ? kSecondary : kText);
+            // Tempo %, its range and the tempo-center lamp (lit at 0.00%).
+            int pixels = 17;
+            for (; pixels > 14; --pixels) {
+                if (tabularWidth(QFontMetrics(font(pixels, QFont::DemiBold)), m_state.tempo) <= area.width() - 40) {
+                    break;
+                }
+            }
+            painter.setFont(font(pixels, QFont::DemiBold));
+            painter.setPen(m_state.tempoCentered ? kSecondary : kDecimals);
+            const QFontMetrics metrics(painter.font());
             drawTabular(painter, area.left() + 2, valueBaseline, m_state.tempo);
+            int x = area.left() + 2 + tabularWidth(metrics, m_state.tempo) + 5;
+            const QFont rangeFont = font(12, QFont::DemiBold);
+            const int rangeWidth = QFontMetrics(rangeFont).horizontalAdvance(m_state.range);
+            if (x + rangeWidth + 12 <= area.right()) {
+                painter.setFont(rangeFont);
+                painter.setPen(kSecondary);
+                painter.drawText(QPoint(x, valueBaseline), m_state.range);
+                x += rangeWidth + 5;
+            }
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(m_state.tempoCentered ? kPlay : kLampOff);
+            painter.drawEllipse(QRectF(x, valueBaseline - 7, 6, 6));
+            painter.setBrush(Qt::NoBrush);
         }
     }
     if (needs(Part::Key)) {
@@ -624,7 +618,7 @@ void DeckLabStripRenderer::paint(QPainter& painter, const QRect& dirty, bool pre
             painter.drawText(QPoint(area.right() - 6 - width, baseline), m_state.key);
             if (m_state.keyMatch != 0) {
                 painter.setPen(Qt::NoPen);
-                painter.setBrush(m_state.keyMatch > 0 ? kPlay : QColor(0x7a, 0x3a, 0x3a));
+                painter.setBrush(m_state.keyMatch > 0 ? kPlay : kDim);
                 painter.drawEllipse(QRectF(area.right() - 6 - width - 9, baseline - 7, 6, 6));
                 painter.setBrush(Qt::NoBrush);
             }
@@ -638,6 +632,22 @@ void DeckLabStripRenderer::paint(QPainter& painter, const QRect& dirty, bool pre
             painter.setFont(font(pixels, QFont::Bold));
             painter.setPen(color);
             painter.drawText(QPoint(area.left() + 2, valueBaseline), m_state.key);
+            // Harmonic hint against the master deck: a check or a cross.
+            if (m_state.keyMatch != 0) {
+                const int kx = area.left() + 2 + QFontMetrics(painter.font()).horizontalAdvance(m_state.key) + 5;
+                if (m_state.keyMatch > 0) {
+                    QPainterPath check;
+                    check.moveTo(kx, valueBaseline - 5);
+                    check.lineTo(kx + 3, valueBaseline - 2);
+                    check.lineTo(kx + 9, valueBaseline - 9);
+                    painter.setPen(QPen(kPlay, 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                    painter.drawPath(check);
+                } else {
+                    painter.setPen(QPen(kSecondary, 1.5));
+                    painter.drawLine(QPointF(kx, valueBaseline - 9), QPointF(kx + 7, valueBaseline - 2));
+                    painter.drawLine(QPointF(kx + 7, valueBaseline - 9), QPointF(kx, valueBaseline - 2));
+                }
+            }
         }
     }
     if (needs(Part::Time)) {
@@ -648,7 +658,7 @@ void DeckLabStripRenderer::paint(QPainter& painter, const QRect& dirty, bool pre
         }
         const int right = mini ? area.right() - 6 : compact ? m_size.width() - 8 : m_size.width() - 10;
         int pixels = mini ? 14 : compact ? 26 : 30;
-        const int minimum = mini ? 14 : compact ? 20 : 22;
+        const int minimum = mini ? 14 : 20;
         for (; pixels > minimum; --pixels) {
             if (tabularWidth(QFontMetrics(font(pixels, QFont::Bold)), m_state.remaining) <= right - area.left()) {
                 break;
@@ -716,7 +726,19 @@ void DeckLabDeckStrip::placeMeter() {
 
 void DeckLabDeckStrip::paintEvent(QPaintEvent* event) {
     QPainter painter(this);
-    m_renderer.paint(painter, event->rect(), isDown(), hasFocus() && focusPolicy() != Qt::NoFocus);
+    // A focus frame only for keyboard focus; touch never shows one.
+    m_renderer.paint(painter, event->rect(), isDown(), m_keyboardFocus && hasFocus());
+}
+
+void DeckLabDeckStrip::focusInEvent(QFocusEvent* event) {
+    m_keyboardFocus = event->reason() == Qt::TabFocusReason ||
+            event->reason() == Qt::BacktabFocusReason || event->reason() == Qt::ShortcutFocusReason;
+    QPushButton::focusInEvent(event);
+}
+
+void DeckLabDeckStrip::focusOutEvent(QFocusEvent* event) {
+    m_keyboardFocus = false;
+    QPushButton::focusOutEvent(event);
 }
 
 void DeckLabDeckStrip::resizeEvent(QResizeEvent* event) {
@@ -821,9 +843,9 @@ QSize DeckLabChipButton::sizeHint() const {
 void DeckLabChipButton::paintEvent(QPaintEvent*) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.fillRect(rect(), isDown() ? QColor(0x26, 0x26, 0x26) : QColor(0x15, 0x15, 0x15));
-    painter.fillRect(QRect(0, height() - 1, width(), 1), QColor(0x26, 0x26, 0x26));
-    painter.fillRect(QRect(width() - 1, 0, 1, height()), QColor(0x26, 0x26, 0x26));
+    painter.fillRect(rect(), isDown() ? kPanelPressed : kMiniPanel);
+    painter.fillRect(QRect(0, height() - 1, width(), 1), kHairline);
+    painter.fillRect(QRect(width() - 1, 0, 1, height()), kHairline);
     QFont captionFont = font();
     captionFont.setPixelSize(13);
     captionFont.setWeight(QFont::DemiBold);
@@ -836,7 +858,7 @@ void DeckLabChipButton::paintEvent(QPaintEvent*) {
     int x = std::max(6, (width() - contentWidth) / 2 + 4);
     if (!m_caption.isEmpty()) {
         painter.setFont(captionFont);
-        painter.setPen(isEnabled() ? QColor(0xa6, 0xa6, 0xa6) : QColor(0x55, 0x55, 0x55));
+        painter.setPen(isEnabled() ? kSecondary : kDim);
         painter.drawText(QRect(x, 0, captionMetrics.horizontalAdvance(m_caption), height()),
                 Qt::AlignVCenter | Qt::AlignLeft, m_caption);
         x += captionMetrics.horizontalAdvance(m_caption) + 8;
@@ -858,6 +880,31 @@ void DeckLabChipButton::paintEvent(QPaintEvent*) {
         painter.drawText(area, Qt::AlignCenter, chip.text);
         x += chipWidth + 4;
     }
+}
+
+DeckLabMark::DeckLabMark(QWidget* parent)
+        : QWidget(parent) {
+    setAttribute(Qt::WA_OpaquePaintEvent);
+    setAttribute(Qt::WA_TransparentForMouseEvents);
+    setFixedSize(48, 44);
+    setAccessibleName(QCoreApplication::translate("DeckLabDeckStrip", "Deck Lab"));
+}
+
+void DeckLabMark::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    painter.fillRect(rect(), kMiniPanel);
+    painter.fillRect(QRect(0, height() - 1, width(), 1), kHairline);
+    const double size = 26;
+    const QPointF origin((width() - size) / 2, (height() - 1 - size) / 2);
+    const auto box = [&origin, size](double x, double y, double w, double h) {
+        return QRectF(origin.x() + x * size / 100, origin.y() + y * size / 100,
+                w * size / 100, h * size / 100);
+    };
+    painter.fillRect(box(14, 32, 10, 36), kDim);
+    painter.fillRect(box(30, 22, 10, 56), kDim);
+    painter.fillRect(box(60, 14, 10, 72), kText);
+    painter.fillRect(box(76, 30, 10, 40), kText);
+    painter.fillRect(box(47, 6, 6, 90), kWarning);
 }
 
 DeckLabLevelMeter::DeckLabLevelMeter(Qt::Orientation orientation, int channels, QWidget* parent)
@@ -888,7 +935,7 @@ bool DeckLabLevelMeter::setLevels(double first, double second, bool clipping) {
 
 void DeckLabLevelMeter::paintEvent(QPaintEvent*) {
     QPainter painter(this);
-    painter.fillRect(rect(), QColor(0x0c, 0x0c, 0x0c));
+    painter.fillRect(rect(), kPanel);
     const bool vertical = m_orientation == Qt::Vertical;
     const int length = vertical ? height() : width();
     const int thickness = vertical ? width() : height();
@@ -901,11 +948,11 @@ void DeckLabLevelMeter::paintEvent(QPaintEvent*) {
             const bool on = segment < m_lit[channel] || (top && m_clip);
             QColor color;
             if (top) {
-                color = on ? QColor(0xe5, 0x48, 0x4d) : QColor(0x3a, 0x1c, 0x1d);
+                color = on ? kWarning : kWarningDim;
             } else if (segment >= kSegments - 4) {
-                color = on ? QColor(0xf5, 0xa6, 0x23) : QColor(0x2e, 0x26, 0x18);
+                color = on ? QColor(0xe8, 0xd4, 0x4d) : QColor(0x2c, 0x2a, 0x1a);
             } else {
-                color = on ? QColor(0x3d, 0xdc, 0x84) : QColor(0x18, 0x2a, 0x20);
+                color = on ? kPlay : QColor(0x16, 0x2a, 0x20);
             }
             const int from = int(std::round(segment * step));
             const int to = int(std::round((segment + 1) * step)) - 1;

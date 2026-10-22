@@ -13,6 +13,8 @@
 #include <array>
 #include <cmath>
 
+#include "util/fpclassify.h"
+
 class QPainter;
 
 // Deck identity colors. Badges, lane edges and the waveform pairing all use
@@ -20,15 +22,15 @@ class QPainter;
 inline QColor deckLabDeckColor(int deck) {
     switch (deck) {
     case 1:
-        return QColor(0x5b, 0x9c, 0xff);
+        return QColor(0x35, 0xc8, 0xf0); // cyan
     case 2:
-        return QColor(0xff, 0x6f, 0x91);
+        return QColor(0xf5, 0xa5, 0x24); // amber
     case 3:
-        return QColor(0xb4, 0x8c, 0xff);
+        return QColor(0xb5, 0xe6, 0x1d); // lime
     case 4:
-        return QColor(0x4f, 0xd1, 0xc5);
+        return QColor(0xc7, 0x7d, 0xff); // violet
     default:
-        return QColor(0x88, 0x88, 0x88);
+        return QColor(0x9a, 0xa3, 0xaf);
     }
 }
 
@@ -42,7 +44,8 @@ struct DeckLabBeatPhase {
     double fraction = 0;
 };
 inline DeckLabBeatPhase deckLabBeatPhase(long long beatIndex, double fraction) {
-    if (!std::isfinite(fraction)) {
+    // util_isfinite: the build uses -ffast-math, where std::isfinite is unreliable.
+    if (!util_isfinite(fraction)) {
         return {};
     }
     const double whole = std::floor(fraction);
@@ -135,7 +138,7 @@ class DeckLabStripRenderer {
     void paintTitle(QPainter& painter, const QRect& area, int pixels) const;
     void paintPhase(QPainter& painter) const;
     int paintChip(QPainter& painter, int x, int y, int height, const QString& text, bool on,
-            const QColor& lit, bool alignRight) const;
+            const QColor& lit, bool alignRight, bool outlined = false) const;
     Mode m_mode = Mode::Full;
     QSize m_size;
     QString m_family;
@@ -177,11 +180,14 @@ class DeckLabDeckStrip final : public QPushButton {
     void paintEvent(QPaintEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void changeEvent(QEvent* event) override;
+    void focusInEvent(QFocusEvent* event) override;
+    void focusOutEvent(QFocusEvent* event) override;
 
   private:
     void placeMeter();
     DeckLabStripRenderer m_renderer;
     DeckLabLevelMeter* m_meter;
+    bool m_keyboardFocus = false;
 };
 
 // One-line readout above a waveform on Browse and FX. Display only.
@@ -230,6 +236,16 @@ class DeckLabChipButton final : public QPushButton {
   private:
     QString m_caption;
     QList<Chip> m_chips;
+};
+
+// Brand mark at the left of the tab rail: waveform bars split by a red
+// playhead (played bars graphite, unplayed white). Display only.
+class DeckLabMark final : public QWidget {
+  public:
+    explicit DeckLabMark(QWidget* parent = nullptr);
+
+  protected:
+    void paintEvent(QPaintEvent* event) override;
 };
 
 // Painted segment level meter for the Decks page. It is polled by the display

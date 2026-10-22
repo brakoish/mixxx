@@ -96,46 +96,48 @@ const QString kStyle = QStringLiteral(R"(
  WDeckLab QMenu::item {padding:13px 20px;}
  WDeckLab QMenu::item:selected {background:#333;}
  )");
-// Tab rail: 44 px touch targets, the active page underlined in brand red, a
-// live FX tab lit while the native processor runs. min/max heights pin the
-// polished border box to the 44 px fixed height.
+// Brand tokens: ground #0D0F12, panel #16191E, raise #20242B, line #2C313A,
+// muted #9AA3AF, text #F2F4F7. Selection is white or a raised fill; live red
+// #FF3D2E is reserved for playhead, recording, clip and end-of-track.
+// Tab rail: 44 px targets, the active page in white with a 3 px white
+// underline. min/max heights pin the polished border box to 44 px.
 const QString kRailStyle = QStringLiteral(R"(
- QWidget#decklab-rail {background:#151515;}
- QPushButton[rail="true"] {background:#151515;color:#9a9a9a;border:0px;border-right:1px solid #262626;
-     border-bottom:1px solid #262626;border-radius:0px;min-height:43px;max-height:43px;padding:0px 6px;
+ QWidget#decklab-rail {background:#16191E;}
+ QPushButton[rail="true"] {background:#16191E;color:#9AA3AF;border:0px;border-right:1px solid #2C313A;
+     border-bottom:1px solid #2C313A;border-radius:0px;min-height:43px;max-height:43px;padding:0px 6px;
      font-size:15px;font-weight:600;}
- QPushButton[rail="true"]:pressed {background:#232323;}
- QPushButton[rail="true"]:checked {color:#ffffff;background:#0c0c0c;border-bottom:3px solid #d74448;}
- QPushButton[rail="true"]:disabled {color:#4e4e4e;}
- QPushButton[rail="true"][live="true"] {color:#ff7477;}
+ QPushButton[rail="true"]:pressed {background:#20242B;}
+ QPushButton[rail="true"]:checked {color:#F2F4F7;background:#16191E;border-bottom:3px solid #F2F4F7;}
+ QPushButton[rail="true"]:disabled {color:#4B525C;}
+ QPushButton[rail="true"][live="true"] {background:#20242B;color:#F2F4F7;}
  )");
-// Decks page surfaces. Matte black and graphite; color only carries state.
+// Decks page surfaces: ground with 1-2 px line gaps between waveforms/cards.
 const QString kDeckStyle = QStringLiteral(R"(
- QWidget#decklab-wave-zone {background:#1d1d1d;}
- QWidget#decklab-deck-row {background:#262626;}
- QWidget[deckCard="true"] {background:#131313;}
- QWidget[deckSideRow="true"] {background:#0f0f0f;}
+ QWidget#decklab-wave-zone {background:#0D0F12;}
+ QWidget#decklab-deck-row {background:#2C313A;}
+ QWidget[deckCard="true"] {background:#0D0F12;}
+ QWidget[deckSideRow="true"] {background:#0D0F12;}
  )");
 // Lit touch controls. Each button carries its own sheet so the same rules
 // also apply inside popups, and min/max heights keep a 44 px border box.
+// On = raised fill with white text and outline; Play adds its green lamp.
 const QString kActionStyle = QStringLiteral(R"(
- QPushButton {background:#1b1b1b;color:#dcdcdc;border:1px solid #313131;border-radius:4px;
+ QPushButton {background:#16191E;color:#C9CED6;border:1px solid #2C313A;border-radius:3px;
      min-height:42px;max-height:42px;padding:0px 2px;font-size:13px;font-weight:600;}
- QPushButton:pressed {background:#2c2c2c;}
- QPushButton:checked {background:#3a1517;border-color:#d74448;color:#ffffff;}
- QPushButton[lamp="loop"]:checked {background:#16361b;border-color:#6ee128;color:#f2fff2;}
- QPushButton[lamp="play"]:checked {background:#11361f;border-color:#3ddc84;color:#effff4;}
- QPushButton[lamp="cue"]:pressed {background:#3a2a10;border-color:#ff9f1a;}
- QPushButton[actionFeedback="true"] {background:#10293a;border-color:#4cc2ff;color:#ffffff;}
- QPushButton:disabled {background:#151515;color:#585858;border-color:#232323;}
+ QPushButton:pressed {background:#20242B;}
+ QPushButton:checked {background:#20242B;border-color:#F2F4F7;color:#F2F4F7;}
+ QPushButton[lamp="play"]:checked {background:#20242B;border-color:#2FD27A;color:#F2F4F7;}
+ QPushButton[lamp="cue"]:pressed {background:#20242B;border-color:#FF7A1A;}
+ QPushButton[actionFeedback="true"] {background:#2C313A;border-color:#F2F4F7;color:#F2F4F7;}
+ QPushButton:disabled {background:#111418;color:#4B525C;border-color:#1E2228;}
  )");
 const QString kPadStyle = QStringLiteral(R"(
- QPushButton {background:#181818;color:#9a9a9a;border:1px solid #2c2c2c;border-radius:4px;
+ QPushButton {background:#16191E;color:#9AA3AF;border:1px solid #2C313A;border-radius:3px;
      min-height:42px;max-height:42px;padding:0px;font-size:15px;font-weight:600;}
- QPushButton:pressed {background:#2a2a2a;}
- QPushButton:disabled {background:#141414;color:#4a4a4a;border-color:#202020;}
+ QPushButton:pressed {background:#20242B;}
+ QPushButton:disabled {background:#111418;color:#4B525C;border-color:#1E2228;}
  )");
-const QColor kFxLamp(0xe0, 0x5a, 0x5d);
+const QColor kFxLamp(0xf2, 0xf4, 0xf7);
 // Layer follow ignores controller traffic right after start-up and right
 // after a track load (mapping initialisation and load-time engine resets).
 constexpr qint64 kFollowStartupGraceMs = 1200;
@@ -377,7 +379,7 @@ class DeckLabHotcuePad final : public QPushButton {
         QStyleOptionButton option; initStyleOption(&option); option.text.clear();
         QPainter painter(this); style()->drawControl(QStyle::CE_PushButton, &option, &painter, this);
         if (!property("cueSet").toBool()) {
-            painter.setPen(QColor(isEnabled() ? "#aaaaaa" : "#777777"));
+            painter.setPen(QColor(isEnabled() ? "#9aa3af" : "#4b525c"));
             painter.drawText(rect(), Qt::AlignCenter, text());
             return;
         }
@@ -499,7 +501,8 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     m_rail->setStyleSheet(kRailStyle);
     m_rail->setFixedHeight(44);
     auto* rail = row(m_rail);
-    const QStringList names = {tr("Decks"), tr("Browse"), tr("Sampler"), tr("FX"), tr("Settings")};
+    const QStringList names = {tr("Decks"), tr("Browse"), tr("Sampler"), tr("Lab FX"), tr("Settings")};
+    rail->addWidget(new DeckLabMark(m_rail));
     const QStringList triggers = {"overview", "library", "samplers", "effects", "settings"};
     auto* navigation = new QButtonGroup(this);
     for (int page = 0; page < 5; ++page) {
@@ -1703,11 +1706,15 @@ void WDeckLab::ensureDeckSurfaces(int deck) {
     auto* body = new QWidget(lane);
     body->setObjectName(QStringLiteral("decklab-lane-body-%1").arg(deck));
     auto* bodyRow = row(body);
-    auto* edge = new QWidget(body);
+    // Deck identity beside the waveform: a deck-color bar with the number.
+    auto* edge = new QLabel(QString::number(deck), body);
     edge->setObjectName(QStringLiteral("decklab-lane-edge-%1").arg(deck));
     edge->setAttribute(Qt::WA_StyledBackground);
-    edge->setStyleSheet(QStringLiteral("background:%1;").arg(deckLabDeckColor(deck).name()));
-    edge->setFixedWidth(4);
+    edge->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
+    edge->setStyleSheet(QStringLiteral("background:#0D0F12;color:%1;border-left:3px solid %1;"
+                                       "font-size:14px;font-weight:700;padding-top:4px;")
+                                .arg(deckLabDeckColor(deck).name()));
+    edge->setFixedWidth(18);
     bodyRow->addWidget(edge);
     laneRows->addWidget(body, 1);
     lane->hide();
@@ -2230,7 +2237,7 @@ void WDeckLab::tickDecks() {
         }
     }
     connectControllerFx();
-    // The native RMX processor lights the FX tab while it is wet or tailing.
+    // Lab FX raises its tab while it is wet or tailing.
     if (m_tabs[3]) setStylePropertyIf(m_tabs[3], "live", m_fxActive || m_fxReleasing);
     if (m_overloadUntil && now >= m_overloadUntil) {
         m_overloadUntil = 0;
@@ -2279,8 +2286,8 @@ void WDeckLab::noteDeckTouched(int deck) {
     const int shown = m_layers[side];
     if (shown == deck) return;
     if (now - m_lastTouch[shown - 1] < kFollowHoldMs) return;
-    // A finger on the screen owns the gesture; never retarget under it.
-    if (QGuiApplication::mouseButtons() != Qt::NoButton) return;
+    // A held touch Cue owns its deck; never retarget the side under it.
+    if (m_touchCue == channel(shown)) return;
     setDisplayedDeck(side, deck);
     // Keep the layer controls truthful for mappings that read them.
     set(side == 0 ? QStringLiteral("[DeckLabLeft]") : QStringLiteral("[DeckLabRight]"),
@@ -2446,7 +2453,9 @@ void WDeckLab::tickEffects() {
         set(channel(m_fxDeck), m_heldRoll, 0); m_heldRoll.clear();
     }
     if (!m_fxActive) return;
-    if (m_page != 3 || now - m_lastFxTick > 550 || !isVisible()) { releaseEffects(); return; }
+    // Matches the DSP deadman (1.5 s): a GUI stall during a track load must
+    // not snap Lab FX dry. Page change and hide still release at once.
+    if (m_page != 3 || now - m_lastFxTick > 1500 || !isVisible()) { releaseEffects(); return; }
     m_lastFxTick = now;
     control(fxSlot(), "parameter15")->setParameter((++m_heartbeat % 65535 + 1) / 65535.0);
     // A latched delay follows pitch/Sync changes without needing another touch.

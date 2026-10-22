@@ -48,6 +48,7 @@
 #include "widget/woverview.h"
 #include "widget/controlwidgetconnection.h"
 #include "skin/legacy/skincontext.h"
+#include "util/fpclassify.h"
 #include "util/valuetransformer.h"
 #ifdef __LILV__
 #include "effects/backends/lv2/lv2effectprocessor.h"
@@ -232,7 +233,8 @@ TEST_F(NativeDeckLabTest, WholeTrackOverviewFollowsPositionAcrossDecksLayoutsAnd
             EXPECT_NEAR(fraction,overview->getControlParameterDisplay(),.001);
             if(overview->isVisible()) {
                 const QImage image=overview->grab().toImage(); const int x=int((overview->width()-1)*overview->getControlParameterDisplay());
-                EXPECT_EQ(QColor(Qt::white),image.pixelColor(x,20));
+                // The playhead is the brand's live red.
+                EXPECT_EQ(QColor(0xff,0x3d,0x2e),image.pixelColor(x,20));
                 EXPECT_EQ(40,overview->height());
             }
             EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey(group,"play")));
@@ -588,8 +590,9 @@ TEST_F(NativeDeckLabTest, WaveformLayoutPreferenceRoundTripsBothDeckCountsWithou
                 ASSERT_TRUE(detail->isVisible());
                 const QRect area(detail->mapTo(panel.get(), QPoint()), detail->size());
                 EXPECT_TRUE(panel->rect().contains(area));
-                // Stacked lanes span the full width; side by side they halve it.
-                EXPECT_NEAR(layout ? 395 : 796, area.width(), 3) << "mode " << mode << " layout " << layout;
+                // Stacked lanes span the full width beside an 18 px deck tag;
+                // side by side they halve it.
+                EXPECT_NEAR(layout ? 381 : 782, area.width(), 3) << "mode " << mode << " layout " << layout;
                 EXPECT_GE(area.height(), mode == 2 ? (layout ? 100 : 54) : (layout ? 200 : 100));
                 for (const auto& other : areas) EXPECT_FALSE(other.intersects(area));
                 areas << area;
@@ -624,7 +627,7 @@ TEST_F(NativeDeckLabTest, WaveformLayoutPreferenceRoundTripsBothDeckCountsWithou
     }
     restored.resize(800, 480); restored.show(); restored.selectPage(0); QTest::qWait(30);
     EXPECT_EQ(1, restored.findChild<QComboBox*>("decklab-waveform-layout")->currentData().toInt());
-    EXPECT_NEAR(395, restored.findChild<QWidget*>("decklab-detail-1")->width(), 3);
+    EXPECT_NEAR(381, restored.findChild<QWidget*>("decklab-detail-1")->width(), 3);
     EXPECT_EQ(0, writes);
 }
 
@@ -762,7 +765,7 @@ TEST_F(NativeDeckLabTest, DeckIdentityAndLabelledReadoutsFitWithoutStealingWavef
     QTest::qWait(150);
     QComboBox* format = nullptr;
     for (auto* combo : panel->findChildren<QComboBox*>())
-        if (combo->itemText(0).startsWith("Camelot")) format = combo;
+        if (combo->itemText(0).contains("8A")) format = combo;
     ASSERT_NE(nullptr, format);
     for (int notation = 0; notation < 3; ++notation) {
         QMetaObject::invokeMethod(format, "activated", Q_ARG(int, notation)); settle();
@@ -786,8 +789,8 @@ TEST_F(NativeDeckLabTest, DeckIdentityAndLabelledReadoutsFitWithoutStealingWavef
     // Full-width waveforms: no side columns take their space.
     for (int deck = 1; deck <= 2; ++deck) {
         auto* detail = panel->findChild<QWidget*>(QStringLiteral("decklab-detail-%1").arg(deck));
-        EXPECT_EQ(QSize(796, 106), detail->size());
-        EXPECT_EQ(QPoint(4, 44 + (deck - 1) * 108), detail->mapTo(panel.get(), QPoint()));
+        EXPECT_EQ(QSize(782, 106), detail->size());
+        EXPECT_EQ(QPoint(18, 44 + (deck - 1) * 108), detail->mapTo(panel.get(), QPoint()));
         auto* overview = panel->findChild<QWidget*>(QStringLiteral("decklab-overview-%1").arg(deck));
         EXPECT_NEAR(400, overview->width(), 1); EXPECT_EQ(40, overview->height());
         EXPECT_NEAR((deck - 1) * 400, overview->mapTo(panel.get(), QPoint()).x(), 2);
@@ -903,9 +906,9 @@ TEST_F(NativeDeckLabTest, AutoLayoutShowsFourRealDecksAndRetainsLoadedUpperDecks
         EXPECT_EQ(436, cue->mapTo(panel.get(),QPoint()).y());
         // Four full-width waveforms, stacked in deck order.
         auto* detail = panel->findChild<QWidget*>(QStringLiteral("decklab-detail-%1").arg(deck)); ASSERT_NE(nullptr,detail);
-        EXPECT_EQ(796, detail->width()); EXPECT_NEAR(56.5, detail->height(), 1);
+        EXPECT_EQ(782, detail->width()); EXPECT_NEAR(56.5, detail->height(), 1);
         const QPoint at = detail->mapTo(panel.get(),QPoint());
-        EXPECT_EQ(4, at.x()); EXPECT_GT(at.y(), previousTop); previousTop = at.y();
+        EXPECT_EQ(18, at.x()); EXPECT_GT(at.y(), previousTop); previousTop = at.y();
         auto* overview = panel->findChild<QWidget*>(QStringLiteral("decklab-overview-%1").arg(deck));
         ASSERT_NE(nullptr, overview); EXPECT_TRUE(overview->isVisible()); EXPECT_EQ(40, overview->height());
         EXPECT_NEAR(200,overview->width(),1);
@@ -1877,18 +1880,23 @@ TEST_F(NativeDeckLabTest, BeatPhaseMeterCountsGridBeatsInFours) {
     // A phase at or past 1 carries into the following beat.
     EXPECT_EQ(2, deckLabBeatPhase(1, 1.25).segment);
     EXPECT_NEAR(.25, deckLabBeatPhase(1, 1.25).fraction, 1e-9);
-    EXPECT_EQ(-1, deckLabBeatPhase(5, std::nan("")).segment);
+    EXPECT_EQ(-1, deckLabBeatPhase(5, util_double_nan()).segment);
     // On a generated 128 BPM grid the lit segment follows the playhead.
     loadGenerated(1, 128); ProcessBuffer();
     ControlObject::set(ConfigKey("[Channel1]", "quantize"), 0); QTest::qWait(150);
     const double samples = ControlObject::get(ConfigKey("[Channel1]", "track_samples")); ASSERT_GT(samples, 0);
     const double beatFrames = 44100.0 * 60 / 128;
-    for (int beat : {0, 1, 2, 3, 4, 6, 13}) {
+    int checked = 0;
+    for (int beat : {0, 1, 2, 3, 4, 5, 6, 7, 9}) {
         const double frame = (beat + .5) * beatFrames;
+        if (frame * 2 >= samples) break; // stay inside the generated track
         ControlObject::set(ConfigKey("[Channel1]", "playposition"), frame * 2 / samples);
         ProcessBuffer(); QTest::qWait(150);
+        EXPECT_NEAR(frame * 2 / samples, ControlObject::get(ConfigKey("[Channel1]", "playposition")), .001);
         EXPECT_EQ(beat % 4, strip(1)->state().phase) << beat;
+        ++checked;
     }
+    EXPECT_GE(checked, 5);
     capture(QStringLiteral("decks-phase-meter.png"));
     EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "play")));
 }
@@ -2012,7 +2020,7 @@ TEST_F(NativeDeckLabTest, DecksLayoutsScaleToLargerTouchscreens) {
                 ASSERT_TRUE(strip(deck)->isVisible());
                 EXPECT_TRUE(strip(deck)->renderer().overflowingParts().isEmpty()) << deck << " " << size.width();
                 auto* detail = panel->findChild<QWidget*>(QStringLiteral("decklab-detail-%1").arg(deck));
-                EXPECT_EQ(size.width() - 4, detail->width());
+                EXPECT_EQ(size.width() - 18, detail->width());
             }
             if (size == QSize(1024, 600))
                 capture(QStringLiteral("decks-%1-1024x600.png").arg(mode == 2 ? QStringLiteral("four") : QStringLiteral("two")));
