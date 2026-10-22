@@ -237,10 +237,16 @@ def build_qml_candidate(env, work, out, tree, repo, generated, revision, lock, a
     version = command(["flatpak", "run", "--nosocket=x11", "--env=QT_QPA_PLATFORM=offscreen"] + sandbox
                       + [ref] + app + ["--version"], env=env, capture=True)
     (out / "runtime-version.txt").write_text(version + "\n")
-    smoke = (["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1280x800x24 -ac +extension GLX -nolisten tcp",
-              "flatpak", "run", "--socket=x11", "--env=QT_QPA_PLATFORM=xcb", "--env=LIBGL_ALWAYS_SOFTWARE=1",
-              "--env=QSG_INFO=1", "--env=DECKLAB_PERF_LOG=1", "--env=DECKLAB_QML_MAIN=" + QML_MAIN,
-              "--env=DECKLAB_QML_SMOKE_DIR=" + str(out)] + sandbox + [ref] + app + ["--qml"])
+    # A fixed display, set explicitly: run 39852481763 reached Qt with no DISPLAY. The smoke keeps the
+    # host network namespace so libxcb can also use Xvfb's abstract socket (no devices, audio or
+    # sockets otherwise); the diagnostics land in qml-smoke.log.
+    display = ":99"
+    smoke = (["xvfb-run", "--server-num=99", "--server-args=-screen 0 1280x800x24 -ac +extension GLX -nolisten tcp",
+              "sh", "-c", 'echo "xvfb DISPLAY=$DISPLAY"; ls -la /tmp/.X11-unix; exec "$@"', "sh",
+              "flatpak", "run", "--socket=x11", "--env=DISPLAY=" + display, "--env=QT_QPA_PLATFORM=xcb",
+              "--env=LIBGL_ALWAYS_SOFTWARE=1", "--env=QSG_INFO=1", "--env=DECKLAB_PERF_LOG=1",
+              "--env=DECKLAB_QML_MAIN=" + QML_MAIN, "--env=DECKLAB_QML_SMOKE_DIR=" + str(out)]
+             + [arg for arg in sandbox if arg != "--unshare=network"] + [ref] + app + ["--qml"])
     with (out / "qml-smoke.log").open("w") as log:
         print("+", " ".join(smoke), flush=True)
         subprocess.run(smoke, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=300)
