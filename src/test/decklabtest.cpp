@@ -46,6 +46,28 @@
 #endif
 
 namespace {
+void swipeTouch(QWidget* viewport, const QPoint& from, const QPoint& to, int holdBeforeRelease = 0) {
+    static auto* device = QTest::createTouchDevice();
+    auto touch = QTest::touchEvent(viewport, device, false);
+    touch.press(0, from, viewport).commit();
+    QTest::qWait(40);
+    for (int step = 1; step <= 8; ++step) {
+        touch.move(0, from + (to - from) * step / 8, viewport).commit();
+        QTest::qWait(30);
+    }
+    if (holdBeforeRelease > 0) QTest::qWait(holdBeforeRelease);
+    touch.release(0, to, viewport).commit();
+    QTest::qWait(100);
+    QScroller::scroller(viewport)->stop();
+    QCoreApplication::processEvents();
+}
+void tapTouch(QWidget* viewport, const QPoint& point) {
+    static auto* device = QTest::createTouchDevice();
+    auto touch = QTest::touchEvent(viewport, device, false);
+    touch.press(0, point, viewport).commit(); QTest::qWait(40);
+    touch.release(0, point, viewport).commit(); QTest::qWait(100);
+}
+
 class TestPlayers final : public PlayerManagerInterface {
   public:
     std::array<BaseTrackPlayer*,4> decks{};
@@ -239,6 +261,76 @@ TEST_F(NativeDeckLabTest, ActiveNavigationCannotBeUncheckedByReselectingIt) {
     auto* category = panel->findChild<QPushButton*>("decklab-settings-category-2"); ASSERT_NE(nullptr, category);
     category->click(); category->click(); EXPECT_TRUE(category->isChecked());
     EXPECT_FALSE(panel->findChild<QPushButton*>("decklab-settings-category-0")->isChecked());
+}
+
+TEST_F(NativeDeckLabTest, SettingsTouchSwipeRevealsDeckFourWithoutTogglingQuantize) {
+    panel->selectPage(4); QTest::qWait(50);
+    for (int category = 0; category < 5; ++category) {
+        auto* scroll = panel->findChild<QScrollArea*>(QStringLiteral("decklab-settings-scroll-%1").arg(category));
+        ASSERT_NE(nullptr, scroll);
+        EXPECT_TRUE(QScroller::hasScroller(scroll->viewport()));
+        EXPECT_NE(static_cast<Qt::GestureType>(0), QScroller::grabbedGesture(scroll->viewport()));
+    }
+    auto* scroll = panel->findChild<QScrollArea*>("decklab-settings-scroll-0");
+    auto* viewport = scroll->viewport();
+    auto* deckFour = panel->findChild<QComboBox*>("decklab-tempo-range-4"); ASSERT_NE(nullptr, deckFour);
+    const auto fullyVisible = [viewport](QWidget* widget) {
+        return viewport->rect().contains(QRect(widget->mapTo(viewport, QPoint()), widget->size()));
+    };
+    ASSERT_GT(scroll->verticalScrollBar()->maximum(), 0);
+    ASSERT_FALSE(fullyVisible(deckFour));
+    std::array<double, 4> before;
+    for (int deck = 1; deck <= 4; ++deck)
+        before[deck - 1] = ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), "quantize"));
+    QPushButton* quantize = nullptr;
+    for (auto* button : scroll->findChildren<QPushButton*>())
+        if (button->text() == "Quantize") { quantize = button; break; }
+    ASSERT_NE(nullptr, quantize);
+    const QPoint start = quantize->mapTo(viewport, quantize->rect().center());
+    swipeTouch(viewport, start, QPoint(start.x(), 10), 400);
+    EXPECT_GT(scroll->verticalScrollBar()->value(), 0);
+    for (int attempt = 0; attempt < 8 && !fullyVisible(deckFour); ++attempt)
+        swipeTouch(viewport, QPoint(viewport->width() / 2, viewport->height() - 30),
+                QPoint(viewport->width() / 2, 30));
+    EXPECT_TRUE(fullyVisible(deckFour));
+    for (int deck = 1; deck <= 4; ++deck)
+        EXPECT_DOUBLE_EQ(before[deck - 1], ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), "quantize")));
+    // Ordinary row taps remain commands after a swipe; no scrollbar or
+    // ensureWidgetVisible call is used to reach the fourth deck.
+    QPushButton* fourthQuantize = nullptr;
+    for (auto* button : scroll->findChildren<QPushButton*>())
+        if (button->text() == "Quantize") fourthQuantize = button;
+    ASSERT_NE(nullptr, fourthQuantize); ASSERT_TRUE(fullyVisible(fourthQuantize));
+    tapTouch(viewport, fourthQuantize->mapTo(viewport, fourthQuantize->rect().center()));
+    EXPECT_DOUBLE_EQ(before[3] > 0 ? 0 : 1, ControlObject::get(ConfigKey("[Channel4]", "quantize")));
+    QTest::mouseClick(fourthQuantize, Qt::LeftButton);
+    EXPECT_DOUBLE_EQ(before[3], ControlObject::get(ConfigKey("[Channel4]", "quantize")));
+}
+
+TEST_F(NativeDeckLabTest, SourcesTouchSwipeRevealsOffscreenRowsWithoutOpeningThem) {
+    auto root = TreeItem::newRoot(source.get());
+    for (int row = 0; row < 24; ++row) root->appendChild(QStringLiteral("Source %1").arg(row + 1));
+    source->model.setRootItem(std::move(root));
+    panel->browsePress(); panel->browsePress(); QTest::qWait(50);
+    ASSERT_TRUE(sidebar->isVisible());
+    auto* viewport = sidebar->viewport();
+    EXPECT_EQ(QAbstractItemView::ScrollPerPixel, sidebar->verticalScrollMode());
+    EXPECT_NE(static_cast<Qt::GestureType>(0), QScroller::grabbedGesture(viewport));
+    const QPersistentModelIndex parent = sidebar->rootIndex();
+    const QModelIndex last = model->index(23, 0, parent); ASSERT_TRUE(last.isValid());
+    ASSERT_FALSE(viewport->rect().contains(sidebar->visualRect(last)));
+    ASSERT_GT(sidebar->verticalScrollBar()->maximum(), 0);
+    const int before = source->activations;
+    for (int attempt = 0; attempt < 8 && !viewport->rect().contains(sidebar->visualRect(last)); ++attempt)
+        swipeTouch(viewport, QPoint(viewport->width() / 2, viewport->height() - 25),
+                QPoint(viewport->width() / 2, 25), attempt == 0 ? 400 : 0);
+    EXPECT_GT(sidebar->verticalScrollBar()->value(), 0);
+    EXPECT_TRUE(viewport->rect().contains(sidebar->visualRect(last)));
+    EXPECT_EQ(before, source->activations); EXPECT_EQ(parent, sidebar->rootIndex());
+    EXPECT_TRUE(sidebar->isVisible()); EXPECT_FALSE(library->isVisible());
+    tapTouch(viewport, sidebar->visualRect(last).center());
+    QCoreApplication::processEvents();
+    EXPECT_EQ(before + 1, source->activations); EXPECT_TRUE(library->isVisible());
 }
 
 TEST_F(NativeDeckLabTest, InternalClockCannotClaimAConfiguredAudioOutput) {
@@ -972,13 +1064,14 @@ TEST_F(NativeDeckLabTest, ControllerFxDetailsReadAllRealUnitsWithoutControlWrite
     EXPECT_NE(static_cast<Qt::GestureType>(0),QScroller::grabbedGesture(text->viewport()));
     const QString detail=text->toPlainText();
     for(int unit=1;unit<=4;++unit) {
-        EXPECT_TRUE(detail.contains(QStringLiteral("Unit %1 · %2 · Mix %3%").arg(unit).arg(unit%2 ? "ON" : "OFF").arg(unit*10)));
+        EXPECT_TRUE(detail.contains(QStringLiteral("Unit %1 · %2 · Mix %3%").arg(unit).arg(unit%2 ? "Enabled" : "Bypassed").arg(unit*10)));
         EXPECT_TRUE(detail.contains(QStringLiteral("Routed decks: %1").arg(unit)));
     }
     for(int slot=0;slot<3;++slot)
         EXPECT_TRUE(detail.contains(QStringLiteral("Slot %1: %2 [%3]").arg(slot+1).arg(manifests[slot]->name(),slot%2 ? "OFF" : "ON")));
     auto* ownership=dialog->findChild<QLabel*>("decklab-controller-fx-ownership"); ASSERT_NE(nullptr,ownership);
-    EXPECT_TRUE(ownership->text().contains("separate dedicated chains"));
+    EXPECT_TRUE(ownership->text().contains("Read only"));
+    EXPECT_TRUE(ownership->text().contains("RMX controls are separate, on the FX screen."));
     auto* refresh=dialog->findChild<QPushButton*>("decklab-controller-fx-refresh"); ASSERT_NE(nullptr,refresh);
     auto* close=dialog->findChild<QPushButton*>("decklab-controller-fx-close"); ASSERT_NE(nullptr,close);
     for(auto* action:{refresh,close}) { action->style()->unpolish(action); action->style()->polish(action); }
@@ -989,7 +1082,7 @@ TEST_F(NativeDeckLabTest, ControllerFxDetailsReadAllRealUnitsWithoutControlWrite
     // writing that control back or changing any neighbouring unit.
     ControlObject::set(ConfigKey("[EffectRack1_EffectUnit4]","mix"),.73); const int externalWrites=writes;
     refresh->click(); QCoreApplication::processEvents(); EXPECT_EQ(externalWrites,writes);
-    EXPECT_TRUE(text->toPlainText().contains("Unit 4 · OFF · Mix 73%"));
+    EXPECT_TRUE(text->toPlainText().contains("Unit 4 · Bypassed · Mix 73%"));
     const QString output=qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
     if(!output.isEmpty()) EXPECT_TRUE(dialog->grab().save(QDir(output).filePath("controller-fx-details.png")));
     close->click(); QCoreApplication::processEvents(); EXPECT_EQ(externalWrites,writes);
@@ -1022,6 +1115,57 @@ TEST_F(NativeDeckLabTest, ControllerFxDetailsReadAllRealUnitsWithoutControlWrite
     ControlObject::set(ConfigKey("[EffectRack1_EffectUnit4]","mix"),0); const int fourthDryWrites=writes;
     QTest::qWait(150); EXPECT_EQ(fourthDryWrites,writes);
     EXPECT_EQ(QStringLiteral("FX 1 ON · 2 DRY\nFX 3 DRY · 4 DRY"),summary->text());
+}
+
+TEST_F(NativeDeckLabTest, ControllerFxSummaryIncludesFourthSlotOnlyWithoutControlWrites) {
+    m_pEffectsManager->setup();
+    const auto manifests=m_pEffectsManager->getBackendManager()->getManifestsForBackend(EffectBackendType::BuiltIn);
+    ASSERT_GT(manifests.size(),0);
+    std::vector<ConfigKey> keys;
+    for(int unit=1;unit<=4;++unit) {
+        const QString group=QStringLiteral("[EffectRack1_EffectUnit%1]").arg(unit);
+        const auto chain=m_pEffectsManager->getEffectChain(group); ASSERT_FALSE(chain.isNull());
+        ASSERT_GE(chain->getEffectSlots().size(),4);
+        if(unit==1 || unit==3) chain->getEffectSlots().at(3)->loadEffectWithDefaults(manifests[0]);
+        for(int slot=0;slot<chain->getEffectSlots().size();++slot) {
+            if(slot!=3 || (unit!=1 && unit!=3))
+                chain->getEffectSlots().at(slot)->loadEffectWithDefaults(EffectManifestPointer());
+            const ConfigKey key(QStringLiteral("[EffectRack1_EffectUnit%1_Effect%2]").arg(unit).arg(slot+1),"enabled");
+            keys.push_back(key);
+            ControlObject::set(key,(unit==1 || unit==3) && slot==3 ? 1 : 0);
+        }
+        for(const auto& item:{"enabled","mix"}) keys.emplace_back(group,QString::fromLatin1(item));
+        ControlObject::set(ConfigKey(group,"enabled"),1);
+        ControlObject::set(ConfigKey(group,"mix"),.5);
+        for(int deck=1;deck<=4;++deck) {
+            const ConfigKey key(group,QStringLiteral("group_[Channel%1]_enable").arg(deck)); keys.push_back(key);
+            ControlObject::set(key,deck==unit ? 1 : 0);
+        }
+    }
+    QCoreApplication::processEvents();
+    int writes=0; std::vector<double> snapshot;
+    std::vector<std::unique_ptr<ControlProxy>> observed;
+    for(const auto& key:keys) {
+        snapshot.push_back(ControlObject::get(key));
+        observed.emplace_back(std::make_unique<ControlProxy>(key.group,key.item));
+        ASSERT_TRUE(observed.back()->connectValueChanged(panel.get(),[&writes](double){++writes;},Qt::DirectConnection));
+    }
+    auto* choice=panel->findChild<QComboBox*>("decklab-deck-layout"); ASSERT_NE(nullptr,choice);
+    auto* summary=panel->findChild<QLabel*>("decklab-performance-effects"); ASSERT_NE(nullptr,summary);
+    QMetaObject::invokeMethod(choice,"activated",Q_ARG(int,2)); QTest::qWait(150);
+    EXPECT_EQ(QStringLiteral("FX 1 ON · 2 DRY\nFX 3 ON · 4 DRY"),summary->text());
+    for(int unit:{1,3})
+        EXPECT_TRUE(summary->toolTip().contains(QStringLiteral("FX %1; decks %1; %2; 50%").arg(unit).arg(manifests[0]->name())));
+    QMetaObject::invokeMethod(choice,"activated",Q_ARG(int,1)); QTest::qWait(150);
+    EXPECT_TRUE(summary->text().section('\n',0,0).endsWith("50%"));
+    EXPECT_FALSE(summary->text().section('\n',0,0).contains("DRY"));
+    panel->findChild<QPushButton*>("decklab-performance-board-fx")->click(); QCoreApplication::processEvents();
+    auto* dialog=panel->findChild<QDialog*>("decklab-controller-fx-info"); ASSERT_NE(nullptr,dialog);
+    auto* text=dialog->findChild<QTextBrowser*>("decklab-controller-fx-text"); ASSERT_NE(nullptr,text);
+    EXPECT_TRUE(text->toPlainText().contains(QStringLiteral("Slot 4: %1 [ON]").arg(manifests[0]->name())));
+    dialog->findChild<QPushButton*>("decklab-controller-fx-refresh")->click(); QTest::qWait(150);
+    EXPECT_EQ(0,writes);
+    for(size_t index=0;index<keys.size();++index) EXPECT_DOUBLE_EQ(snapshot[index],ControlObject::get(keys[index]));
 }
 
 TEST_F(NativeDeckLabTest, LinkedZoomFollowsTheLastStableExternalChangeWithoutFeedback) {

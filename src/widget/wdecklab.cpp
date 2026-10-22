@@ -105,6 +105,45 @@ QHBoxLayout* row(QWidget* widget = nullptr, int spacing = 0) {
     layout->setSpacing(spacing);
     return layout;
 }
+// Qt can synthesize a button release after a recognized touch scroll. Keep
+// that release from becoming a command on the control beneath the swipe.
+class DeckLabTouchScrollGuard final : public QObject {
+  public:
+    DeckLabTouchScrollGuard(QWidget* viewport, QWidget* content)
+            : QObject(viewport), m_scroller(QScroller::scroller(viewport)) {
+        QScroller::grabGesture(viewport, QScroller::TouchGesture);
+        connect(m_scroller, &QScroller::stateChanged, this, [this](QScroller::State state) {
+            if (state == QScroller::Dragging) m_touchDragged = true;
+        });
+        viewport->installEventFilter(this);
+        if (content != viewport) content->installEventFilter(this);
+        for (auto* child : content->findChildren<QWidget*>()) child->installEventFilter(this);
+    }
+  protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonRelease) {
+            const auto* mouse = static_cast<QMouseEvent*>(event);
+            if (mouse->source() != Qt::MouseEventNotSynthesized) {
+                const auto state = m_scroller->state();
+                const bool press = event->type() == QEvent::MouseButtonPress;
+                if (press && (state == QScroller::Pressed || state == QScroller::Inactive))
+                    m_touchDragged = false;
+                const bool suppress = m_touchDragged || state == QScroller::Dragging || state == QScroller::Scrolling;
+                // A slow drag may already be Inactive at release. Retain the
+                // recognized drag until that synthesized release is consumed.
+                if (!press) m_touchDragged = false;
+                if (suppress) {
+                    if (auto* button = qobject_cast<QAbstractButton*>(watched)) button->setDown(false);
+                    return true;
+                }
+            }
+        }
+        return QObject::eventFilter(watched, event);
+    }
+  private:
+    QScroller* m_scroller;
+    bool m_touchDragged = false;
+};
 // Mouse events also receive Qt's synthesized primary touchscreen contact.
 // TouchCancel and application deactivation are handled by the owning surface.
 class DeckLabXY final : public QWidget {
@@ -487,7 +526,7 @@ void WDeckLab::showControllerFxInfo() {
     dialog->setStyleSheet(QStringLiteral("QDialog{background:#101010;color:#eee;border:1px solid #555;} QLabel{color:#eee;} QTextBrowser{background:#111;color:#eee;border:1px solid #333;font-size:13px;} QPushButton{background:#202020;color:#eee;border:1px solid #555;min-height:38px;max-height:38px;padding:2px;}"));
     auto* content = column(dialog, 8); content->setSpacing(8);
     auto* heading = new QLabel(tr("DECK LAB · CONTROLLER FX DETAILS"), dialog); heading->setFixedHeight(24); content->addWidget(heading);
-    auto* ownership = new QLabel(tr("Ownership: standard/controller FX units 1–4. Deck Lab RMX uses separate dedicated chains.\nRead only; use the controller or standard Mixxx setup to change these units."), dialog);
+    auto* ownership = new QLabel(tr("Read only · Adjust these effects on your controller or in advanced settings.\nRMX controls are separate, on the FX screen."), dialog);
     ownership->setObjectName(QStringLiteral("decklab-controller-fx-ownership")); ownership->setWordWrap(true); content->addWidget(ownership);
     auto* text = new QTextBrowser(dialog); text->setReadOnly(true); text->setOpenExternalLinks(false);
     text->setObjectName(QStringLiteral("decklab-controller-fx-text")); content->addWidget(text, 1);
@@ -500,7 +539,7 @@ void WDeckLab::showControllerFxInfo() {
             const auto chain = m_effects ? m_effects->getEffectChain(group) : EffectChainPointer();
             if (!chain) { blocks << tr("Unit %1 · unavailable").arg(unit).toHtmlEscaped(); continue; }
             const double mix = value(group, "mix");
-            QString block = tr("Unit %1 · %2 · Mix %3").arg(unit).arg(value(group, "enabled") > 0 ? tr("ON") : tr("OFF"),
+            QString block = tr("Unit %1 · %2 · Mix %3").arg(unit).arg(value(group, "enabled") > 0 ? tr("Enabled") : tr("Bypassed"),
                     std::isfinite(mix) ? QString::number(mix * 100, 'f', 0) + QLatin1Char('%') : tr("unavailable")).toHtmlEscaped();
             QStringList routes;
             for (int deck = 1; deck <= 4; ++deck)
@@ -1036,6 +1075,7 @@ QWidget* WDeckLab::buildSettings() {
     const QStringList names{tr("Deck"), tr("Levels / Cue"), tr("Display"), tr("Library"), tr("Device")};
     for (int index = 0; index < names.size(); ++index) {
         auto* scroll = new QScrollArea(pages);
+        scroll->setObjectName(QStringLiteral("decklab-settings-scroll-%1").arg(index));
         scroll->setWidgetResizable(true);
         scroll->setFrameShape(QFrame::NoFrame);
         auto* content = new QWidget(scroll);
@@ -1074,7 +1114,7 @@ QWidget* WDeckLab::buildSettings() {
                 auto* switches = row(nullptr, 4);
                 switches->addWidget(toggle(tr("Quantize"), channel(deck), "quantize"));
                 switches->addWidget(toggle(tr("Slip"), channel(deck), "slip_enabled"));
-                switches->addWidget(toggle(tr("Master tempo"), channel(deck), "keylock"));
+                switches->addWidget(toggle(tr("Key lock"), channel(deck), "keylock"));
                 rows->addLayout(switches);
                 auto* range = new QComboBox(content);
                 range->setObjectName(QStringLiteral("decklab-tempo-range-%1").arg(deck));
@@ -1182,7 +1222,9 @@ QWidget* WDeckLab::buildSettings() {
                 rows->addWidget(b);
             }
         }
-        rows->addStretch(); scroll->setWidget(content); pages->addWidget(scroll);
+        rows->addStretch(); scroll->setWidget(content);
+        new DeckLabTouchScrollGuard(scroll->viewport(), content);
+        pages->addWidget(scroll);
         auto* link = button(names[index], [pages, index] { pages->setCurrentIndex(index); }, categories,
                 QStringLiteral("decklab-settings-category-%1").arg(index));
         link->setCheckable(true); categorySelection->addButton(link, index);
@@ -1474,6 +1516,8 @@ void WDeckLab::bindBrowser(WSearchLineEdit* search, WLibrarySidebar* sidebar, WL
     sidebar->setIndentation(0);
     sidebar->setRootIsDecorated(false);
     sidebar->setItemsExpandable(false);
+    sidebar->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    new DeckLabTouchScrollGuard(sidebar->viewport(), sidebar->viewport());
     sidebar->installEventFilter(this);
     sidebar->setEditTriggers(QAbstractItemView::NoEditTriggers);
     if (auto* model = qobject_cast<SidebarModel*>(sidebar->model()))
@@ -1809,8 +1853,8 @@ void WDeckLab::refreshDeck(int deck) {
             QString name = tr("Empty");
             bool effectOn = false;
             int loadedEffects = 0;
-            for (int slot = 0; chain && slot < 3; ++slot) {
-                auto effect = chain->getEffectSlot(slot);
+            for (int slot = 0; chain && slot < chain->getEffectSlots().size(); ++slot) {
+                const auto effect = chain->getEffectSlots().at(slot);
                 if (effect && effect->isLoaded() && effect->getManifest()) {
                     const bool enabled = value(QStringLiteral("[EffectRack1_EffectUnit%1_Effect%2]").arg(unit).arg(slot + 1), "enabled") > 0;
                     if (loadedEffects == 0 || (enabled && !effectOn)) name = effect->getManifest()->name();
