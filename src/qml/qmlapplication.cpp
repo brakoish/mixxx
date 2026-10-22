@@ -452,6 +452,14 @@ void QmlApplication::runDeckLabSmoke(const QString& outputDir) {
         return;
     }
 
+    // Without a receiver Qt aborts on a scene graph error; record it instead.
+    connect(pWindow,
+            &QQuickWindow::sceneGraphError,
+            this,
+            [state, finish](QQuickWindow::SceneGraphError, const QString& message) {
+                state->failures.append(QStringLiteral("Scene graph error: ") + message);
+                finish(4);
+            });
     connect(
             pWindow,
             &QQuickWindow::frameSwapped,

@@ -273,20 +273,32 @@ def build_qml_candidate(env, work, out, tree, repo, generated, revision, lock, a
     version = command(["flatpak", "run", "--nosocket=x11", "--env=QT_QPA_PLATFORM=offscreen"] + sandbox
                       + [ref] + app + ["--version"], env=env, capture=True)
     (out / "runtime-version.txt").write_text(version + "\n")
-    # A fixed display, set explicitly: run 39852481763 reached Qt with no DISPLAY. The smoke keeps the
-    # host network namespace so libxcb can also use Xvfb's abstract socket (no devices, audio or
-    # sockets otherwise); the diagnostics land in qml-smoke.log.
+    # Flatpak's --nosocket=fallback-x11 also revokes x11, which left Qt without a DISPLAY in runs
+    # 39852481763 and 39858448698, so the smoke grants x11 without it. A fixed display, set
+    # explicitly; the smoke keeps the host network namespace so libxcb can also use Xvfb's abstract
+    # socket (no devices or audio); the diagnostics land in qml-smoke.log.
     display = ":99"
     smoke = (["xvfb-run", "--server-num=99", "--server-args=-screen 0 1280x800x24 -ac +extension GLX -nolisten tcp",
               "sh", "-c", 'echo "xvfb DISPLAY=$DISPLAY"; ls -la /tmp/.X11-unix; exec "$@"', "sh",
               "flatpak", "run", "--socket=x11", "--env=DISPLAY=" + display, "--env=QT_QPA_PLATFORM=xcb",
               "--env=LIBGL_ALWAYS_SOFTWARE=1", "--env=QSG_INFO=1", "--env=DECKLAB_PERF_LOG=1",
               "--env=DECKLAB_QML_MAIN=" + QML_MAIN, "--env=DECKLAB_QML_SMOKE_DIR=" + str(out)]
-             + [arg for arg in sandbox if arg != "--unshare=network"] + [ref] + app + ["--qml"])
+             + [arg for arg in sandbox if arg not in ("--unshare=network", "--nosocket=fallback-x11")]
+             + [ref] + app + ["--qml"])
     with (out / "qml-smoke.log").open("w") as log:
         print("+", " ".join(smoke), flush=True)
-        subprocess.run(smoke, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=300)
-    smoke_result = check_qml_smoke(json.loads((out / "qml-smoke.json").read_text()))
+        try:
+            exit_code = subprocess.run(smoke, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT,
+                                       timeout=300).returncode
+        except subprocess.TimeoutExpired:
+            exit_code = "timeout"
+    if not (out / "qml-smoke.json").is_file():
+        raise RuntimeError("QML smoke wrote no result (exit %s); see qml-smoke.log" % exit_code)
+    smoke_result = json.loads((out / "qml-smoke.json").read_text())
+    # The checks gate the job; a non-zero exit after they ran (shutdown) is recorded, not hidden.
+    smoke_result["process_exit"] = exit_code
+    (out / "qml-smoke.json").write_text(json.dumps(smoke_result, indent=2) + "\n")
+    smoke_result = check_qml_smoke(smoke_result)
     record = {"source_revision": revision, "upstream_source_revision": lock["upstream_source_revision"],
               "architecture": "aarch64", "experimental": "gpu-screen QML/EGLFS spike, not a product candidate",
               "flatpak_branch": QML_BRANCH, "flatpak_commits": actual, "gl_extension": {gl: gl_commit},
