@@ -6,6 +6,7 @@
 #include "controllers/controller.h"
 #include "controllers/controllerlearningeventfilter.h"
 #include "controllers/controllermappinginfoenumerator.h"
+#include "controllers/decklabbridgegate.h"
 #include "controllers/defs_controllers.h"
 #include "moc_controllermanager.cpp"
 #include "util/cmdlineargs.h"
@@ -297,6 +298,14 @@ void ControllerManager::slotSetUpDevices() {
         QFileInfo mappingFile = findMappingFile(mappingFilePath, mappingPaths);
         if (!mappingFile.exists()) {
             qDebug() << "Could not find" << mappingFilePath << "in any mapping path.";
+            continue;
+        }
+
+        // Deck Lab: the native kiosk does not need the legacy SysEx state
+        // bridge (see controllers/decklabbridgegate.h).
+        if (mixxx::decklab::midiStateBridgeDisabledFromEnvironment() &&
+                mixxx::decklab::isMidiStateBridgeMapping(mappingFile.fileName())) {
+            qInfo() << "DECKLAB_MIDI_BRIDGE=0: not opening the Deck Lab state bridge on" << name;
             continue;
         }
 

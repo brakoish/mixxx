@@ -27,11 +27,13 @@
     "DeckLabLv2SafetyTest.*",
     "DeckLabSystemTest.*",
     "DeckLabBrowseMatchTest.*",
-    "DeckLabBrowseTest.*"
+    "DeckLabBrowseTest.*",
+    "DeckLabWaveformCacheTest.*",
+    "DeckLabMidiBridgeGateTest.*"
   ],
   "input_sha256": {
     ".github/workflows/decklab-pi.yml": "47687c75d8245ecd0be521275cc6871e241d94de9c06ecae8f17c4e2429b124e",
-    "CMakeLists.txt": "f72575dfaa8c59f53bc93474c806bfa1d049f1406154f3b9851679debd9d76f0",
+    "CMakeLists.txt": "854a9de5d476662e1250f33e91528d85aa218ea7b589d46db303d358a5758375",
     "packaging/flatpak/modules/benchmark.yaml": "a85079134b2e8e9a2f837d400030039293e41870d4bf79d761cb4126309591f1",
     "packaging/flatpak/modules/chromaprint.yaml": "b0507a6d98aa75d7d37b7fc33f7fc2f03291ebd59a40711897dfbb0e398b30f2",
     "packaging/flatpak/modules/fdk-aac-free.yaml": "b136e1164587f580267e46cd98afe5fe021ee0e0aa450bffe720ea298b81c6db",

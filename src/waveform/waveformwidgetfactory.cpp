@@ -24,6 +24,7 @@
 #include "util/performancetimer.h"
 #include "util/timer.h"
 #include "waveform/guitick.h"
+#include "waveform/rendergate.h"
 #include "waveform/sharedglcontext.h"
 #include "waveform/visualsmanager.h"
 #include "waveform/vsyncthread.h"
@@ -151,7 +152,12 @@ WaveformWidgetFactory::WaveformWidgetFactory()
           m_perfTicks(0),
           m_perfTickNanosSum(0),
           m_perfTickNanosMax(0),
-          m_perfDroppedFramesBaseline(0) {
+          m_perfDroppedFramesBaseline(0),
+          m_perfSwapTimerStarted(false) {
+    if (m_perfLogEnabled) {
+        m_perfSwapIntervals.reserve(2048);
+        m_perfScratch.reserve(2048);
+    }
     m_pStemSplitTracksControl = std::make_unique<ControlObject>(
             ConfigKey(kWaveformGroup, QStringLiteral("stem_split_tracks")));
     m_visualGain[AllBand] = kVisualGainDefault[AllBand];
@@ -939,6 +945,14 @@ void WaveformWidgetFactory::swapSelf() {
             static_cast<int>(m_waveformWidgetHolders.size()));
     if (m_perfLogEnabled) {
         m_perfSlotTimer.start();
+        // Frame pacing as the GUI thread sees it: the swap slot should start
+        // once per frame interval. Late slots show up as long intervals.
+        if (m_perfSwapTimerStarted) {
+            m_perfSwapIntervals.push_back(m_perfSwapTimer.restart().toIntegerNanos());
+        } else {
+            m_perfSwapTimer.start();
+            m_perfSwapTimerStarted = true;
+        }
     }
 
     // Do this in an extra slot to be sure to hit the desired interval
@@ -1050,6 +1064,55 @@ void WaveformWidgetFactory::finishPerfTick(qint64 swapNanos) {
                                    QString::number(stats.skipped),
                                    QString::number(stats.hidden));
         holder.m_renderGate.resetStats();
+        if (holder.m_waveformWidget) {
+            const QString renderers = holder.m_waveformWidget->takePerfReport();
+            if (!renderers.isEmpty()) {
+                // CPU per rendered frame, mean/p95 in ms, per renderer.
+                qInfo().noquote() << QStringLiteral("DECKLAB_PERF renderers %1 %2")
+                                             .arg(group, renderers);
+            }
+        }
+    }
+    {
+        // Frame pacing over the window: mean, 95th percentile and maximum of
+        // the swap slot intervals, and how many exceeded 1.5 frame periods.
+        const qint64 nominalNanos = m_frameRate > 0 ? 1000000000LL / m_frameRate : 0;
+        qint64 sum = 0;
+        qint64 maxInterval = 0;
+        int late = 0;
+        for (const qint64 interval : m_perfSwapIntervals) {
+            sum += interval;
+            maxInterval = std::max(maxInterval, interval);
+            if (nominalNanos > 0 && interval * 2 > nominalNanos * 3) {
+                ++late;
+            }
+        }
+        const auto count = static_cast<qint64>(m_perfSwapIntervals.size());
+        const qint64 p95 = RendererTimings::percentile95(m_perfSwapIntervals, &m_perfScratch);
+        qInfo().noquote()
+                << QStringLiteral(
+                           "DECKLAB_PERF pacing mode=%1 fps=%2 intervals=%3 "
+                           "mean=%4ms p95=%5ms max=%6ms late=%7")
+                           .arg(QString::number(m_vsyncThread
+                                                ? static_cast<int>(
+                                                          m_vsyncThread->vsyncMode())
+                                                : -1),
+                                   QString::number(m_frameRate),
+                                   QString::number(count),
+                                   QString::number(count ? static_cast<double>(sum) /
+                                                           static_cast<double>(count) / 1e6
+                                                         : 0.0,
+                                           'f',
+                                           3),
+                                   QString::number(p95 > 0 ? static_cast<double>(p95) / 1e6
+                                                           : 0.0,
+                                           'f',
+                                           3),
+                                   QString::number(static_cast<double>(maxInterval) / 1e6,
+                                           'f',
+                                           3),
+                                   QString::number(late));
+        m_perfSwapIntervals.clear();
     }
     const int droppedFrames = m_vsyncThread ? m_vsyncThread->droppedFrames() : 0;
     const double meanMillis = m_perfTicks

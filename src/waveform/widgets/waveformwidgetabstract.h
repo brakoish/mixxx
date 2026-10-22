@@ -38,6 +38,12 @@ class WaveformWidgetAbstract : public WaveformWidgetRenderer {
     virtual mixxx::Duration render();
     virtual void resize(int width, int height);
 
+    /// Deck Lab perf log: per-renderer CPU time and geometry cache counters
+    /// since the last call, which resets them. Empty when not measured.
+    virtual QString takePerfReport() {
+        return QString();
+    }
+
   protected:
     QWidget* m_widget;
     bool m_initSuccess;
