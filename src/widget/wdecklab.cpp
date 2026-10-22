@@ -343,7 +343,10 @@ QWidget* WDeckLab::buildDecks() {
                 const int deck = displayedDeck(side);
                 if (item == "play") set(channel(deck), item, !value(channel(deck), item));
                 else if (item != "cue_default") {
-                    pulse(channel(deck), item);
+                    // Mixxx's general beatsync phase-seeks only with Quantize.
+                    // This action explicitly promises tempo AND phase once.
+                    pulse(channel(deck), QStringLiteral("beatsync_tempo"));
+                    pulse(channel(deck), QStringLiteral("beatsync_phase"));
                     m_syncFeedbackUntil[side] = m_clock.elapsed() + 600;
                     refreshDeck(deck);
                 }

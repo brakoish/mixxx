@@ -393,11 +393,14 @@ TEST_F(NativeDeckLabTest, SyncAcknowledgmentCannotTransferToAnotherLayer) {
 }
 
 TEST_F(NativeDeckLabTest, DeckIdentityAndLabelledReadoutsFitWithoutStealingWaveformSpace) {
-    m_pMixerDeck1->loadFakeTrack(false, 300); ProcessBuffer();
+    auto track = m_pMixerDeck1->loadFakeTrack(false, 300);
+    track->setKey(mixxx::track::io::key::E_MAJOR, mixxx::track::io::key::USER); ProcessBuffer();
+    panel->setAudioOutputConfigured(true);
+    ControlObject::set(ConfigKey("[SoundManager]", "status"), 2);
+    ControlObject::set(ConfigKey("[DeckLabNative]", "tools_ready"), 1);
     ControlObject::set(ConfigKey("[Channel1]", "duration"), 7200);
     QTest::qWait(150);
     auto* numbers = panel->findChild<QLabel*>("decklab-numbers-1"); ASSERT_NE(nullptr, numbers);
-    ControlObject::set(ConfigKey("[Channel1]", "visual_key"), 2);
     QComboBox* format = nullptr;
     for (auto* combo : panel->findChildren<QComboBox*>())
         if (combo->itemText(0).startsWith("Camelot")) format = combo;
