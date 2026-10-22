@@ -243,6 +243,36 @@ class DeckLabPad final : public QPushButton {
 };
 }
 
+// Browse page state (browse-ui). Lives here so other pages never see it.
+struct DeckLabBrowseState {
+    enum class List {
+        Sources,
+        Categories,
+        Values,
+    };
+    List list = List::Sources;
+    QPersistentModelIndex source; // Collection root or Rekordbox USB device
+    bool rekordbox = false;
+    int trackCount = -1;
+    decklab::Category category = decklab::Category::AllTracks;
+    QString valueLabel;
+    QString filter; // Category query currently applied to the track view
+    bool fromCategories = false;
+    QPersistentModelIndex returnRoot; // Sidebar folder opened from a category
+    int categoryRow = 0;
+    TrackPointer selectedTrack;
+    bool matchEnabled = true;
+    QTimer matchTimer;
+    QTimer loadingTimer;
+    QStackedWidget* listStack = nullptr;
+    QListWidget* items = nullptr;
+    DeckLabBreadcrumb* breadcrumb = nullptr;
+    DeckLabTrackCard* card = nullptr;
+    DeckLabActionButton* preview = nullptr;
+    DeckLabActionButton* match = nullptr;
+    DeckLabToast* toast = nullptr;
+};
+
 WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
         PlayerManagerInterface* players, EffectsManager* effects, QWidget* parent)
         : QWidget(parent), WBaseWidget(this), m_config(config), m_library(library),
@@ -778,36 +808,6 @@ QWidget* WDeckLab::buildDecks() {
     // Parking parent only; each physical-side utility follows its visible deck.
     page->hide(); return page;
 }
-
-// Browse page state (browse-ui). Lives here so other pages never see it.
-struct DeckLabBrowseState {
-    enum class List {
-        Sources,
-        Categories,
-        Values,
-    };
-    List list = List::Sources;
-    QPersistentModelIndex source; // Collection root or Rekordbox USB device
-    bool rekordbox = false;
-    int trackCount = -1;
-    decklab::Category category = decklab::Category::AllTracks;
-    QString valueLabel;
-    QString filter; // Category query currently applied to the track view
-    bool fromCategories = false;
-    QPersistentModelIndex returnRoot; // Sidebar folder opened from a category
-    int categoryRow = 0;
-    TrackPointer selectedTrack;
-    bool matchEnabled = true;
-    QTimer matchTimer;
-    QTimer loadingTimer;
-    QStackedWidget* listStack = nullptr;
-    QListWidget* items = nullptr;
-    DeckLabBreadcrumb* breadcrumb = nullptr;
-    DeckLabTrackCard* card = nullptr;
-    DeckLabActionButton* preview = nullptr;
-    DeckLabActionButton* match = nullptr;
-    DeckLabToast* toast = nullptr;
-};
 
 namespace {
 using DeckLabList = DeckLabBrowseState::List;

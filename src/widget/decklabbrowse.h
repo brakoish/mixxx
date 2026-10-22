@@ -26,16 +26,16 @@ namespace decklab {
 
 using ChromaticKey = mixxx::track::io::key::ChromaticKey;
 
-// Camelot (Lancelot) wheel position: 1..12, A = minor, B = major.
-struct Camelot {
+// Lancelot key wheel position: 1..12, A = minor, B = major.
+struct LancelotPosition {
     int number = 0;
     bool major = false;
     bool isValid() const {
         return number > 0;
     }
 };
-Camelot camelot(ChromaticKey key);
-QString camelotText(ChromaticKey key);
+LancelotPosition lancelot(ChromaticKey key);
+QString lancelotText(ChromaticKey key);
 
 // Same key, relative major/minor (same number) or one step on the wheel
 // (same letter). Diagonal moves are deliberately not highlighted.
@@ -55,7 +55,7 @@ double tempoDifferencePercent(double trackBpm, double referenceBpm);
 // Parses any key notation shown by Mixxx or an export (8A, 1m, Am, A♭m...).
 // Cached, GUI thread only.
 ChromaticKey keyFromText(const QString& text);
-QColor camelotColor(ChromaticKey key);
+QColor keyWheelColor(ChromaticKey key);
 
 // The deck Browse compares rows with. Updated from deck controls by the
 // native surface; read while painting rows. GUI thread only.

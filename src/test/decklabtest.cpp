@@ -2012,7 +2012,7 @@ TEST_F(NativeDeckLabTest, BrowseScalesCleanlyTo1024x600And1280x800) {
     }
 }
 
-TEST(DeckLabBrowseMatchTest, CamelotWheelCompatibilityTable) {
+TEST(DeckLabBrowseMatchTest, LancelotWheelHarmonicMatchTable) {
     using namespace mixxx::track::io::key;
     const std::vector<std::pair<ChromaticKey, QString>> wheel{
             {C_MAJOR, "8B"}, {D_FLAT_MAJOR, "3B"}, {D_MAJOR, "10B"}, {E_FLAT_MAJOR, "5B"},
@@ -2022,7 +2022,7 @@ TEST(DeckLabBrowseMatchTest, CamelotWheelCompatibilityTable) {
             {E_MINOR, "9A"}, {F_MINOR, "4A"}, {F_SHARP_MINOR, "11A"}, {G_MINOR, "6A"},
             {G_SHARP_MINOR, "1A"}, {A_MINOR, "8A"}, {B_FLAT_MINOR, "3A"}, {B_MINOR, "10A"}};
     for (const auto& [key, text] : wheel) {
-        EXPECT_EQ(text, decklab::camelotText(key)) << KeyUtils::keyDebugName(key).toStdString();
+        EXPECT_EQ(text, decklab::lancelotText(key)) << KeyUtils::keyDebugName(key).toStdString();
         // Mixxx's own Lancelot notation agrees with the wheel.
         EXPECT_EQ(text, KeyUtils::keyToString(key, KeyUtils::KeyNotation::Lancelot));
     }
@@ -2081,27 +2081,27 @@ TEST(DeckLabBrowseMatchTest, TempoMatchesWithinSixPercentOnly) {
 }
 
 TEST(DeckLabBrowseTest, BreadcrumbDropsMiddleSegmentsBeforeTheDeepestLevel) {
-    const QStringList path{"Rekordbox", "USB DRIVE", "Genres", "House and Tech"};
+    const QStringList path{"Rekordbox", "USB DRIVE", "Folder", "Playlist 3"};
     const auto measure = [](const QString& text) { return static_cast<int>(text.size()); };
     const QString separator = QStringLiteral(" / ");
     // Fits: unchanged.
     EXPECT_EQ(path, decklab::elideBreadcrumb(path, 100, measure, separator));
     // Middle levels go first; the source and the deepest level stay.
-    EXPECT_EQ((QStringList{"Rekordbox", decklab::ellipsis(), "Genres", "House and Tech"}),
+    EXPECT_EQ((QStringList{"Rekordbox", decklab::ellipsis(), "Folder", "Playlist 3"}),
             decklab::elideBreadcrumb(path, 40, measure, separator));
-    EXPECT_EQ((QStringList{"Rekordbox", decklab::ellipsis(), "House and Tech"}),
+    EXPECT_EQ((QStringList{"Rekordbox", decklab::ellipsis(), "Playlist 3"}),
             decklab::elideBreadcrumb(path, 30, measure, separator));
-    EXPECT_EQ((QStringList{decklab::ellipsis(), "House and Tech"}),
+    EXPECT_EQ((QStringList{decklab::ellipsis(), "Playlist 3"}),
             decklab::elideBreadcrumb(path, 20, measure, separator));
-    EXPECT_EQ(QStringList{"House and Tech"}, decklab::elideBreadcrumb(path, 5, measure, separator));
+    EXPECT_EQ(QStringList{"Playlist 3"}, decklab::elideBreadcrumb(path, 5, measure, separator));
     EXPECT_EQ(QStringList{"Sources"}, decklab::elideBreadcrumb({"Sources"}, 1, measure, separator));
     // The painted breadcrumb applies the same rule to its real width.
     DeckLabBreadcrumb crumb;
     crumb.resize(300, 44);
-    crumb.setSegments({"Rekordbox", "USB DRIVE", "Playlists", "Warm-up", "Late Night Selection"});
+    crumb.setSegments({"Rekordbox", "USB DRIVE", "Playlists", "Folder 2", "Generated Playlist 12"});
     const QStringList shown = crumb.displayedSegments();
     ASSERT_GE(shown.size(), 2);
-    EXPECT_EQ(QStringLiteral("Late Night Selection"), shown.last());
+    EXPECT_EQ(QStringLiteral("Generated Playlist 12"), shown.last());
     EXPECT_TRUE(shown.contains(decklab::ellipsis()));
     EXPECT_EQ(crumb.segments().join(QStringLiteral(" › ")), crumb.toolTip());
 }

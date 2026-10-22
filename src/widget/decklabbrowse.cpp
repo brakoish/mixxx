@@ -163,7 +163,7 @@ void paintChip(QPainter& painter,
 }
 } // namespace
 
-Camelot camelot(ChromaticKey key) {
+LancelotPosition lancelot(ChromaticKey key) {
     const int value = static_cast<int>(key);
     if (value < 1 || value > 24) {
         return {};
@@ -176,8 +176,8 @@ Camelot camelot(ChromaticKey key) {
     return {(7 + 7 * majorTonic) % 12 + 1, major};
 }
 
-QString camelotText(ChromaticKey key) {
-    const Camelot position = camelot(key);
+QString lancelotText(ChromaticKey key) {
+    const LancelotPosition position = lancelot(key);
     if (!position.isValid()) {
         return {};
     }
@@ -185,8 +185,8 @@ QString camelotText(ChromaticKey key) {
 }
 
 HarmonicMatch harmonicMatch(ChromaticKey track, ChromaticKey reference) {
-    const Camelot a = camelot(track);
-    const Camelot b = camelot(reference);
+    const LancelotPosition a = lancelot(track);
+    const LancelotPosition b = lancelot(reference);
     if (!a.isValid() || !b.isValid()) {
         return HarmonicMatch::None;
     }
@@ -237,14 +237,14 @@ ChromaticKey keyFromText(const QString& text) {
     return key;
 }
 
-QColor camelotColor(ChromaticKey key) {
-    const Camelot position = camelot(key);
+QColor keyWheelColor(ChromaticKey key) {
+    const LancelotPosition position = lancelot(key);
     if (!position.isValid()) {
         return {};
     }
-    // The familiar Camelot wheel runs from yellow-green (1) round the hue circle.
-    const qreal hue = std::fmod(0.21 + (position.number - 1) / 12.0, 1.0);
-    return QColor::fromHsvF(hue, position.major ? 0.55 : 0.70, position.major ? 0.95 : 0.85);
+    // Wheel positions run round the hue circle, starting at yellow-green (1).
+    const float hue = static_cast<float>(std::fmod(0.21 + (position.number - 1) / 12.0, 1.0));
+    return QColor::fromHsvF(hue, position.major ? 0.55f : 0.70f, position.major ? 0.95f : 0.85f);
 }
 
 bool MatchReference::sameAs(const MatchReference& other) const {
@@ -410,8 +410,8 @@ QVector<CategoryValue> collectCategoryValues(
         }
         QList<int> keys = counts.keys();
         std::sort(keys.begin(), keys.end(), [](int a, int b) {
-            const Camelot x = camelot(static_cast<ChromaticKey>(a));
-            const Camelot y = camelot(static_cast<ChromaticKey>(b));
+            const LancelotPosition x = lancelot(static_cast<ChromaticKey>(a));
+            const LancelotPosition y = lancelot(static_cast<ChromaticKey>(b));
             if (x.isValid() != y.isValid()) {
                 return x.isValid();
             }
@@ -422,16 +422,16 @@ QVector<CategoryValue> collectCategoryValues(
         });
         for (int value : keys) {
             const auto key = static_cast<ChromaticKey>(value);
-            const QString camelotName = camelotText(key);
-            if (camelotName.isEmpty()) {
+            const QString lancelotName = lancelotText(key);
+            if (lancelotName.isEmpty()) {
                 values.append({translate("No key"), QStringLiteral("key:\"\""), counts.value(value), QColor()});
                 continue;
             }
             QString label = KeyUtils::keyToString(key);
             if (label.isEmpty()) {
-                label = camelotName;
+                label = lancelotName;
             }
-            values.append({label, QStringLiteral("key:") + camelotName, counts.value(value), camelotColor(key)});
+            values.append({label, QStringLiteral("key:") + lancelotName, counts.value(value), keyWheelColor(key)});
         }
         break;
     }
@@ -923,7 +923,7 @@ void DeckLabTrackCard::paintArtwork(QPainter& painter, const QRect& box) {
         }
         painter.drawPixmap(box.topLeft(), m_coverScaled);
     } else {
-        QColor base = m_color.isValid() ? m_color : camelotColor(m_key);
+        QColor base = m_color.isValid() ? m_color : keyWheelColor(m_key);
         if (!base.isValid()) {
             base = QColor(0x3a, 0x3a, 0x3a);
         }
