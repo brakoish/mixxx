@@ -98,8 +98,10 @@ VSyncPll::Result VSyncPll::addSample(double phaseInMicros, bool vblankReferenced
         m_stats.duplicates++;
         return Result::Duplicate;
     }
-    const bool gap = !m_hasLastSample ||
-            phaseInMicros - m_lastSampleMicros > kGapFrames * m_deltaOut;
+    const double framesSinceLast = m_hasLastSample
+            ? (phaseInMicros - m_lastSampleMicros) / m_deltaOut
+            : 0.0;
+    const bool gap = !m_hasLastSample || framesSinceLast > kGapFrames;
 
     // Predict the next vblank, then wrap the error to the nearest frame. After
     // a gap this skips the whole freewheeled stretch. Upstream wraps positive
@@ -188,7 +190,9 @@ double VSyncPll::nextSlotMicros(double now,
 
 bool VSyncKeepalive::onSlot(qint64 nowMillis, bool active) {
     if (!m_started) {
+        // The first slot after the loop locked.
         m_started = true;
+        m_runUntilMillis = nowMillis + kSettleMillis;
         m_nextRefreshMillis = nowMillis + kIdleRefreshIntervalMillis;
     }
     if (active) {

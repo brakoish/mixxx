@@ -359,15 +359,23 @@ TEST(DeckLabVSyncTest, SlotScheduleFollowsCorrectionsAndNeverDoublesAnInterval) 
 
 TEST(DeckLabVSyncTest, KeepaliveStopsWhenIdleAndRefillsTheQueue) {
     VSyncKeepalive keepalive;
-    qint64 now = 0;
-    // Idle from the start: no paints.
+    qint64 now = 1000;
+    // Right after the lock: paints for 30 s even when idle (the period
+    // settles), then stops.
+    const qint64 lockedAt = now;
+    while (keepalive.onSlot(now += 17, false)) {
+        ASSERT_LT(now - lockedAt, 40000);
+    }
+    EXPECT_GE(now - lockedAt, VSyncKeepalive::kSettleMillis);
+    EXPECT_LT(now - lockedAt, VSyncKeepalive::kSettleMillis + 34);
+    EXPECT_EQ(1u, keepalive.stats().starts);
+    EXPECT_EQ(1u, keepalive.stats().stops);
     for (int i = 0; i < 30; ++i) {
         EXPECT_FALSE(keepalive.onSlot(now += 17, false));
     }
-    EXPECT_EQ(0u, keepalive.stats().starts);
     // A deck starts moving: paint every slot.
     EXPECT_TRUE(keepalive.onSlot(now += 17, true));
-    EXPECT_EQ(1u, keepalive.stats().starts);
+    EXPECT_EQ(2u, keepalive.stats().starts);
     // A paint that waited for a vblank needs no follow-up.
     EXPECT_FALSE(keepalive.onFrameSwapped(true));
     // Unqueued paints (resume, a dropped frame): refill, at most 4 per slot.
@@ -389,7 +397,7 @@ TEST(DeckLabVSyncTest, KeepaliveStopsWhenIdleAndRefillsTheQueue) {
     }
     EXPECT_GE(now - pausedAt, VSyncKeepalive::kIdleStopMillis);
     EXPECT_LT(now - pausedAt, VSyncKeepalive::kIdleStopMillis + 17);
-    EXPECT_EQ(1u, keepalive.stats().stops);
+    EXPECT_EQ(2u, keepalive.stats().stops);
     EXPECT_FALSE(keepalive.running());
     EXPECT_FALSE(keepalive.onFrameSwapped(false)) << "no refills while stopped";
     for (int i = 0; i < 600; ++i) {
@@ -397,7 +405,7 @@ TEST(DeckLabVSyncTest, KeepaliveStopsWhenIdleAndRefillsTheQueue) {
     }
     // Play again.
     EXPECT_TRUE(keepalive.onSlot(now += 17, true));
-    EXPECT_EQ(2u, keepalive.stats().starts);
+    EXPECT_EQ(3u, keepalive.stats().starts);
     EXPECT_EQ(0u, keepalive.stats().refreshes);
 
     // Long idle: 250 ms of paints once a minute, counted from the last
@@ -616,8 +624,8 @@ ClosedLoopResult runClosedLoop(const ClosedLoopConfig& config) {
         return 0.0;
     };
     const auto deepIdle = [&](double t) {
-        if (t < 1e6) {
-            return false; // startup
+        if (t < (VSyncKeepalive::kSettleMillis + 1000) * 1000.0) {
+            return false; // startup: lock, then the settle time
         }
         return std::none_of(config.play.begin(), config.play.end(), [t](const auto& range) {
             return t >= range.first && t < range.second + 600000.0;
@@ -815,8 +823,20 @@ TEST(DeckLabVSyncTest, ClosedLoopLocksIdlesAndResumesWithoutAJump) {
         // Startup, play 2-30 s and 90-100 s (38 s at 60 Hz plus refills),
         // nothing during the 60 s idle stretch.
         EXPECT_LT(result.paints, 40 * 61) << what;
-        EXPECT_EQ(2u, result.relocks) << what << ": one per start of play";
+        EXPECT_EQ(1u, result.relocks) << what << ": the first play falls into the settle time";
     }
+}
+
+TEST(DeckLabVSyncTest, ClosedLoopStartsIdleAndPlaysLater) {
+    // Locked at startup, idle through the settle time and beyond, then play:
+    // the freewheel after the settle is good enough for a smooth start.
+    ClosedLoopConfig config;
+    config.seconds = 75.0;
+    config.play = {{50e6, 75e6}};
+    const ClosedLoopResult result = runClosedLoop(config);
+    expectSmooth(result, "idle start");
+    EXPECT_NEAR(kMeasuredPeriod, result.finalPeriod, 0.05);
+    EXPECT_EQ(1u, result.relocks);
 }
 
 TEST(DeckLabVSyncTest, ClosedLoopResumesAfterAFreewheelError) {
@@ -833,7 +853,7 @@ TEST(DeckLabVSyncTest, ClosedLoopResumesAfterAFreewheelError) {
         const std::string what = "vblank shift " + std::to_string(shift);
         expectSmooth(result, what);
         EXPECT_NEAR(kMeasuredPeriod, result.finalPeriod, 0.05) << what;
-        EXPECT_EQ(2u, result.relocks) << what;
+        EXPECT_EQ(1u, result.relocks) << what;
     }
 }
 

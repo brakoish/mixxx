@@ -184,6 +184,11 @@ class VSyncKeepalive {
   public:
     /// Keep repainting this long after the last activity.
     static constexpr qint64 kIdleStopMillis = 500;
+    /// And this long after the loop locked at startup, so upstream's filter
+    /// refines the 20-frame init average (good to 5 to 15 us) before the
+    /// first freewheel. Its time constant is about 200 frames, so 30 s leave
+    /// e^-9 of the init error.
+    static constexpr qint64 kSettleMillis = 30000;
     /// Extra paints per slot to refill the swap queue after unqueued paints.
     static constexpr int kRefillPaintsPerSlot = 4;
     /// While idle, repaint for kRefreshMillis this often, so the freewheeled
