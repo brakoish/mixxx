@@ -356,7 +356,7 @@ TEST_F(NativeDeckLabTest, DecksTransportHasTruthfulStatesAndLargerTargets) {
     EXPECT_TRUE(panel->findChild<QLabel*>("decklab-pitch-1")->text().contains("%"));
     EXPECT_EQ(44, play->height()); EXPECT_EQ(44, sync->height());
     EXPECT_EQ(40, panel->findChild<QPushButton*>("decklab-tab-0")->height());
-    EXPECT_EQ(QStringLiteral("Beat Sync"), sync->text()); EXPECT_FALSE(sync->isCheckable());
+    EXPECT_EQ(QStringLiteral("BEAT\nSYNC"), sync->text()); EXPECT_FALSE(sync->isCheckable());
     sync->click(); QCoreApplication::processEvents();
     EXPECT_TRUE(sync->property("actionFeedback").toBool());
     EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "sync_enabled")));
@@ -621,6 +621,7 @@ TEST_F(NativeDeckLabTest, SideUtilitiesOperateRealLoopsAndModesWithoutRetargetin
     ControlObject::set(ConfigKey("[Channel1]", "beatloop_size"), .125); QTest::qWait(150);
     EXPECT_EQ(QStringLiteral("LOOP\n1/8"), loop->text());
     ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 1); QCoreApplication::processEvents();
+    QTest::qWait(kUnreplaceDelay + 1);
     m_pMixerDeck3->slotEjectTrack(1); ProcessBuffer(); QTest::qWait(150);
     EXPECT_FALSE(loop->isEnabled()); EXPECT_FALSE(quantize->isEnabled()); EXPECT_FALSE(keylock->isEnabled());
 }
