@@ -35,9 +35,7 @@ class DeckLabSystemPage : public QWidget {
 
     explicit DeckLabSystemPage(QWidget* parent);
     void setSystem(DeckLabSystem* system);
-    DeckLabSystem* system() const {
-        return m_system;
-    }
+    DeckLabSystem* system() const;
     void showSection(Section section);
     Section currentSection() const {
         return m_current;

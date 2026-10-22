@@ -705,7 +705,7 @@ void DeckLabSystem::onRescanFinished() {
     const auto pending = m_pendingReapply;
     m_pendingReapply.clear();
     for (const auto& profile : pending) {
-        reapply(profile);
+        reapply(profile, true);
     }
 }
 
@@ -991,41 +991,50 @@ void DeckLabSystem::onDevicesChanged(const QJsonObject& data, const QStringList&
         }
         emit controllerArrived(key, name, profile.has_value());
         if (profile) {
-            reapply(*profile);
+            reapply(*profile, false);
+        } else if (!anyPlaying()) {
+            // A new controller: enumerate it now so Deck Setup can enable it.
+            QString reason;
+            rescanControllers(&reason);
         }
     }
 }
 
-void DeckLabSystem::reapply(const decklab::DeviceProfile& profile) {
+void DeckLabSystem::reapply(const decklab::DeviceProfile& profile, bool afterRescan) {
     const auto all = controllers();
+    const auto isProfile = [&profile](const ControllerInfo& info) {
+        return info.key == profile.key || (!profile.controller.isEmpty() && info.mixxxName == profile.controller);
+    };
+    if (!afterRescan && m_services.controllers) {
+        // A replugged controller needs fresh MIDI/HID streams even when Mixxx
+        // still lists the old device. Re-enumerate when that can't disturb a
+        // playing set: idle, or no other controller is running.
+        bool otherOpen = false;
+        for (const auto& info : all) {
+            otherOpen |= info.open && !isProfile(info);
+        }
+        if (anyPlaying() && otherOpen) {
+            emit notice(tr("%1 is back. Stop the music, then open Deck Setup to reconnect it.").arg(profile.name));
+            return;
+        }
+        QString reason;
+        if (rescanControllers(&reason)) {
+            if (!m_pendingReapply.contains(profile)) {
+                m_pendingReapply.append(profile);
+            }
+            return;
+        }
+        emit notice(reason);
+    }
     const ControllerInfo* current = nullptr;
     for (const auto& info : all) {
-        if (info.key == profile.key || (!profile.controller.isEmpty() && info.mixxxName == profile.controller)) {
+        if (isProfile(info) && !info.mixxxName.isEmpty()) {
             current = &info;
         }
     }
-    if (!current || current->mixxxName.isEmpty()) {
-        // Mixxx has not enumerated it yet. Re-enumerate now when that cannot
-        // disturb a playing set: idle, or no other controller is running.
-        bool otherOpen = false;
-        for (const auto& info : all) {
-            otherOpen |= info.open && info.key != profile.key;
-        }
-        if (anyPlaying() && otherOpen) {
-            emit notice(tr("%1 is back. Stop the music, then Settings → Setup → Deck Setup to reconnect it.")
-                                .arg(profile.name));
-            return;
-        }
-        if (!m_rescanning) {
-            QString reason;
-            if (!rescanControllers(&reason)) {
-                emit notice(reason);
-                return;
-            }
-        }
-        if (!m_pendingReapply.contains(profile)) {
-            m_pendingReapply.append(profile);
-        }
+    if (!current) {
+        emit notice(tr("%1 was not detected. Open Deck Setup and tap Detect again or Restart to detect.")
+                            .arg(profile.name));
         return;
     }
     if (!current->open && !profile.mapping.isEmpty()) {

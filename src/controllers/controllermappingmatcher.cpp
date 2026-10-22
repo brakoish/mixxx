@@ -329,8 +329,8 @@ bool productMatches(const ControllerMappingMatcher::Device& device, const Produc
         return false;
     }
     if (device.hid && device.interfaceNumber && !product.interface_number.isEmpty()) {
-        const int interface = product.interface_number.toInt(&ok, 16);
-        if (ok && interface != *device.interfaceNumber) {
+        const int productInterface = product.interface_number.toInt(&ok, 16);
+        if (ok && productInterface != *device.interfaceNumber) {
             return false;
         }
     }

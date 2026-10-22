@@ -85,7 +85,7 @@ void systemSmokeStep(int index, WDeckLab* surface) {
     case 1: settings(Section::Wifi); break;
     case 2:
         settings(Section::Wifi);
-        clickVisible(surface, QStringLiteral("decklab-wifi-network"), QStringLiteral("Neighbour Home"));
+        clickVisible(surface, QStringLiteral("decklab-wifi-network"), QStringLiteral("Example-Network"));
         break;
     case 3: settings(Section::Bluetooth); break;
     case 4: settings(Section::Screen); break;

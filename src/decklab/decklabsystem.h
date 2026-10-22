@@ -164,7 +164,7 @@ class DeckLabSystem : public QObject {
     void onEvent(const QString& topic, const QJsonObject& data);
     void onDevicesChanged(const QJsonObject& data, const QStringList& added);
     void onRescanFinished();
-    void reapply(const decklab::DeviceProfile& profile);
+    void reapply(const decklab::DeviceProfile& profile, bool afterRescan);
     void reapplyAudio(const decklab::DeviceProfile& profile);
     void forgetMissingRecordingDrive();
     bool preferencesOpen() const;

@@ -1395,7 +1395,9 @@ class AboutPage : public SectionPage {
         add(tr("DJ engine"), tr("Mixxx %1").arg(VersionStore::version()));
         const bool service = online();
         add(tr("System service"),
-                service ? tr("Connected · decklabd %1").arg(m_system->client()->serverVersion())
+                service ? (m_system->client()->isReadOnly()
+                                          ? tr("Connected · decklabd %1 · read-only").arg(m_system->client()->serverVersion())
+                                          : tr("Connected · decklabd %1").arg(m_system->client()->serverVersion()))
                         : tr("Offline — DJing is unaffected"));
         if (!info.isEmpty()) {
             QStringList addresses;
@@ -1518,6 +1520,10 @@ DeckLabSystemPage::DeckLabSystemPage(QWidget* parent)
         m_stack->addWidget(page);
     }
     refreshTiles();
+}
+
+DeckLabSystem* DeckLabSystemPage::system() const {
+    return m_system.data();
 }
 
 QString DeckLabSystemPage::sectionName(Section section) {

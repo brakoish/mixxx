@@ -25,24 +25,24 @@ QJsonArray parseArray(const char* json) {
 DeckLabFakeService::DeckLabFakeService(QObject* parent)
         : QObject(parent),
           m_server(new QLocalServer(this)) {
-    systemInfo = parse(R"({"hostname": "decklab", "os": "Raspberry Pi OS (Debian 13)",
+    systemInfo = parse(R"JSON({"hostname": "decklab", "os": "Raspberry Pi OS (Debian 13)",
         "kernel": "6.18.0-v8+", "model": "Raspberry Pi 4 Model B Rev 1.2", "decklab_version": "2026.10",
         "uptime_s": 5420, "temp_c": 58.4, "throttled": "0x0", "undervoltage_now": false, "cpu_mhz": 1500,
         "mem_available_mb": 2810, "ip": ["192.0.2.42"],
-        "storage": {"root_free_mb": 18450, "data_free_mb": 18450}})");
-    wifiStatus = parse(R"({"enabled": true, "connected": true, "ssid": "Studio 5G", "signal": 78,
-        "ip": "192.0.2.42", "saved": ["Studio 5G", "Club Backstage"]})");
-    networks = parseArray(R"([
-        {"ssid": "Studio 5G", "signal": 78, "security": "wpa", "saved": true, "active": true},
-        {"ssid": "Club Backstage", "signal": 54, "security": "wpa3", "saved": true, "active": false},
-        {"ssid": "Guest", "signal": 41, "security": "open", "saved": false, "active": false},
-        {"ssid": "Neighbour Home", "signal": 22, "security": "wpa", "saved": false, "active": false}])");
-    btStatus = parse(R"({"available": true, "powered": true, "devices": [
-        {"address": "F4:4E:FD:12:34:56", "name": "JBL Flip 6", "paired": true, "connected": false, "audio": true},
-        {"address": "00:1B:66:AA:BB:CC", "name": "Sennheiser HD 450BT", "paired": false, "connected": false, "audio": true}]})");
-    display = parse(R"({"available": true, "brightness": 80})");
-    timeStatus = parse(R"({"timezone": "Europe/London", "ntp": true, "synced": true,
-        "now": "2026-10-22T21:30:00+01:00"})");
+        "storage": {"root_free_mb": 18450, "data_free_mb": 18450}})JSON");
+    wifiStatus = parse(R"JSON({"enabled": true, "connected": true, "ssid": "Studio-WiFi", "signal": 78,
+        "ip": "192.0.2.42", "saved": ["Studio-WiFi", "Backstage-WiFi"]})JSON");
+    networks = parseArray(R"JSON([
+        {"ssid": "Studio-WiFi", "signal": 78, "security": "wpa", "saved": true, "active": true},
+        {"ssid": "Backstage-WiFi", "signal": 54, "security": "wpa3", "saved": true, "active": false},
+        {"ssid": "Guest-WiFi", "signal": 41, "security": "open", "saved": false, "active": false},
+        {"ssid": "Example-Network", "signal": 22, "security": "wpa", "saved": false, "active": false}])JSON");
+    btStatus = parse(R"JSON({"available": true, "powered": true, "devices": [
+        {"address": "02:00:00:00:00:01", "name": "Practice Speaker", "paired": true, "connected": false, "audio": true},
+        {"address": "02:00:00:00:00:02", "name": "Wireless Headphones", "paired": false, "connected": false, "audio": true}]})JSON");
+    display = parse(R"JSON({"available": true, "brightness": 80})JSON");
+    timeStatus = parse(R"JSON({"timezone": "Europe/London", "ntp": true, "synced": true,
+        "now": "2026-10-22T21:30:00+01:00"})JSON");
     timezones = QStringList{QStringLiteral("Africa/Cairo"),
             QStringLiteral("Africa/Johannesburg"),
             QStringLiteral("Africa/Lagos"),
@@ -68,13 +68,13 @@ DeckLabFakeService::DeckLabFakeService(QObject* parent)
             QStringLiteral("Europe/Rome"),
             QStringLiteral("Pacific/Auckland"),
             QStringLiteral("UTC")};
-    drives = parseArray(R"([
+    drives = parseArray(R"JSON([
         {"id": "6A3F-1C2B", "label": "DJ USB", "mount": "/media/decklab/6A3F-1C2B", "size_mb": 30528,
          "free_mb": 12402, "fs": "exfat", "read_only": true, "rekordbox": true, "busy": false},
         {"id": "0e9c1d7a-55aa-4b33-9e3f-2f9d0c4a1b77", "label": "MIX SETS",
          "mount": "/media/decklab/0e9c1d7a-55aa-4b33-9e3f-2f9d0c4a1b77", "size_mb": 61056,
-         "free_mb": 40220, "fs": "ext4", "read_only": false, "rekordbox": false, "busy": false}])");
-    devices = parse(R"({"controllers": [
+         "free_mb": 40220, "fs": "ext4", "read_only": false, "rekordbox": false, "busy": false}])JSON");
+    devices = parse(R"JSON({"controllers": [
         {"key": "2b73:0042:A1B2C3", "vid": "2b73", "pid": "0042", "serial": "A1B2C3", "name": "DDJ-FLX4",
          "midi_ports": ["DDJ-FLX4 MIDI 1"], "hid": false,
          "audio_card": {"alsa_id": "DDJFLX4", "name": "DDJ-FLX4", "playback_channels": 4, "capture_channels": 0}}],
@@ -82,7 +82,7 @@ DeckLabFakeService::DeckLabFakeService(QObject* parent)
         {"alsa_id": "Headphones", "name": "bcm2835 Headphones", "playback_channels": 2, "capture_channels": 0,
          "usb": false, "builtin": true},
         {"alsa_id": "DDJFLX4", "name": "DDJ-FLX4", "playback_channels": 4, "capture_channels": 0,
-         "usb": true, "builtin": false}]})");
+         "usb": true, "builtin": false}]})JSON");
     connect(m_server, &QLocalServer::newConnection, this, &DeckLabFakeService::onConnection);
 }
 

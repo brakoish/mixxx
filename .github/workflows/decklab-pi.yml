@@ -25,7 +25,7 @@ jobs:
       - name: Check out exact source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 200
+          fetch-depth: 0
           persist-credentials: false
       - name: Validate build inputs and failure guards
         run: |
