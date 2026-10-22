@@ -4,6 +4,7 @@
 #include <QUrl>
 #include <QtDebug>
 
+#include "control/controlobject.h"
 #include "library/sidebarmodel.h"
 #include "moc_wlibrarysidebar.cpp"
 #include "util/defs.h"
@@ -370,8 +371,14 @@ void WLibrarySidebar::mousePressEvent(QMouseEvent* pEvent) {
 }
 
 void WLibrarySidebar::focusInEvent(QFocusEvent* pEvent) {
-    // Clear the current index, i.e. remove the focus indicator
-    selectionModel()->clearCurrentIndex();
+    // Clear the current index, i.e. remove the focus indicator.
+    // Deck Lab keeps it: the highlighted row is what its browse knob moves,
+    // and focus returns here whenever a category list is left.
+    const auto* pDeckLab = ControlObject::getControl(
+            ConfigKey("[DeckLabNative]", "active"), ControlFlag::NoWarnIfMissing);
+    if (!pDeckLab || !pDeckLab->toBool()) {
+        selectionModel()->clearCurrentIndex();
+    }
     QTreeView::focusInEvent(pEvent);
 }
 

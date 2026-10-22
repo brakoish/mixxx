@@ -2,12 +2,16 @@
 #include "widget/decklabsmoke.h"
 #include <QApplication>
 #include <QComboBox>
+#include <QDataStream>
 #include <QDir>
 #include <QFile>
 #include <QHelpEvent>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLinearGradient>
+#include <QListWidget>
+#include <QPainter>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -22,8 +26,20 @@
 #include "decklab/decklabsystem.h"
 #include "decklab/decklabsystempages.h"
 #include "decklab/decklabsystemui.h"
+#include "library/coverartutils.h"
+#include "library/library.h"
+#include "library/sidebarmodel.h"
+#include "library/trackcollectionmanager.h"
+#include "library/trackmodel.h"
+#include "mixer/playerinfo.h"
+#include "track/track.h"
+#include "track/trackref.h"
 #include "util/cmdlineargs.h"
+#include "widget/decklabbrowse.h"
 #include "widget/wdecklab.h"
+#include "widget/wlibrary.h"
+#include "widget/wlibrarysidebar.h"
+#include "widget/wtracktableview.h"
 #include "widget/woverview.h"
 
 namespace {
@@ -166,6 +182,139 @@ void systemSmokeStep(int index, WDeckLab* surface) {
     default: break;
     }
 }
+// Generated demo library for the Browse captures: invented titles and
+// artists, silent audio and drawn artwork. No personal media is involved.
+struct DemoTrack {
+    const char* title;
+    const char* artist;
+    const char* album;
+    double bpm;
+    const char* key;
+    int rating;
+    unsigned color;
+    const char* comment;
+    double seconds;
+};
+const DemoTrack kDemoTracks[] = {
+        {"Night Drive", "Demo Artist A", "Demo Album One", 122.0, "8A", 4, 0x2fb36d, "Warm-up, long intro", 392},
+        {"Signal Fire", "Demo Artist B", "Demo Album Two", 124.0, "9A", 5, 0xd74448, "Peak-time roller", 361},
+        {"Harbor Lights", "Demo Artist A", "Demo Album One", 121.0, "8B", 3, 0x5ab0ff, "", 415},
+        {"Concrete Bloom", "Demo Artist C", "Demo Album Three", 130.0, "2A", 4, 0, "Breakdown at 3:10", 402},
+        {"Glass Garden", "Demo Artist D", "Demo Album Four", 123.0, "7A", 5, 0xf5c542, "Vocal", 348},
+        {"Late Checkout", "Demo Artist B", "Demo Album Two", 125.0, "9B", 3, 0, "", 377},
+        {"Deep Current", "Demo Artist C", "Demo Album Three", 132.0, "11A", 2, 0, "", 420},
+        {"Spiral Steps", "Demo Artist E", "Demo Album Five", 120.0, "8A", 4, 0x9b6bff, "Long outro for mixing", 455},
+        {"Static Hearts", "Demo Artist F", "", 116.0, "4B", 3, 0, "", 301},
+        {"Low Tide", "Demo Artist D", "Demo Album Four", 118.0, "5A", 4, 0, "", 333},
+};
+
+bool writeSilentWav(const QString& path, int seconds) {
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) return false;
+    const quint32 rate = 8000;
+    const quint16 channels = 1;
+    const quint16 bits = 16;
+    const quint32 bytes = rate * channels * (bits / 8) * static_cast<quint32>(seconds);
+    QByteArray header;
+    QDataStream out(&header, QIODevice::WriteOnly);
+    out.setByteOrder(QDataStream::LittleEndian);
+    out.writeRawData("RIFF", 4); out << quint32(36 + bytes); out.writeRawData("WAVE", 4);
+    out.writeRawData("fmt ", 4);
+    out << quint32(16) << quint16(1) << channels << rate << quint32(rate * channels * (bits / 8))
+        << quint16(channels * (bits / 8)) << bits;
+    out.writeRawData("data", 4); out << bytes;
+    return file.write(header) == header.size() && file.write(QByteArray(int(bytes), '\0')) == int(bytes);
+}
+
+QImage demoCover(int n) {
+    QImage image(256, 256, QImage::Format_RGB32);
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing);
+    QLinearGradient gradient(0, 0, 256, 256);
+    gradient.setColorAt(0, QColor::fromHsv((n * 47) % 360, 170, 210));
+    gradient.setColorAt(1, QColor::fromHsv((n * 47 + 150) % 360, 200, 60));
+    painter.fillRect(image.rect(), gradient);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(255, 255, 255, 46));
+    painter.drawEllipse(QPointF(60 + (n * 29) % 120, 190 - (n * 17) % 90), 92, 92);
+    painter.setBrush(QColor(0, 0, 0, 70));
+    painter.drawRect(QRectF(150, 24 + (n * 13) % 60, 70, 170));
+    return image;
+}
+
+void seedDemoLibrary(Library* library, const QString& folder) {
+    if (!library || !QDir().mkpath(folder)) return;
+    int n = 0;
+    for (const DemoTrack& demo : kDemoTracks) {
+        const QString base = QDir(folder).filePath(QStringLiteral("%1 %2")
+                        .arg(n + 1, 2, 10, QLatin1Char('0'))
+                        .arg(QString::fromUtf8(demo.title)));
+        if (!writeSilentWav(base + QStringLiteral(".wav"), 2)) continue;
+        demoCover(n++).save(base + QStringLiteral(".png"));
+        const TrackPointer track = library->trackCollectionManager()->getOrAddTrack(
+                TrackRef::fromFilePath(base + QStringLiteral(".wav")));
+        if (!track) continue;
+        track->setTitle(QString::fromUtf8(demo.title));
+        track->setArtist(QString::fromUtf8(demo.artist));
+        track->setAlbum(QString::fromUtf8(demo.album));
+        track->trySetBpm(demo.bpm);
+        track->setKeyText(QString::fromUtf8(demo.key));
+        track->setRating(demo.rating);
+        if (demo.color) track->setColor(mixxx::RgbColor::optional(demo.color));
+        track->setComment(QString::fromUtf8(demo.comment));
+        track->setDuration(demo.seconds);
+        CoverInfoGuesser().guessAndSetCoverInfoForTrack(track);
+        library->trackCollectionManager()->saveTrack(track);
+    }
+    library->searchTracksInCollection(QString());
+}
+
+bool selectSidebarRoot(WDeckLab* surface, const QString& icon) {
+    auto* sidebar = surface->findChild<WLibrarySidebar*>();
+    if (!sidebar) return false;
+    auto* model = sidebar->model();
+    for (int row = 0; row < model->rowCount(); ++row) {
+        const QModelIndex index = model->index(row, 0);
+        if (index.data(SidebarModel::IconNameRole).toString() == icon) {
+            sidebar->setCurrentIndex(index);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool selectListItem(WDeckLab* surface, const QString& text) {
+    auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
+    if (!list) return false;
+    for (int row = 0; row < list->count(); ++row) {
+        if (list->item(row)->text() == text) {
+            list->setCurrentRow(row);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool selectTrack(WDeckLab* surface, const QString& title) {
+    auto* library = surface->findChild<WLibrary*>();
+    auto* table = library ? library->getCurrentTrackTableView() : nullptr;
+    auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
+    if (!tracks) return false;
+    const int column = tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Title);
+    for (int row = 0; row < table->model()->rowCount(); ++row) {
+        if (table->model()->index(row, column).data().toString() == title) {
+            table->selectRow(row);
+            return true;
+        }
+    }
+    return false;
+}
+
+struct BrowseCapture {
+    QString name;
+    int waitMs;
+    std::function<bool()> action;
+};
 } // namespace
 
 void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
@@ -179,6 +328,7 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
     auto* timer = new QTimer(surface);
     auto step = std::make_shared<int>(0);
     auto failures = std::make_shared<QJsonArray>();
+    auto browseDone = std::make_shared<bool>(false);
     const auto check = [surface, failures] {
         if (surface->size() != QSize(800, 480)) failures->append("Surface is not 800x480");
         for (int deck = 1; deck <= 4; ++deck) {
@@ -243,6 +393,91 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
             auto* layout=surface->findChild<QComboBox*>("decklab-deck-layout");
             QMetaObject::invokeMethod(layout,"activated",Q_ARG(int,*step==19?1:2));
             surface->selectPage(0);
+        }
+        else if (!*browseDone) {
+            // Browse captures with a generated library. They reuse the same
+            // checks and do not change the reported screen count.
+            timer->stop();
+            surface->setFixedSize(800, 480);
+            seedDemoLibrary(surface->library(), QDir(config->getSettingsPath()).filePath("decklab-demo-music"));
+            const auto press = [surface] { surface->browsePress(); return true; };
+            auto captures = std::make_shared<QList<BrowseCapture>>(QList<BrowseCapture>{
+                    {"sources", 500, [surface] {
+                         QMetaObject::invokeMethod(surface->findChild<QComboBox*>("decklab-deck-layout"), "activated", Q_ARG(int, 1));
+                         surface->selectPage(1);
+                         ControlObject::set(ConfigKey("[DeckLabNative]", "browse_sources"), 1);
+                         ControlObject::set(ConfigKey("[DeckLabNative]", "browse_sources"), 0);
+                         QCoreApplication::processEvents();
+                         return selectSidebarRoot(surface, QStringLiteral("tracks"));
+                     }},
+                    {"categories", 400, press},
+                    {"artists", 400, [surface] {
+                         if (!selectListItem(surface, decklab::categoryName(decklab::Category::Artist))) return false;
+                         surface->browsePress();
+                         return selectListItem(surface, QStringLiteral("Demo Artist B"));
+                     }},
+                    {"artist-tracks", 900, [surface] { surface->browsePress(); return selectTrack(surface, "Signal Fire"); }},
+                    {"keys", 400, [surface] {
+                         surface->browseBack(); surface->browseBack();
+                         if (!selectListItem(surface, decklab::categoryName(decklab::Category::Key))) return false;
+                         surface->browsePress();
+                         return true;
+                     }},
+                    {"reference-deck", 1800, [surface] {
+                         surface->browseBack();
+                         if (!selectListItem(surface, decklab::categoryName(decklab::Category::AllTracks))) return false;
+                         surface->browsePress();
+                         if (!selectTrack(surface, "Night Drive")) return false;
+                         // Loads (never plays) a paused reference deck for match highlighting.
+                         ControlObject::set(ConfigKey("[Channel1]", "LoadSelectedTrack"), 1);
+                         ControlObject::set(ConfigKey("[Channel1]", "LoadSelectedTrack"), 0);
+                         return true;
+                     }},
+                    {"match", 900, [surface] {
+                         // Silent fixture files have no beat grid until loaded; give the
+                         // paused reference deck its generated tempo.
+                         if (const TrackPointer loaded = PlayerInfo::instance().getTrackInfo(QStringLiteral("[Channel1]"))) {
+                             loaded->trySetBpm(122.0);
+                         }
+                         surface->selectPage(1);
+                         return selectTrack(surface, "Spiral Steps");
+                     }},
+                    {"four-decks", 700, [surface] {
+                         QMetaObject::invokeMethod(surface->findChild<QComboBox*>("decklab-deck-layout"), "activated", Q_ARG(int, 2));
+                         surface->selectPage(1);
+                         return selectTrack(surface, "Signal Fire");
+                     }},
+            });
+            auto index = std::make_shared<int>(0);
+            auto next = std::make_shared<std::function<void()>>();
+            *next = [=] {
+                if (*index >= captures->size()) {
+                    *browseDone = true;
+                    timer->start(350);
+                    return;
+                }
+                const BrowseCapture capture = captures->at(*index);
+                if (!capture.action()) failures->append(QString(QStringLiteral("Browse capture could not reach: ") + capture.name));
+                QTimer::singleShot(capture.waitMs, surface, [=] {
+                    check();
+                    // Browse touch targets keep 44 px in the real surface style.
+                    if (auto* browse = surface->findChild<QWidget*>(QStringLiteral("decklab-browse"))) {
+                        for (auto* button : browse->findChildren<QPushButton*>()) {
+                            if (button->isVisible() && button->height() < 44) {
+                                failures->append(QStringLiteral("Small Browse touch target %1 (%2 px)")
+                                                         .arg(button->objectName())
+                                                         .arg(button->height()));
+                            }
+                        }
+                    }
+                    const QString file = QStringLiteral("app-browse-%1-%2.png").arg(*index + 1, 2, 10, QLatin1Char('0')).arg(capture.name);
+                    if (!surface->grab().save(QDir(output).filePath(file))) failures->append("Screenshot failed");
+                    ++*index;
+                    (*next)();
+                });
+            };
+            (*next)();
+            return;
         }
         else {
             timer->stop();

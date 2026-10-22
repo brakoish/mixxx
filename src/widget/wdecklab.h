@@ -5,6 +5,7 @@
 #include <QHash>
 #include <QPersistentModelIndex>
 #include <QPointer>
+#include <QStringList>
 #include <QTimer>
 #include <array>
 #include <memory>
@@ -35,6 +36,7 @@ class QProgressBar;
 class QStackedWidget;
 class QVBoxLayout;
 class QGridLayout;
+struct DeckLabBrowseState;
 
 // A native appliance surface. All audio remains in Mixxx's existing engine.
 // No window coordinates, injected keys, desktop focus polling or MIDI IPC.
@@ -59,6 +61,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void setAudioOutputConfigured(bool configured);
     /// Deck Lab system integration (decklabd, Deck Setup, System pages).
     void attachSystem(DeckLabSystem* system);
+    Library* library() const { return m_library; }
 
   signals:
     void advancedPreferencesRequested();
@@ -103,6 +106,28 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void updateLayers();
     void releaseTouchCue();
     void setSearchOpen(bool open);
+    // Browse page internals (browse-ui workstream).
+    void browseMove(int delta, bool listLevel);
+    void browseEnter();
+    void resetBrowseLevels();
+    void enterCategories(const QModelIndex& source);
+    void showCategories();
+    void openCategory(int row);
+    void openCategoryValue(int row);
+    void activateBrowseSource();
+    void clearBrowseFilter();
+    void checkRekordboxImport();
+    void syncSelectedTrack();
+    void refreshBrowseCard();
+    void refreshPreviewButton();
+    void togglePreview();
+    void stopPreview();
+    void scheduleMatchRefresh();
+    void refreshMatchReference();
+    void showLoadRefused(int deck);
+    void showLoadUnavailable(int slot);
+    int matchReferenceDeck();
+    QStringList browseSegments() const;
     int displayedDeck(int side) const;
     void setDisplayedDeck(int side, int deck);
     QString fxGroup() const;
@@ -222,4 +247,5 @@ class WDeckLab : public QWidget, public WBaseWidget {
     QLabel* m_performanceStatus = nullptr;
     bool m_holdFx = false;
     bool m_sampleRouting = false;
+    std::unique_ptr<DeckLabBrowseState> m_browseState;
 };

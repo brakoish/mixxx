@@ -46,6 +46,11 @@ class WTrackTableView : public WLibraryTableView {
     void editSelectedItem();
     void activateSelectedTrack();
     void applyDeckLabLayout();
+    void fitDeckLabColumns();
+    /// Restores Deck Lab's default columns for the current view.
+    void resetDeckLabColumns();
+    /// Opens Mixxx's column chooser (touch has no right click).
+    void showDeckLabColumnMenu(const QPoint& globalPos);
 #ifdef __STEM__
     void loadSelectedTrackToGroup(const QString& group,
             mixxx::StemChannelSelection stemMask,
@@ -156,6 +161,7 @@ class WTrackTableView : public WLibraryTableView {
     // Signalled 20 times per second (every 50ms) by GuiTick.
     void slotGuiTick50ms(double);
     void slotScrollValueChanged(int);
+    void slotDeckLabSectionResized(int logicalIndex, int oldSize, int newSize);
 
     void slotSortingChanged(int headerSection, Qt::SortOrder order);
     void slotRandomSorting();
@@ -191,6 +197,7 @@ class WTrackTableView : public WLibraryTableView {
     TrackModel* getTrackModel() const;
 
     void initTrackMenu();
+    void saveDeckLabColumns();
     void showTrackMenu(const QPoint pos, const QModelIndex& index);
 
     void hideOrRemoveSelectedTracks();
@@ -219,4 +226,5 @@ class WTrackTableView : public WLibraryTableView {
     ControlProxy* m_pSortOrder;
 
     int m_dropRow;
+    bool m_applyingDeckLabLayout = false;
 };

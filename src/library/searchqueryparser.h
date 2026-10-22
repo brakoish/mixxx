@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QRegularExpression>
+#include <QSet>
 #include <QString>
 #include <memory>
 
@@ -16,6 +17,11 @@ class SearchQueryParser {
     explicit SearchQueryParser(TrackCollection* pTrackCollection, QStringList searchColumns);
 
     void setSearchColumns(QStringList searchColumns);
+
+    /// Columns present in the searched table. External libraries (for
+    /// example Rekordbox USB exports) lack album_artist and key_id; filters
+    /// then use only the columns that exist. Empty (default): all columns.
+    void setAvailableColumns(const QStringList& columns);
 
     std::unique_ptr<QueryNode> parseQuery(
             const QString& query,
@@ -42,7 +48,12 @@ class SearchQueryParser {
             QStringList* tokens,
             bool removeLeadingEqualsSign = true) const;
 
+    QStringList sqlColumns(const QString& field) const;
+    std::unique_ptr<QueryNode> keyTextNode(
+            mixxx::track::io::key::ChromaticKey key, bool fuzzy) const;
+
     TrackCollection* m_pTrackCollection;
+    QSet<QString> m_availableColumns;
     QStringList m_queryColumns;
     bool m_searchCrates;
     QStringList m_textFilters;
