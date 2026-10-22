@@ -1,5 +1,7 @@
 #include "widget/wtracktableviewheader.h"
 
+#include <QSignalBlocker>
+
 #include <QCheckBox>
 #include <QContextMenuEvent>
 #include <QPainter>
@@ -154,6 +156,11 @@ WTrackTableViewHeader::WTrackTableViewHeader(Qt::Orientation orientation,
 
 void WTrackTableViewHeader::contextMenuEvent(QContextMenuEvent* pEvent) {
     pEvent->accept();
+    // Layouts applied by the view (Deck Lab) may hide sections directly.
+    for (auto it = m_columnCheckBoxes.constBegin(); it != m_columnCheckBoxes.constEnd(); ++it) {
+        const QSignalBlocker blocker(it.value());
+        it.value()->setChecked(!isSectionHidden(it.key()));
+    }
     m_menu.popup(pEvent->globalPos());
 }
 
