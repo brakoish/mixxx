@@ -1010,6 +1010,7 @@ QWidget* WDeckLab::buildBrowse() {
     m_browseStack->addWidget(b.listStack);
     b.items = new QListWidget(b.listStack);
     b.items->setObjectName(QStringLiteral("decklab-browse-categories"));
+    b.items->setStyleSheet(QStringLiteral("QListWidget{background:#101010;border:0;outline:0;}"));
     b.items->setItemDelegate(new DeckLabListDelegate(b.items));
     b.items->setUniformItemSizes(true);
     b.items->setFrameShape(QFrame::NoFrame);
@@ -2290,7 +2291,9 @@ void WDeckLab::openCategoryValue(int rowIndex) {
 void WDeckLab::checkRekordboxImport() {
     auto& b = *m_browseState;
     if (!b.rekordbox || !b.source.isValid()) { b.loadingTimer.stop(); return; }
-    if (!rekordboxImported(b.source)) return;
+    // Keep polling (one data() call) until Browse is visible again; never
+    // move focus or Library state while another page is shown.
+    if (!rekordboxImported(b.source) || m_page != 1) return;
     b.loadingTimer.stop();
     auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
     if (table && table->model()) b.trackCount = table->model()->rowCount();
@@ -2408,7 +2411,7 @@ void WDeckLab::refreshMatchReference() {
         if (b.matchEnabled) {
             detail = tr("No deck");
             if (reference.deck) {
-                QStringList parts{tr("Deck %1").arg(reference.deck)};
+                QStringList parts{tr("D%1", "Short deck label, e.g. D2").arg(reference.deck)};
                 const QString key = KeyUtils::keyToString(reference.key);
                 if (reference.key != mixxx::track::io::key::INVALID && !key.isEmpty()) parts << key;
                 if (reference.bpm > 0) parts << QString::number(reference.bpm, 'f', 0);
