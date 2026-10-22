@@ -196,6 +196,34 @@ QString beatLoopSizeText(double size) {
             : QString::number(size, 'g', 3);
 }
 
+// Keep the full touch target dark; the cue's saved color belongs to its letter
+// badge and waveform marker, not to the whole instrument panel.
+class DeckLabHotcuePad final : public QPushButton {
+  public:
+    using QPushButton::QPushButton;
+  protected:
+    void paintEvent(QPaintEvent*) override {
+        QStyleOptionButton option; initStyleOption(&option); option.text.clear();
+        QPainter painter(this); style()->drawControl(QStyle::CE_PushButton, &option, &painter, this);
+        if (!property("cueSet").toBool()) {
+            painter.setPen(QColor(isEnabled() ? "#aaaaaa" : "#777777"));
+            painter.drawText(rect(), Qt::AlignCenter, text());
+            return;
+        }
+        const QColor color(property("cueColor").toString());
+        const int badgeWidth = text().size() > 1 ? 36 : 26;
+        const QRect badge((width() - badgeWidth) / 2, (height() - 26) / 2, badgeWidth, 26);
+        painter.fillRect(badge, color);
+        // A neutral rim also makes deliberately black/white imported cues visible.
+        painter.setPen(QColor("#888888")); painter.drawRect(badge.adjusted(0, 0, -1, -1));
+        const auto linear = [](double c) { return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4); };
+        const double luminance = 0.2126 * linear(color.redF()) +
+                0.7152 * linear(color.greenF()) + 0.0722 * linear(color.blueF());
+        painter.setPen(luminance > 0.179 ? Qt::black : Qt::white);
+        painter.drawText(badge, Qt::AlignCenter, text());
+    }
+};
+
 class DeckLabPad final : public QPushButton {
   public:
     using QPushButton::QPushButton;
@@ -389,7 +417,11 @@ void WDeckLab::watch(const QString& group, const QString& item, std::function<vo
 }
 QPushButton* WDeckLab::button(const QString& text, std::function<void()> action,
         QWidget* parent, const QString& name) {
-    auto* b = name.startsWith("decklab-sample-") ? new DeckLabPad(text, parent ? parent : this) : new QPushButton(text, parent ? parent : this);
+    QPushButton* b;
+    if (name.startsWith("decklab-hotcue-") || name.startsWith("decklab-card-hotcue-"))
+        b = new DeckLabHotcuePad(text, parent ? parent : this);
+    else if (name.startsWith("decklab-sample-")) b = new DeckLabPad(text, parent ? parent : this);
+    else b = new QPushButton(text, parent ? parent : this);
     b->setObjectName(name);
     b->setFocusPolicy(Qt::NoFocus);
     b->setAccessibleName(text);
@@ -634,7 +666,10 @@ void WDeckLab::refreshHotcues(int deck, const QString& prefix) {
         if (pad->text() != label) pad->setText(label);
         const int color = int(value(group, base + QStringLiteral("color")));
         const QString ink = set && color >= 0 && color <= 0xffffff ? QColor::fromRgb(color).name() : QStringLiteral("#555555");
-        const QString style = QStringLiteral("min-height:38px;max-height:38px;padding:1px 2px;font-size:13px;font-weight:600;border-radius:0;border:1px solid #333;border-bottom:3px solid %1;").arg(ink);
+        if (pad->property("cueSet").toBool() != set || pad->property("cueColor").toString() != ink) {
+            pad->setProperty("cueSet", set); pad->setProperty("cueColor", ink); pad->update();
+        }
+        const QString style = QStringLiteral("min-height:38px;max-height:38px;padding:1px 2px;font-size:15px;font-weight:600;border-radius:0;border:1px solid #3c3c3c;");
         if (pad->styleSheet() != style) pad->setStyleSheet(style);
         const QString name = tr("Deck %1 cue %2, %3").arg(deck).arg(letter, loop ? tr("saved loop") : set ? tr("set") : tr("empty"));
         if (pad->accessibleName() != name) pad->setAccessibleName(name);

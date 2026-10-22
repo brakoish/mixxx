@@ -848,6 +848,51 @@ TEST_F(NativeDeckLabTest, TouchHotcuesSetAndJumpWithoutPreviewOrRetargeting) {
     EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel1]","play")));
 }
 
+TEST_F(NativeDeckLabTest, HotcueBadgesRenderSavedColorsAndKeepEmptySlotsQuiet) {
+    m_pMixerDeck1->loadFakeTrack(false,128); ProcessBuffer(); QTest::qWait(150);
+    // Reference colors are fixture data, never a rewrite of a user's cue palette.
+    const std::array<int,8> colors{0xe53935,0x00c8e5,0xb6dc24,0xa75be8,0x2bcb58,0xff922b,0x365bdb,0xffde32};
+    const auto renderedColor = [](QPushButton* pad) {
+        const QImage image=pad->grab().toImage();
+        return image.pixelColor((pad->width()-26)/2+3,(pad->height()-26)/2+3);
+    };
+    for(int cue=1;cue<=8;++cue) {
+        auto* pad=panel->findChild<QPushButton*>(QStringLiteral("decklab-hotcue-1-%1").arg(cue)); ASSERT_NE(nullptr,pad);
+        EXPECT_FALSE(pad->property("cueSet").toBool());
+        pad->click(); ProcessBuffer();
+        ControlObject::set(ConfigKey("[Channel1]",QStringLiteral("hotcue_%1_color").arg(cue)),colors[cue-1]);
+    }
+    QTest::qWait(150);
+    for(int cue=1;cue<=8;++cue) {
+        auto* pad=panel->findChild<QPushButton*>(QStringLiteral("decklab-hotcue-1-%1").arg(cue));
+        EXPECT_TRUE(pad->property("cueSet").toBool());
+        EXPECT_EQ(QColor::fromRgb(colors[cue-1]),renderedColor(pad));
+        EXPECT_EQ(44,pad->height()); EXPECT_GE(pad->width(),44);
+        EXPECT_EQ(QString(QChar('A'+cue-1)),pad->text());
+        EXPECT_DOUBLE_EQ(colors[cue-1],ControlObject::get(ConfigKey("[Channel1]",QStringLiteral("hotcue_%1_color").arg(cue))));
+    }
+    const QString output=qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
+    if(!output.isEmpty()) EXPECT_TRUE(panel->grab().save(QDir(output).filePath("hotcue-badges-stacked.png")));
+    auto* waves=panel->findChild<QComboBox*>("decklab-waveform-layout"); ASSERT_NE(nullptr,waves);
+    waves->setCurrentIndex(1); QMetaObject::invokeMethod(waves,"activated",Q_ARG(int,1)); QTest::qWait(150);
+    if(!output.isEmpty()) EXPECT_TRUE(panel->grab().save(QDir(output).filePath("hotcue-badges-side.png")));
+    auto* a=panel->findChild<QPushButton*>("decklab-hotcue-1-1");
+    for(int color : {0x000000,0xffffff}) {
+        ControlObject::set(ConfigKey("[Channel1]","hotcue_1_color"),color); QTest::qWait(150);
+        EXPECT_EQ(QColor::fromRgb(color),renderedColor(a));
+        // The badge contains a contrasting letter even for extreme imported colors.
+        const QImage image=a->grab().toImage(); const QColor ink=color==0?Qt::white:Qt::black;
+        int contrasting=0;
+        for(int y=12;y<32;++y) for(int x=a->width()/2-7;x<a->width()/2+7;++x)
+            if(image.pixelColor(x,y)==ink) ++contrasting;
+        EXPECT_GT(contrasting,5);
+    }
+    m_pMixerDeck1->loadFakeTrack(false,132); ProcessBuffer(); QTest::qWait(150);
+    EXPECT_FALSE(a->property("cueSet").toBool()); EXPECT_EQ(QStringLiteral("A+"),a->text());
+    EXPECT_NE(QColor(Qt::white),renderedColor(a));
+    EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel1]","play")));
+}
+
 TEST_F(NativeDeckLabTest, MorePanelKeepsHeldCueAndFullTrackInformationAccessible) {
     auto track=m_pMixerDeck1->loadFakeTrack(false,128);
     const QString title=QString(140,QChar('W'))+QStringLiteral(" full title");
@@ -1323,7 +1368,7 @@ TEST_F(NativeDeckLabTest, FourthDeckCuePopupTargetsActualDecksAndCancelsChangedC
     EXPECT_GE(ControlObject::get(ConfigKey("[Channel3]","hotcue_1_position")),0);
     EXPECT_LT(ControlObject::get(ConfigKey("[Channel4]","hotcue_1_position")),0);
     ControlObject::set(ConfigKey("[Channel3]","hotcue_1_color"),0); QTest::qWait(150);
-    EXPECT_TRUE(cue3->styleSheet().contains("#000000")); menu3->close();
+    EXPECT_EQ(QStringLiteral("#000000"),cue3->property("cueColor").toString()); menu3->close();
     auto* more4=panel->findChild<QPushButton*>("decklab-card-4-more"); ASSERT_NE(nullptr,more4); more4->click(); QCoreApplication::processEvents();
     auto* menu4=panel->findChild<QMenu*>("decklab-card-4-more-menu"); ASSERT_NE(nullptr,menu4); ASSERT_TRUE(menu4->isVisible());
     EXPECT_GE(menu4->width(),352);
