@@ -481,7 +481,7 @@
         <Overview>
           <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Normalize>true</Normalize>
-          <LabelFontSize>12</LabelFontSize>
+          <LabelFontSize>14</LabelFontSize>
           <Channel>1</Channel>
           <Connection>
             <ConfigKey>[Channel1],playposition</ConfigKey>
@@ -591,7 +591,7 @@
         <Overview>
           <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Normalize>true</Normalize>
-          <LabelFontSize>12</LabelFontSize>
+          <LabelFontSize>14</LabelFontSize>
           <Channel>2</Channel>
           <Connection>
             <ConfigKey>[Channel2],playposition</ConfigKey>
@@ -701,7 +701,7 @@
         <Overview>
           <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Normalize>true</Normalize>
-          <LabelFontSize>12</LabelFontSize>
+          <LabelFontSize>14</LabelFontSize>
           <Channel>3</Channel>
           <Connection>
             <ConfigKey>[Channel3],playposition</ConfigKey>
@@ -811,7 +811,7 @@
         <Overview>
           <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Normalize>true</Normalize>
-          <LabelFontSize>12</LabelFontSize>
+          <LabelFontSize>14</LabelFontSize>
           <Channel>4</Channel>
           <Connection>
             <ConfigKey>[Channel4],playposition</ConfigKey>
