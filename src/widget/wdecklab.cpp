@@ -852,6 +852,7 @@ decklab::Glyph sourceGlyph(const QModelIndex& index) {
     const QString icon = rootIconName(index);
     if (icon == QStringLiteral("tracks")) return decklab::Glyph::Collection;
     if (icon == QStringLiteral("crates")) return decklab::Glyph::Crate;
+    if (icon == QStringLiteral("autodj")) return decklab::Glyph::Playlist;
     if (icon == QStringLiteral("history")) return decklab::Glyph::History;
     if (icon == QStringLiteral("recordings")) return decklab::Glyph::Album;
     if (icon == QStringLiteral("computer")) return decklab::Glyph::Folder;
@@ -1047,6 +1048,9 @@ QWidget* WDeckLab::buildBrowse() {
     pane->setAttribute(Qt::WA_StyledBackground);
     pane->setStyleSheet(QStringLiteral("QWidget#decklab-browse-pane{background:#0c0c0c;border-left:1px solid #262626;}"));
     pane->setFixedWidth(236);
+    // No arrow buttons on the thin touch scroll bars of the lists.
+    m_browser->setStyleSheet(QStringLiteral(
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0px;border:0;background:transparent;}"));
     auto* paneLayout = column(pane);
     paneLayout->setContentsMargins(6, 6, 6, 6);
     paneLayout->setSpacing(6);
@@ -2131,7 +2135,7 @@ void WDeckLab::refreshLoadButtons() {
         const bool playing = value(channel(target), "play") > 0;
         const bool loaded = value(channel(target), "track_loaded") > 0;
         load->setText(tr("Load %1").arg(target));
-        load->setDetail(playing ? tr("On air") : loaded ? tr("Paused · replaces") : tr("Empty deck"));
+        load->setDetail(playing ? tr("On air") : loaded ? tr("Paused") : tr("Empty deck"));
         load->setTone(playing ? Tone::OnAir : tracks && selected ? Tone::Ready : Tone::Neutral);
         load->setEnabled(!playing && tracks && selected);
         load->setAccessibleName(playing ? tr("Deck %1 is on air and cannot be loaded").arg(target)
@@ -2332,11 +2336,14 @@ void WDeckLab::refreshBrowseCard() {
             const auto category = static_cast<decklab::Category>(item->data(DeckLabListDelegate::CategoryRole).toInt());
             const QString count = item->data(DeckLabListDelegate::CountRole).toString();
             b.card->showItem(categoryGlyph(category), item->text(),
-                    count.isEmpty() || category != decklab::Category::AllTracks ? source : tr("%1 · %2 tracks").arg(source, count),
+                    count.isEmpty() || category != decklab::Category::AllTracks ? source
+                            : count == QStringLiteral("1") ? tr("%1 · 1 track").arg(source) : tr("%1 · %2 tracks").arg(source, count),
                     (item->flags() & Qt::ItemIsEnabled) ? openHint : tr("Reading the USB export…"));
         } else {
+            const QString count = item->data(DeckLabListDelegate::CountRole).toString();
             b.card->showItem(categoryGlyph(b.category), item->text(),
-                    tr("%1 · %2 tracks").arg(decklab::categoryName(b.category), item->data(DeckLabListDelegate::CountRole).toString()),
+                    count == QStringLiteral("1") ? tr("%1 · 1 track").arg(decklab::categoryName(b.category))
+                                                 : tr("%1 · %2 tracks").arg(decklab::categoryName(b.category), count),
                     tr("Press or tap to show these tracks"),
                     item->data(DeckLabListDelegate::AccentRole).value<QColor>());
         }
@@ -2350,7 +2357,7 @@ void WDeckLab::refreshBrowseCard() {
     QString subtitle;
     const QString icon = rootIconName(index);
     const int children = index.model()->rowCount(index);
-    if (isCollectionSource(index)) subtitle = tr("All music on this unit · by artist, album, BPM or key");
+    if (isCollectionSource(index)) subtitle = tr("Whole library, by category");
     else if (isRekordboxDevice(index)) subtitle = rekordboxImported(index) ? tr("USB drive · rekordbox export") : tr("USB drive · reads its rekordbox export when opened");
     else if (!index.parent().isValid() && icon == QStringLiteral("rekordbox")) subtitle = tr("USB drives with a rekordbox export");
     else if (children == 1) subtitle = tr("1 item");

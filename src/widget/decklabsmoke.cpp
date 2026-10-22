@@ -25,6 +25,7 @@
 #include "library/sidebarmodel.h"
 #include "library/trackcollectionmanager.h"
 #include "library/trackmodel.h"
+#include "mixer/playerinfo.h"
 #include "track/track.h"
 #include "track/trackref.h"
 #include "util/cmdlineargs.h"
@@ -283,7 +284,15 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                          ControlObject::set(ConfigKey("[Channel1]", "LoadSelectedTrack"), 0);
                          return true;
                      }},
-                    {"match", 900, [surface] { surface->selectPage(1); return selectTrack(surface, "Spiral Steps"); }},
+                    {"match", 900, [surface] {
+                         // Silent fixture files have no beat grid until loaded; give the
+                         // paused reference deck its generated tempo.
+                         if (const TrackPointer loaded = PlayerInfo::instance().getTrackInfo(QStringLiteral("[Channel1]"))) {
+                             loaded->trySetBpm(122.0);
+                         }
+                         surface->selectPage(1);
+                         return selectTrack(surface, "Spiral Steps");
+                     }},
                     {"four-decks", 700, [surface] {
                          QMetaObject::invokeMethod(surface->findChild<QComboBox*>("decklab-deck-layout"), "activated", Q_ARG(int, 2));
                          surface->selectPage(1);

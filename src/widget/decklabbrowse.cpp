@@ -703,13 +703,18 @@ void DeckLabBreadcrumb::setSegments(const QStringList& segments) {
 }
 
 QStringList DeckLabBreadcrumb::displayedSegments() const {
-    const QFontMetrics metrics(pixelFont(font(), 15, true));
+    // Path segments use the regular font; reserve the extra width of the
+    // bold deepest level, which is always shown.
+    const QFontMetrics pathMetrics(pixelFont(font(), 14));
+    const QFontMetrics lastMetrics(pixelFont(font(), 15, true));
+    const QString last = m_segments.isEmpty() ? QString() : m_segments.last();
+    const int boldExtra = std::max(0, lastMetrics.horizontalAdvance(last) - pathMetrics.horizontalAdvance(last));
     return elideBreadcrumb(m_segments,
-            std::max(0, width() - 20),
-            [&metrics](const QString& text) {
-                return metrics.horizontalAdvance(text);
+            std::max(0, width() - 20 - boldExtra),
+            [&pathMetrics](const QString& text) {
+                return pathMetrics.horizontalAdvance(text);
             },
-            QStringLiteral("  ›  "));
+            QStringLiteral(" › "));
 }
 
 void DeckLabBreadcrumb::paintEvent(QPaintEvent*) {
@@ -718,7 +723,7 @@ void DeckLabBreadcrumb::paintEvent(QPaintEvent*) {
     const QStringList shown = displayedSegments();
     const QFont lastFont = pixelFont(font(), 15, true);
     const QFont pathFont = pixelFont(font(), 14);
-    const QString separator = QStringLiteral("  ›  ");
+    const QString separator = QStringLiteral(" › ");
     int x = 10;
     const int available = width() - 10;
     for (int n = 0; n < shown.size(); ++n) {
@@ -1006,7 +1011,7 @@ void DeckLabTrackCard::paintTrack(QPainter& painter) {
     y = chipTop + chipHeight + 8;
     const int bottom = height() - pad;
     const QFontMetrics smallMetrics(smallFont);
-    // Match summary, rating and color share one line.
+    // Rating and track color, then the relation to the reference deck.
     if (y + 14 <= bottom) {
         int x = pad;
         for (int star = 0; star < 5; ++star) {
@@ -1020,15 +1025,16 @@ void DeckLabTrackCard::paintTrack(QPainter& painter) {
             painter.drawEllipse(QPointF(x + 7, y + 7), 5, 5);
             x += 18;
         }
-        const QString summary = matchSummary();
-        if (!summary.isEmpty()) {
-            painter.setFont(smallFont);
-            painter.setPen(harmonic != HarmonicMatch::None || tempo ? colors::keyMatch : colors::muted);
-            painter.drawText(QRect(x + 4, y, width() - pad - x - 4, 14),
-                    Qt::AlignRight | Qt::AlignVCenter,
-                    smallMetrics.elidedText(summary, Qt::ElideRight, width() - pad - x - 4));
-        }
         y += 20;
+    }
+    const QString summary = matchSummary();
+    if (!summary.isEmpty() && y + smallMetrics.height() <= bottom) {
+        painter.setFont(pixelFont(font(), 11, true));
+        painter.setPen(harmonic != HarmonicMatch::None || tempo ? colors::keyMatch : colors::muted);
+        painter.drawText(QRect(pad, y, width() - 2 * pad, smallMetrics.height()),
+                Qt::AlignLeft | Qt::AlignVCenter,
+                smallMetrics.elidedText(summary, Qt::ElideRight, width() - 2 * pad));
+        y += smallMetrics.height() + 4;
     }
     QStringList about;
     if (!m_album.isEmpty()) {
