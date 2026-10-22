@@ -121,6 +121,8 @@ class WDeckLab : public QWidget, public WBaseWidget {
     std::array<QLabel*, 4> m_waveNumbers{};
     std::array<QProgressBar*, 4> m_meters{};
     std::array<QLabel*, 4> m_numbers{};
+    std::array<QLabel*, 2> m_deckIdentifiers{};
+    std::array<qint64, 2> m_syncFeedbackUntil{};
     std::array<QPushButton*, 4> m_loadButtons{};
     std::array<QPushButton*, 16> m_samples{};
     std::array<QWidget*, 4> m_deckWaveforms{};

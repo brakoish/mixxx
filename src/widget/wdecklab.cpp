@@ -56,12 +56,16 @@ const QString kStyle = QStringLiteral(R"(
  WDeckLab QPushButton {background:#202020;border:1px solid #444;border-radius:2px;padding:5px 9px;min-height:28px;}
  WDeckLab QPushButton:pressed {background:#383838;}
  WDeckLab QPushButton:checked {background:#303030;border-color:#d74448;}
+ WDeckLab QPushButton[transport="true"] {border-radius:0;border-width:1px 1px 1px 0;}
+ WDeckLab QPushButton[transport="true"][first="true"] {border-left-width:1px;}
+ WDeckLab QPushButton[actionFeedback="true"] {border-color:#d74448;background:#303030;}
  WDeckLab QPushButton:disabled {color:#777;border-color:#303030;}
  WDeckLab QPushButton[rail="true"] {border-width:0px 1px 1px 0px;border-radius:0px;font-weight:600;}
  WDeckLab QPushButton[rail="true"]:checked {background:#111;border-bottom:2px solid #d74448;}
  WDeckLab QLabel[muted="true"] {color:#aaa;font-size:12px;}
  WDeckLab QLabel[deck="true"] {font-size:15px;font-weight:600;}
  WDeckLab QLabel[numbers="true"] {font-size:20px;font-weight:600;}
+ WDeckLab QLabel[deckIdentity="true"] {font-size:21px;font-weight:600;}
  WDeckLab QComboBox {background:#222;border:1px solid #484848;border-radius:2px;min-height:38px;padding-left:10px;}
  WDeckLab QComboBox QAbstractItemView {background:#181818;selection-background-color:#333;min-height:40px;}
  WDeckLab QComboBox QAbstractItemView::item {min-height:40px;}
@@ -323,19 +327,37 @@ QWidget* WDeckLab::buildDecks() {
         const int side = deck - 1;
         auto* strip = new QWidget(page);
         strip->setMinimumWidth(0);
-        auto* contents = column(strip, 7);
+        auto* contents = column(strip, 4);
+        auto* metrics = row(nullptr, 6);
+        m_deckIdentifiers[side] = new QLabel(QString::number(deck), strip);
+        m_deckIdentifiers[side]->setObjectName(QStringLiteral("decklab-identity-%1").arg(deck));
+        m_deckIdentifiers[side]->setProperty("deckIdentity", true);
+        m_deckIdentifiers[side]->setFixedWidth(24);
+        m_deckIdentifiers[side]->setAlignment(Qt::AlignCenter);
+        metrics->addWidget(m_deckIdentifiers[side]);
         m_numbers[deck - 1] = new QLabel(strip);
+        m_numbers[deck - 1]->setObjectName(QStringLiteral("decklab-numbers-%1").arg(deck));
         m_numbers[deck - 1]->setProperty("numbers", true);
-        contents->addWidget(m_numbers[deck - 1]);
-        auto* actions = row(nullptr, 3);
+        m_numbers[deck - 1]->setFixedHeight(44);
+        m_numbers[deck - 1]->setTextFormat(Qt::RichText);
+        metrics->addWidget(m_numbers[deck - 1], 1);
+        contents->addLayout(metrics);
+        auto* actions = row(nullptr, 0);
         for (const auto& pair : {qMakePair(tr("Cue"), QStringLiteral("cue_default")),
                      qMakePair(tr("Play"), QStringLiteral("play")),
-                     qMakePair(tr("Sync"), QStringLiteral("beatsync"))}) {
+                     qMakePair(tr("Beat Sync"), QStringLiteral("beatsync"))}) {
             auto* b = button(pair.first, [this, side, item = pair.second] {
                 const int deck = displayedDeck(side);
                 if (item == "play") set(channel(deck), item, !value(channel(deck), item));
-                else if (item != "cue_default") pulse(channel(deck), item);
+                else if (item != "cue_default") {
+                    pulse(channel(deck), item);
+                    m_syncFeedbackUntil[side] = m_clock.elapsed() + 600;
+                    refreshDeck(deck);
+                }
             }, strip, QStringLiteral("decklab-%1-%2").arg(deck).arg(pair.second));
+            b->setFixedHeight(48);
+            b->setProperty("transport", true);
+            b->setProperty("first", pair.second == "cue_default");
             if (pair.second == "cue_default") {
                 connect(b, &QPushButton::pressed, this, [this, side] { releaseTouchCue(); m_touchCue = channel(displayedDeck(side)); set(m_touchCue, "cue_default", 1); });
                 connect(b, &QPushButton::released, this, &WDeckLab::releaseTouchCue);
@@ -343,7 +365,9 @@ QWidget* WDeckLab::buildDecks() {
             if (pair.second == "play") {
                 b->setCheckable(true);
                 for (int layer : {deck, deck + 2}) watch(channel(layer), "play", [this, side, b](double) {
-                    b->setChecked(value(channel(displayedDeck(side)), "play") > 0);
+                    const bool playing = value(channel(displayedDeck(side)), "play") > 0;
+                    b->setChecked(playing);
+                    b->setText(playing ? tr("Pause") : tr("Play"));
                 });
             }
             actions->addWidget(b);
@@ -351,7 +375,7 @@ QWidget* WDeckLab::buildDecks() {
         contents->addLayout(actions);
         layout->addWidget(strip, 1);
     }
-    page->setFixedHeight(98);
+    page->setFixedHeight(100);
     return page;
 }
 
@@ -911,6 +935,10 @@ void WDeckLab::selectPage(int page) {
     if (m_page == 1 && page != 1) m_sampleTarget = 0;
     releaseTouchCue();
     m_page = page;
+    // Decks gets larger targets without moving companion utility windows.
+    for (auto* tab : m_tabs) tab->setFixedHeight(page == 0 ? 44 : 40);
+    if (auto* usb = findChild<QPushButton*>(QStringLiteral("decklab-usb")))
+        usb->setFixedHeight(page == 0 ? 44 : 40);
     // Keep the existing mapping's public page numbers: 4 = tools, 5 = settings.
     set(kTab, "current", page == 4 ? 5 : page);
     for (int n = 0; n < 5; ++n) m_tabs[n]->setChecked(n == page);
@@ -1053,13 +1081,42 @@ void WDeckLab::refreshDeck(int deck) {
         m_titles[deck - 1]->setText(m_titles[deck - 1]->fontMetrics().elidedText(line, Qt::ElideRight,
                 std::max(0, m_titles[deck - 1]->width() - 18)));
         m_titles[deck - 1]->setToolTip(QStringLiteral("<span>%1</span>").arg(title.toHtmlEscaped()));
-        if (m_waveNumbers[deck - 1]) m_waveNumbers[deck - 1]->setText(track ? QStringLiteral("%1    %2 BPM").arg(key).arg(bpm, 0, 'f', 2) : QString());
+        if (m_waveNumbers[deck - 1]) {
+            m_waveNumbers[deck - 1]->setVisible(m_page != 0);
+            m_waveNumbers[deck - 1]->setText(track ? QStringLiteral("%1    %2 BPM").arg(key).arg(bpm, 0, 'f', 2) : QString());
+        }
     }
     const int side = deck % 2 ? 0 : 1;
     if (displayedDeck(side) == deck && m_numbers[side]) {
         double remaining = duration * (1 - value(channel(deck), "playposition"));
-        m_numbers[side]->setText(track ? QStringLiteral("%1 BPM     %2     −%3").arg(bpm, 0, 'f', 2).arg(key, timeText(remaining))
-                : tr("Deck %1 · Ready").arg(deck));
+        const bool loaded = value(channel(deck), "track_loaded") > 0;
+        const bool playing = value(channel(deck), "play") > 0;
+        double pitch = (value(channel(deck), "rate_ratio") - 1) * 100;
+        if (!std::isfinite(pitch) || std::abs(pitch) < .005) pitch = 0;
+        const QString pitchText = (pitch >= 0 ? QStringLiteral("+") : QString()) + QString::number(pitch, 'f', 2) + QLatin1Char('%');
+        m_numbers[side]->setText(track ? QStringLiteral("%1 <span style='font-size:11px;font-weight:400'>BPM</span>   %2   −%3<br><span style='font-size:11px;color:#aaa;font-weight:400'>%4 · %5</span>")
+                    .arg(bpm, 0, 'f', 2).arg(key.toHtmlEscaped(), timeText(remaining),
+                            playing ? tr("PLAYING") : tr("PAUSED"), pitchText)
+                : tr("Ready to load"));
+        m_deckIdentifiers[side]->setText(QString::number(deck));
+        m_deckIdentifiers[side]->setAccessibleName(tr("Deck %1").arg(deck));
+        for (const auto& action : {"play", "cue_default", "beatsync"}) {
+            auto* button = findChild<QPushButton*>(QStringLiteral("decklab-%1-%2").arg(side + 1).arg(QString::fromLatin1(action)));
+            if (!button) continue;
+            button->setEnabled(loaded);
+            if (QString::fromLatin1(action) == "play") {
+                button->setChecked(playing);
+                button->setText(playing ? tr("Pause") : tr("Play"));
+                button->setAccessibleName(tr("Deck %1 %2").arg(deck).arg(playing ? tr("Pause") : tr("Play")));
+            } else if (QString::fromLatin1(action) == "beatsync") {
+                const bool feedback = m_clock.elapsed() < m_syncFeedbackUntil[side];
+                if (button->property("actionFeedback").toBool() != feedback) {
+                    button->setProperty("actionFeedback", feedback);
+                    button->style()->unpolish(button); button->style()->polish(button);
+                }
+                button->setAccessibleDescription(tr("Match tempo and beat once; does not enable sync lock"));
+            }
+        }
     }
 }
 

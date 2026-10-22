@@ -76,6 +76,7 @@ def test_summary(path):
             or len(enabled) < 190 or len(required) != 1
             or not {"FirstBrowsePressDoesNotOpenSource", "SingleTapOpensFolderAndBackRestoresSelection",
                     "IndependentRmxDoesNotBorrowControllerChains", "PagesFit800By480",
+                    "DecksTransportHasTruthfulStatesAndLargerTargets",
                     "Lv2PreparationUsesSelectedRateWithoutAudio", "TouchSearchUsesNativeKeyboardAndReturnsWaveforms"}.issubset(native_ui)
             or any(case.find("skipped") is not None for case in enabled)):
         raise ValueError("Native regression suite incomplete or failed")

@@ -291,7 +291,10 @@ TEST_F(NativeDeckLabTest, LongMetadataCannotHideTempoOrExpandSurface) {
     ProcessBuffer(); QTest::qWait(150); panel->selectPage(0); QCoreApplication::processEvents();
     auto* title=panel->findChild<QLabel*>("decklab-wave-title-1");
     auto* numbers=panel->findChild<QLabel*>("decklab-wave-metrics-1"); ASSERT_NE(nullptr,title); ASSERT_NE(nullptr,numbers);
-    EXPECT_EQ(Qt::PlainText,title->textFormat()); EXPECT_TRUE(numbers->isVisible());
+    EXPECT_EQ(Qt::PlainText,title->textFormat()); EXPECT_FALSE(numbers->isVisible());
+    EXPECT_TRUE(panel->findChild<QLabel*>("decklab-numbers-1")->text().contains("128"));
+    panel->selectPage(3); QTest::qWait(150);
+    EXPECT_TRUE(numbers->isVisible());
     EXPECT_TRUE(numbers->text().contains("128")); EXPECT_EQ(QSize(800,480),panel->size());
 }
 
@@ -302,11 +305,35 @@ TEST_F(NativeDeckLabTest, ControllerLayerChangeRefreshesPlayState) {
     QCoreApplication::processEvents();
     auto* play = panel->findChild<QPushButton*>("decklab-1-play"); ASSERT_NE(nullptr, play);
     EXPECT_TRUE(play->isChecked());
+    EXPECT_EQ(QStringLiteral("Pause"), play->text());
+    EXPECT_EQ(QStringLiteral("1"), panel->findChild<QLabel*>("decklab-identity-1")->text());
     ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 1);
     QCoreApplication::processEvents();
     EXPECT_FALSE(play->isChecked());
+    EXPECT_EQ(QStringLiteral("Play"), play->text());
+    EXPECT_EQ(QStringLiteral("3"), panel->findChild<QLabel*>("decklab-identity-1")->text());
     EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel1]", "play")));
     EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel3]", "play")));
+}
+
+TEST_F(NativeDeckLabTest, DecksTransportHasTruthfulStatesAndLargerTargets) {
+    m_pMixerDeck1->loadFakeTrack(false, 128); ProcessBuffer(); QTest::qWait(150);
+    auto* play = panel->findChild<QPushButton*>("decklab-1-play");
+    auto* sync = panel->findChild<QPushButton*>("decklab-1-beatsync");
+    auto* numbers = panel->findChild<QLabel*>("decklab-numbers-1");
+    ASSERT_NE(nullptr, play); ASSERT_NE(nullptr, sync); ASSERT_NE(nullptr, numbers);
+    EXPECT_EQ(QStringLiteral("Play"), play->text()); EXPECT_TRUE(play->isEnabled());
+    EXPECT_TRUE(numbers->text().contains("PAUSED")); EXPECT_TRUE(numbers->text().contains("%"));
+    EXPECT_EQ(48, play->height()); EXPECT_EQ(48, sync->height());
+    EXPECT_EQ(44, panel->findChild<QPushButton*>("decklab-tab-0")->height());
+    EXPECT_EQ(QStringLiteral("Beat Sync"), sync->text()); EXPECT_FALSE(sync->isCheckable());
+    sync->click(); QCoreApplication::processEvents();
+    EXPECT_TRUE(sync->property("actionFeedback").toBool());
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "sync_enabled")));
+    QTest::qWait(700); EXPECT_FALSE(sync->property("actionFeedback").toBool());
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "play")));
+    panel->selectPage(1); QCoreApplication::processEvents();
+    EXPECT_EQ(40, panel->findChild<QPushButton*>("decklab-tab-0")->height());
 }
 
 TEST_F(NativeDeckLabTest, LatchedRmxFollowsTempoChangesWithoutAnotherTouch) {
