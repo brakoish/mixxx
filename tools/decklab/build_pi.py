@@ -9,6 +9,8 @@ import platform
 import shutil
 import subprocess
 import sys
+import time
+from urllib.parse import urlparse
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -47,6 +49,40 @@ def gl_extension_ref(metadata):
             if version:
                 return "org.freedesktop.Platform.GL.default//" + version
     raise ValueError("Runtime metadata names no GL extension version")
+
+
+def archive_sources(manifest):
+    """(url, sha256, flatpak-builder download path) for every pinned archive, nested modules included."""
+    def visit(modules):
+        for module in modules:
+            for source in module.get("sources", []):
+                if source.get("type") == "archive" and source.get("url") and len(source.get("sha256", "")) == 64:
+                    name = Path(urlparse(source["url"]).path).name
+                    yield source["url"], source["sha256"], Path(source["sha256"]) / name
+            yield from visit(module.get("modules", []))
+    return list(visit(manifest["modules"]))
+
+
+def prefetch_archives(manifest, downloads, env):
+    """QML job only: fill flatpak-builder's download cache over IPv4 with retries.
+
+    Runs 39856968708 (both attempts) timed out reaching one archive host from the
+    runner while it answered elsewhere. Best effort: a wrong file is discarded here
+    and flatpak-builder still verifies every checksum itself."""
+    for url, sha256, relative in archive_sources(manifest):
+        target = downloads / relative
+        if target.is_file():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        partial = target.with_name(target.name + ".part")
+        fetched = subprocess.run(["curl", "-4", "-fsSL", "--retry", "5", "--retry-all-errors",
+                                  "--connect-timeout", "20", "--max-time", "300", "-o", str(partial), url],
+                                 env=env).returncode == 0
+        if fetched and digest(partial) == sha256:
+            partial.rename(target)
+        else:
+            print("prefetch failed (flatpak-builder will retry): " + url, flush=True)
+            partial.unlink(missing_ok=True)
 
 
 def check_qml_smoke(result):
@@ -314,11 +350,21 @@ def build(work, jobs, lock):
     state = work / "state"
     tree = work / "build"
     repo = work / "repo"
-    command(["flatpak-builder", "--user", "--disable-rofiles-fuse", "--force-clean",
-             "--keep-build-dirs", "--disable-tests", "--ccache", "--jobs=" + str(jobs),
-             "--state-dir=" + str(state), "--repo=" + str(repo),
-             "--default-branch=" + (QML_BRANCH if qml else "decklab"),
-             tree, generated], env=env)
+    builder = ["flatpak-builder", "--user", "--disable-rofiles-fuse", "--force-clean",
+               "--keep-build-dirs", "--disable-tests", "--ccache", "--jobs=" + str(jobs),
+               "--state-dir=" + str(state), "--repo=" + str(repo),
+               "--default-branch=" + (QML_BRANCH if qml else "decklab")]
+    if qml:
+        prefetch_archives(manifest, state / "downloads", env)
+        for attempt in range(3):
+            try:
+                command(builder + ["--download-only", tree, generated], env=env)
+                break
+            except subprocess.CalledProcessError:
+                if attempt == 2:
+                    raise
+                time.sleep(60 * (attempt + 1))
+    command(builder + [tree, generated], env=env)
     if qml:
         build_qml_candidate(env, work, out, tree, repo, generated, revision, lock, actual)
         return

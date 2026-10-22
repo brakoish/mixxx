@@ -30,6 +30,19 @@ class BuildGuards(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_pi.gl_extension_ref("[Extension org.freedesktop.Platform.Locale]\nversions=6.10\n")
 
+    def test_archive_prefetch_covers_nested_pinned_archives_only(self):
+        manifest = {"modules": [
+            {"name": "a", "sources": [{"type": "archive", "url": "https://example.org/x/a-1.0.tar.gz?dl=1",
+                                       "sha256": "a" * 64}],
+             "modules": [{"name": "b", "sources": [{"type": "archive", "url": "https://example.org/b.tar.xz",
+                                                     "sha256": "b" * 64},
+                                                    {"type": "git", "url": "https://example.org/c.git",
+                                                     "commit": "c" * 40}]}]},
+            {"name": "d", "sources": [{"type": "script", "commands": ["true"]}]}]}
+        self.assertEqual(build_pi.archive_sources(manifest),
+                         [("https://example.org/x/a-1.0.tar.gz?dl=1", "a" * 64, Path("a" * 64) / "a-1.0.tar.gz"),
+                          ("https://example.org/b.tar.xz", "b" * 64, Path("b" * 64) / "b.tar.xz")])
+
     def test_qml_smoke_requires_every_check(self):
         good = {"failures": [], "qml_errors": [], "screens": 4, "waveform_items": 2, "scratch_engaged": True,
                 "scratch_released": True, "play_tap": True, "audio_started": False}
