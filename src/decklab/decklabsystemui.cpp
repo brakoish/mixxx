@@ -14,6 +14,7 @@
 
 #include "control/controlproxy.h"
 #include "decklab/decklabdclient.h"
+#include "decklab/decklaboverlay.h"
 #include "decklab/decklabsetupwizard.h"
 #include "decklab/decklabsystem.h"
 #include "decklab/decklabui.h"
@@ -31,6 +32,8 @@ enum class BannerKind {
 
 // Compact pill over the top of the surface. Informational banners pass
 // touches through to the controls beneath; only actionable ones take taps.
+// Native windows above the GL waveforms (decklab/decklaboverlay.h), painted
+// opaque: there is no compositor to blend them with a waveform.
 class Banner : public TouchButton {
   public:
     Banner(BannerKind kind, Icon icon, bool actionable, QWidget* parent, const QString& name)
@@ -42,6 +45,7 @@ class Banner : public TouchButton {
         setFocusPolicy(Qt::NoFocus);
         setAttribute(Qt::WA_TransparentForMouseEvents, !actionable);
         hide();
+        decklab::overlay::keepAboveWaveforms(this);
     }
     void setMessage(const QString& text) {
         setText(text);
@@ -73,7 +77,6 @@ class Banner : public TouchButton {
             border = QColor("#a07a22");
             accent = QColor("#ffc84a");
         }
-        background.setAlpha(240);
         painter.setPen(QPen(border, 1.2));
         painter.setBrush(background);
         painter.drawRoundedRect(QRectF(rect()).adjusted(0.6, 0.6, -0.6, -0.6), 4, 4);
@@ -127,6 +130,11 @@ DeckLabSystemUi::DeckLabSystemUi(QWidget* surface, Hooks hooks)
     m_toastTimer.setSingleShot(true);
     connect(&m_toastTimer, &QTimer::timeout, this, [this] {
         m_toast->hide();
+        layoutBanners();
+    });
+    m_probeTimer.setSingleShot(true);
+    connect(&m_probeTimer, &QTimer::timeout, this, [this] {
+        m_probeWarning.clear();
         layoutBanners();
     });
     m_offerTimer.setSingleShot(true);
@@ -251,6 +259,18 @@ void DeckLabSystemUi::attach(DeckLabSystem* system) {
     emit toolsConnectedChanged(system->isReady());
     updateSetupPanel();
     m_audioDebounce.start();
+    bool probe = false;
+    const int probeSeconds = qEnvironmentVariableIntValue("DECKLAB_OVERLAY_PROBE", &probe);
+    if (probe && probeSeconds >= 0) {
+        // Real-display check of the overlays over the GL waveforms: banners
+        // first, then the first-run flow (not marked done unless finished).
+        QTimer::singleShot(probeSeconds * 1000, this, [this] { showOverlayProbe(); });
+        QTimer::singleShot((probeSeconds + 30) * 1000, this, [this] {
+            if (!m_wizard) {
+                openFirstRun();
+            }
+        });
+    }
     const bool smoke = !qEnvironmentVariableIsEmpty("DECKLAB_SMOKE_DIR");
     if (!system->firstRunDone() && !CmdlineArgs::Instance().getSafeMode() && !smoke) {
         // First run: welcome, Wi-Fi, time zone and Deck Setup once the
@@ -282,7 +302,8 @@ void DeckLabSystemUi::layoutBanners() {
     if (!m_surface) {
         return;
     }
-    const QString thermal = m_system ? m_system->thermalWarning() : QString();
+    const QString thermal = !m_probeWarning.isEmpty() ? m_probeWarning
+                                                      : (m_system ? m_system->thermalWarning() : QString());
     asBanner(m_thermalBanner)->setMessage(thermal);
     m_thermalBanner->setVisible(!thermal.isEmpty());
     if (m_wizard && m_wizard->isVisible()) {
@@ -296,9 +317,17 @@ void DeckLabSystemUi::layoutBanners() {
         }
         const int width = std::min(asBanner(banner)->preferredWidth(), m_surface->width() - 32);
         banner->setGeometry((m_surface->width() - width) / 2, top, width, banner->height());
-        banner->raise();
+        decklab::overlay::raiseAboveWaveforms(banner);
         top += banner->height() + 6;
     }
+}
+
+void DeckLabSystemUi::showOverlayProbe() {
+    m_probeWarning = tr("Overlay check: warning banner above the waveforms");
+    m_probeTimer.start(30000);
+    showToast(tr("Overlay check: toast above the waveforms"), 30000);
+    offerController(QStringLiteral("overlay-check"), tr("Overlay check"));
+    layoutBanners();
 }
 
 void DeckLabSystemUi::showToast(const QString& text, int milliseconds) {

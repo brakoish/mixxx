@@ -780,6 +780,10 @@ WDeckLab::~WDeckLab() {
     if (m_sidebar && m_sidebar->selectionModel()) disconnect(m_sidebar->selectionModel(), nullptr, this, nullptr);
     if (m_browseState && m_browseState->items) disconnect(m_browseState->items, nullptr, this, nullptr);
     hide();
+    // Overlays deleted with this surface would release their suppression
+    // after our members are gone.
+    for (const auto& connection : std::as_const(m_waveformSuppressors)) disconnect(connection);
+    m_waveformSuppressors.clear();
     releaseTouchCue();
     releaseEffects();
     set(kNative, "active", 0);
@@ -2134,8 +2138,13 @@ void WDeckLab::addWaveform(QWidget* widget, int deck) {
     widget->setMinimumHeight(16);
     widget->setObjectName(QStringLiteral("decklab-detail-%1").arg(deck));
     widget->setMaximumHeight(QWIDGETSIZE_MAX);
+    // Suppression hides the viewer without reflowing the Decks page.
+    QSizePolicy policy = widget->sizePolicy();
+    policy.setRetainSizeWhenHidden(true);
+    widget->setSizePolicy(policy);
     static_cast<QBoxLayout*>(body->layout())->addWidget(widget, 1);
-    widget->show();
+    m_detailWaveforms[deck - 1] = widget;
+    widget->setVisible(!waveformsSuppressed());
     watch(channel(deck), "waveform_zoom", [this, deck](double zoom) {
         if (!util_isfinite(zoom) || zoom <= 0 || zoom == m_linkedZoom ||
                 zoom != value(channel(deck), "waveform_zoom")) return;
@@ -2153,6 +2162,40 @@ void WDeckLab::addWaveform(QWidget* widget, int deck) {
     else if (m_linkedZoom > 0) set(channel(deck), "waveform_zoom", m_linkedZoom);
     updateLayers();
     refreshDeck(deck);
+}
+
+void WDeckLab::setWaveformsSuppressed(QObject* owner, bool suppressed) {
+    if (!owner) return;
+    const bool before = waveformsSuppressed();
+    if (suppressed) {
+        if (m_waveformSuppressors.contains(owner)) return;
+        // Only the address is used: the owner is already gone when this runs.
+        m_waveformSuppressors.insert(owner, connect(owner, &QObject::destroyed, this,
+                [this, owner] { setWaveformsSuppressed(owner, false); }));
+    } else {
+        const auto found = m_waveformSuppressors.find(owner);
+        if (found == m_waveformSuppressors.end()) return;
+        disconnect(found.value());
+        m_waveformSuppressors.erase(found);
+    }
+    if (before != waveformsSuppressed()) applyWaveformSuppression();
+}
+
+void WDeckLab::applyWaveformSuppression() {
+    const bool suppressed = waveformsSuppressed();
+    for (const auto& viewer : m_detailWaveforms) {
+        if (!viewer) continue;
+        if (suppressed && viewer->isVisible()) {
+            // A hidden viewer never sees the release of a touch scratch that
+            // is still held: end it now so the deck cannot stay held.
+            QMouseEvent release(QEvent::MouseButtonRelease, QPointF(), QPointF(),
+                    Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(viewer, &release);
+        }
+        // Showing maps the GL window again; WGLWidget::showEvent and the
+        // render gate force a full render of its first frame.
+        viewer->setVisible(!suppressed);
+    }
 }
 
 void WDeckLab::addOverview(QWidget* widget, int deck) {

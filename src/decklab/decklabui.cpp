@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "decklab/decklaboverlay.h"
 #include "moc_decklabui.cpp"
 #include "widget/decklabcombodelegate.h"
 
@@ -745,6 +746,8 @@ Confirm::Confirm(QWidget* host)
     setAttribute(Qt::WA_DeleteOnClose);
     setGeometry(host->rect());
     host->installEventFilter(this);
+    // Covers the whole host: hide the native GL waveforms while shown.
+    decklab::overlay::suppressWaveformsWhileVisible(this);
 }
 
 bool Confirm::eventFilter(QObject* watched, QEvent* event) {

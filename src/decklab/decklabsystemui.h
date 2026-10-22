@@ -45,6 +45,11 @@ class DeckLabSystemUi : public QObject {
     DeckLabSetupWizard* openFirstRun();
     DeckLabSetupWizard* wizard() const;
     void setAudioOutputConfigured(bool configured);
+    /// Overlay stacking check for a real display (DECKLAB_OVERLAY_PROBE=<s>
+    /// runs it <s> seconds after attach, then opens the first-run flow 30 s
+    /// later): a toast, a warning banner and a tappable controller offer over
+    /// the surface for 30 s. Changes no setting.
+    void showOverlayProbe();
 
   signals:
     void toolsConnectedChanged(bool connected);
@@ -77,6 +82,8 @@ class DeckLabSystemUi : public QObject {
     QTimer m_toastTimer;
     QTimer m_offerTimer;
     QTimer m_audioDebounce;
+    QTimer m_probeTimer;
+    QString m_probeWarning;
     QString m_offerKey;
     bool m_outputConfigured = false;
 };

@@ -1762,6 +1762,7 @@ add_library(
   src/widget/decklabsmoke.cpp
   src/decklab/decklabdclient.cpp
   src/decklab/decklabfakeservice.cpp
+  src/decklab/decklaboverlay.cpp
   src/decklab/decklabsetupmodel.cpp
   src/decklab/decklabsetupwizard.cpp
   src/decklab/decklabsignals.cpp
