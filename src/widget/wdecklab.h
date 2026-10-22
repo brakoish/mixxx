@@ -18,6 +18,7 @@
 
 class ControlObject;
 class ControlProxy;
+class DeckLabLevelMeter;
 class Library;
 class PlayerManagerInterface;
 class EffectsManager;
@@ -105,12 +106,99 @@ class WDeckLab : public QWidget, public WBaseWidget {
     QString fxSlot() const;
     QString channel(int deck) const;
 
+    // Decks page refresh. State controls mark a deck dirty and one queued
+    // flush refreshes it; the display tick only advances playing clocks.
+    struct DeckProxies {
+        ControlProxy* play = nullptr;
+        ControlProxy* loaded = nullptr;
+        ControlProxy* bpm = nullptr;
+        ControlProxy* localBpm = nullptr;
+        ControlProxy* rateRatio = nullptr;
+        ControlProxy* rateRange = nullptr;
+        ControlProxy* duration = nullptr;
+        ControlProxy* position = nullptr;
+        ControlProxy* samples = nullptr;
+        ControlProxy* key = nullptr;
+        ControlProxy* sync = nullptr;
+        ControlProxy* leader = nullptr;
+        ControlProxy* keylock = nullptr;
+        ControlProxy* quantize = nullptr;
+        ControlProxy* pfl = nullptr;
+        ControlProxy* loop = nullptr;
+        ControlProxy* loopSize = nullptr;
+        ControlProxy* slip = nullptr;
+        ControlProxy* vu = nullptr;
+        ControlProxy* peak = nullptr;
+        ControlProxy* zoom = nullptr;
+        std::array<ControlProxy*, 8> cuePosition{};
+        std::array<ControlProxy*, 8> cueType{};
+        std::array<ControlProxy*, 8> cueColor{};
+    };
+    struct TransportState {
+        int deck = -1;
+        bool loaded = false;
+        bool playing = false;
+        bool looping = false;
+        bool quantize = false;
+        bool keylock = false;
+        bool feedback = false;
+        double size = -1;
+        bool operator==(const TransportState&) const = default;
+    };
+    struct TransportButtons {
+        QPushButton* play = nullptr;
+        QPushButton* cue = nullptr;
+        QPushButton* sync = nullptr;
+        QPushButton* halve = nullptr;
+        QPushButton* loop = nullptr;
+        QPushButton* twice = nullptr;
+        QPushButton* quantize = nullptr;
+        QPushButton* keylock = nullptr;
+        QPushButton* more = nullptr;
+        TransportState shown;
+    };
+    struct HotcueState {
+        int deck = -1;
+        bool loaded = false;
+        bool playing = false;
+        std::array<qint64, 8> cues{};
+        bool operator==(const HotcueState&) const = default;
+    };
+    struct HotcuePads {
+        std::array<QPushButton*, 8> pads{};
+        HotcueState shown;
+    };
+    void markDeckDirty(int deck);
+    void flushDirtyDecks();
+    void tickDecks();
+    void tickMeters();
+    void refreshControllerFx();
+    void connectControllerFx();
+    bool deckShown(int deck) const;
+
     UserSettingsPointer m_config;
     Library* m_library;
     PlayerManagerInterface* m_players;
     EffectsManager* m_effects;
     std::vector<std::unique_ptr<ControlObject>> m_ownedControls;
-    QHash<QString, ControlProxy*> m_controls;
+    QHash<QString, QHash<QString, ControlProxy*>> m_controls;
+    std::array<DeckProxies, 4> m_deck{};
+    std::array<bool, 4> m_deckDirty{};
+    std::array<double, 4> m_shownPosition{};
+    bool m_flushQueued = false;
+    bool m_fxSummaryDirty = false;
+    bool m_fxWatchersReady = false;
+    quint64 m_layoutSignature = 0;
+    QHash<QString, TransportButtons> m_transport;
+    std::array<QString, 2> m_sidePrefixes;
+    std::array<QString, 4> m_cardPrefixes;
+    std::array<QString, 2> m_sideHotcuePrefixes;
+    std::array<QString, 4> m_cardHotcuePrefixes;
+    QTimer m_meterTimer;
+    DeckLabLevelMeter* m_masterMeter = nullptr;
+    std::array<ControlProxy*, 2> m_mainVu{};
+    ControlProxy* m_mainPeak = nullptr;
+    QString m_shownRmx;
     QVBoxLayout* m_root;
     QStackedWidget* m_pages;
     QWidget* m_deckControls;
@@ -129,7 +217,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     std::array<QPushButton*, 5> m_tabs{};
     std::array<QLabel*, 4> m_titles{};
     std::array<QLabel*, 4> m_waveNumbers{};
-    std::array<QProgressBar*, 4> m_meters{};
+    std::array<DeckLabLevelMeter*, 4> m_meters{};
     std::array<QLabel*, 4> m_numbers{};
     std::array<QLabel*, 4> m_keys{};
     std::array<QLabel*, 4> m_remaining{};
@@ -145,7 +233,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     std::array<QWidget*, 4> m_detailColumns{};
     std::array<QWidget*, 2> m_sideUtilities{};
     std::array<QWidget*, 2> m_sideHotcues{};
-    QHash<QString, std::array<QPushButton*, 8>> m_hotcueButtons;
+    QHash<QString, HotcuePads> m_hotcueButtons;
     QWidget* m_pairPerformance = nullptr;
     QWidget* m_pairContexts = nullptr;
     QWidget* m_pairDetails = nullptr;
@@ -155,7 +243,6 @@ class WDeckLab : public QWidget, public WBaseWidget {
     QLabel* m_pairRMX = nullptr;
     QLabel* m_pairCue = nullptr;
     QLabel* m_masterLevelLabel = nullptr;
-    std::array<QProgressBar*, 2> m_masterMeters{};
     QLabel* m_pairZoom = nullptr;
     double m_linkedZoom = 0;
     bool m_zoomPending = false;

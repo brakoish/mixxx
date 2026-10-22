@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "widget/wdecklab.h"
 #include "widget/decklabcombodelegate.h"
+#include "widget/decklabdeckwidgets.h"
 
 #include <QApplication>
 #include <QBoxLayout>
@@ -105,6 +106,77 @@ QHBoxLayout* row(QWidget* widget = nullptr, int spacing = 0) {
     layout->setSpacing(spacing);
     return layout;
 }
+// Guarded presentation writes. Several Qt setters repolish, relayout or post
+// accessibility events even for an unchanged value, so every Decks refresh
+// goes through these and is a visual no-op when nothing changed.
+void setTextIf(QLabel* label, const QString& text) {
+    if (label && label->text() != text) label->setText(text);
+}
+void setTextIf(QAbstractButton* button, const QString& text) {
+    if (button && button->text() != text) button->setText(text);
+}
+void setToolTipIf(QWidget* widget, const QString& tip) {
+    if (widget && widget->toolTip() != tip) widget->setToolTip(tip);
+}
+void setAccessibleNameIf(QWidget* widget, const QString& name) {
+    if (widget && widget->accessibleName() != name) widget->setAccessibleName(name);
+}
+void setAccessibleDescriptionIf(QWidget* widget, const QString& text) {
+    if (widget && widget->accessibleDescription() != text) widget->setAccessibleDescription(text);
+}
+void setVisibleIf(QWidget* widget, bool visible) {
+    // Mirrors QWidget's own early return, including widgets never shown yet.
+    if (!widget || (widget->testAttribute(Qt::WA_WState_ExplicitShowHide) &&
+                           widget->isHidden() == !visible)) return;
+    widget->setVisible(visible);
+}
+void setEnabledIf(QWidget* widget, bool enabled) {
+    if (widget && widget->testAttribute(Qt::WA_ForceDisabled) == enabled) widget->setEnabled(enabled);
+}
+void setCheckedIf(QAbstractButton* button, bool checked) {
+    if (button && button->isChecked() != checked) button->setChecked(checked);
+}
+void setStyleSheetIf(QWidget* widget, const QString& style) {
+    if (widget && widget->styleSheet() != style) widget->setStyleSheet(style);
+}
+void setFixedHeightIf(QWidget* widget, int height) {
+    if (widget && (widget->minimumHeight() != height || widget->maximumHeight() != height))
+        widget->setFixedHeight(height);
+}
+void setFixedWidthIf(QWidget* widget, int width) {
+    if (widget && (widget->minimumWidth() != width || widget->maximumWidth() != width))
+        widget->setFixedWidth(width);
+}
+void setFocusPolicyIf(QWidget* widget, Qt::FocusPolicy policy) {
+    if (widget && widget->focusPolicy() != policy) widget->setFocusPolicy(policy);
+}
+void setWordWrapIf(QLabel* label, bool wrap) {
+    if (label && label->wordWrap() != wrap) label->setWordWrap(wrap);
+}
+// Dynamic style properties only take effect after a repolish; never repolish
+// for a property that did not change.
+void setStylePropertyIf(QWidget* widget, const char* name, bool value) {
+    if (!widget || widget->property(name).toBool() == value) return;
+    widget->setProperty(name, value);
+    widget->style()->unpolish(widget);
+    widget->style()->polish(widget);
+}
+// Calls back when a watched widget's size changes, so width-dependent elision
+// is refreshed by layout settling rather than by polling.
+class DeckLabResizeWatcher final : public QObject {
+  public:
+    DeckLabResizeWatcher(QWidget* target, std::function<void()> changed)
+            : QObject(target), m_changed(std::move(changed)) {
+        target->installEventFilter(this);
+    }
+  protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (event->type() == QEvent::Resize) m_changed();
+        return QObject::eventFilter(watched, event);
+    }
+  private:
+    std::function<void()> m_changed;
+};
 // Qt can synthesize a button release after a recognized touch scroll. Keep
 // that release from becoming a command on the control beneath the swipe.
 class DeckLabTouchScrollGuard final : public QObject {
@@ -265,6 +337,49 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     createControl(QStringLiteral("[Sidebar]"), QStringLiteral("sidebar_visible"), 1);
     createControl(QStringLiteral("[DeckLabLeft]"), QStringLiteral("current"));
     createControl(QStringLiteral("[DeckLabRight]"), QStringLiteral("current"));
+    // Resolve every per-deck control once; refreshes read cached proxies and
+    // never build group/item strings on the hot path.
+    for (int deck = 1; deck <= 4; ++deck) {
+        const QString group = channel(deck);
+        auto& d = m_deck[deck - 1];
+        d.play = control(group, QStringLiteral("play"));
+        d.loaded = control(group, QStringLiteral("track_loaded"));
+        d.bpm = control(group, QStringLiteral("bpm"));
+        d.localBpm = control(group, QStringLiteral("local_bpm"));
+        d.rateRatio = control(group, QStringLiteral("rate_ratio"));
+        d.rateRange = control(group, QStringLiteral("rateRange"));
+        d.duration = control(group, QStringLiteral("duration"));
+        d.position = control(group, QStringLiteral("playposition"));
+        d.samples = control(group, QStringLiteral("track_samples"));
+        d.key = control(group, QStringLiteral("visual_key"));
+        d.sync = control(group, QStringLiteral("sync_enabled"));
+        d.leader = control(group, QStringLiteral("sync_leader"));
+        d.keylock = control(group, QStringLiteral("keylock"));
+        d.quantize = control(group, QStringLiteral("quantize"));
+        d.pfl = control(group, QStringLiteral("pfl"));
+        d.loop = control(group, QStringLiteral("loop_enabled"));
+        d.loopSize = control(group, QStringLiteral("beatloop_size"));
+        d.slip = control(group, QStringLiteral("slip_enabled"));
+        d.vu = control(group, QStringLiteral("vu_meter"));
+        d.peak = control(group, QStringLiteral("peak_indicator"));
+        d.zoom = control(group, QStringLiteral("waveform_zoom"));
+        for (int cue = 1; cue <= 8; ++cue) {
+            const QString base = QStringLiteral("hotcue_%1_").arg(cue);
+            d.cuePosition[cue - 1] = control(group, base + QStringLiteral("position"));
+            d.cueType[cue - 1] = control(group, base + QStringLiteral("type"));
+            d.cueColor[cue - 1] = control(group, base + QStringLiteral("color"));
+        }
+        m_cardPrefixes[deck - 1] = QStringLiteral("decklab-card-%1-").arg(deck);
+        m_cardHotcuePrefixes[deck - 1] = QStringLiteral("decklab-card-hotcue-%1-").arg(deck);
+        m_shownPosition[deck - 1] = -1;
+    }
+    for (int side = 0; side < 2; ++side) {
+        m_sidePrefixes[side] = QStringLiteral("decklab-%1-").arg(side + 1);
+        m_sideHotcuePrefixes[side] = QStringLiteral("decklab-hotcue-%1-").arg(side + 1);
+    }
+    m_mainVu = {control(QStringLiteral("[Main]"), QStringLiteral("vu_meter_left")),
+            control(QStringLiteral("[Main]"), QStringLiteral("vu_meter_right"))};
+    m_mainPeak = control(QStringLiteral("[Main]"), QStringLiteral("peak_indicator"));
     m_root = column(this);
     auto* rail = row();
     const QStringList names = {tr("Decks"), tr("Browse"), tr("Sampler"), tr("FX"), tr("Settings")};
@@ -339,14 +454,30 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     for (int deck = 1; deck <= 4; ++deck) {
         for (const auto& key : {"play", "track_loaded"}) {
             watch(channel(deck), QString::fromLatin1(key), [this, deck](double) {
-                updateLayers(); refreshLoadButtons(); refreshFx();
+                // Relayout only happens when the layout actually changes;
+                // otherwise this just queues one coalesced deck refresh.
+                updateLayers(); markDeckDirty(deck); refreshLoadButtons(); refreshFx();
             });
+        }
+        // Deck state shown on the Decks page. Each change only marks the deck
+        // dirty; one queued flush refreshes it however many values changed.
+        for (const auto& key : {"bpm", "local_bpm", "rate_ratio", "rateRange", "visual_key",
+                     "sync_enabled", "sync_leader", "keylock", "quantize", "pfl",
+                     "loop_enabled", "beatloop_size", "slip_enabled", "duration"}) {
+            watch(channel(deck), QString::fromLatin1(key), [this, deck](double) { markDeckDirty(deck); });
+        }
+        for (int cue = 0; cue < 8; ++cue) {
+            for (auto* proxy : {m_deck[deck - 1].cuePosition[cue], m_deck[deck - 1].cueType[cue],
+                         m_deck[deck - 1].cueColor[cue]}) {
+                proxy->connectValueChanged(this, [this, deck](double) { markDeckDirty(deck); }, Qt::QueuedConnection);
+            }
         }
         if (m_players) {
             auto* player = m_players->getPlayer(channel(deck));
             if (player) {
                 connect(player, &BaseTrackPlayer::newTrackLoaded, this, [this, deck](TrackPointer) {
                     m_tempos[deck - 1].at = -1;
+                    m_shownPosition[deck - 1] = -1;
                     refreshDeck(deck);
                     if (m_page == 1) {
                         setDisplayedDeck((deck - 1) % 2, deck);
@@ -368,8 +499,17 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     watch("[App]", "audio_latency_overload_count", [this](double) { updateStatus(); });
     watch("[Recording]", "status", [this](double) { updateStatus(); });
     watch("[SoundManager]", "status", [this](double) { updateStatus(); });
+    for (const auto& item : {"headMix", "headSplit"}) {
+        watch(QStringLiteral("[Master]"), QString::fromLatin1(item), [this](double) {
+            m_fxSummaryDirty = true; markDeckDirty(0);
+        });
+    }
     connect(&m_fxTimer, &QTimer::timeout, this, &WDeckLab::tickEffects);
     m_fxTimer.start(100);
+    // Meters are sampled at a fixed display rate instead of following each
+    // engine-rate value signal; unchanged segments never repaint.
+    connect(&m_meterTimer, &QTimer::timeout, this, &WDeckLab::tickMeters);
+    m_meterTimer.start(40);
     qApp->installEventFilter(this);
     set(kNative, "active", 1);
     selectPage(0);
@@ -378,6 +518,7 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
 
 WDeckLab::~WDeckLab() {
     m_fxTimer.stop();
+    m_meterTimer.stop();
     qApp->removeEventFilter(this);
     // QWidget closes focus after derived members have been destroyed. Search
     // emits on focus-out, so detach its callback and hide while our controls
@@ -389,7 +530,13 @@ WDeckLab::~WDeckLab() {
     set(kNative, "active", 0);
 }
 
-QString WDeckLab::channel(int deck) const { return QStringLiteral("[Channel%1]").arg(deck); }
+QString WDeckLab::channel(int deck) const {
+    // Shared, preformatted group names: refreshes copy an implicitly shared
+    // string instead of formatting a new one for every control lookup.
+    static const std::array<QString, 4> groups{QStringLiteral("[Channel1]"),
+            QStringLiteral("[Channel2]"), QStringLiteral("[Channel3]"), QStringLiteral("[Channel4]")};
+    return deck >= 1 && deck <= 4 ? groups[deck - 1] : QStringLiteral("[Channel%1]").arg(deck);
+}
 
 void WDeckLab::createControl(const QString& group, const QString& item, double initial) {
     if (!ControlObject::getControl(ConfigKey(group, item), ControlFlag::NoWarnIfMissing)) {
@@ -400,9 +547,13 @@ void WDeckLab::createControl(const QString& group, const QString& item, double i
 }
 
 ControlProxy* WDeckLab::control(const QString& group, const QString& item) {
-    const QString key = group + QLatin1Char(',') + item;
-    if (!m_controls.contains(key)) m_controls.insert(key, new ControlProxy(group, item, this, ControlFlag::NoWarnIfMissing));
-    return m_controls.value(key);
+    // Two-level lookup: no concatenated key is allocated per call.
+    auto& items = m_controls[group];
+    const auto found = items.constFind(item);
+    if (found != items.cend()) return found.value();
+    auto* proxy = new ControlProxy(group, item, this, ControlFlag::NoWarnIfMissing);
+    items.insert(item, proxy);
+    return proxy;
 }
 double WDeckLab::value(const QString& group, const QString& item) { return control(group, item)->get(); }
 void WDeckLab::set(const QString& group, const QString& item, double v) {
@@ -436,6 +587,9 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
     auto makeAction = [this, strip, target, prefix, followsLayer](const QString& label, const QString& item, bool checked = false) {
         auto pressed = std::make_shared<std::pair<int, quint64>>(0, 0);
         auto* b = button(label, [this, target, prefix, pressed, item] {
+            // A click may have toggled a checkable button; never trust the
+            // cached presentation after a touch.
+            m_transport[prefix].shown = TransportState();
             if (pressed->second != m_interactionEpoch || pressed->first != target() ||
                     value(channel(target()), "track_loaded") <= 0) {
                 // QPushButton toggles before clicked; cancel its visual toggle too.
@@ -470,6 +624,15 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
             connect(b, &QPushButton::released, this, &WDeckLab::releaseTouchCue);
         }
         b->setCheckable(checked);
+        auto& buttons = m_transport[prefix];
+        if (item == "play") buttons.play = b;
+        else if (item == "cue_default") buttons.cue = b;
+        else if (item == "beatsync") buttons.sync = b;
+        else if (item == "loop_halve") buttons.halve = b;
+        else if (item == "beatloop_activate") buttons.loop = b;
+        else if (item == "loop_double") buttons.twice = b;
+        else if (item == "quantize") buttons.quantize = b;
+        else if (item == "keylock") buttons.keylock = b;
         return b;
     };
     if (followsLayer) {
@@ -515,7 +678,7 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
         for (int actual : {deck, deck + 2}) watch(channel(actual), "track_loaded", [menu](double) { menu->close(); });
         auto* more = button(tr("PLAY/CUE\nMORE"), [menu, strip] { menu->popup(strip->mapToGlobal(QPoint(0, strip->height()))); }, strip, prefix + QStringLiteral("more"));
         more->setFixedHeight(44); more->setStyleSheet(QStringLiteral("min-height:40px;max-height:40px;padding:1px 2px;font-size:11px;"));
-        append(more, 68);
+        append(more, 68); m_transport[prefix].more = more;
         strip->setFixedHeight(44);
     } else {
         auto* actions = row(strip);
@@ -537,7 +700,7 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
         watch("[DeckLabRight]", "current", [menu](double) { menu->close(); });
         auto* more = button(tr("More"), [menu, strip] { menu->popup(strip->mapToGlobal(QPoint(0, strip->height()))); }, strip, prefix + QStringLiteral("more"));
         more->setStyleSheet(QStringLiteral("min-height:44px;max-height:44px;padding:1px 2px;font-size:12px;"));
-        more->setFixedHeight(48); actions->addWidget(more, 1);
+        more->setFixedHeight(48); actions->addWidget(more, 1); m_transport[prefix].more = more;
         strip->setFixedHeight(48);
     }
     return strip;
@@ -622,6 +785,7 @@ QWidget* WDeckLab::buildHotcues(int deck, bool followsLayer, QWidget* parent) {
         auto pressed = std::make_shared<Press>();
         auto* pad = button(QString(QChar('A' + cue - 1)), [this, target, prefix, pressed, cue] {
             const int actual = target(); const QString group = channel(actual);
+            m_hotcueButtons[prefix].shown = HotcueState();
             auto* player = m_players ? m_players->getPlayer(group) : nullptr;
             const QString base = QStringLiteral("hotcue_%1_").arg(cue);
             const double position = value(group, base + QStringLiteral("position"));
@@ -635,6 +799,7 @@ QWidget* WDeckLab::buildHotcues(int deck, bool followsLayer, QWidget* parent) {
             refreshHotcues(actual, prefix);
         }, strip, prefix + QString::number(cue));
         pad->setFixedHeight(44); pad->setMinimumWidth(44); pad->setFocusPolicy(Qt::NoFocus);
+        pad->setStyleSheet(QStringLiteral("min-height:40px;max-height:40px;padding:1px 2px;font-size:15px;font-weight:600;border-radius:0;border:1px solid #3c3c3c;"));
         connect(pad, &QPushButton::pressed, this, [this, target, pressed, cue] {
             pressed->deck = target(); pressed->epoch = m_interactionEpoch;
             auto* player = m_players ? m_players->getPlayer(channel(pressed->deck)) : nullptr;
@@ -644,39 +809,48 @@ QWidget* WDeckLab::buildHotcues(int deck, bool followsLayer, QWidget* parent) {
         });
         pads->addWidget(pad, 1); buttons[cue - 1] = pad;
     }
-    m_hotcueButtons.insert(prefix, buttons);
+    HotcuePads registered;
+    registered.pads = buttons;
+    m_hotcueButtons.insert(prefix, registered);
     strip->setFixedHeight(44); return strip;
 }
 
 void WDeckLab::refreshHotcues(int deck, const QString& prefix) {
-    const auto found = m_hotcueButtons.constFind(prefix);
-    if (found == m_hotcueButtons.cend()) return;
-    const QString group = channel(deck);
-    const bool loaded = value(group, "track_loaded") > 0;
-    const bool playing = value(group, "play") > 0;
+    const auto found = m_hotcueButtons.find(prefix);
+    if (found == m_hotcueButtons.end() || deck < 1 || deck > 4) return;
+    const auto& d = m_deck[deck - 1];
+    HotcueState state;
+    state.deck = deck;
+    state.loaded = d.loaded->get() > 0;
+    state.playing = d.play->get() > 0;
+    for (int cue = 0; cue < 8; ++cue) {
+        const bool set = d.cuePosition[cue]->get() >= 0;
+        const bool loop = set && int(d.cueType[cue]->get()) == int(mixxx::CueType::Loop);
+        const int color = int(d.cueColor[cue]->get());
+        state.cues[cue] = !set ? -1 : (qint64(loop) << 32) | (color >= 0 && color <= 0xffffff ? color : 0x555555);
+    }
+    // Unchanged cue state: no text, property, tooltip or accessibility writes.
+    if (state == found.value().shown) return;
+    found.value().shown = state;
     for (int cue = 1; cue <= 8; ++cue) {
-        auto* pad = found.value()[cue - 1]; if (!pad) continue;
-        const QString base = QStringLiteral("hotcue_%1_").arg(cue);
-        const bool set = value(group, base + QStringLiteral("position")) >= 0;
-        const bool loop = set && int(value(group, base + QStringLiteral("type"))) == int(mixxx::CueType::Loop);
+        auto* pad = found.value().pads[cue - 1]; if (!pad) continue;
+        const qint64 cueState = state.cues[cue - 1];
+        const bool set = cueState >= 0;
+        const bool loop = set && (cueState >> 32) != 0;
         const QString letter(QChar('A' + cue - 1));
-        const bool enabled = loaded && (set || !playing);
+        const bool enabled = state.loaded && (set || !state.playing);
         const QString label = letter + (loop ? QString(QChar(0x21bb)) : set ? QString() : QStringLiteral("+"));
-        if (pad->isEnabled() != enabled) pad->setEnabled(enabled);
-        if (pad->text() != label) pad->setText(label);
-        const int color = int(value(group, base + QStringLiteral("color")));
-        const QString ink = set && color >= 0 && color <= 0xffffff ? QColor::fromRgb(color).name() : QStringLiteral("#555555");
+        setEnabledIf(pad, enabled);
+        setTextIf(pad, label);
+        const QString ink = set ? QColor::fromRgb(int(cueState & 0xffffff)).name() : QStringLiteral("#555555");
         if (pad->property("cueSet").toBool() != set || pad->property("cueColor").toString() != ink) {
             pad->setProperty("cueSet", set); pad->setProperty("cueColor", ink); pad->update();
         }
-        const QString style = QStringLiteral("min-height:40px;max-height:40px;padding:1px 2px;font-size:15px;font-weight:600;border-radius:0;border:1px solid #3c3c3c;");
-        if (pad->styleSheet() != style) pad->setStyleSheet(style);
-        const QString name = tr("Deck %1 cue %2, %3").arg(deck).arg(letter, loop ? tr("saved loop") : set ? tr("set") : tr("empty"));
-        if (pad->accessibleName() != name) pad->setAccessibleName(name);
+        setAccessibleNameIf(pad, tr("Deck %1 cue %2, %3").arg(deck).arg(letter, loop ? tr("saved loop") : set ? tr("set") : tr("empty")));
         const QString help = loop ? tr("Jump to saved loop %1 start; preserves playback and does not enable looping").arg(letter) :
                 set ? tr("Jump to cue %1; preserves playback").arg(letter) : tr("Set cue %1 at the current paused position").arg(letter);
-        if (pad->toolTip() != help) pad->setToolTip(help);
-        if (pad->accessibleDescription() != help) pad->setAccessibleDescription(help);
+        setToolTipIf(pad, help);
+        setAccessibleDescriptionIf(pad, help);
     }
 }
 
@@ -1323,18 +1497,12 @@ void WDeckLab::addWaveform(QWidget* widget, int deck) {
         m_masterLevelLabel->setObjectName(QStringLiteral("decklab-master-level-label"));
         m_masterLevelLabel->setProperty("muted", true); m_masterLevelLabel->setFixedHeight(16);
         m_masterLevelLabel->setAlignment(Qt::AlignCenter); levels->addWidget(m_masterLevelLabel);
-        for (int side = 0; side < 2; ++side) {
-            auto* meter = new QProgressBar(mainLevels); meter->setRange(0, 100);
-            meter->setTextVisible(false); meter->setFixedHeight(10);
-            const double initial = value("[Main]", side ? "vu_meter_right" : "vu_meter_left");
-            meter->setValue(std::isfinite(initial) ? int(std::clamp(initial, 0.0, 1.0) * 100) : 0);
-            meter->setObjectName(QStringLiteral("decklab-master-meter-%1").arg(side));
-            meter->setAccessibleName(side ? tr("Main output right level") : tr("Main output left level"));
-            levels->addWidget(meter); m_masterMeters[side] = meter;
-            watch("[Main]", side ? "vu_meter_right" : "vu_meter_left", [meter](double v) {
-                meter->setValue(std::isfinite(v) ? int(std::clamp(v, 0.0, 1.0) * 100) : 0);
-            });
-        }
+        // One painted stereo meter, sampled by the meter tick.
+        m_masterMeter = new DeckLabLevelMeter(Qt::Horizontal, 2, mainLevels);
+        m_masterMeter->setObjectName(QStringLiteral("decklab-master-meter"));
+        m_masterMeter->setAccessibleName(tr("Main output level"));
+        m_masterMeter->setFixedHeight(21); levels->addWidget(m_masterMeter);
+        m_masterMeter->setLevels(m_mainVu[0]->get(), m_mainVu[1]->get(), m_mainPeak->get() > 0);
         const auto showMainClip = [this](double v) {
             const bool clipping = v > 0;
             if (m_masterLevelLabel->property("clipping").toBool() == clipping) return;
@@ -1438,11 +1606,10 @@ void WDeckLab::addWaveform(QWidget* widget, int deck) {
     state->setProperty("muted", true); state->setFixedWidth(70); state->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     state->setContentsMargins(0, 0, 8, 0);
     m_playStates[deck - 1] = state; titleLayout->addWidget(state);
-    auto* meter = new QProgressBar(header); meter->setRange(0,100); meter->setValue(0); meter->setTextVisible(false); meter->setFixedSize(80,10);
+    auto* meter = new DeckLabLevelMeter(Qt::Horizontal, 1, header); meter->setFixedSize(80,10);
     meter->setObjectName(QStringLiteral("decklab-level-%1").arg(deck));
     meter->setAccessibleName(tr("Deck %1 level").arg(deck)); titleLayout->addWidget(meter,0,Qt::AlignVCenter); m_meters[deck-1]=meter;
-    watch(channel(deck),"vu_meter",[meter](double v){meter->setValue(std::isfinite(v)?int(std::clamp(v,0.0,1.0)*100):0);});
-    watch(channel(deck),"peak_indicator",[this, deck, meter](double v){if(meter->property("clipping").toBool()!=(v>0)){meter->setProperty("clipping",v>0);meter->style()->unpolish(meter);meter->style()->polish(meter);}
+    watch(channel(deck),"peak_indicator",[this, deck](double v){
         if (auto* label = m_meterLabels[deck - 1]) {
             if (label->property("clipping").toBool() != (v > 0)) {
                 label->setProperty("clipping", v > 0); label->setText(v > 0 ? tr("CLIP") : tr("LVL"));
@@ -1466,6 +1633,8 @@ void WDeckLab::addWaveform(QWidget* widget, int deck) {
     m_numbers[deck - 1] = metric("numbers", 170, true);
     m_keys[deck - 1] = metric("key", 130, true);
     m_remaining[deck - 1] = metric("remaining", 195, true);
+    // The clock changes every second while playing; plain text avoids an HTML parse.
+    m_remaining[deck - 1]->setTextFormat(Qt::PlainText);
     auto* modes = new QLabel(metrics); modes->setProperty("muted", true);
     modes->setObjectName(QStringLiteral("decklab-modes-%1").arg(deck)); m_modes[deck - 1] = modes;
     values->insertWidget(3, modes, 1);
@@ -1485,12 +1654,15 @@ void WDeckLab::addWaveform(QWidget* widget, int deck) {
     m_sources[deck - 1]->setContentsMargins(8, 0, 8, 0);
     m_sources[deck - 1]->setFixedHeight(22); lines->addWidget(m_sources[deck - 1]);
     m_sources[deck - 1]->hide();
+    // Width-dependent elision follows layout settling, not a polling timer.
+    new DeckLabResizeWatcher(m_titles[deck - 1], [this, deck] { markDeckDirty(deck); });
+    new DeckLabResizeWatcher(m_sources[deck - 1], [this, deck] { markDeckDirty(deck); });
     for (auto* child : header->findChildren<QWidget*>()) child->setAttribute(Qt::WA_TransparentForMouseEvents);
     auto* contextPanel = new QWidget(m_pairContexts); auto* contextRows = column(contextPanel);
     contextPanel->setFixedHeight(110); m_contextPanels[deck - 1] = contextPanel;
     m_waveContexts[deck - 1] = new QLabel(contextPanel);
     m_waveContexts[deck - 1]->setObjectName(QStringLiteral("decklab-wave-context-%1").arg(deck));
-    m_waveContexts[deck - 1]->setTextFormat(Qt::RichText);
+    m_waveContexts[deck - 1]->setTextFormat(Qt::PlainText);
     m_waveContexts[deck - 1]->setWordWrap(true);
     m_waveContexts[deck - 1]->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     m_waveContexts[deck - 1]->setContentsMargins(8, 0, 4, 0);
@@ -1522,6 +1694,7 @@ void WDeckLab::addWaveform(QWidget* widget, int deck) {
     layout->addWidget(m_cardTransports[deck - 1]); m_cardTransports[deck - 1]->hide();
     m_deckWaveforms[deck - 1] = frame;
     watch(channel(deck), "waveform_zoom", [this, deck](double zoom) {
+        m_fxSummaryDirty = true; markDeckDirty(0);
         if (!std::isfinite(zoom) || zoom <= 0 || zoom == m_linkedZoom ||
                 zoom != value(channel(deck), "waveform_zoom")) return;
         m_linkedZoom = zoom;
@@ -1751,35 +1924,38 @@ void WDeckLab::refreshLoadButtons() {
     }
 }
 void WDeckLab::refreshDeck(int deck) {
+    if (deck < 1 || deck > 4) return;
+    const auto& d = m_deck[deck - 1];
     auto* player = m_players ? m_players->getPlayer(channel(deck)) : nullptr;
     auto track = player ? player->getLoadedTrack() : TrackPointer();
     QString title = track ? track->getTitle() : tr("Choose a track in Browse");
-    const double raw = value(channel(deck), "bpm");
-    const double bpm = m_tempos[deck - 1].update(value(channel(deck), "track_loaded"),
-            value(channel(deck), "local_bpm"), value(channel(deck), "rate_ratio"), raw, m_clock.elapsed());
-    const double duration = value(channel(deck), "duration");
-    QString key = KeyUtils::keyToString(static_cast<mixxx::track::io::key::ChromaticKey>(int(value(channel(deck), "visual_key"))));
+    const bool loaded = d.loaded->get() > 0;
+    const bool playing = d.play->get() > 0;
+    const double bpm = m_tempos[deck - 1].update(loaded, d.localBpm->get(), d.rateRatio->get(), d.bpm->get(), m_clock.elapsed());
+    const double duration = d.duration->get();
+    const double rawPosition = d.position->get();
+    const double position = std::isfinite(rawPosition) ? rawPosition : 0;
+    m_shownPosition[deck - 1] = position;
+    QString key = KeyUtils::keyToString(static_cast<mixxx::track::io::key::ChromaticKey>(int(d.key->get())));
     if (key.isEmpty()) key = QStringLiteral("—");
     if (m_titles[deck - 1]) {
         const bool compactTitle = m_page == 0 && m_fourDeckLayout;
         if (!track && compactTitle) title = tr("Browse tracks");
-        m_titles[deck - 1]->setWordWrap(compactTitle);
+        setWordWrapIf(m_titles[deck - 1], compactTitle);
         // Fixed empty guidance fits its final card; do not elide against a
         // newly revealed upper deck's not-yet-settled width of zero.
-        m_titles[deck - 1]->setText(track ? m_titles[deck - 1]->fontMetrics().elidedText(title, Qt::ElideRight,
+        setTextIf(m_titles[deck - 1], track ? m_titles[deck - 1]->fontMetrics().elidedText(title, Qt::ElideRight,
                 std::max(0, (m_titles[deck - 1]->width() - 18) * (compactTitle ? 2 : 1))) : title);
-        m_titles[deck - 1]->setToolTip(QStringLiteral("<span>%1</span>").arg(title.toHtmlEscaped()));
+        setToolTipIf(m_titles[deck - 1], QStringLiteral("<span>%1</span>").arg(title.toHtmlEscaped()));
         if (m_waveNumbers[deck - 1]) {
-            m_waveNumbers[deck - 1]->setVisible(m_page != 0);
-            m_waveNumbers[deck - 1]->setText(track ? QStringLiteral("%1    %2 BPM").arg(key).arg(bpm, 0, 'f', 2) : QString());
+            setVisibleIf(m_waveNumbers[deck - 1], m_page != 0);
+            setTextIf(m_waveNumbers[deck - 1], track ? QStringLiteral("%1    %2 BPM").arg(key).arg(bpm, 0, 'f', 2) : QString());
         }
     }
     const int side = deck % 2 ? 0 : 1;
     if (m_numbers[deck - 1]) {
-        double remaining = duration * (1 - value(channel(deck), "playposition"));
-        const bool loaded = value(channel(deck), "track_loaded") > 0;
-        const bool playing = value(channel(deck), "play") > 0;
-        double pitch = (value(channel(deck), "rate_ratio") - 1) * 100;
+        const double remaining = duration * (1 - position);
+        double pitch = (d.rateRatio->get() - 1) * 100;
         if (!std::isfinite(pitch) || std::abs(pitch) < .005) pitch = 0;
         const QString pitchText = (pitch >= 0 ? QStringLiteral("+") : QString()) + QString::number(pitch, 'f', 2) + QLatin1Char('%');
         const bool compact = m_page == 0 && m_fourDeckLayout;
@@ -1791,47 +1967,47 @@ void WDeckLab::refreshDeck(int deck) {
                 m_deckMetrics[deck - 1]->isHidden() != (m_page != 0) ||
                 m_deckSecondary[deck - 1]->isHidden() != (m_page != 0) ||
                 m_sources[deck - 1]->isHidden() == paired;
-        m_waveHeaders[deck - 1]->setEnabled(m_page == 0);
-        m_waveHeaders[deck - 1]->setAccessibleName(track ? tr("Deck %1 full track information").arg(deck) : tr("Deck %1 empty; open Browse").arg(deck));
-        m_waveHeaders[deck - 1]->setAccessibleDescription(track ? tr("Read the full title, artist and source") : tr("Choose a track in Browse; preserves the current browser location"));
-        m_infoAffordances[deck - 1]->setText(track ? tr("INFO") : tr("BROWSE"));
-        m_infoAffordances[deck - 1]->setFixedWidth(track ? 30 : 46);
-        m_infoAffordances[deck - 1]->setVisible(m_page == 0);
-        m_waveHeaders[deck - 1]->setFocusPolicy(m_page == 0 ? Qt::StrongFocus : Qt::NoFocus);
-        m_waveHeaders[deck - 1]->setFixedHeight(m_page == 0 ? (compact ? 128 : 88) : 24);
-        m_waveIdentities[deck - 1]->setFixedWidth(compact ? 20 : 32);
-        m_titles[deck - 1]->setFixedHeight(compact ? 44 : paired ? 20 : 24);
-        m_deckMetrics[deck - 1]->setVisible(m_page == 0);
-        m_deckMetrics[deck - 1]->setFixedHeight(28);
-        m_playStates[deck - 1]->setVisible(false);
-        m_playStates[deck - 1]->setText(loaded ? (playing ? tr("PLAYING") : tr("PAUSED")) : tr("EMPTY"));
-        m_numbers[deck - 1]->setText(compact
+        setEnabledIf(m_waveHeaders[deck - 1], m_page == 0);
+        setAccessibleNameIf(m_waveHeaders[deck - 1], track ? tr("Deck %1 full track information").arg(deck) : tr("Deck %1 empty; open Browse").arg(deck));
+        setAccessibleDescriptionIf(m_waveHeaders[deck - 1], track ? tr("Read the full title, artist and source") : tr("Choose a track in Browse; preserves the current browser location"));
+        setTextIf(m_infoAffordances[deck - 1], track ? tr("INFO") : tr("BROWSE"));
+        setFixedWidthIf(m_infoAffordances[deck - 1], track ? 30 : 46);
+        setVisibleIf(m_infoAffordances[deck - 1], m_page == 0);
+        setFocusPolicyIf(m_waveHeaders[deck - 1], m_page == 0 ? Qt::StrongFocus : Qt::NoFocus);
+        setFixedHeightIf(m_waveHeaders[deck - 1], m_page == 0 ? (compact ? 128 : 88) : 24);
+        setFixedWidthIf(m_waveIdentities[deck - 1], compact ? 20 : 32);
+        setFixedHeightIf(m_titles[deck - 1], compact ? 44 : paired ? 20 : 24);
+        setVisibleIf(m_deckMetrics[deck - 1], m_page == 0);
+        setFixedHeightIf(m_deckMetrics[deck - 1], 28);
+        setVisibleIf(m_playStates[deck - 1], false);
+        setTextIf(m_playStates[deck - 1], loaded ? (playing ? tr("PLAYING") : tr("PAUSED")) : tr("EMPTY"));
+        setTextIf(m_numbers[deck - 1], compact
                         ? (track ? QString::number(bpm, 'f', 2) : QStringLiteral("—"))
                         : track ? QStringLiteral("%1 <span style='font-size:11px;font-weight:400;color:#aaa'>BPM</span>").arg(bpm, 0, 'f', 2) : QStringLiteral("— <span style='font-size:11px;font-weight:400;color:#aaa'>BPM</span>"));
-        m_keys[deck - 1]->setText((compact ? QStringLiteral("%1") : QStringLiteral("<span style='font-size:11px;font-weight:400;color:#aaa'>KEY</span> %1")).arg(track ? key.toHtmlEscaped() : QStringLiteral("—")));
-        m_remaining[deck - 1]->setText(track ? QStringLiteral("−") + timeText(remaining) : QStringLiteral("—"));
-        m_pitch[deck - 1]->setText(loaded ? (compact ? pitchText : tr("PITCH %1").arg(pitchText)) : QString());
+        setTextIf(m_keys[deck - 1], (compact ? QStringLiteral("%1") : QStringLiteral("<span style='font-size:11px;font-weight:400;color:#aaa'>KEY</span> %1")).arg(track ? key.toHtmlEscaped() : QStringLiteral("—")));
+        setTextIf(m_remaining[deck - 1], track ? QStringLiteral("−") + timeText(remaining) : QStringLiteral("—"));
+        setTextIf(m_pitch[deck - 1], loaded ? (compact ? pitchText : tr("PITCH %1").arg(pitchText)) : QString());
         QStringList modes;
-        if (value(channel(deck), "loop_enabled") > 0)
-            modes << (compact ? tr("LOOP %1").arg(beatLoopSizeText(value(channel(deck), "beatloop_size"))) : tr("LOOP"));
-        if (value(channel(deck), "sync_enabled") > 0) modes << tr("SYNC LOCK");
-        const bool leader = value(channel(deck), "sync_leader") > 0;
-        const bool slip = value(channel(deck), "slip_enabled") > 0;
+        if (d.loop->get() > 0)
+            modes << (compact ? tr("LOOP %1").arg(beatLoopSizeText(d.loopSize->get())) : tr("LOOP"));
+        if (d.sync->get() > 0) modes << tr("SYNC LOCK");
+        const bool leader = d.leader->get() > 0;
+        const bool slip = d.slip->get() > 0;
         if (!compact && leader) modes << tr("MASTER");
         if (!compact && slip) modes << tr("SLIP");
-        if (compact && value(channel(deck), "keylock") > 0) modes << tr("KEYLOCK");
-        if (compact && value(channel(deck), "quantize") > 0) modes << tr("QNT");
-        const bool pfl = value(channel(deck), "pfl") > 0;
+        if (compact && d.keylock->get() > 0) modes << tr("KEYLOCK");
+        if (compact && d.quantize->get() > 0) modes << tr("QNT");
+        const bool pfl = d.pfl->get() > 0;
         QStringList compactModes;
-        if (value(channel(deck), "sync_enabled") > 0) compactModes << tr("SYNC");
+        if (d.sync->get() > 0) compactModes << tr("SYNC");
         if (leader) compactModes << tr("MASTER");
         if (slip) compactModes << tr("SLIP");
-        if (value(channel(deck), "keylock") > 0) compactModes << tr("KEY");
-        if (value(channel(deck), "quantize") > 0) compactModes << tr("QNT");
+        if (d.keylock->get() > 0) compactModes << tr("KEY");
+        if (d.quantize->get() > 0) compactModes << tr("QNT");
         QString compactLoop;
         for (const auto& mode : modes) if (mode.startsWith(tr("LOOP"))) compactLoop = mode;
-        m_modes[deck - 1]->setText(compact ? tr("HP %1 %2\n%3").arg(pfl ? tr("ON") : tr("OFF"), compactLoop, compactModes.join(QLatin1Char(' '))) : modes.join(QStringLiteral(" · ")));
-        m_modes[deck - 1]->setToolTip(modes.join(QStringLiteral(" · ")));
+        setTextIf(m_modes[deck - 1], compact ? tr("HP %1 %2\n%3").arg(pfl ? tr("ON") : tr("OFF"), compactLoop, compactModes.join(QLatin1Char(' '))) : modes.join(QStringLiteral(" · ")));
+        setToolTipIf(m_modes[deck - 1], modes.join(QStringLiteral(" · ")));
         auto* values = static_cast<QBoxLayout*>(m_deckMetrics[deck - 1]->layout());
         auto* utility = static_cast<QBoxLayout*>(m_deckSecondary[deck - 1]->layout());
         QWidget* destination = m_page == 0 ? m_deckSecondary[deck - 1] : m_deckMetrics[deck - 1];
@@ -1851,17 +2027,15 @@ void WDeckLab::refreshDeck(int deck) {
             m_modes[deck - 1]->show(); m_pitch[deck - 1]->show();
             m_remaining[deck - 1]->show();
         }
-        m_numbers[deck - 1]->setFixedWidth(compact ? 108 : paired ? 125 : 150);
-        m_keys[deck - 1]->setFixedWidth(compact ? 56 : paired ? 85 : 105);
-        m_remaining[deck - 1]->setFixedWidth(compact ? 100 : paired ? 142 : 160);
-        m_pitch[deck - 1]->setFixedWidth(compact ? 64 : 96);
-        m_deckSecondary[deck - 1]->setFixedHeight(compact ? 28 : 18);
-        m_modes[deck - 1]->setFixedHeight(compact ? 28 : 18);
-        m_modes[deck - 1]->setStyleSheet(compact ? QStringLiteral("font-size:10px;padding-left:8px;") : QString());
-        m_deckSecondary[deck - 1]->setVisible(m_page == 0);
-        m_sources[deck - 1]->setVisible(paired);
-        const double rawPosition = value(channel(deck), "playposition");
-        const double position = std::isfinite(rawPosition) ? rawPosition : 0;
+        setFixedWidthIf(m_numbers[deck - 1], compact ? 108 : paired ? 125 : 150);
+        setFixedWidthIf(m_keys[deck - 1], compact ? 56 : paired ? 85 : 105);
+        setFixedWidthIf(m_remaining[deck - 1], compact ? 100 : paired ? 142 : 160);
+        setFixedWidthIf(m_pitch[deck - 1], compact ? 64 : 96);
+        setFixedHeightIf(m_deckSecondary[deck - 1], compact ? 28 : 18);
+        setFixedHeightIf(m_modes[deck - 1], compact ? 28 : 18);
+        setStyleSheetIf(m_modes[deck - 1], compact ? QStringLiteral("font-size:10px;padding-left:8px;") : QString());
+        setVisibleIf(m_deckSecondary[deck - 1], m_page == 0);
+        setVisibleIf(m_sources[deck - 1], paired);
         QString source = tr("SOURCE —");
         if (track) {
             const QString location = track->getLocation();
@@ -1879,34 +2053,32 @@ void WDeckLab::refreshDeck(int deck) {
                 ? tr("%1 · ELAP %2")
                           .arg(source, timeText(duration * std::clamp(position, 0.0, 1.0)))
                 : tr("EMPTY · Choose a track in Browse");
-        m_sources[deck - 1]->setText(m_sources[deck - 1]->fontMetrics().elidedText(
+        setTextIf(m_sources[deck - 1], m_sources[deck - 1]->fontMetrics().elidedText(
                 sourceLine, Qt::ElideRight, std::max(0, m_sources[deck - 1]->width() - 16)));
-        m_sources[deck - 1]->setToolTip(sourceLine);
+        setToolTipIf(m_sources[deck - 1], sourceLine);
         QString beatText = tr("BEAT —");
-        if (track && track->getBeats()) {
-            const auto beats = track->getBeats();
-            const auto frame = mixxx::audio::FramePos::fromEngineSamplePos(
-                    position * value(channel(deck), "track_samples"));
-            mixxx::audio::FramePos previous, next;
-            if (frame.isValid() && beats->findPrevNextBeats(frame, &previous, &next, false) && next > previous) {
-                const auto iterator = beats->iteratorFrom(previous);
-                const double phase = (frame - previous) / (next - previous);
-                beatText = tr("BEAT %1").arg(double(iterator - beats->cfirstmarker()) + 1 + phase, 0, 'f', 2);
+        if (track) {
+            if (const auto beats = track->getBeats()) {
+                const auto frame = mixxx::audio::FramePos::fromEngineSamplePos(position * d.samples->get());
+                mixxx::audio::FramePos previous, next;
+                if (frame.isValid() && beats->findPrevNextBeats(frame, &previous, &next, false) && next > previous) {
+                    const auto iterator = beats->iteratorFrom(previous);
+                    const double phase = (frame - previous) / (next - previous);
+                    beatText = tr("BEAT %1").arg(double(iterator - beats->cfirstmarker()) + 1 + phase, 0, 'f', 2);
+                }
             }
         }
         const QString stateText = loaded ? playing ? tr("PLAYING") : tr("PAUSED") : tr("EMPTY");
-        m_waveContexts[deck - 1]->setText(m_page == 0 && m_sideBySideWaveforms
-                ? tr("<b>D%1 · %2</b> · <span style='font-size:11px'>%3 · HP CUE %4</span>")
-                          .arg(deck).arg(loaded ? (playing ? tr("PLAYING") : tr("PAUSED")) : tr("EMPTY"), beatText,
-                                  value(channel(deck), "pfl") > 0 ? tr("ON") : tr("OFF"))
+        // Plain text: this readout advances while playing and must never
+        // re-parse HTML on the display tick.
+        setTextIf(m_waveContexts[deck - 1], m_page == 0 && m_sideBySideWaveforms
+                ? tr("D%1 · %2 · %3 · HP CUE %4").arg(deck).arg(stateText, beatText, pfl ? tr("ON") : tr("OFF"))
                 : compact
-                        ? QStringLiteral("<b style='font-size:12px'>D%1 · %2</b><br><span style='font-size:11px'>%3</span>")
-                                  .arg(deck).arg(stateText, beatText.toHtmlEscaped())
-                        : QStringLiteral("<b style='font-size:14px'>D%1 · %2</b><br><span style='font-size:12px'>%3<br>HP CUE %4</span><br><span style='font-size:11px;color:#aaa'>%5</span>")
-                                  .arg(deck).arg(stateText, beatText.toHtmlEscaped(), pfl ? tr("ON") : tr("OFF"),
-                                          modes.join(QStringLiteral(" · ")).toHtmlEscaped()));
-        m_waveContexts[deck - 1]->setToolTip(tr("Beat index and phase relative to the stored beat grid's first marker; no bar or phrase inference"));
-        if (m_overviews[deck - 1]) m_overviews[deck - 1]->setVisible(m_page == 0);
+                        ? tr("D%1 · %2\n%3").arg(deck).arg(stateText, beatText)
+                        : tr("D%1 · %2\n%3\nHP CUE %4\n%5").arg(deck).arg(stateText, beatText, pfl ? tr("ON") : tr("OFF"),
+                                  modes.join(QStringLiteral(" · "))));
+        setToolTipIf(m_waveContexts[deck - 1], tr("Beat index and phase relative to the stored beat grid's first marker; no bar or phrase inference"));
+        if (m_overviews[deck - 1]) setVisibleIf(m_overviews[deck - 1], m_page == 0);
         if (presentationChanged) {
             // Reparenting plus changed fixed columns must settle together,
             // including cards that were hidden in the previous presentation.
@@ -1917,103 +2089,197 @@ void WDeckLab::refreshDeck(int deck) {
             values->activate(); utility->activate();
         }
     }
-    if (displayedDeck(side) == deck) {
-        refreshTransport(deck, QStringLiteral("decklab-%1-").arg(side + 1));
-    }
-    refreshTransport(deck, QStringLiteral("decklab-card-%1-").arg(deck));
-    if (m_pairPerformance && m_pairPerformance->isVisible() && deck == (m_fourDeckLayout ? 4 : displayedDeck(1))) {
-        QStringList effects;
-        QStringList activeStates;
-        QStringList detailedEffects;
-        for (int unit = 1; unit <= 4; ++unit) {
-            const QString group = QStringLiteral("[EffectRack1_EffectUnit%1]").arg(unit);
-            auto chain = m_effects ? m_effects->getEffectChain(group) : EffectChainPointer();
-            QString name = tr("Empty");
-            bool effectOn = false;
-            int loadedEffects = 0;
-            for (int slot = 0; chain && slot < chain->getEffectSlots().size(); ++slot) {
-                const auto effect = chain->getEffectSlots().at(slot);
-                if (effect && effect->isLoaded() && effect->getManifest()) {
-                    const bool enabled = value(QStringLiteral("[EffectRack1_EffectUnit%1_Effect%2]").arg(unit).arg(slot + 1), "enabled") > 0;
-                    if (loadedEffects == 0 || (enabled && !effectOn)) name = effect->getManifest()->name();
-                    effectOn |= enabled;
-                    ++loadedEffects;
-                }
+    if (displayedDeck(side) == deck) refreshTransport(deck, m_sidePrefixes[side]);
+    refreshTransport(deck, m_cardPrefixes[deck - 1]);
+}
+
+void WDeckLab::refreshControllerFx() {
+    // Event driven: unit, slot, routing, headphone and zoom changes mark this
+    // dirty. Nothing here runs on the display tick.
+    if (!m_pairEffects || !m_fxWatchersReady || m_page != 0) return;
+    m_fxSummaryDirty = false;
+    QStringList effects;
+    QStringList activeStates;
+    QStringList detailedEffects;
+    for (int unit = 1; unit <= 4; ++unit) {
+        const QString group = QStringLiteral("[EffectRack1_EffectUnit%1]").arg(unit);
+        auto chain = m_effects ? m_effects->getEffectChain(group) : EffectChainPointer();
+        QString name = tr("Empty");
+        bool effectOn = false;
+        int loadedEffects = 0;
+        for (int slot = 0; chain && slot < chain->getEffectSlots().size(); ++slot) {
+            const auto effect = chain->getEffectSlots().at(slot);
+            if (effect && effect->isLoaded() && effect->getManifest()) {
+                const bool enabled = value(QStringLiteral("[EffectRack1_EffectUnit%1_Effect%2]").arg(unit).arg(slot + 1), "enabled") > 0;
+                if (loadedEffects == 0 || (enabled && !effectOn)) name = effect->getManifest()->name();
+                effectOn |= enabled;
+                ++loadedEffects;
             }
-            if (loadedEffects > 1) name += tr(" +%1").arg(loadedEffects - 1);
-            QStringList targets;
-            for (int target = 1; target <= 4; ++target)
-                if (value(group, QStringLiteral("group_[Channel%1]_enable").arg(target)) > 0)
-                    targets << QString::number(target);
-            const double rawMix = value(group, "mix");
-            const double mix = std::isfinite(rawMix) ? std::clamp(rawMix, 0.0, 1.0) : 0.0;
-            const int mixPercent = int(mix * 100);
-            const QString route = targets.isEmpty() ? QStringLiteral("—") : targets.join(QLatin1Char('/'));
-            const bool active = effectOn && value(group, "enabled") > 0 && mix > 0 && !targets.isEmpty();
-            const QString state = active ? (mixPercent > 0 ? tr("%1%").arg(mixPercent) : tr("<1%")) : tr("DRY");
-            activeStates << (active ? tr("ON") : tr("DRY"));
-            const QString prefix = tr("FX%1→%2 ").arg(unit).arg(route);
-            const QString suffix = QLatin1Char(' ') + state;
-            const int available = std::max(8, 100 - m_pairEffects->fontMetrics().horizontalAdvance(prefix + suffix));
-            const QString shortName = m_pairEffects->fontMetrics().elidedText(name, Qt::ElideRight, available);
-            if (unit <= 2) effects << prefix + shortName + suffix;
-            detailedEffects << tr("FX %1; decks %2; %3; %4").arg(unit).arg(route, name, state);
         }
-        m_pairEffects->setText(m_fourDeckLayout
-                        ? tr("FX 1 %1 · 2 %2\nFX 3 %3 · 4 %4").arg(activeStates[0], activeStates[1], activeStates[2], activeStates[3])
-                        : effects.join(QLatin1Char('\n')));
-        m_pairEffects->setToolTip(detailedEffects.join(QLatin1Char('\n')));
-        m_pairRMX->setText(tr("RMX · D%1\n%2").arg(m_fxDeck).arg(m_fxReleasing ? tr("TAIL") : m_fxActive ? tr("ON") : tr("DRY")));
-        const double headMix = value("[Master]", "headMix");
-        const int mainMix = std::isfinite(headMix) ? int(std::clamp((headMix + 1) * 50, 0.0, 100.0)) : 0;
-        const bool split = value("[Master]", "headSplit") > 0;
-        m_pairCue->setText(split ? tr("HP SPLIT") : mainMix == 0 ? tr("HP CUE") : mainMix == 100 ? tr("HP MAIN") : tr("HP %1% MAIN").arg(mainMix));
-        m_pairCue->setToolTip(tr("Headphones: %1% toward main output; split cue %2. Per-deck HP CUE shows the selected cue feeds.").arg(mainMix).arg(split ? tr("on") : tr("off")));
-        m_pairZoom->setText(tr("LINKED ZOOM"));
-        m_pairZoom->setToolTip(tr("All four decks share the same waveform zoom; current value %1")
-                                      .arg(value(channel(1), "waveform_zoom"), 0, 'g', 2));
+        if (loadedEffects > 1) name += tr(" +%1").arg(loadedEffects - 1);
+        QStringList targets;
+        for (int target = 1; target <= 4; ++target)
+            if (value(group, QStringLiteral("group_[Channel%1]_enable").arg(target)) > 0)
+                targets << QString::number(target);
+        const double rawMix = value(group, "mix");
+        const double mix = std::isfinite(rawMix) ? std::clamp(rawMix, 0.0, 1.0) : 0.0;
+        const int mixPercent = int(mix * 100);
+        const QString route = targets.isEmpty() ? QStringLiteral("—") : targets.join(QLatin1Char('/'));
+        const bool active = effectOn && value(group, "enabled") > 0 && mix > 0 && !targets.isEmpty();
+        const QString state = active ? (mixPercent > 0 ? tr("%1%").arg(mixPercent) : tr("<1%")) : tr("DRY");
+        activeStates << (active ? tr("ON") : tr("DRY"));
+        const QString prefix = tr("FX%1→%2 ").arg(unit).arg(route);
+        const QString suffix = QLatin1Char(' ') + state;
+        const int available = std::max(8, 100 - m_pairEffects->fontMetrics().horizontalAdvance(prefix + suffix));
+        const QString shortName = m_pairEffects->fontMetrics().elidedText(name, Qt::ElideRight, available);
+        if (unit <= 2) effects << prefix + shortName + suffix;
+        detailedEffects << tr("FX %1; decks %2; %3; %4").arg(unit).arg(route, name, state);
+    }
+    setTextIf(m_pairEffects, m_fourDeckLayout
+                    ? tr("FX 1 %1 · 2 %2\nFX 3 %3 · 4 %4").arg(activeStates[0], activeStates[1], activeStates[2], activeStates[3])
+                    : effects.join(QLatin1Char('\n')));
+    setToolTipIf(m_pairEffects, detailedEffects.join(QLatin1Char('\n')));
+    const double headMix = value("[Master]", "headMix");
+    const int mainMix = std::isfinite(headMix) ? int(std::clamp((headMix + 1) * 50, 0.0, 100.0)) : 0;
+    const bool split = value("[Master]", "headSplit") > 0;
+    setTextIf(m_pairCue, split ? tr("HP SPLIT") : mainMix == 0 ? tr("HP CUE") : mainMix == 100 ? tr("HP MAIN") : tr("HP %1% MAIN").arg(mainMix));
+    setToolTipIf(m_pairCue, tr("Headphones: %1% toward main output; split cue %2. Per-deck HP CUE shows the selected cue feeds.").arg(mainMix).arg(split ? tr("on") : tr("off")));
+    setTextIf(m_pairZoom, tr("LINKED ZOOM"));
+    setToolTipIf(m_pairZoom, tr("All four decks share the same waveform zoom; current value %1")
+                                  .arg(m_deck[0].zoom->get(), 0, 'g', 2));
+}
+
+void WDeckLab::connectControllerFx() {
+    // Controller effect units may be created after this surface. Connect once
+    // they exist; until then the summary simply waits.
+    if (m_fxWatchersReady || !m_effects ||
+            !m_effects->getEffectChain(QStringLiteral("[EffectRack1_EffectUnit1]"))) return;
+    m_fxWatchersReady = true;
+    const auto dirty = [this](double) { m_fxSummaryDirty = true; markDeckDirty(0); };
+    for (int unit = 1; unit <= 4; ++unit) {
+        const QString group = QStringLiteral("[EffectRack1_EffectUnit%1]").arg(unit);
+        watch(group, QStringLiteral("enabled"), dirty);
+        watch(group, QStringLiteral("mix"), dirty);
+        for (int deck = 1; deck <= 4; ++deck) watch(group, QStringLiteral("group_[Channel%1]_enable").arg(deck), dirty);
+        for (int slot = 1; slot <= 4; ++slot) {
+            const QString effect = QStringLiteral("[EffectRack1_EffectUnit%1_Effect%2]").arg(unit).arg(slot);
+            for (const auto& item : {"enabled", "loaded", "loaded_effect"}) watch(effect, QString::fromLatin1(item), dirty);
+        }
+    }
+    m_fxSummaryDirty = true; markDeckDirty(0);
+}
+
+void WDeckLab::markDeckDirty(int deck) {
+    if (deck >= 1 && deck <= 4) m_deckDirty[deck - 1] = true;
+    if (m_flushQueued) return;
+    m_flushQueued = true;
+    QTimer::singleShot(0, this, &WDeckLab::flushDirtyDecks);
+}
+
+void WDeckLab::flushDirtyDecks() {
+    m_flushQueued = false;
+    for (int deck = 1; deck <= 4; ++deck) {
+        if (!m_deckDirty[deck - 1]) continue;
+        m_deckDirty[deck - 1] = false;
+        refreshDeck(deck);
+    }
+    if (m_fxSummaryDirty) refreshControllerFx();
+}
+
+bool WDeckLab::deckShown(int deck) const {
+    if (m_page == 0 && m_fourDeckLayout) return true;
+    return deck == m_layers[0] || deck == m_layers[1];
+}
+
+void WDeckLab::tickDecks() {
+    const qint64 now = m_clock.elapsed();
+    for (int deck = 1; deck <= 4; ++deck) {
+        // An expired one-shot Sync acknowledgment repaints exactly once.
+        if (m_syncFeedbackUntil[deck - 1] && now >= m_syncFeedbackUntil[deck - 1]) {
+            m_syncFeedbackUntil[deck - 1] = 0;
+            markDeckDirty(deck);
+        }
+    }
+    connectControllerFx();
+    if (m_pairRMX) {
+        const QString rmx = tr("RMX · D%1\n%2").arg(m_fxDeck).arg(m_fxReleasing ? tr("TAIL") : m_fxActive ? tr("ON") : tr("DRY"));
+        if (rmx != m_shownRmx) { m_shownRmx = rmx; setTextIf(m_pairRMX, rmx); }
+    }
+    if (!isVisible() || !m_waveforms->isVisible()) return;
+    // Only clocks advance on the tick: playing decks, or a paused deck whose
+    // position was moved (cue, needle or scratch).
+    for (int deck = 1; deck <= 4; ++deck) {
+        if (!deckShown(deck)) continue;
+        const auto& d = m_deck[deck - 1];
+        if (d.loaded->get() <= 0) continue;
+        const double rawPosition = d.position->get();
+        const double position = std::isfinite(rawPosition) ? rawPosition : 0;
+        if (d.play->get() > 0 || position != m_shownPosition[deck - 1]) refreshDeck(deck);
     }
 }
 
+void WDeckLab::tickMeters() {
+    if (!isVisible() || !m_waveforms->isVisible()) return;
+    for (int deck = 1; deck <= 4; ++deck) {
+        auto* meter = m_meters[deck - 1];
+        if (meter && meter->isVisible())
+            meter->setLevels(m_deck[deck - 1].vu->get(), 0, m_deck[deck - 1].peak->get() > 0);
+    }
+    if (m_masterMeter && m_masterMeter->isVisible())
+        m_masterMeter->setLevels(m_mainVu[0]->get(), m_mainVu[1]->get(), m_mainPeak->get() > 0);
+}
+
 void WDeckLab::refreshTransport(int deck, const QString& prefix) {
-    const bool loaded = value(channel(deck), "track_loaded") > 0;
-    const bool playing = value(channel(deck), "play") > 0;
-    if (auto* more = findChild<QPushButton*>(prefix + QStringLiteral("more")))
-        more->setAccessibleName((prefix.startsWith(QStringLiteral("decklab-card-"))
-                ? tr("Deck %1 more: hot cues and beatgrid")
-                : tr("Deck %1 more: transport, track information and beatgrid")).arg(deck));
-    if (prefix.startsWith(QStringLiteral("decklab-card-")))
-        refreshHotcues(deck, QStringLiteral("decklab-card-hotcue-%1-").arg(deck));
-    else
-        refreshHotcues(deck, QStringLiteral("decklab-hotcue-%1-").arg(deck % 2 ? 1 : 2));
-    for (const auto& action : {"play", "cue_default", "beatsync", "loop_halve", "beatloop_activate", "loop_double", "quantize", "keylock"}) {
-        auto* b = findChild<QPushButton*>(prefix + QString::fromLatin1(action)); if (!b) continue;
-        b->setEnabled(loaded);
-        if (QString::fromLatin1(action) == "play") {
-            b->setChecked(playing); b->setText(playing ? tr("Pause") : tr("Play"));
-        } else if (QString::fromLatin1(action) == "beatloop_activate") {
-            const bool looping = value(channel(deck), "loop_enabled") > 0;
-            const QString sizeText = beatLoopSizeText(value(channel(deck), "beatloop_size"));
-            b->setChecked(looping); b->setText(tr("LOOP\n%1").arg(sizeText));
-            b->setAccessibleName(tr("Deck %1 loop %2 beats, %3").arg(deck).arg(sizeText, looping ? tr("on") : tr("off")));
-            b->setAccessibleDescription(tr("Toggle the selected beat loop; half and double change its beat length"));
-            continue;
-        } else if (QString::fromLatin1(action) == "quantize" || QString::fromLatin1(action) == "keylock") {
-            const bool on = value(channel(deck), QString::fromLatin1(action)) > 0;
-            b->setChecked(on);
-            b->setText((QString::fromLatin1(action) == "quantize" ? tr("QNT") : tr("KEY LOCK")) + QLatin1Char('\n') + (on ? tr("ON") : tr("OFF")));
-        }
-        b->setAccessibleName(tr("Deck %1 %2").arg(deck).arg(b->text()));
-        if (QString::fromLatin1(action) == "loop_halve") b->setAccessibleName(tr("Deck %1 halve loop length").arg(deck));
-        if (QString::fromLatin1(action) == "loop_double") b->setAccessibleName(tr("Deck %1 double loop length").arg(deck));
-        if (QString::fromLatin1(action) == "quantize") b->setAccessibleName(tr("Deck %1 Quantize %2").arg(deck).arg(b->isChecked() ? tr("on") : tr("off")));
-        if (QString::fromLatin1(action) == "beatsync") {
-            const bool feedback = m_clock.elapsed() < m_syncFeedbackUntil[deck - 1];
-            if (b->property("actionFeedback").toBool() != feedback) {
-                b->setProperty("actionFeedback", feedback); b->style()->unpolish(b); b->style()->polish(b);
-            }
-            b->setAccessibleDescription(tr("Match tempo and beat once; does not enable sync lock"));
-        }
+    if (deck < 1 || deck > 4) return;
+    const bool card = prefix.startsWith(QStringLiteral("decklab-card-"));
+    refreshHotcues(deck, card ? m_cardHotcuePrefixes[deck - 1] : m_sideHotcuePrefixes[deck % 2 ? 0 : 1]);
+    const auto found = m_transport.find(prefix);
+    if (found == m_transport.end()) return;
+    auto& t = found.value();
+    const auto& d = m_deck[deck - 1];
+    TransportState state;
+    state.deck = deck;
+    state.loaded = d.loaded->get() > 0;
+    state.playing = d.play->get() > 0;
+    state.looping = d.loop->get() > 0;
+    state.quantize = d.quantize->get() > 0;
+    state.keylock = d.keylock->get() > 0;
+    state.feedback = m_clock.elapsed() < m_syncFeedbackUntil[deck - 1];
+    state.size = d.loopSize->get();
+    // Cached buttons and an unchanged state: no lookups and no widget writes.
+    if (state == t.shown) return;
+    t.shown = state;
+    if (t.more)
+        setAccessibleNameIf(t.more, (card ? tr("Deck %1 more: hot cues and beatgrid")
+                                          : tr("Deck %1 more: transport, track information and beatgrid")).arg(deck));
+    for (auto* b : {t.play, t.cue, t.sync, t.halve, t.loop, t.twice, t.quantize, t.keylock}) setEnabledIf(b, state.loaded);
+    if (t.play) {
+        setCheckedIf(t.play, state.playing); setTextIf(t.play, state.playing ? tr("Pause") : tr("Play"));
+        setAccessibleNameIf(t.play, tr("Deck %1 %2").arg(deck).arg(t.play->text()));
+    }
+    if (t.cue) setAccessibleNameIf(t.cue, tr("Deck %1 %2").arg(deck).arg(t.cue->text()));
+    if (t.loop) {
+        const QString sizeText = beatLoopSizeText(state.size);
+        setCheckedIf(t.loop, state.looping); setTextIf(t.loop, tr("LOOP\n%1").arg(sizeText));
+        setAccessibleNameIf(t.loop, tr("Deck %1 loop %2 beats, %3").arg(deck).arg(sizeText, state.looping ? tr("on") : tr("off")));
+        setAccessibleDescriptionIf(t.loop, tr("Toggle the selected beat loop; half and double change its beat length"));
+    }
+    if (t.halve) setAccessibleNameIf(t.halve, tr("Deck %1 halve loop length").arg(deck));
+    if (t.twice) setAccessibleNameIf(t.twice, tr("Deck %1 double loop length").arg(deck));
+    if (t.quantize) {
+        setCheckedIf(t.quantize, state.quantize);
+        setTextIf(t.quantize, tr("QNT") + QLatin1Char('\n') + (state.quantize ? tr("ON") : tr("OFF")));
+        setAccessibleNameIf(t.quantize, tr("Deck %1 Quantize %2").arg(deck).arg(state.quantize ? tr("on") : tr("off")));
+    }
+    if (t.keylock) {
+        setCheckedIf(t.keylock, state.keylock);
+        setTextIf(t.keylock, tr("KEY LOCK") + QLatin1Char('\n') + (state.keylock ? tr("ON") : tr("OFF")));
+        setAccessibleNameIf(t.keylock, tr("Deck %1 %2").arg(deck).arg(t.keylock->text()));
+    }
+    if (t.sync) {
+        setStylePropertyIf(t.sync, "actionFeedback", state.feedback);
+        setAccessibleNameIf(t.sync, tr("Deck %1 %2").arg(deck).arg(t.sync->text()));
+        setAccessibleDescriptionIf(t.sync, tr("Match tempo and beat once; does not enable sync lock"));
     }
 }
 
@@ -2115,7 +2381,7 @@ void WDeckLab::tickEffects() {
     if (m_toolsOnline && now - m_lastToolsReady > 2000) {
         m_toolsOnline = false; for (auto* b : m_toolButtons) b->setEnabled(false); updateStatus();
     }
-    for (int deck = 1; deck <= 4; ++deck) refreshDeck(deck);
+    tickDecks();
     if (m_page == 1) updateBreadcrumb();
     if (m_holdFx && now - m_holdStarted >= 4000) { m_holdFx = false; releaseEffects(); }
     if(!m_heldSamplerRoll.isEmpty()&&now-m_holdStarted>=4000){set(m_heldSamplerGroup,m_heldSamplerRoll,0);m_heldSamplerRoll.clear();}
@@ -2173,12 +2439,14 @@ void WDeckLab::updateStatus() {
     if (!m_outputConfigured || value("[SoundManager]", "status") != 2) text += tr("   Audio disconnected · Settings → Device");
     if (!m_toolsOnline) text += tr("   System tools offline");
     if (overloads) text += tr("   Audio overloads: %1").arg(overloads);
-    m_status->setText(recording == 2 ? tr("REC") : recording == 3 ? tr("REC II") :
+    // Called for every waveform measurement too: unchanged status must not
+    // relayout the rail.
+    setTextIf(m_status, recording == 2 ? tr("REC") : recording == 3 ? tr("REC II") :
             (!m_outputConfigured || value("[SoundManager]", "status") != 2) ? tr("Audio !") :
             !m_toolsOnline ? tr("System !") : tr("Load !"));
-    m_status->setToolTip(text.trimmed()); m_status->setAccessibleName(text.trimmed());
-    m_status->setVisible(!text.isEmpty());
-    if (m_performanceStatus) m_performanceStatus->setText(tr("Waveforms: %1 FPS · %2 dropped\nAudio overload count: %3")
+    setToolTipIf(m_status, text.trimmed()); setAccessibleNameIf(m_status, text.trimmed());
+    setVisibleIf(m_status, !text.isEmpty());
+    if (m_performanceStatus) setTextIf(m_performanceStatus, tr("Waveforms: %1 FPS · %2 dropped\nAudio overload count: %3")
             .arg(m_measuredFps, 0, 'f', 1).arg(m_droppedFrames).arg(overloads));
 }
 bool WDeckLab::eventFilter(QObject* watched, QEvent* event) {
@@ -2251,6 +2519,22 @@ void WDeckLab::updateLayers() {
         ++m_interactionEpoch;
         m_fourDeckLayout = four;
     }
+    // Play and track_loaded changes call this. Only a real change in the
+    // presentation (page, deck count, waveform arrangement, displayed layers or
+    // attached widgets) relayouts; otherwise just refresh the deck state.
+    quint64 signature = quint64(four) | quint64(m_sideBySideWaveforms) << 1 |
+            quint64(m_page + 1) << 2 | quint64(m_layers[0]) << 5 | quint64(m_layers[1]) << 8;
+    for (int index = 0; index < 4; ++index) {
+        if (m_deckWaveforms[index]) signature |= quint64(1) << (11 + index);
+        if (m_overviews[index]) signature |= quint64(1) << (15 + index);
+    }
+    if (signature == m_layoutSignature) {
+        for (int deck = 1; deck <= 4; ++deck) markDeckDirty(deck);
+        refreshLoadButtons();
+        return;
+    }
+    m_layoutSignature = signature;
+    m_fxSummaryDirty = true; markDeckDirty(0);
     m_deckControls->hide();
     const bool paired = m_page == 0;
     const bool separated = paired && m_sideBySideWaveforms;
@@ -2311,6 +2595,8 @@ void WDeckLab::updateLayers() {
                 move(m_contextPanels[deck - 1], separate, separateRows, 0);
                 m_contextPanels[deck - 1]->setFixedHeight(44);
                 m_waveContexts[deck - 1]->setFixedHeight(28);
+                // Both dimensions fixed: a changing readout never relayouts.
+                m_waveContexts[deck - 1]->setFixedWidth(344);
                 move(m_detailColumns[deck - 1], separate, separateRows, 1);
                 m_detailColumns[deck - 1]->setFixedHeight(compact ? 66 : 176);
                 separate->show();
@@ -2322,6 +2608,7 @@ void WDeckLab::updateLayers() {
                 detail->setFixedHeight(compact ? 55 : 110);
                 m_contextPanels[deck - 1]->setFixedHeight(compact ? 55 : 110);
                 m_waveContexts[deck - 1]->setFixedHeight(compact ? 39 : 94);
+                m_waveContexts[deck - 1]->setFixedWidth(112);
                 move(m_contextPanels[deck - 1], m_pairContexts,
                         static_cast<QBoxLayout*>(m_pairContexts->layout()), side);
             }

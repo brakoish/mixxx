@@ -36,6 +36,7 @@
 #include "mixer/playermanager.h"
 #include "track/beats.h"
 #include "waveform/waveformwidgetfactory.h"
+#include "widget/decklabdeckwidgets.h"
 #include "widget/decklabtempopresenter.h"
 #include "widget/wdecklab.h"
 #include "widget/wlibrary.h"
@@ -66,6 +67,11 @@ void swipeTouch(QWidget* viewport, const QPoint& from, const QPoint& to, int hol
     QTest::qWait(100);
     QScroller::scroller(viewport)->stop();
     QCoreApplication::processEvents();
+}
+// Deck state changes are coalesced into one queued refresh; let both the
+// control notification and that refresh run.
+void settle() {
+    for (int pass = 0; pass < 3; ++pass) QCoreApplication::processEvents();
 }
 void tapTouch(QWidget* viewport, const QPoint& point) {
     static auto* device = QTest::createTouchDevice();
@@ -498,7 +504,7 @@ TEST_F(NativeDeckLabTest, ControllerLayerChangeRefreshesPlayState) {
     m_pMixerDeck1->loadFakeTrack(false, 128); ProcessBuffer();
     ControlObject::set(ConfigKey("[Channel1]", "play"), 1);
     ControlObject::set(ConfigKey("[Channel3]", "play"), 0);
-    QCoreApplication::processEvents();
+    settle();
     auto* play = panel->findChild<QPushButton*>("decklab-1-play"); ASSERT_NE(nullptr, play);
     EXPECT_TRUE(play->isChecked());
     EXPECT_EQ(QStringLiteral("Pause"), play->text());
@@ -611,10 +617,46 @@ TEST_F(NativeDeckLabTest, DecksTransportHasTruthfulStatesAndLargerTargets) {
     EXPECT_EQ(40, panel->findChild<QPushButton*>("decklab-tab-0")->height());
 }
 
+TEST_F(NativeDeckLabTest, IdleDecksRefreshWithoutStyleOrLayoutWork) {
+    m_pMixerDeck1->loadFakeTrack(false, 128); m_pMixerDeck2->loadFakeTrack(false, 130); ProcessBuffer();
+    QTest::qWait(400);
+    // Counts the expensive side effects of presentation writes: repolish,
+    // relayout and polish. A refresh with unchanged state must cause none.
+    struct Counter final : QObject {
+        int style = 0, layout = 0, polish = 0;
+        bool eventFilter(QObject*, QEvent* event) override {
+            if (event->type() == QEvent::StyleChange) ++style;
+            else if (event->type() == QEvent::LayoutRequest) ++layout;
+            else if (event->type() == QEvent::Polish || event->type() == QEvent::PolishRequest) ++polish;
+            return false;
+        }
+    } counter;
+    QList<QWidget*> watched{panel.get()};
+    watched.append(panel->findChildren<QWidget*>());
+    for (auto* widget : watched) widget->installEventFilter(&counter);
+    QTest::qWait(650); // six display ticks and more than a dozen meter ticks
+    EXPECT_EQ(0, counter.style); EXPECT_EQ(0, counter.layout); EXPECT_EQ(0, counter.polish);
+    // Control traffic that marks the deck dirty without changing anything shown
+    // (an empty cue's color) runs the refresh but writes nothing.
+    ASSERT_LT(ControlObject::get(ConfigKey("[Channel1]", "hotcue_8_position")), 0);
+    for (int color : {0x123456, 0x654321}) {
+        ControlObject::set(ConfigKey("[Channel1]", "hotcue_8_color"), color); settle();
+    }
+    QTest::qWait(150);
+    EXPECT_EQ(0, counter.style); EXPECT_EQ(0, counter.layout);
+    // A real change still reaches the screen through the coalesced refresh.
+    auto* quantize = panel->findChild<QPushButton*>("decklab-1-quantize"); ASSERT_NE(nullptr, quantize);
+    const bool before = ControlObject::get(ConfigKey("[Channel1]", "quantize")) > 0;
+    ControlObject::set(ConfigKey("[Channel1]", "quantize"), before ? 0 : 1); settle();
+    EXPECT_EQ(!before, quantize->isChecked());
+    for (auto* widget : watched) widget->removeEventFilter(&counter);
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "play")));
+}
+
 TEST_F(NativeDeckLabTest, LayerChangeReleasesOnlyTheReplacedTouchCue) {
     m_pMixerDeck1->loadFakeTrack(false, 128);
     m_pMixerDeck2->loadFakeTrack(false, 130);
-    m_pMixerDeck3->loadFakeTrack(false, 132); fourthDeck->loadFakeTrack(false, 134); ProcessBuffer(); QCoreApplication::processEvents();
+    m_pMixerDeck3->loadFakeTrack(false, 132); fourthDeck->loadFakeTrack(false, 134); ProcessBuffer(); settle();
     auto* left = panel->findChild<QPushButton*>("decklab-1-cue_default");
     auto* right = panel->findChild<QPushButton*>("decklab-2-cue_default");
     ASSERT_NE(nullptr, left); ASSERT_NE(nullptr, right);
@@ -641,7 +683,7 @@ TEST_F(NativeDeckLabTest, LayerChangeReleasesOnlyTheReplacedTouchCue) {
 TEST_F(NativeDeckLabTest, SyncAcknowledgmentCannotTransferToAnotherLayer) {
     m_pMixerDeck1->loadFakeTrack(false, 128);
     m_pMixerDeck2->loadFakeTrack(false, 130);
-    m_pMixerDeck3->loadFakeTrack(false, 132); fourthDeck->loadFakeTrack(false, 134); ProcessBuffer(); QCoreApplication::processEvents();
+    m_pMixerDeck3->loadFakeTrack(false, 132); fourthDeck->loadFakeTrack(false, 134); ProcessBuffer(); settle();
     auto* left = panel->findChild<QPushButton*>("decklab-1-beatsync");
     auto* right = panel->findChild<QPushButton*>("decklab-2-beatsync");
     ASSERT_NE(nullptr, left); ASSERT_NE(nullptr, right);
@@ -726,7 +768,7 @@ TEST_F(NativeDeckLabTest, TransportStateAndTargetRemainTruthfulInPlayingFixture)
 TEST_F(NativeDeckLabTest, UpperLayerTransportTargetsLoadedDecksThreeAndFour) {
     m_pMixerDeck1->loadFakeTrack(false, 128); m_pMixerDeck2->loadFakeTrack(false, 130);
     m_pMixerDeck3->loadFakeTrack(false, 132); fourthDeck->loadFakeTrack(false, 134);
-    ProcessBuffer(); QCoreApplication::processEvents();
+    ProcessBuffer(); settle();
     ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 1);
     ControlObject::set(ConfigKey("[DeckLabRight]", "current"), 1); QCoreApplication::processEvents();
     panel->findChild<QPushButton*>("decklab-1-play")->click();
@@ -753,7 +795,7 @@ TEST_F(NativeDeckLabTest, TouchBeatSyncMatchesTempoAndPhaseOnceWithoutStopping) 
     ControlObject::set(ConfigKey("[Channel2]", "play"), 1); ProcessBuffer();
     ASSERT_GT(std::abs(ControlObject::get(ConfigKey("[Channel1]", "beat_distance")) -
             ControlObject::get(ConfigKey("[Channel2]", "beat_distance"))), .01);
-    QCoreApplication::processEvents(); panel->findChild<QPushButton*>("decklab-1-beatsync")->click();
+    settle(); panel->findChild<QPushButton*>("decklab-1-beatsync")->click();
     for (int n = 0; n < 8; ++n) ProcessBuffer();
     EXPECT_NEAR(130, ControlObject::get(ConfigKey("[Channel1]", "bpm")), 1e-6);
     EXPECT_NEAR(ControlObject::get(ConfigKey("[Channel1]", "beat_distance")),
@@ -1120,11 +1162,11 @@ TEST_F(NativeDeckLabTest, DeckAndMasterFeedbackFollowRealControlsInBothLayouts) 
     ASSERT_EQ(ControlObject::getControl(ConfigKey("[Main]","vu_meter_left")),ControlObject::getControl(ConfigKey("[Master]","VuMeterL")));
     ASSERT_EQ(ControlObject::getControl(ConfigKey("[Main]","vu_meter_right")),ControlObject::getControl(ConfigKey("[Master]","VuMeterR")));
     ASSERT_EQ(ControlObject::getControl(ConfigKey("[Main]","peak_indicator")),ControlObject::getControl(ConfigKey("[Master]","PeakIndicator")));
-    QCoreApplication::processEvents();
+    QTest::qWait(150);
+    auto* mainMeter=panel->findChild<DeckLabLevelMeter*>("decklab-master-meter"); ASSERT_NE(nullptr,mainMeter);
     for(int side=0;side<2;++side) {
-        auto* meter=panel->findChild<QProgressBar*>(QStringLiteral("decklab-master-meter-%1").arg(side)); ASSERT_NE(nullptr,meter);
         const double level=ControlObject::get(ConfigKey("[Main]",side ? "vu_meter_right" : "vu_meter_left"));
-        EXPECT_EQ(int(std::clamp(level,0.0,1.0)*100),meter->value());
+        EXPECT_DOUBLE_EQ(std::clamp(level,0.0,1.0),mainMeter->level(side));
     }
     for(int layout:{1,2}) {
         QMetaObject::invokeMethod(choice,"activated",Q_ARG(int,layout)); QCoreApplication::processEvents();
@@ -1166,14 +1208,15 @@ TEST_F(NativeDeckLabTest, DeckAndMasterFeedbackFollowRealControlsInBothLayouts) 
                 EXPECT_FALSE(source->toolTip().contains("PLAYING")); EXPECT_FALSE(source->toolTip().contains("PAUSED"));
                 EXPECT_FALSE(source->toolTip().contains('%'));
             }
-            auto* meter=panel->findChild<QProgressBar*>(QStringLiteral("decklab-level-%1").arg(deck)); ASSERT_NE(nullptr,meter);
-            EXPECT_TRUE(meter->isVisible()); EXPECT_EQ(10*deck,meter->value());
+            auto* meter=panel->findChild<DeckLabLevelMeter*>(QStringLiteral("decklab-level-%1").arg(deck)); ASSERT_NE(nullptr,meter);
+            EXPECT_TRUE(meter->isVisible()); EXPECT_NEAR(.1*deck,meter->level(0),1e-9);
+            EXPECT_EQ(deck==1,meter->clipping());
             auto* level=panel->findChild<QLabel*>(QStringLiteral("decklab-level-label-%1").arg(deck)); ASSERT_NE(nullptr,level);
             EXPECT_EQ(deck==1 ? QStringLiteral("CLIP") : QStringLiteral("LVL"),level->text());
         }
-        auto* left=panel->findChild<QProgressBar*>("decklab-master-meter-0"); ASSERT_NE(nullptr,left);
-        auto* right=panel->findChild<QProgressBar*>("decklab-master-meter-1"); ASSERT_NE(nullptr,right);
-        EXPECT_TRUE(left->isVisible()); EXPECT_TRUE(right->isVisible()); EXPECT_EQ(25,left->value()); EXPECT_EQ(75,right->value());
+        EXPECT_TRUE(mainMeter->isVisible()); EXPECT_DOUBLE_EQ(.25,mainMeter->level(0)); EXPECT_DOUBLE_EQ(.75,mainMeter->level(1));
+        EXPECT_TRUE(mainMeter->clipping());
+        EXPECT_GT(mainMeter->litSegments(1),mainMeter->litSegments(0));
         auto* master=panel->findChild<QLabel*>("decklab-master-level-label"); ASSERT_NE(nullptr,master);
         EXPECT_EQ(QStringLiteral("MASTER CLIP"),master->text());
         auto* headphones=panel->findChild<QLabel*>("decklab-headphone-context"); ASSERT_NE(nullptr,headphones);
