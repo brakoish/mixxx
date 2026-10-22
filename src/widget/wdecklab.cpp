@@ -1928,17 +1928,20 @@ void WDeckLab::selectPage(int page) {
 void WDeckLab::showSources() {
     if (!m_sidebar || !m_browseState) return;
     auto& b = *m_browseState;
+    // Captured before any widget switch can move focus to the sidebar.
+    const QPersistentModelIndex highlighted(m_sidebar->currentIndex());
     m_browseStack->setCurrentWidget(b.listStack);
     if (value("[Sidebar]", "sidebar_visible") != 1) set("[Sidebar]", "sidebar_visible", 1);
     if (b.list == DeckLabList::Sources) {
         m_sidebar->setFocusProxy(nullptr);
         b.listStack->setCurrentWidget(m_sidebar);
-        // WLibrarySidebar clears its current index when it gains focus; keep
-        // the highlighted source (for example after Back from categories).
-        const QPersistentModelIndex highlighted(m_sidebar->currentIndex());
         set("[Library]", "focused_widget", 2);
         if (m_page == 1) m_sidebar->setFocus(Qt::OtherFocusReason);
-        if (highlighted.isValid() && m_sidebar->currentIndex() != highlighted) m_sidebar->setCurrentIndex(highlighted);
+        // Keep the highlighted source (for example after Back from categories).
+        if (highlighted.isValid() && highlighted.parent() == m_sidebar->rootIndex() &&
+                m_sidebar->currentIndex() != highlighted) {
+            m_sidebar->setCurrentIndex(highlighted);
+        }
         if (!m_sidebar->currentIndex().isValid() && m_sidebar->model()->rowCount(m_sidebar->rootIndex())) {
             m_sidebar->setCurrentIndex(m_sidebar->model()->index(0, 0, m_sidebar->rootIndex()));
         }
