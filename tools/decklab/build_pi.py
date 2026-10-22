@@ -72,6 +72,7 @@ def test_summary(path):
                 if case.get("classname") == "EngineBufferE2ETest"
                 and case.get("name") == "PrepareScalersPreservesDeckState"]
     native_ui = {case.get("name") for case in enabled if case.get("classname") == "NativeDeckLabTest"}
+    edge_labels = {case.get("name") for case in enabled if case.get("classname") == "WaveformMarkLabelTest"}
     if (int(report.get("failures", 0)) or int(report.get("errors", 0))
             or len(enabled) < 190 or len(required) != 1
             or not {"FirstBrowsePressDoesNotOpenSource", "SingleTapOpensFolderAndBackRestoresSelection",
@@ -84,14 +85,17 @@ def test_summary(path):
                     "AutoLayoutShowsFourRealDecksAndRetainsLoadedUpperDecks", "LayerOrLayoutChangeCancelsPendingTransportPress",
                     "BrowseLoadCancelsChangedTargetAndOffersFourDirectDestinations", "LayoutRoundTripsKeepModeAndPitchReadoutsInsideEachDeck",
                     "BrowseToolsMatchPlayingFourthDeckAndGuardStaleUnload",
+                    "SideUtilitiesOperateRealLoopsAndModesWithoutRetargetingHeldActions",
                     "Lv2PreparationUsesSelectedRateWithoutAudio", "TouchSearchUsesNativeKeyboardAndReturnsWaveforms"}.issubset(native_ui)
+            or not {"EdgeLabelsStayInsideWithoutChangingWidth", "OverwideLabelsRemainInsideAtBothEdges"}.issubset(edge_labels)
             or any(case.find("skipped") is not None for case in enabled)):
         raise ValueError("Native regression suite incomplete or failed")
     return {"enabled_passed": len(enabled),
             "disabled": len(cases) - len(enabled),
             "failures": int(report.get("failures", 0)),
             "errors": int(report.get("errors", 0)),
-            "preparation_regression_passed": True, "native_ui_regressions_passed": len(native_ui)}
+            "preparation_regression_passed": True, "native_ui_regressions_passed": len(native_ui),
+            "waveform_edge_regressions_passed": len(edge_labels)}
 
 
 def external_workdir(root, path):

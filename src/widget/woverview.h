@@ -3,6 +3,7 @@
 #include <QColor>
 #include <QList>
 #include <QPixmap>
+#include <optional>
 
 #include "analyzer/analyzerprogress.h"
 #include "track/track_decl.h"
@@ -149,6 +150,7 @@ class WOverview : public WWidget, public TrackDropTarget {
     // Hold the last visual sample processed to generate the pixmap
     int m_actualCompletion;
     bool m_pixmapDone;
+    std::optional<bool> m_normalizeOverview;
     float m_waveformPeak;
     float m_diffGain;
     qreal m_devicePixelRatio;

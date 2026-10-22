@@ -120,7 +120,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     QWidget* m_searchPanel = nullptr;
     QWidget* m_keyboard = nullptr;
     QLabel* m_breadcrumb;
-    QLabel* m_status;
+    QPushButton* m_status;
     std::array<QPushButton*, 5> m_tabs{};
     std::array<QLabel*, 4> m_titles{};
     std::array<QLabel*, 4> m_waveNumbers{};
@@ -135,8 +135,10 @@ class WDeckLab : public QWidget, public WBaseWidget {
     std::array<QWidget*, 4> m_deckSecondary{};
     std::array<QLabel*, 4> m_modes{};
     std::array<QWidget*, 4> m_cardTransports{};
+    std::array<QWidget*, 4> m_waveBodies{};
+    std::array<QWidget*, 4> m_detailColumns{};
+    std::array<QWidget*, 2> m_sideUtilities{};
     std::array<QWidget*, 4> m_overviews{};
-    std::array<QLabel*, 2> m_deckIdentifiers{};
     std::array<qint64, 4> m_syncFeedbackUntil{};
     std::array<QPushButton*, 4> m_loadButtons{};
     std::array<QPushButton*, 16> m_samples{};

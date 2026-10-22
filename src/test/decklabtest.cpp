@@ -231,12 +231,12 @@ TEST_F(NativeDeckLabTest, ActiveNavigationCannotBeUncheckedByReselectingIt) {
 }
 
 TEST_F(NativeDeckLabTest, InternalClockCannotClaimAConfiguredAudioOutput) {
-    auto* status = panel->findChild<QLabel*>("decklab-status"); ASSERT_NE(nullptr, status);
+    auto* status = panel->findChild<QPushButton*>("decklab-status"); ASSERT_NE(nullptr, status);
     ControlObject::set(ConfigKey("[SoundManager]", "status"), 2); QCoreApplication::processEvents();
-    EXPECT_TRUE(status->text().contains("Audio disconnected"));
-    panel->setAudioOutputConfigured(true); EXPECT_FALSE(status->text().contains("Audio disconnected"));
+    EXPECT_TRUE(status->toolTip().contains("Audio disconnected"));
+    panel->setAudioOutputConfigured(true); EXPECT_FALSE(status->toolTip().contains("Audio disconnected"));
     ControlObject::set(ConfigKey("[SoundManager]", "status"), 0); QCoreApplication::processEvents();
-    EXPECT_TRUE(status->text().contains("Audio disconnected"));
+    EXPECT_TRUE(status->toolTip().contains("Audio disconnected"));
 }
 
 TEST_F(NativeDeckLabTest, PagesFit800By480) {
@@ -334,12 +334,13 @@ TEST_F(NativeDeckLabTest, ControllerLayerChangeRefreshesPlayState) {
     auto* play = panel->findChild<QPushButton*>("decklab-1-play"); ASSERT_NE(nullptr, play);
     EXPECT_TRUE(play->isChecked());
     EXPECT_EQ(QStringLiteral("Pause"), play->text());
-    EXPECT_EQ(QStringLiteral("1"), panel->findChild<QLabel*>("decklab-identity-1")->text());
+    EXPECT_TRUE(panel->findChild<QLabel*>("decklab-wave-identity-1")->isVisible());
     ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 1);
     QCoreApplication::processEvents();
     EXPECT_FALSE(play->isChecked());
     EXPECT_EQ(QStringLiteral("Play"), play->text());
-    EXPECT_EQ(QStringLiteral("3"), panel->findChild<QLabel*>("decklab-identity-1")->text());
+    EXPECT_TRUE(panel->findChild<QLabel*>("decklab-wave-identity-3")->isVisible());
+    EXPECT_FALSE(panel->findChild<QLabel*>("decklab-wave-identity-1")->isVisible());
     EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel1]", "play")));
     EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel3]", "play")));
 }
@@ -353,8 +354,8 @@ TEST_F(NativeDeckLabTest, DecksTransportHasTruthfulStatesAndLargerTargets) {
     EXPECT_EQ(QStringLiteral("Play"), play->text()); EXPECT_TRUE(play->isEnabled());
     EXPECT_EQ(QStringLiteral("PAUSED"), panel->findChild<QLabel*>("decklab-state-1")->text());
     EXPECT_TRUE(panel->findChild<QLabel*>("decklab-pitch-1")->text().contains("%"));
-    EXPECT_EQ(48, play->height()); EXPECT_EQ(48, sync->height());
-    EXPECT_EQ(44, panel->findChild<QPushButton*>("decklab-tab-0")->height());
+    EXPECT_EQ(44, play->height()); EXPECT_EQ(44, sync->height());
+    EXPECT_EQ(40, panel->findChild<QPushButton*>("decklab-tab-0")->height());
     EXPECT_EQ(QStringLiteral("Beat Sync"), sync->text()); EXPECT_FALSE(sync->isCheckable());
     sync->click(); QCoreApplication::processEvents();
     EXPECT_TRUE(sync->property("actionFeedback").toBool());
@@ -447,9 +448,11 @@ TEST_F(NativeDeckLabTest, DeckIdentityAndLabelledReadoutsFitWithoutStealingWavef
         ASSERT_NE(nullptr, identity); EXPECT_EQ(QString::number(deck), identity->text()); EXPECT_EQ(32, identity->width());
         EXPECT_LE(identity->fontMetrics().tightBoundingRect(identity->text()).height(), 24);
     }
-    EXPECT_EQ(32, panel->findChild<QLabel*>("decklab-identity-1")->width());
     EXPECT_EQ(QSize(800, 480), panel->size());
-    EXPECT_EQ(384, panel->waveformContainer()->height());
+    EXPECT_EQ(440, panel->waveformContainer()->height());
+    EXPECT_EQ(QSize(668,132), panel->findChild<QWidget*>("decklab-detail-1")->size());
+    EXPECT_EQ(QSize(668,44), panel->findChild<QWidget*>("decklab-overview-1")->size());
+    EXPECT_EQ(QSize(132,176), panel->findChild<QPushButton*>("decklab-1-play")->parentWidget()->size());
 }
 
 TEST_F(NativeDeckLabTest, TransportStateAndTargetRemainTruthfulInPlayingFixture) {
@@ -481,8 +484,8 @@ TEST_F(NativeDeckLabTest, UpperLayerTransportTargetsLoadedDecksThreeAndFour) {
     EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel2]", "play")));
     EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel3]", "play")));
     EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel4]", "play")));
-    EXPECT_EQ(QStringLiteral("3"), panel->findChild<QLabel*>("decklab-identity-1")->text());
-    EXPECT_EQ(QStringLiteral("4"), panel->findChild<QLabel*>("decklab-identity-2")->text());
+    EXPECT_TRUE(panel->findChild<QLabel*>("decklab-wave-identity-3")->isVisible());
+    EXPECT_TRUE(panel->findChild<QLabel*>("decklab-wave-identity-4")->isVisible());
     EXPECT_TRUE(panel->findChild<QLabel*>("decklab-wave-identity-3")->isVisible());
     EXPECT_TRUE(panel->findChild<QLabel*>("decklab-wave-identity-4")->isVisible());
     EXPECT_FALSE(panel->findChild<QLabel*>("decklab-wave-identity-1")->isVisible());
@@ -540,7 +543,7 @@ TEST_F(NativeDeckLabTest, AutoLayoutShowsFourRealDecksAndRetainsLoadedUpperDecks
         auto* cue = panel->findChild<QPushButton*>(QStringLiteral("decklab-card-%1-cue_default").arg(deck));
         EXPECT_EQ(48, cue->height()); EXPECT_GE(cue->width(), 100);
         auto* overview = panel->findChild<QWidget*>(QStringLiteral("decklab-overview-%1").arg(deck));
-        ASSERT_NE(nullptr, overview); EXPECT_TRUE(overview->isVisible()); EXPECT_EQ(24, overview->height());
+        ASSERT_NE(nullptr, overview); EXPECT_TRUE(overview->isVisible()); EXPECT_EQ(44, overview->height());
         EXPECT_TRUE(overview->testAttribute(Qt::WA_TransparentForMouseEvents)); EXPECT_FALSE(overview->acceptDrops());
         EXPECT_TRUE(panel->rect().contains(QRect(cue->mapTo(panel.get(), QPoint()), cue->size())));
     }
@@ -562,6 +565,64 @@ TEST_F(NativeDeckLabTest, LayerOrLayoutChangeCancelsPendingTransportPress) {
     QTest::mouseRelease(play, Qt::LeftButton);
     EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "play")));
     EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel3]", "play")));
+}
+
+TEST_F(NativeDeckLabTest, SideUtilitiesOperateRealLoopsAndModesWithoutRetargetingHeldActions) {
+    m_pMixerDeck1->loadFakeTrack(false, 128);
+    m_pMixerDeck3->loadFakeTrack(false, 132); ProcessBuffer();
+    for (int deck : {1,3}) {
+        const QString group = QStringLiteral("[Channel%1]").arg(deck);
+        ControlObject::set(ConfigKey(group, "quantize"), 0);
+        ControlObject::set(ConfigKey(group, "keylock"), 0);
+        ControlObject::set(ConfigKey(group, "beatloop_size"), 4);
+    }
+    QTest::qWait(150);
+    auto find = [this](const QString& action) {
+        return panel->findChild<QPushButton*>(QStringLiteral("decklab-1-") + action);
+    };
+    auto* loop = find("beatloop_activate"); auto* half = find("loop_halve"); auto* twice = find("loop_double");
+    auto* quantize = find("quantize"); auto* keylock = find("keylock"); auto* play = find("play");
+    ASSERT_NE(nullptr, loop); ASSERT_NE(nullptr, half); ASSERT_NE(nullptr, twice);
+    ASSERT_NE(nullptr, quantize); ASSERT_NE(nullptr, keylock); ASSERT_NE(nullptr, play);
+    for (auto* action : {loop,half,twice,quantize,keylock,play}) {
+        EXPECT_EQ(44, action->height()); EXPECT_GE(action->width(), 44); EXPECT_TRUE(action->isEnabled());
+    }
+    EXPECT_EQ(QStringLiteral("LOOP\n4"), loop->text()); EXPECT_FALSE(loop->isChecked());
+    loop->click(); QCoreApplication::processEvents(); ProcessBuffer(); QTest::qWait(20);
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel1]", "loop_enabled")));
+    EXPECT_TRUE(loop->isChecked()); EXPECT_TRUE(loop->accessibleName().contains("on"));
+    half->click(); QCoreApplication::processEvents(); ProcessBuffer(); QTest::qWait(20);
+    EXPECT_DOUBLE_EQ(2, ControlObject::get(ConfigKey("[Channel1]", "beatloop_size")));
+    EXPECT_EQ(QStringLiteral("LOOP\n2"), loop->text());
+    twice->click(); QCoreApplication::processEvents(); ProcessBuffer(); QTest::qWait(20);
+    EXPECT_DOUBLE_EQ(4, ControlObject::get(ConfigKey("[Channel1]", "beatloop_size")));
+    loop->click(); QCoreApplication::processEvents(); ProcessBuffer(); QTest::qWait(20);
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "loop_enabled")));
+    EXPECT_FALSE(loop->isChecked());
+    quantize->click(); keylock->click(); QCoreApplication::processEvents();
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel1]", "quantize")));
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel1]", "keylock")));
+    EXPECT_TRUE(quantize->isChecked()); EXPECT_TRUE(keylock->isChecked());
+    for (const auto& action : {"loop_halve", "beatloop_activate", "loop_double", "quantize", "keylock", "play"}) {
+        ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 0); QCoreApplication::processEvents();
+        auto* button = find(QString::fromLatin1(action));
+        QTest::mousePress(button, Qt::LeftButton);
+        ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 1); QCoreApplication::processEvents();
+        QTest::mouseRelease(button, Qt::LeftButton);
+        EXPECT_DOUBLE_EQ(4, ControlObject::get(ConfigKey("[Channel3]", "beatloop_size")));
+        EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel3]", "loop_enabled")));
+        EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel3]", "quantize")));
+        EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel3]", "keylock")));
+        EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel3]", "play")));
+        if (button->isCheckable()) EXPECT_FALSE(button->isChecked());
+    }
+    EXPECT_EQ(QStringLiteral("Play"), play->text());
+    ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 0); QCoreApplication::processEvents();
+    ControlObject::set(ConfigKey("[Channel1]", "beatloop_size"), .125); QTest::qWait(150);
+    EXPECT_EQ(QStringLiteral("LOOP\n1/8"), loop->text());
+    ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 1); QCoreApplication::processEvents();
+    m_pMixerDeck3->slotEjectTrack(1); ProcessBuffer(); QTest::qWait(150);
+    EXPECT_FALSE(loop->isEnabled()); EXPECT_FALSE(quantize->isEnabled()); EXPECT_FALSE(keylock->isEnabled());
 }
 
 TEST_F(NativeDeckLabTest, BrowseLoadCancelsChangedTargetAndOffersFourDirectDestinations) {
@@ -670,7 +731,12 @@ TEST_F(NativeDeckLabTest, LayoutRoundTripsKeepModeAndPitchReadoutsInsideEachDeck
             auto* modes=panel->findChild<QLabel*>(QStringLiteral("decklab-modes-%1").arg(deck));
             if(!pitch->isVisible()) continue;
             EXPECT_TRUE(modes->isVisible()); EXPECT_TRUE(pitch->text().contains("PITCH"));
-            EXPECT_TRUE(modes->text().contains("LOOP")); EXPECT_TRUE(modes->text().contains("KEYLOCK"));
+            EXPECT_TRUE(modes->text().contains("SYNC LOCK"));
+            if(index==2) { EXPECT_TRUE(modes->text().contains("LOOP")); EXPECT_TRUE(modes->text().contains("KEYLOCK")); }
+            else {
+                EXPECT_TRUE(panel->findChild<QPushButton*>(QStringLiteral("decklab-%1-quantize").arg(deck))->isChecked());
+                EXPECT_TRUE(panel->findChild<QPushButton*>(QStringLiteral("decklab-%1-keylock").arg(deck))->isChecked());
+            }
             EXPECT_LE(modes->fontMetrics().horizontalAdvance(modes->text()),modes->width());
             EXPECT_TRUE(panel->rect().contains(QRect(pitch->mapTo(panel.get(),QPoint()),pitch->size())));
             QList<QLabel*> readouts;

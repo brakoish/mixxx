@@ -48,9 +48,11 @@ void WaveformMarkLabel::prerender(QPointF bottomLeft,
             bottomLeft.y() - pixmapRect.height());
     m_areaRect.moveTo(topLeft);
 
-    if (m_areaRect.right() > widgetWidth) {
-        m_areaRect.setLeft(widgetWidth - m_areaRect.width());
-    }
+    // Edge cues can request a label to the left of sample zero. Keep its full
+    // pixmap visible, and preserve its width for label collision detection.
+    m_areaRect.moveLeft(math_clamp(m_areaRect.left(),
+            qreal(0),
+            math_max(qreal(0), qreal(widgetWidth) - m_areaRect.width())));
 
     m_pixmap = QPixmap(static_cast<int>(pixmapRect.width() * scaleFactor),
             static_cast<int>(pixmapRect.height() * scaleFactor));

@@ -166,6 +166,12 @@ void WOverview::setup(const QDomNode& node, const SkinContext& context) {
     if (okay) {
         m_iLabelFontSize = labelFontSize;
     }
+    // A skin can normalize this display without changing the user's global
+    // overview preference or any audio/replay gain.
+    m_normalizeOverview.reset();
+    if (!SkinContext::selectNode(node, QStringLiteral("Normalize")).isNull()) {
+        m_normalizeOverview = context.selectBool(node, QStringLiteral("Normalize"), false);
+    }
 
     // Clear the background pixmap, if it exists.
     m_backgroundPixmap = QPixmap();
@@ -762,7 +768,7 @@ void WOverview::drawWaveformPixmap(QPainter* pPainter) {
 
     WaveformWidgetFactory* pWidgetFactory = WaveformWidgetFactory::instance();
     float diffGain;
-    bool normalize = pWidgetFactory->isOverviewNormalized();
+    const bool normalize = m_normalizeOverview.value_or(pWidgetFactory->isOverviewNormalized());
     if (normalize && m_pixmapDone && m_waveformPeak > 1) {
         diffGain = 255 - m_waveformPeak - 1;
     } else {
