@@ -105,6 +105,7 @@ class NativeDeckLabTest : public BaseSignalPathTest {
     void SetUp() override {
         BaseSignalPathTest::SetUp();
         config()->setValue(ConfigKey("[DeckLab]", "DeckLayout"), 2);
+        config()->setValue(ConfigKey("[DeckLab]", "WaveformLayout"), 0);
         fourthDeck = std::make_unique<Deck>(nullptr, config(), m_pEngineMixer.get(), m_pEffectsManager.get(),
                 EngineChannel::CENTER, m_pEngineMixer->registerChannelGroup(QStringLiteral("[Channel4]")));
         addDeck(fourthDeck->getEngineDeck());
@@ -454,6 +455,67 @@ TEST_F(NativeDeckLabTest, ControllerLayerChangeRefreshesPlayState) {
     EXPECT_FALSE(panel->findChild<QLabel*>("decklab-wave-identity-1")->isVisible());
     EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel1]", "play")));
     EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel3]", "play")));
+}
+
+TEST_F(NativeDeckLabTest, WaveformLayoutPreferenceRoundTripsBothDeckCountsWithoutEngineWrites) {
+    m_pMixerDeck1->loadFakeTrack(false, 128);
+    m_pMixerDeck2->loadFakeTrack(false, 130);
+    m_pMixerDeck3->loadFakeTrack(false, 132); fourthDeck->loadFakeTrack(false, 134);
+    ProcessBuffer(); QTest::qWait(150);
+    auto* choice = panel->findChild<QComboBox*>("decklab-waveform-layout"); ASSERT_NE(nullptr, choice);
+    EXPECT_EQ(0, choice->currentData().toInt());
+    EXPECT_EQ(QStringLiteral("Stacked"), choice->itemText(0));
+    EXPECT_EQ(QStringLiteral("Side by side"), choice->itemText(1));
+    std::vector<std::unique_ptr<ControlProxy>> observed; int writes = 0;
+    for (int deck = 1; deck <= 4; ++deck)
+        for (const auto& item : {"play", "rate", "sync_enabled", "waveform_zoom", "pfl"}) {
+            observed.emplace_back(std::make_unique<ControlProxy>(QStringLiteral("[Channel%1]").arg(deck), QString::fromLatin1(item)));
+            ASSERT_TRUE(observed.back()->connectValueChanged(panel.get(), [&writes](double) { ++writes; }, Qt::DirectConnection));
+        }
+    for (int mode : {1, 2, 1}) {
+        QMetaObject::invokeMethod(panel->findChild<QComboBox*>("decklab-deck-layout"), "activated", Q_ARG(int, mode));
+        for (int layout : {1, 0, 1, 0}) {
+            choice->setCurrentIndex(layout);
+            QMetaObject::invokeMethod(choice, "activated", Q_ARG(int, layout));
+            QTest::qWait(30);
+            EXPECT_EQ(layout, config()->getValue(ConfigKey("[DeckLab]", "WaveformLayout"), -1));
+            const int count = mode == 2 ? 4 : 2;
+            for (int deck = 1; deck <= count; ++deck) {
+                auto* detail = panel->findChild<QWidget*>(QStringLiteral("decklab-detail-%1").arg(deck)); ASSERT_NE(nullptr, detail);
+                ASSERT_TRUE(detail->isVisible());
+                const QPoint at = detail->mapTo(panel.get(), QPoint());
+                EXPECT_EQ(layout ? QSize(344, mode == 2 ? 66 : 176) : QSize(576, mode == 2 ? 55 : 110), detail->size());
+                EXPECT_EQ(layout ? QPoint((deck - 1) % 2 * 344, 84 + (mode == 2 ? (deck - 1) / 2 * 110 : 0))
+                                 : QPoint(112, 40 + (deck - 1) * (mode == 2 ? 55 : 110)), at);
+                EXPECT_TRUE(panel->rect().contains(QRect(at, detail->size())));
+                auto* overview = panel->findChild<QWidget*>(QStringLiteral("decklab-overview-%1").arg(deck));
+                ASSERT_NE(nullptr, overview); EXPECT_TRUE(overview->isVisible());
+                EXPECT_EQ(mode == 2 ? 200 : 400, overview->width()); EXPECT_EQ(44, overview->height());
+            }
+            EXPECT_EQ(0, writes);
+            panel->selectPage(1); QCoreApplication::processEvents();
+            EXPECT_FALSE(panel->findChild<QWidget*>("decklab-separate-wave-1")->isVisible());
+            panel->selectPage(0); QCoreApplication::processEvents();
+        }
+    }
+    // An in-flight transport gesture cannot survive a presentation change.
+    auto* more = panel->findChild<QPushButton*>("decklab-1-more"); more->click(); QCoreApplication::processEvents();
+    auto* play = panel->findChild<QPushButton*>("decklab-1-play"); ASSERT_TRUE(play->isVisible());
+    QTest::mousePress(play, Qt::LeftButton);
+    choice->setCurrentIndex(1); QMetaObject::invokeMethod(choice, "activated", Q_ARG(int, 1));
+    QTest::mouseRelease(play, Qt::LeftButton);
+    EXPECT_EQ(0, writes);
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "play")));
+    // A new surface reads the saved preference rather than silently resetting it.
+    WDeckLab restored(config(), nullptr, players.get(), m_pEffectsManager.get());
+    for (int deck = 1; deck <= 4; ++deck) {
+        restored.addWaveform(new QWidget(&restored), deck);
+        restored.addOverview(new QWidget(&restored), deck);
+    }
+    restored.resize(800, 480); restored.show(); restored.selectPage(0); QTest::qWait(30);
+    EXPECT_EQ(1, restored.findChild<QComboBox*>("decklab-waveform-layout")->currentData().toInt());
+    EXPECT_EQ(QSize(344,176), restored.findChild<QWidget*>("decklab-detail-1")->size());
+    EXPECT_EQ(0, writes);
 }
 
 TEST_F(NativeDeckLabTest, DecksTransportHasTruthfulStatesAndLargerTargets) {

@@ -220,6 +220,7 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     setAttribute(Qt::WA_StyledBackground);
     setMinimumSize(800, 480);
     m_clock.start();
+    m_sideBySideWaveforms = m_config->getValue(ConfigKey("[DeckLab]", "WaveformLayout"), 0) == 1;
     for (const auto& name : {"active", "browse_press", "browse_back", "browse_sources", "tool_request", "tool_serial", "tools_ready", "layout_decks"}) {
         createControl(kNative, QString::fromLatin1(name));
     }
@@ -1180,6 +1181,22 @@ QWidget* WDeckLab::buildSettings() {
             keys->setCurrentIndex(notation == "OpenKey" ? 1 : notation == "Traditional" ? 2 : 0);
             connect(keys, qOverload<int>(&QComboBox::activated), this, &WDeckLab::setKeyNotation);
             addRow(tr("Key format"), keys);
+            auto* waveLayout = new QComboBox(content);
+            waveLayout->setObjectName(QStringLiteral("decklab-waveform-layout"));
+            waveLayout->addItem(tr("Stacked"), 0);
+            waveLayout->addItem(tr("Side by side"), 1);
+            waveLayout->setCurrentIndex(m_sideBySideWaveforms ? 1 : 0);
+            connect(waveLayout, qOverload<int>(&QComboBox::activated), this, [this, waveLayout](int n) {
+                const bool sideBySide = waveLayout->itemData(n).toInt() == 1;
+                if (sideBySide == m_sideBySideWaveforms) return;
+                for (auto* menu : findChildren<QMenu*>())
+                    if (menu->objectName().endsWith(QStringLiteral("more-menu"))) menu->close();
+                releaseTouchCue(); ++m_interactionEpoch;
+                m_sideBySideWaveforms = sideBySide;
+                m_config->setValue(ConfigKey("[DeckLab]", "WaveformLayout"), sideBySide ? 1 : 0);
+                updateLayers();
+            });
+            addRow(tr("Decks waveform layout"), waveLayout);
             auto* fps = new QComboBox(content);
             fps->addItems({tr("30 FPS · lower draw cost"), tr("60 FPS · smoother motion")});
             fps->setCurrentIndex(WaveformWidgetFactory::instance()->getFrameRate() > 30 ? 1 : 0);
@@ -1259,7 +1276,9 @@ void WDeckLab::addWaveform(QWidget* widget, int deck) {
         auto* performance = row(m_pairPerformance);
         m_pairContexts = new QWidget(m_pairPerformance); column(m_pairContexts);
         m_pairContexts->setFixedWidth(112); performance->addWidget(m_pairContexts);
-        m_pairDetails = new QWidget(m_pairPerformance); column(m_pairDetails);
+        m_pairDetails = new QWidget(m_pairPerformance);
+        auto* detailGrid = new QGridLayout(m_pairDetails);
+        detailGrid->setContentsMargins(0, 0, 0, 0); detailGrid->setSpacing(0);
         performance->addWidget(m_pairDetails, 1);
         auto* feedback = new QWidget(m_pairPerformance); auto* feedbackRows = column(feedback);
         feedback->setFixedWidth(112); performance->addWidget(feedback);
@@ -1456,6 +1475,9 @@ void WDeckLab::addWaveform(QWidget* widget, int deck) {
     auto* detail = new QWidget(body); auto* detailLayout = column(detail);
     detail->setObjectName(QStringLiteral("decklab-detail-column-%1").arg(deck));
     m_detailColumns[deck - 1] = detail;
+    auto* separate = new QWidget(m_pairDetails); column(separate);
+    separate->setObjectName(QStringLiteral("decklab-separate-wave-%1").arg(deck));
+    m_separateWaves[deck - 1] = separate; separate->hide();
     widget->setMinimumHeight(16);
     widget->setObjectName(QStringLiteral("decklab-detail-%1").arg(deck));
     widget->setMaximumHeight(QWIDGETSIZE_MAX);
@@ -1835,7 +1857,11 @@ void WDeckLab::refreshDeck(int deck) {
             }
         }
         const QString stateText = loaded ? playing ? tr("PLAYING") : tr("PAUSED") : tr("EMPTY");
-        m_waveContexts[deck - 1]->setText(compact
+        m_waveContexts[deck - 1]->setText(m_page == 0 && m_sideBySideWaveforms
+                ? tr("<b>D%1 · %2</b> · <span style='font-size:11px'>%3 · HP CUE %4</span>")
+                          .arg(deck).arg(loaded ? (playing ? tr("PLAYING") : tr("PAUSED")) : tr("EMPTY"), beatText,
+                                  value(channel(deck), "pfl") > 0 ? tr("ON") : tr("OFF"))
+                : compact
                         ? QStringLiteral("<b style='font-size:12px'>D%1 · %2</b><br><span style='font-size:11px'>%3</span>")
                                   .arg(deck).arg(stateText, beatText.toHtmlEscaped())
                         : QStringLiteral("<b style='font-size:14px'>D%1 · %2</b><br><span style='font-size:12px'>%3<br>HP CUE %4</span><br><span style='font-size:11px;color:#aaa'>%5</span>")
@@ -2189,6 +2215,7 @@ void WDeckLab::updateLayers() {
     }
     m_deckControls->hide();
     const bool paired = m_page == 0;
+    const bool separated = paired && m_sideBySideWaveforms;
     auto move = [](QWidget* widget, QWidget* parent, QBoxLayout* layout, int index) {
         if (!widget || !parent) return;
         if (widget->parentWidget() && widget->parentWidget()->layout())
@@ -2196,6 +2223,18 @@ void WDeckLab::updateLayers() {
         if (widget->parentWidget() != parent) widget->setParent(parent);
         layout->insertWidget(index, widget);
     };
+    auto* detailGrid = m_pairDetails ? static_cast<QGridLayout*>(m_pairDetails->layout()) : nullptr;
+    if (detailGrid) {
+        for (int index = 0; index < 4; ++index) {
+            detailGrid->setRowStretch(index, 0); detailGrid->setColumnStretch(index, 0);
+            if (m_separateWaves[index]) {
+                detailGrid->removeWidget(m_separateWaves[index]);
+                m_separateWaves[index]->setVisible(separated && (four || index + 1 == m_layers[0] || index + 1 == m_layers[1]));
+            }
+        }
+        detailGrid->setColumnStretch(0, 1); detailGrid->setColumnStretch(1, separated ? 1 : 0);
+        m_pairContexts->setVisible(paired && !separated);
+    }
     if (m_pairPerformance) {
         m_waveLayout->removeWidget(m_pairPerformance);
         m_pairPerformance->setVisible(paired);
@@ -2226,14 +2265,29 @@ void WDeckLab::updateLayers() {
         if (paired && visible) {
             const int side = compact ? deck - 1 : deck == m_layers[0] ? 0 : 1;
             frame->setFixedHeight(220);
-            move(m_detailColumns[deck - 1], m_pairDetails,
-                    static_cast<QBoxLayout*>(m_pairDetails->layout()), side);
-            m_detailColumns[deck - 1]->setFixedHeight(compact ? 55 : 110);
+            if (separated) {
+                auto* separate = m_separateWaves[deck - 1];
+                separate->setFixedHeight(compact ? 110 : 220);
+                detailGrid->addWidget(separate, compact ? side / 2 : 0, side % 2);
+                auto* separateRows = static_cast<QBoxLayout*>(separate->layout());
+                move(m_contextPanels[deck - 1], separate, separateRows, 0);
+                m_contextPanels[deck - 1]->setFixedHeight(44);
+                m_waveContexts[deck - 1]->setFixedHeight(28);
+                move(m_detailColumns[deck - 1], separate, separateRows, 1);
+                m_detailColumns[deck - 1]->setFixedHeight(compact ? 66 : 176);
+                separate->show();
+            } else {
+                auto* detail = m_detailColumns[deck - 1];
+                if (detail->parentWidget()->layout()) detail->parentWidget()->layout()->removeWidget(detail);
+                if (detail->parentWidget() != m_pairDetails) detail->setParent(m_pairDetails);
+                detailGrid->addWidget(detail, side, 0);
+                detail->setFixedHeight(compact ? 55 : 110);
+                m_contextPanels[deck - 1]->setFixedHeight(compact ? 55 : 110);
+                m_waveContexts[deck - 1]->setFixedHeight(compact ? 39 : 94);
+                move(m_contextPanels[deck - 1], m_pairContexts,
+                        static_cast<QBoxLayout*>(m_pairContexts->layout()), side);
+            }
             m_detailColumns[deck - 1]->show();
-            m_contextPanels[deck - 1]->setFixedHeight(compact ? 55 : 110);
-            m_waveContexts[deck - 1]->setFixedHeight(compact ? 39 : 94);
-            move(m_contextPanels[deck - 1], m_pairContexts,
-                    static_cast<QBoxLayout*>(m_pairContexts->layout()), side);
             m_contextPanels[deck - 1]->show();
             m_meters[deck - 1]->setMinimumWidth(0); m_meters[deck - 1]->setMaximumWidth(QWIDGETSIZE_MAX);
             m_meters[deck - 1]->setFixedHeight(10);

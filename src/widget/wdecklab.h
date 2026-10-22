@@ -149,6 +149,8 @@ class WDeckLab : public QWidget, public WBaseWidget {
     QWidget* m_pairPerformance = nullptr;
     QWidget* m_pairContexts = nullptr;
     QWidget* m_pairDetails = nullptr;
+    std::array<QWidget*, 4> m_separateWaves{};
+    bool m_sideBySideWaveforms = false;
     QLabel* m_pairEffects = nullptr;
     QLabel* m_pairRMX = nullptr;
     QLabel* m_pairCue = nullptr;

@@ -67,6 +67,14 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
             QMetaObject::invokeMethod(layout,"activated",Q_ARG(int,*step==17?2:0));
             surface->selectPage(0);
         }
+        else if (*step == 19 || *step == 20) {
+            auto* waves=surface->findChild<QComboBox*>("decklab-waveform-layout");
+            waves->setCurrentIndex(1);
+            QMetaObject::invokeMethod(waves,"activated",Q_ARG(int,1));
+            auto* layout=surface->findChild<QComboBox*>("decklab-deck-layout");
+            QMetaObject::invokeMethod(layout,"activated",Q_ARG(int,*step==19?1:2));
+            surface->selectPage(0);
+        }
         else {
             timer->stop();
             QFile file(QDir(output).filePath("native-smoke.json"));
