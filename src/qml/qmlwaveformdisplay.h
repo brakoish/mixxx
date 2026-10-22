@@ -1,12 +1,19 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QPointer>
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QSGNode>
 #include <QSGSimpleRectNode>
+#include <QTimer>
+#include <atomic>
 #include <chrono>
+#include <limits>
+#include <memory>
+#include <vector>
 
+#include "control/controlproxy.h"
 #include "qml/qmlplayerproxy.h"
 #include "qml/qmlwaveformrenderer.h"
 #include "track/track.h"
@@ -64,6 +71,9 @@ class QmlWaveformDisplay : public QQuickItem, VSyncTimeProvider, public Waveform
     void setGroup(const QString& group) override;
     void setZoom(double zoom) {
         WaveformWidgetRenderer::setZoom(zoom);
+        // The render gate does not poll the zoom.
+        requestRender();
+        update();
         emit zoomChanged();
     }
 
@@ -76,6 +86,20 @@ class QmlWaveformDisplay : public QQuickItem, VSyncTimeProvider, public Waveform
 
     QQmlListProperty<mixxx::qml::QmlWaveformRendererFactory> renderers();
 
+    /// Deck Lab touch scratch: interleaved audio samples per logical pixel
+    /// at the current zoom (valid after the first rendered frame).
+    Q_INVOKABLE double audioSamplesPerPixel() const {
+        return getAudioSamplePerPixel();
+    }
+
+    /// Deck Lab render gate (gpu-screen spike). Upstream redraws every frame
+    /// forever; with the gate a paused, unchanged waveform requests no frames.
+    /// DECKLAB_RENDER_GATE=0 restores upstream behaviour.
+    static bool renderGateEnabled();
+    quint64 renderCount() const {
+        return m_renderCount.load(std::memory_order_relaxed);
+    }
+
   protected:
     QSGNode* updatePaintNode(QSGNode* old, QQuickItem::UpdatePaintNodeData*) override;
     void geometryChange(const QRectF& newGeometry, const QRectF& oldGeometry) override;
@@ -87,6 +111,8 @@ class QmlWaveformDisplay : public QQuickItem, VSyncTimeProvider, public Waveform
 
     void slotFrameSwapped();
     void slotWindowChanged(QQuickWindow* window);
+    void slotGateTick();
+    void slotGateControlChanged();
   signals:
     void playerChanged();
     void zoomChanged();
@@ -95,6 +121,8 @@ class QmlWaveformDisplay : public QQuickItem, VSyncTimeProvider, public Waveform
 
   private:
     void setCurrentTrack(TrackPointer pTrack);
+    void connectGateControls();
+    void requestFrame();
 
     // Properties
     QPointer<QmlPlayerProxy> m_pPlayer;
@@ -113,6 +141,16 @@ class QmlWaveformDisplay : public QQuickItem, VSyncTimeProvider, public Waveform
 
     DirtyFlags m_dirtyFlag{DirtyFlag::None};
     QList<QmlWaveformRendererFactory*> m_waveformRenderers;
+
+    // Render gate. Written in updatePaintNode() (scene graph sync, GUI thread
+    // blocked), read on the GUI thread.
+    const bool m_gateEnabled;
+    QTimer m_gateTimer;
+    QElapsedTimer m_sinceFrame;
+    std::atomic<bool> m_lastFrameMoving{true};
+    std::atomic<quint64> m_renderCount{0};
+    qint64 m_lastPixel{std::numeric_limits<qint64>::min()};
+    std::vector<std::unique_ptr<ControlProxy>> m_gateControls;
 };
 
 } // namespace qml
