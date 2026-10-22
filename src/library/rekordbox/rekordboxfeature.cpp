@@ -7,16 +7,20 @@
 #include <QDir>
 #include <QMap>
 #include <QMessageBox>
+#include <QSet>
 #include <QSettings>
 #include <QString>
 #include <QStringList>
 #include <QTextCodec>
 #include <QtDebug>
+#include <exception>
 
+#include "decklab/decklabphrase.h"
 #include "engine/engine.h"
 #include "library/dao/trackschema.h"
 #include "library/library.h"
 #include "library/queryutil.h"
+#include "library/rekordbox/rekordboxanlz.h"
 #include "library/rekordbox/rekordboxconstants.h"
 #include "library/trackcollection.h"
 #include "library/trackcollectionmanager.h"
@@ -61,6 +65,53 @@ QString findRekordboxPdbPath(const QString& devicePath) {
     }
     return {};
 }
+
+#if defined(__LINUX__)
+const QString kDeckLabMediaRoot = QStringLiteral("/media/decklab");
+
+// udev escapes characters such as spaces in /dev/disk link names ("\x20").
+QString udevUnescape(const QString& name) {
+    QByteArray bytes = name.toUtf8();
+    QByteArray out;
+    for (int i = 0; i < bytes.size(); ++i) {
+        bool ok = false;
+        if (bytes[i] == '\\' && i + 3 < bytes.size() && bytes[i + 1] == 'x') {
+            const int value = bytes.mid(i + 2, 2).toInt(&ok, 16);
+            if (ok) {
+                out.append(static_cast<char>(value));
+                i += 3;
+                continue;
+            }
+        }
+        out.append(bytes[i]);
+    }
+    return QString::fromUtf8(out);
+}
+
+// Filesystem label of a stick mounted at /media/decklab/<FS-UUID>, read from
+// udev's /dev/disk links. Empty when unknown.
+QString deckLabVolumeLabel(const QString& mountPath) {
+    const QFileInfo mount(mountPath);
+    if (mount.absolutePath() != kDeckLabMediaRoot) {
+        return {};
+    }
+    const QString device =
+            QFileInfo(QDir(QStringLiteral("/dev/disk/by-uuid")), mount.fileName())
+                    .canonicalFilePath();
+    if (device.isEmpty()) {
+        return {};
+    }
+    const QDir labels(QStringLiteral("/dev/disk/by-label"));
+    const QStringList links = labels.entryList(
+            QDir::AllEntries | QDir::System | QDir::Hidden | QDir::NoDotAndDotDot);
+    for (const QString& link : links) {
+        if (QFileInfo(labels.filePath(link)).canonicalFilePath() == device) {
+            return udevUnescape(link).trimmed();
+        }
+    }
+    return {};
+}
+#endif
 
 enum class IDForColor : uint8_t {
     Pink = 1,
@@ -235,10 +286,27 @@ QList<TreeItem*> findRekordboxDevices() {
     devices += runMediaUserDir.entryInfoList(
             QDir::AllDirs | QDir::NoDotAndDotDot);
 
+    // Deck Lab mounts every stick read-only at /media/decklab/<FS-UUID>,
+    // whatever the appliance user is called.
+    devices += QDir(kDeckLabMediaRoot).entryInfoList(QDir::AllDirs | QDir::NoDotAndDotDot);
+
+    QSet<QString> seenPaths;
+    QSet<QString> names;
     foreach (QFileInfo device, devices) {
+        if (seenPaths.contains(device.filePath())) {
+            continue;
+        }
+        seenPaths.insert(device.filePath());
         if (!findRekordboxPdbPath(device.filePath()).isEmpty()) {
+            // Show the stick's label rather than its UUID mount folder. The
+            // name is also the device key, so it must stay unique.
+            QString name = deckLabVolumeLabel(device.filePath());
+            if (name.isEmpty() || names.contains(name)) {
+                name = device.fileName();
+            }
+            names.insert(name);
             auto* pFoundDevice = new TreeItem(
-                    device.fileName(),
+                    std::move(name),
                     QVariant(QList<QString>{device.filePath(), IS_RECORDBOX_DEVICE}));
             foundDevices << pFoundDevice;
         }
@@ -859,6 +927,25 @@ void clearDeviceTables(QSqlDatabase& database, TreeItem* child) {
     transaction.commit();
 }
 
+// End of a hot loop stored in a hot cue list (CDJs save hot loops there);
+// invalid for a plain hot cue, so it is imported as a hot cue as before.
+mixxx::audio::FramePos hotLoopEnd(bool isLoop,
+        mixxx::audio::FramePos startPosition,
+        uint32_t loopTimeMs,
+        int timingOffset,
+        double sampleRateKhz) {
+    if (!isLoop) {
+        return mixxx::audio::kInvalidFramePos;
+    }
+    int endTime = static_cast<int>(loopTimeMs) - timingOffset;
+    // Ensure no offset times are less than 1
+    if (endTime < 1) {
+        endTime = 1;
+    }
+    const auto endPosition = mixxx::audio::FramePos(sampleRateKhz * static_cast<double>(endTime));
+    return endPosition > startPosition ? endPosition : mixxx::audio::kInvalidFramePos;
+}
+
 void setHotCue(TrackPointer track,
         mixxx::audio::FramePos startPosition,
         mixxx::audio::FramePos endPosition,
@@ -881,6 +968,9 @@ void setHotCue(TrackPointer track,
 
     if (pCue) {
         pCue->setStartAndEndPosition(startPosition, endPosition);
+        // The stick wins: a slot that became a loop (or stopped being one)
+        // on the stick changes type here too.
+        pCue->setType(type);
     } else {
         pCue = track->createAndAddCue(
                 type,
@@ -894,31 +984,71 @@ void setHotCue(TrackPointer track,
     }
 }
 
+void applyAnalyze(TrackPointer track,
+        mixxx::audio::SampleRate sampleRate,
+        int timingOffset,
+        bool readBeatGrid,
+        bool readCues,
+        rekordbox_anlz_t& anlz);
+
+// Reads one ANLZ file. readBeatGrid/readCues select what is applied to the
+// track; pExtract (optional) receives the beat grid times and the phrase
+// analysis found in the file. A damaged file is skipped with a warning: its
+// framing is checked before parsing, the generated parser throws, and an
+// exception must never reach the GUI.
 void readAnalyze(TrackPointer track,
         mixxx::audio::SampleRate sampleRate,
         int timingOffset,
-        bool ignoreCues,
-        const QString& anlzPath) {
+        bool readBeatGrid,
+        bool readCues,
+        const QString& anlzPath,
+        mixxx::rekordbox::AnlzExtract* pExtract) {
     if (!QFile(anlzPath).exists()) {
         return;
     }
 
     qDebug() << "Rekordbox ANLZ path:" << anlzPath << " for: " << track->getTitle();
 
-    std::ifstream ifs(anlzPath.toStdString(), std::ifstream::binary);
-    kaitai::kstream ks(&ifs);
+    const std::string bytes = mixxx::rekordbox::readAnlzFile(anlzPath);
+    if (bytes.empty()) {
+        return;
+    }
+    try {
+        kaitai::kstream ks(bytes);
+        rekordbox_anlz_t anlz(&ks);
+        if (pExtract) {
+            *pExtract = mixxx::rekordbox::extractAnlz(anlz);
+        }
+        applyAnalyze(track, sampleRate, timingOffset, readBeatGrid, readCues, anlz);
+    } catch (const std::exception& error) {
+        qWarning() << "Skipping unreadable rekordbox analysis file" << anlzPath
+                   << error.what();
+    }
+}
 
-    rekordbox_anlz_t anlz = rekordbox_anlz_t(&ks);
-
+void applyAnalyze(TrackPointer track,
+        mixxx::audio::SampleRate sampleRate,
+        int timingOffset,
+        bool readBeatGrid,
+        bool readCues,
+        rekordbox_anlz_t& anlz) {
     const double sampleRateKhz = sampleRate / 1000.0;
 
     QList<memory_cue_loop_t> memoryCuesAndLoops;
     int lastHotCueIndex = 0;
 
+    // .EXT files carry the nxs2 extended cue lists (PCO2: names, colors, all
+    // eight hot cues) next to legacy PCOB lists. Reading both duplicated
+    // memory cues as extra hot cues, so the extended lists win when present.
+    bool hasExtendedCues = false;
+    for (const auto& section : *anlz.sections()) {
+        hasExtendedCues |= section->fourcc() == rekordbox_anlz_t::SECTION_TAGS_CUES_2;
+    }
+
     for (const auto& section : *anlz.sections()) {
         switch (section->fourcc()) {
         case rekordbox_anlz_t::SECTION_TAGS_BEAT_GRID: {
-            if (!ignoreCues) {
+            if (!readBeatGrid) {
                 break;
             }
 
@@ -944,7 +1074,7 @@ void readAnalyze(TrackPointer track,
             track->trySetBeats(pBeats);
         } break;
         case rekordbox_anlz_t::SECTION_TAGS_CUES: {
-            if (ignoreCues) {
+            if (!readCues || hasExtendedCues) {
                 break;
             }
 
@@ -995,7 +1125,11 @@ void readAnalyze(TrackPointer track,
                     setHotCue(
                             track,
                             position,
-                            mixxx::audio::kInvalidFramePos,
+                            hotLoopEnd(cueEntry->type() == rekordbox_anlz_t::CUE_ENTRY_TYPE_LOOP,
+                                    position,
+                                    cueEntry->loop_time(),
+                                    timingOffset,
+                                    sampleRateKhz),
                             hotCueIndex,
                             QString(),
                             mixxx::RgbColor::nullopt());
@@ -1004,7 +1138,7 @@ void readAnalyze(TrackPointer track,
             }
         } break;
         case rekordbox_anlz_t::SECTION_TAGS_CUES_2: {
-            if (ignoreCues) {
+            if (!readCues) {
                 break;
             }
 
@@ -1060,7 +1194,12 @@ void readAnalyze(TrackPointer track,
                     }
                     setHotCue(track,
                             position,
-                            mixxx::audio::kInvalidFramePos,
+                            hotLoopEnd(cueExtendedEntry->type() ==
+                                            rekordbox_anlz_t::CUE_ENTRY_TYPE_LOOP,
+                                    position,
+                                    cueExtendedEntry->loop_time(),
+                                    timingOffset,
+                                    sampleRateKhz),
                             hotCueIndex,
                             fromUtf16BeString(cueExtendedEntry->comment()),
                             mixxx::RgbColor(qRgb(
@@ -1097,8 +1236,14 @@ void readAnalyze(TrackPointer track,
                 // Set first chronological memory cue as Mixxx MainCue
                 track->setMainCuePosition(memoryCueOrLoop.startPosition);
                 CuePointer pMainCue = track->findCueByType(mixxx::CueType::MainCue);
-                pMainCue->setLabel(memoryCueOrLoop.comment);
-                pMainCue->setColor(*memoryCueOrLoop.color);
+                if (pMainCue) {
+                    pMainCue->setLabel(memoryCueOrLoop.comment);
+                    // Legacy (PCOB) memory cues carry no color: never
+                    // dereference the empty optional.
+                    if (memoryCueOrLoop.color) {
+                        pMainCue->setColor(*memoryCueOrLoop.color);
+                    }
+                }
                 mainCueFound = true;
             } else {
                 // Mixxx v2.4 will feature multiple loops, so these saved here will be usable
@@ -1293,13 +1438,30 @@ TrackPointer RekordboxPlaylistModel::getTrack(const QModelIndex& index) const {
                     .toString();
     QString anlzPathExt = anlzPath.left(anlzPath.length() - 3) + "EXT";
 
+    mixxx::rekordbox::AnlzExtract datExtract;
+    mixxx::rekordbox::AnlzExtract extExtract;
     if (QFile(anlzPathExt).exists()) {
         // Beatgrids appear to be only correct in legacy ANLZ file
-        readAnalyze(track, sampleRate, timingOffset, true, anlzPath);
-        readAnalyze(track, sampleRate, timingOffset, false, anlzPathExt);
+        readAnalyze(track, sampleRate, timingOffset, true, false, anlzPath, &datExtract);
+        readAnalyze(track, sampleRate, timingOffset, false, true, anlzPathExt, &extExtract);
     } else {
-        readAnalyze(track, sampleRate, timingOffset, false, anlzPath);
+        // Exports without an .EXT file keep the grid and the cues together.
+        readAnalyze(track, sampleRate, timingOffset, true, true, anlzPath, &datExtract);
     }
+
+    // Deck Lab: rekordbox's phrase analysis (.EXT PSSI) placed on the beat
+    // grid exported with it (.DAT PQTZ), with the same decoder offset. It
+    // stays with this Track object while it is loaded; nothing is stored.
+    decklab::PhraseMapPointer phrases;
+    if (extExtract.songStructure) {
+        phrases = decklab::buildPhraseMap(
+                *extExtract.songStructure, datExtract.beatTimesMs, timingOffset);
+        if (!phrases) {
+            qWarning() << "Ignoring rekordbox phrase data that does not fit the beat grid:"
+                       << anlzPathExt;
+        }
+    }
+    decklab::setTrackPhrases(track.get(), phrases);
 
     // Assume that the key of the file the has been analyzed in Recordbox is correct
     // and prevent the AnalyzerKey from re-analyzing.
@@ -1484,7 +1646,8 @@ QString RekordboxFeature::formatRootViewHtml() const {
             << tr("Beatgrids")
             << tr("Hot cues")
             << tr("Memory cues")
-            << tr("Loops (only the first loop is currently usable in Mixxx)");
+            << tr("Loops (only the first loop is currently usable in Mixxx)")
+            << tr("Phrases (shown on Deck Lab decks)");
 
     QString html;
     QString refreshLink = tr("Check for attached Rekordbox USB / SD devices (refresh)");

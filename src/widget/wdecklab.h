@@ -12,6 +12,7 @@
 #include <vector>
 #include <functional>
 
+#include "decklab/decklabphraseview.h"
 #include "preferences/usersettings.h"
 #include "track/track_decl.h"
 #include "widget/wbasewidget.h"
@@ -280,6 +281,10 @@ class WDeckLab : public QWidget, public WBaseWidget {
     double m_linkedZoom = 0;
     bool m_zoomPending = false;
     std::array<QWidget*, 4> m_overviews{};
+    // usb-first: phrase data of tracks read from a rekordbox export, and the
+    // phrase bands drawn along each overview. Empty for every other track.
+    std::array<decklab::PhraseMapPointer, 4> m_phraseMaps{};
+    std::array<QPointer<DeckLabPhraseBands>, 4> m_phraseBands{};
     std::array<qint64, 4> m_syncFeedbackUntil{};
     std::array<QPushButton*, 4> m_loadButtons{};
     std::array<QPushButton*, 16> m_samples{};

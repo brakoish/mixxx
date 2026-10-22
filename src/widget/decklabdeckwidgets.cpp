@@ -173,8 +173,15 @@ void DeckLabStripRenderer::layout() {
         set(Part::Tempo, QRect(bpmArea.right() + 7, 36,
                                  std::max(0, keyArea.left() - 6 - bpmArea.right() - 7), 40));
         const int phase = std::clamp(width * 30 / 100, 110, 200);
-        set(Part::Phase, QRect(width - 10 - phase, 88, phase, 8));
-        set(Part::Chips, QRect(12, 80, std::max(0, width - 22 - phase - 10), 22));
+        // A phrase readout (rekordbox exports only) takes the beat meter's
+        // place, and a little more room when the meter's is too small.
+        const int phrase = m_state.phrase.name.isEmpty() ? 0 : std::max(phase, phraseWidth());
+        if (phrase > 0) {
+            set(Part::Phrase, QRect(width - 10 - phrase, 80, phrase, 22));
+        } else {
+            set(Part::Phase, QRect(width - 10 - phase, 88, phase, 8));
+        }
+        set(Part::Chips, QRect(12, 80, std::max(0, width - 22 - std::max(phase, phrase) - 10), 22));
         break;
     }
     case Mode::Compact: {
@@ -189,6 +196,11 @@ void DeckLabStripRenderer::layout() {
         set(Part::Tempo, QRect(10, 88, std::max(0, width - 88), 28));
         set(Part::Key, QRect(width - 76, 88, 76, 28));
         set(Part::Chips, QRect(10, 116, width - 18, 22));
+        // The phrase readout shares the lamp row: lit lamps keep their place
+        // and the phrase takes the room that is left, right-aligned.
+        if (!m_state.phrase.name.isEmpty()) {
+            set(Part::Phrase, rect(Part::Chips));
+        }
         break;
     }
     case Mode::Mini: {
@@ -227,6 +239,11 @@ QRegion DeckLabStripRenderer::setState(const DeckLabStripState& next) {
         return QRegion();
     }
     m_state = next;
+    if (previous.phrase.name.isEmpty() != next.phrase.name.isEmpty()) {
+        // The phrase readout appears or goes: the lamp row lays out again.
+        layout();
+        return QRegion(QRect(QPoint(), m_size));
+    }
     if (previous.deck != next.deck || previous.loaded != next.loaded) {
         return QRegion(QRect(QPoint(), m_size));
     }
@@ -272,6 +289,9 @@ QRegion DeckLabStripRenderer::setState(const DeckLabStripState& next) {
     }
     if (previous.phase != next.phase) {
         add(Part::Phase);
+    }
+    if (previous.phrase != next.phrase) {
+        add(Part::Phrase);
     }
     return dirty;
 }
@@ -477,10 +497,61 @@ void DeckLabStripRenderer::paintPhase(QPainter& painter) const {
     }
 }
 
-void DeckLabStripRenderer::paintLamps(QPainter& painter) const {
+int DeckLabStripRenderer::phraseWidth() const {
+    // Room for the longest common name ("CHORUS 2") and a two-digit count.
+    const int name = QFontMetrics(labelFont()).horizontalAdvance(QStringLiteral("CHORUS 2")) + 14;
+    const int count = tabularWidth(QFontMetrics(numeralFont(kTitle)), QStringLiteral("00.0"));
+    return name + 6 + count + 2;
+}
+
+void DeckLabStripRenderer::paintPhrase(QPainter& painter, int left) const {
+    const QRect area = rect(Part::Phrase).adjusted(std::max(0, left - rect(Part::Phrase).left()), 0, 0, 0);
+    if (area.width() <= 0 || !m_state.loaded || m_state.phrase.name.isEmpty()) {
+        return;
+    }
+    // The countdown sits right-aligned in a fixed cell of tabular figures,
+    // so neither it nor the chip shifts as it runs; the phrase name is a
+    // chip in the phrase's color just before it.
+    const QFont count = numeralFont(kTitle);
+    const QFontMetrics countMetrics(count);
+    const QString& countdown = m_state.phrase.countdown;
+    const int cell = std::max(tabularWidth(countMetrics, QStringLiteral("00.0")),
+            tabularWidth(countMetrics, countdown));
+    if (cell > area.width()) {
+        return;
+    }
+    painter.setFont(count);
+    painter.setPen(kText);
+    drawTabular(painter, area.left() + area.width() - tabularWidth(countMetrics, countdown),
+            baselineFor(area, countMetrics), countdown);
+    const int room = area.width() - cell - 6;
+    const QColor color = m_state.phrase.color.isValid() ? m_state.phrase.color : kDim;
+    const QFont label = labelFont();
+    const QFontMetrics labelMetrics(label);
+    const QString text = labelMetrics.elidedText(
+            m_state.phrase.name.toUpper(), Qt::ElideRight, std::max(0, room - 14));
+    const int top = area.top() + (area.height() - 20) / 2;
+    if (room >= 40 && !text.isEmpty() && text != QStringLiteral("…")) {
+        const int width = std::min(room, labelMetrics.horizontalAdvance(text) + 14);
+        const QRectF chip(area.left() + room - width, top, width, 20);
+        QPainterPath path;
+        path.addRoundedRect(chip.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3);
+        painter.fillPath(path, color);
+        painter.setFont(label);
+        painter.setPen(inkOn(color));
+        painter.drawText(chip, Qt::AlignCenter, text);
+    } else if (room >= 8) {
+        // No room for the name: the phrase color still shows which it is.
+        QPainterPath path;
+        path.addRoundedRect(QRectF(area.left() + room - 8, top, 8, 20), 2, 2);
+        painter.fillPath(path, color);
+    }
+}
+
+int DeckLabStripRenderer::paintLamps(QPainter& painter) const {
     const QRect area = rect(Part::Chips);
     if (area.isEmpty()) {
-        return;
+        return area.left();
     }
     const QColor deckColor = deckLabDeckColor(m_state.deck);
     const int top = area.top() + (area.height() - 20) / 2;
@@ -510,8 +581,9 @@ void DeckLabStripRenderer::paintLamps(QPainter& painter) const {
             painter.setBrush(m_state.tempoCentered ? kPlay : kLampOff);
             painter.drawEllipse(QRectF(x, area.center().y() - 3.5, 8, 8));
             painter.setBrush(Qt::NoBrush);
+            x += 8;
         }
-        return;
+        return x;
     }
     // Compact: only lit lamps, in order of importance, as many as fit.
     struct Lamp {
@@ -537,6 +609,7 @@ void DeckLabStripRenderer::paintLamps(QPainter& painter) const {
         }
         x += paintChip(painter, x, top, lamp.text, true, lamp.color, lamp.outlined) + 4;
     }
+    return x;
 }
 
 void DeckLabStripRenderer::paintValues(QPainter& painter, const QRect& dirty) const {
@@ -668,8 +741,13 @@ void DeckLabStripRenderer::paint(QPainter& painter, const QRect& dirty, bool pre
         if (needs(Part::Phase)) {
             paintPhase(painter);
         }
+        // Compact cards share the lamp row: lamps first, the phrase after.
+        int lampsEnd = 0;
         if (needs(Part::Chips)) {
-            paintLamps(painter);
+            lampsEnd = paintLamps(painter);
+        }
+        if (needs(Part::Phrase)) {
+            paintPhrase(painter, m_mode == Mode::Compact ? lampsEnd + 4 : 0);
         }
         paintValues(painter, dirty);
     }

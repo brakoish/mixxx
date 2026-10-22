@@ -2167,7 +2167,11 @@ void WDeckLab::addOverview(QWidget* widget, int deck) {
     static_cast<QBoxLayout*>(m_cards[deck - 1]->layout())->insertWidget(1, widget);
     widget->show();
     m_overviews[deck - 1] = widget;
+    // usb-first: rekordbox phrase bands along the bottom edge; hidden while
+    // the loaded track has no phrase data.
+    m_phraseBands[deck - 1] = new DeckLabPhraseBands(widget);
     updateLayers();
+    markDeckDirty(deck);
 }
 
 void WDeckLab::bindBrowser(WSearchLineEdit* search, WLibrarySidebar* sidebar, WLibrary* library) {
@@ -2840,6 +2844,8 @@ void WDeckLab::refreshDeck(int deck) {
         }
         m_tracks[deck - 1] = track;
     }
+    // usb-first: phrases ride on Track objects read from a rekordbox export.
+    m_phraseMaps[deck - 1] = decklab::trackPhrases(track.get());
     DeckLabStripState state;
     state.deck = deck;
     state.loaded = track && d.loaded->get() > 0;
@@ -2918,6 +2924,11 @@ void WDeckLab::fillDeckClock(int deck, DeckLabStripState& state) {
             }
         }
     }
+    // usb-first: current rekordbox phrase and its countdown, and the overview
+    // bands' playhead. Both stay empty without phrase data.
+    const auto& phrases = state.loaded ? m_phraseMaps[deck - 1] : decklab::PhraseMapPointer();
+    state.phrase = deckLabPhraseReadout(phrases.get(), std::clamp(position, 0.0, 1.0) * duration);
+    if (auto* bands = m_phraseBands[deck - 1].data()) bands->setPlayback(phrases, duration, position);
 }
 
 void WDeckLab::refreshDeckClock(int deck) {

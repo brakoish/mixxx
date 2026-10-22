@@ -54,6 +54,15 @@ inline DeckLabBeatPhase deckLabBeatPhase(long long beatIndex, double fraction) {
     return {static_cast<int>(((beatIndex % 4) + 4) % 4), fraction - whole};
 }
 
+// Phrase readout from a rekordbox export's phrase analysis: the current
+// phrase and a "bars.beats" countdown to its end. Empty name: no readout.
+struct DeckLabPhraseReadout {
+    QString name;
+    QString countdown;
+    QColor color;
+    bool operator==(const DeckLabPhraseReadout&) const = default;
+};
+
 // Everything one deck readout shows. Widgets repaint only the parts whose
 // values differ from the previous state.
 struct DeckLabStripState {
@@ -81,6 +90,7 @@ struct DeckLabStripState {
     bool looping = false;
     QString loopSize;
     int phase = -1; // lit beat segment 0..3; -1 without a beat grid
+    DeckLabPhraseReadout phrase; // replaces the beat meter while shown
     bool operator==(const DeckLabStripState&) const = default;
 };
 
@@ -112,7 +122,8 @@ class DeckLabStripRenderer {
         Bpm,
         Tempo,
         Key,
-        Time
+        Time,
+        Phrase
     };
     static constexpr int kHero = 36;
     static constexpr int kReadout = 24;
@@ -168,8 +179,12 @@ class DeckLabStripRenderer {
     void paintTransport(QPainter& painter, const QRect& area) const;
     void paintTitle(QPainter& painter, const QRect& area) const;
     void paintPhase(QPainter& painter) const;
+    // left: first usable x (compact cards paint the lamps first).
+    void paintPhrase(QPainter& painter, int left) const;
+    int phraseWidth() const;
     void paintValues(QPainter& painter, const QRect& dirty) const;
-    void paintLamps(QPainter& painter) const;
+    // Returns the x just after the last lamp painted.
+    int paintLamps(QPainter& painter) const;
     int paintChip(QPainter& painter, int x, int y, const QString& text, bool on,
             const QColor& lit, bool outlined = false) const;
     int chipWidth(const QString& text) const;
@@ -178,7 +193,7 @@ class DeckLabStripRenderer {
     QString m_fallback;
     DeckLabStripState m_state;
     bool m_flash = false;
-    std::array<QRect, 9> m_rects{};
+    std::array<QRect, 10> m_rects{};
 };
 
 // Tap target for one deck: the readout opens full track information (or
