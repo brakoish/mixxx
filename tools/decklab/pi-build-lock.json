@@ -24,7 +24,7 @@
     "WaveformMarkLabelTest.*"
   ],
   "input_sha256": {
-    ".github/workflows/decklab-pi.yml": "2b1e5494635b467ae697bc5b86cbffed23d9c9d5994512ff6226d4e3908dc047",
+    ".github/workflows/decklab-pi.yml": "aba85aa47399f9d9cb0a2564075f125db6729a6b59b630bacab849cdbd2c8fc0",
     "CMakeLists.txt": "3f6e3a3a33aa452ac09bf8efd7b881afa9f8802e1ff4338782ef0c8772f35cfa",
     "packaging/flatpak/modules/benchmark.yaml": "a85079134b2e8e9a2f837d400030039293e41870d4bf79d761cb4126309591f1",
     "packaging/flatpak/modules/chromaprint.yaml": "b0507a6d98aa75d7d37b7fc33f7fc2f03291ebd59a40711897dfbb0e398b30f2",

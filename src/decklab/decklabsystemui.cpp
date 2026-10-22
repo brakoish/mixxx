@@ -195,11 +195,12 @@ QWidget* DeckLabSystemUi::createSetupPanel(QWidget* parent) {
     m_setupAudio->setObjectName(QStringLiteral("decklab-setup-audio-state"));
     textLayout->addWidget(m_setupAudio);
     top->addWidget(text, 1);
-    m_setupButton = primaryButton(tr("Deck Setup"), panel, QStringLiteral("decklab-deck-setup"), 52);
-    m_setupButton->setFixedWidth(160);
-    m_setupButton->setEnabled(false);
-    connect(m_setupButton, &QPushButton::clicked, this, [this] { openWizard(0); });
-    top->addWidget(m_setupButton);
+    auto* setup = primaryButton(tr("Deck Setup"), panel, QStringLiteral("decklab-deck-setup"), 52);
+    setup->setFixedWidth(160);
+    setup->setEnabled(m_system != nullptr);
+    connect(setup, &QPushButton::clicked, this, [this] { openWizard(0); });
+    top->addWidget(setup);
+    m_setupButton = setup;
     layout->addLayout(top);
     updateSetupPanel();
     return panel;
