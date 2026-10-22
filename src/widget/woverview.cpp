@@ -310,8 +310,15 @@ void WOverview::onConnectedControlChanged(double dParameter, double dValue) {
     // calculated time between the playhead and cue/cursor should be updated at
     // least once per second, regardless of m_iPos which depends on the length
     // of the widget.
+    // Deck Lab: this used to store the sample index, which changes with every
+    // playposition update (15 Hz), so a hovered overview repainted at the
+    // engine indicator rate instead of once per second.
     int oldPositionSeconds = m_iPosSeconds;
-    m_iPosSeconds = static_cast<int>(dParameter * getTrackSamples());
+    const double trackSampleRate = m_trackSampleRateControl.get();
+    m_iPosSeconds = trackSampleRate > 0
+            ? static_cast<int>(dParameter * getTrackSamples() /
+                      (trackSampleRate * mixxx::kEngineChannelOutputCount))
+            : 0;
     if ((m_bTimeRulerActive || m_pHoveredMark != nullptr) && oldPositionSeconds != m_iPosSeconds) {
         redraw = true;
     }
