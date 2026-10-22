@@ -560,10 +560,30 @@ TEST_F(NativeDeckLabTest, DeckTextFollowsTheOnDeviceScale) {
         EXPECT_EQ(QStringLiteral("Barlow"), QFontInfo(button->font()).family()) << name;
         EXPECT_GE(button->height(), 44) << name;
     }
+    // A surface or skin sheet with button min/max heights (as in the real
+    // application) must not squash readouts or 44 px targets.
+    panel->setStyleSheet(panel->styleSheet() +
+            QStringLiteral(" WDeckLab QPushButton {min-height:20px;max-height:30px;padding:0px;}"));
+    QTest::qWait(100);
+    const char* const targets[] = {"decklab-tab-0", "decklab-tab-4", "decklab-usb", "decklab-performance-board-fx",
+            "decklab-1-quantize", "decklab-1-more", "decklab-2-beatsync", "decklab-hotcue-1-1", "decklab-hotcue-2-8"};
+    for (const char* name : targets) {
+        auto* button = panel->findChild<QPushButton*>(QString::fromLatin1(name)); ASSERT_NE(nullptr, button) << name;
+        EXPECT_TRUE(button->isVisible()) << name;
+        EXPECT_EQ(44, button->height()) << name;
+    }
+    EXPECT_EQ(104, strip(1)->height());
+    EXPECT_EQ(104, strip(2)->height());
     // Four decks drop the artist and BPM decimals before anything shrinks.
     QMetaObject::invokeMethod(panel->findChild<QComboBox*>("decklab-deck-layout"), "activated", Q_ARG(int, 2));
     QTest::qWait(100);
     ASSERT_EQ(DeckLabStripRenderer::Mode::Compact, strip(1)->mode());
+    EXPECT_EQ(138, strip(1)->height());
+    for (const char* name : {"decklab-card-1-cue_default", "decklab-card-4-play", "decklab-card-3-more"}) {
+        auto* button = panel->findChild<QPushButton*>(QString::fromLatin1(name)); ASSERT_NE(nullptr, button) << name;
+        EXPECT_TRUE(button->isVisible()) << name;
+        EXPECT_EQ(44, button->height()) << name;
+    }
     EXPECT_EQ(36, strip(1)->renderer().numeralFont(DeckLabStripRenderer::kHero).pixelSize());
     EXPECT_TRUE(strip(1)->renderer().overflowingParts().isEmpty());
     EXPECT_EQ(QSize(800, 480), panel->size());

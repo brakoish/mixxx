@@ -207,6 +207,13 @@ void setCheckedIf(QAbstractButton* button, bool checked) {
 void setStyleSheetIf(QWidget* widget, const QString& style) {
     if (widget && widget->styleSheet() != style) widget->setStyleSheet(style);
 }
+// Deck readouts are painted QPushButtons. Any surface or skin sheet with a
+// QPushButton min-height would override setFixedHeight() on polish, so each
+// readout carries its own sheet with paired min/max heights.
+QString deckStripSheet(int height) {
+    return QStringLiteral("QPushButton{min-height:%1px;max-height:%1px;padding:0px;margin:0px;border:0px;}")
+            .arg(height);
+}
 void setFixedHeightIf(QWidget* widget, int height) {
     if (widget && (widget->minimumHeight() != height || widget->maximumHeight() != height))
         widget->setFixedHeight(height);
@@ -1755,6 +1762,7 @@ void WDeckLab::ensureDeckSurfaces(int deck) {
     strip->setProperty("deckStrip", true);
     strip->setFocusPolicy(Qt::StrongFocus);
     strip->setFixedHeight(DeckLabStripRenderer::preferredHeight(DeckLabStripRenderer::Mode::Full));
+    strip->setStyleSheet(deckStripSheet(DeckLabStripRenderer::preferredHeight(DeckLabStripRenderer::Mode::Full)));
     strip->setAccessibleName(tr("Deck %1 full track information").arg(deck));
     strip->setAccessibleDescription(tr("Tap the deck readout to read its full title, artist and source"));
     auto infoPress = std::make_shared<std::pair<quint64, TrackPointer>>();
@@ -2681,9 +2689,11 @@ void WDeckLab::updateLayers() {
         const bool shown = decks && (four || deck == m_layers[0] || deck == m_layers[1]);
         if (auto* strip = m_strips[deck - 1]) {
             strip->setMode(four ? DeckLabStripRenderer::Mode::Compact : DeckLabStripRenderer::Mode::Full);
-            setFixedHeightIf(strip, DeckLabStripRenderer::preferredHeight(four
-                                                    ? DeckLabStripRenderer::Mode::Compact
-                                                    : DeckLabStripRenderer::Mode::Full));
+            const int stripHeight = DeckLabStripRenderer::preferredHeight(four
+                            ? DeckLabStripRenderer::Mode::Compact
+                            : DeckLabStripRenderer::Mode::Full);
+            setStyleSheetIf(strip, deckStripSheet(stripHeight));
+            setFixedHeightIf(strip, stripHeight);
             setEnabledIf(strip, decks);
             setFocusPolicyIf(strip, decks ? Qt::StrongFocus : Qt::NoFocus);
         }
