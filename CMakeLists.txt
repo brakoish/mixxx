@@ -1771,6 +1771,7 @@ add_library(
   src/decklab/decklabui.cpp
   src/decklab/decklabutilities.cpp
   src/widget/decklabdeckwidgets.cpp
+  src/widget/decklabstempads.cpp
   src/widget/wlibrarysidebar.cpp
   src/widget/wlibrarytableview.cpp
   src/widget/wlibrarytextbrowser.cpp
@@ -2794,6 +2795,8 @@ if(BUILD_TESTING)
     src/test/decklabwaveformcachetest.cpp
     src/test/decklabsystemtest.cpp
     src/test/decklabusbfirsttest.cpp
+    src/test/decklabstemgesturestest.cpp
+    src/test/decklabstemstest.cpp
     src/test/waveformmarklabeltest.cpp
     src/test/enginefilterbiquadtest.cpp
     src/test/enginemixertest.cpp
