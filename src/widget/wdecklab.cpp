@@ -105,7 +105,7 @@ const QString kRailStyle = QStringLiteral(R"(
  QWidget#decklab-rail {background:#16191E;}
  QPushButton[rail="true"] {background:#16191E;color:#9AA3AF;border:0px;border-right:1px solid #2C313A;
      border-bottom:1px solid #2C313A;border-radius:0px;min-height:43px;max-height:43px;padding:0px 6px;
-     font-size:15px;font-weight:600;}
+     font-family:"Barlow";font-size:16px;font-weight:600;}
  QPushButton[rail="true"]:pressed {background:#20242B;}
  QPushButton[rail="true"]:checked {color:#F2F4F7;background:#16191E;border-bottom:3px solid #F2F4F7;}
  QPushButton[rail="true"]:disabled {color:#4B525C;}
@@ -121,9 +121,10 @@ const QString kDeckStyle = QStringLiteral(R"(
 // Lit touch controls. Each button carries its own sheet so the same rules
 // also apply inside popups, and min/max heights keep a 44 px border box.
 // On = raised fill with white text and outline; Play adds its green lamp.
+// Text sizes follow the on-device scale: buttons 16 px SemiBold.
 const QString kActionStyle = QStringLiteral(R"(
  QPushButton {background:#16191E;color:#C9CED6;border:1px solid #2C313A;border-radius:3px;
-     min-height:42px;max-height:42px;padding:0px 2px;font-size:13px;font-weight:600;}
+     min-height:42px;max-height:42px;padding:0px 2px;font-family:"Barlow";font-size:16px;font-weight:600;}
  QPushButton:pressed {background:#20242B;}
  QPushButton:checked {background:#20242B;border-color:#F2F4F7;color:#F2F4F7;}
  QPushButton[lamp="play"]:checked {background:#20242B;border-color:#2FD27A;color:#F2F4F7;}
@@ -133,14 +134,30 @@ const QString kActionStyle = QStringLiteral(R"(
  )");
 const QString kPadStyle = QStringLiteral(R"(
  QPushButton {background:#16191E;color:#9AA3AF;border:1px solid #2C313A;border-radius:3px;
-     min-height:42px;max-height:42px;padding:0px;font-size:15px;font-weight:600;}
+     min-height:42px;max-height:42px;padding:0px;font-family:"Barlow";font-size:16px;font-weight:600;}
  QPushButton:pressed {background:#20242B;}
  QPushButton:disabled {background:#111418;color:#4B525C;border-color:#1E2228;}
+ )");
+// Deck dialogs (track information, beatgrid, controller FX details): body
+// 16 px, headings 18 px SemiBold, 44 px buttons.
+const QString kDialogStyle = QStringLiteral(R"(
+ QDialog {background:#0D0F12;color:#F2F4F7;border:1px solid #2C313A;}
+ QDialog QWidget {font-family:"Barlow";font-size:16px;font-weight:500;}
+ QLabel {color:#F2F4F7;}
+ QLabel[heading="true"] {font-size:18px;font-weight:600;}
+ QTextBrowser {background:#16191E;color:#F2F4F7;border:1px solid #2C313A;}
+ QPushButton {background:#16191E;color:#F2F4F7;border:1px solid #2C313A;border-radius:3px;
+     min-height:42px;max-height:42px;padding:0px 8px;font-weight:600;}
+ QPushButton:pressed {background:#20242B;}
+ QPushButton:checked {background:#20242B;border-color:#F2F4F7;}
+ QPushButton:disabled {color:#4B525C;border-color:#1E2228;}
  )");
 const QColor kFxLamp(0xf2, 0xf4, 0xf7);
 // Layer follow ignores controller traffic right after start-up and right
 // after a track load (mapping initialisation and load-time engine resets).
 constexpr qint64 kFollowStartupGraceMs = 1200;
+// Whole-track overview height on the Decks page (room for 14 px cue labels).
+constexpr int kOverviewHeight = 44;
 constexpr qint64 kFollowLoadGraceMs = 600;
 // Both layers of one side written together (a mapping that mirrors decks)
 // never flips the screen: the shown deck must have been idle this long.
@@ -361,9 +378,9 @@ QString timeText(double seconds) {
     return QStringLiteral("%1:%2").arg(int(seconds) / 60).arg(int(seconds) % 60, 2, 10, QLatin1Char('0'));
 }
 QString beatLoopSizeText(double size) {
-    if (!std::isfinite(size) || size <= 0) return QStringLiteral("—");
+    if (!util_isfinite(size) || size <= 0) return QStringLiteral("—");
     const double reciprocal = 1.0 / size;
-    return size < 1 && std::isfinite(reciprocal) && reciprocal <= 1000000 &&
+    return size < 1 && util_isfinite(reciprocal) && reciprocal <= 1000000 &&
                     std::abs(reciprocal - std::round(reciprocal)) < 1e-6
             ? QStringLiteral("1/%1").arg(qint64(std::round(reciprocal)))
             : QString::number(size, 'g', 3);
@@ -417,6 +434,8 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
         : QWidget(parent), WBaseWidget(this), m_config(config), m_library(library),
           m_players(players), m_effects(effects) {
     setObjectName(QStringLiteral("DeckLabNative"));
+    // Barlow and Barlow Semi Condensed ship with the skin (OFL).
+    deckLabLoadFonts(m_config->getResourcePath());
     setStyleSheet(kStyle);
     setAttribute(Qt::WA_StyledBackground);
     setMinimumSize(800, 480);
@@ -502,7 +521,9 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     m_rail->setFixedHeight(44);
     auto* rail = row(m_rail);
     const QStringList names = {tr("Decks"), tr("Browse"), tr("Sampler"), tr("Lab FX"), tr("Settings")};
-    rail->addWidget(new DeckLabMark(m_rail));
+    rail->addWidget(new DeckLabMark(QDir(m_config->getResourcePath())
+                                            .filePath(QStringLiteral("skins/DeckLab/decklab-icon-24.png")),
+            m_rail));
     const QStringList triggers = {"overview", "library", "samplers", "effects", "settings"};
     auto* navigation = new QButtonGroup(this);
     for (int page = 0; page < 5; ++page) {
@@ -922,11 +943,12 @@ void WDeckLab::showTrackInfo(int actual) {
     auto* dialog = new QDialog(this, Qt::Dialog | Qt::FramelessWindowHint);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setObjectName(QStringLiteral("decklab-track-info"));
-    dialog->setStyleSheet(QStringLiteral("QDialog{background:#101010;color:#eee;border:1px solid #555;} QLabel{color:#eee;} QTextBrowser{background:#111;color:#eee;border:1px solid #333;font-size:13px;} QPushButton{background:#202020;color:#eee;border:1px solid #555;min-height:38px;max-height:38px;padding:2px;}"));
+    dialog->setStyleSheet(kDialogStyle);
     dialog->setWindowTitle(tr("Deck %1 track information").arg(actual));
     auto* content = column(dialog, 8); content->setSpacing(8);
     auto* heading = new QLabel(tr("DECK LAB · Deck %1 · TRACK INFORMATION").arg(actual), dialog);
-    heading->setObjectName(QStringLiteral("decklab-track-info-heading")); heading->setFixedHeight(24);
+    heading->setObjectName(QStringLiteral("decklab-track-info-heading")); heading->setFixedHeight(28);
+    heading->setProperty("heading", true);
     content->addWidget(heading);
     auto* text = new QTextBrowser(dialog); text->setReadOnly(true); text->setOpenExternalLinks(false);
     text->setObjectName(QStringLiteral("decklab-track-info-text"));
@@ -943,10 +965,11 @@ void WDeckLab::showControllerFxInfo() {
     auto* dialog = new QDialog(this, Qt::Dialog | Qt::FramelessWindowHint);
     dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->setObjectName(QStringLiteral("decklab-controller-fx-info"));
     dialog->setWindowTitle(tr("Controller effects details"));
-    dialog->setStyleSheet(QStringLiteral("QDialog{background:#101010;color:#eee;border:1px solid #555;} QLabel{color:#eee;} QTextBrowser{background:#111;color:#eee;border:1px solid #333;font-size:13px;} QPushButton{background:#202020;color:#eee;border:1px solid #555;min-height:38px;max-height:38px;padding:2px;}"));
+    dialog->setStyleSheet(kDialogStyle);
     auto* content = column(dialog, 8); content->setSpacing(8);
-    auto* heading = new QLabel(tr("DECK LAB · CONTROLLER FX DETAILS"), dialog); heading->setFixedHeight(24); content->addWidget(heading);
-    auto* ownership = new QLabel(tr("Read only · Adjust these effects on your controller or in advanced settings.\nRMX controls are separate, on the FX screen."), dialog);
+    auto* heading = new QLabel(tr("DECK LAB · CONTROLLER FX DETAILS"), dialog); heading->setFixedHeight(28);
+    heading->setProperty("heading", true); content->addWidget(heading);
+    auto* ownership = new QLabel(tr("Read only · Adjust these effects on your controller or in advanced settings.\nLab FX controls are separate, on the Lab FX screen."), dialog);
     ownership->setObjectName(QStringLiteral("decklab-controller-fx-ownership")); ownership->setWordWrap(true); content->addWidget(ownership);
     auto* text = new QTextBrowser(dialog); text->setReadOnly(true); text->setOpenExternalLinks(false);
     text->setObjectName(QStringLiteral("decklab-controller-fx-text")); content->addWidget(text, 1);
@@ -960,7 +983,7 @@ void WDeckLab::showControllerFxInfo() {
             if (!chain) { blocks << tr("Unit %1 · unavailable").arg(unit).toHtmlEscaped(); continue; }
             const double mix = value(group, "mix");
             QString block = tr("Unit %1 · %2 · Mix %3").arg(unit).arg(value(group, "enabled") > 0 ? tr("Enabled") : tr("Bypassed"),
-                    std::isfinite(mix) ? QString::number(mix * 100, 'f', 0) + QLatin1Char('%') : tr("unavailable")).toHtmlEscaped();
+                    util_isfinite(mix) ? QString::number(mix * 100, 'f', 0) + QLatin1Char('%') : tr("unavailable")).toHtmlEscaped();
             QStringList routes;
             for (int deck = 1; deck <= 4; ++deck)
                 if (value(group, QStringLiteral("group_[Channel%1]_enable").arg(deck)) > 0) routes << QString::number(deck);
@@ -1078,9 +1101,10 @@ void WDeckLab::showBeatgrid(int deck, bool followsLayer) {
     auto* dialog = new QDialog(this, Qt::Dialog | Qt::FramelessWindowHint); dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setObjectName(QStringLiteral("decklab-beatgrid-editor"));
     dialog->setWindowTitle(tr("Deck %1 beatgrid").arg(actual));
-    dialog->setStyleSheet(QStringLiteral("QDialog{background:#101010;color:#eee;border:1px solid #555;} QLabel{color:#eee;} QPushButton{background:#202020;color:#eee;border:1px solid #555;min-height:38px;max-height:38px;padding:2px;font-size:13px;} QPushButton:checked{border-color:#d74448;} QPushButton:disabled{color:#777;border-color:#333;}"));
+    dialog->setStyleSheet(kDialogStyle);
     auto* content = column(dialog, 8); content->setSpacing(8);
     auto* title = new QLabel(dialog); title->setObjectName(QStringLiteral("decklab-beatgrid-title")); title->setFixedHeight(48);
+    title->setProperty("heading", true);
     content->addWidget(title);
     auto* hint = new QLabel(tr("Pause deck, release Sync lock and unlock grid to edit."), dialog); hint->setFixedHeight(32); content->addWidget(hint);
     const auto current = [this, deck, followsLayer, actual, track, epoch] {
@@ -1137,7 +1161,7 @@ void WDeckLab::showBeatgrid(int deck, bool followsLayer) {
         const bool beats = bool(track->getBeats());
         const double bpm = value(group, "local_bpm");
         title->setText(tr("DECK LAB · Deck %1 · BEATGRID · Local BPM %2\n%3").arg(actual).arg(
-                std::isfinite(bpm) && bpm > 0 ? QString::number(bpm, 'f', 2) : QStringLiteral("—"),
+                util_isfinite(bpm) && bpm > 0 ? QString::number(bpm, 'f', 2) : QStringLiteral("—"),
                 title->fontMetrics().elidedText(track->getTitle(), Qt::ElideRight, 660)));
         hint->setText(!sharedSafe ? tr("Stop playback and release Sync on every deck using this track before editing.") : !paused ? tr("Pause deck, release Sync lock and unlock grid to edit.") : !beats ? tr("No stored beat grid. Editing is unavailable.") : synced ? tr("Release Sync lock before editing; a master grid can affect other decks.") : locked ? tr("Grid is locked. Unlock while paused to edit.") : tr("Paused · grid unlocked. Changes affect this track's beat grid."));
         lock->setEnabled(paused && sharedSafe); lock->setChecked(locked); lock->setText(locked ? tr("GRID LOCK ON") : tr("GRID LOCK OFF"));
@@ -1700,7 +1724,7 @@ void WDeckLab::ensureDeckSurfaces(int deck) {
     auto* laneRows = column(lane);
     auto* mini = new DeckLabMiniStrip(lane);
     mini->setObjectName(QStringLiteral("decklab-mini-%1").arg(deck));
-    mini->setFixedHeight(22);
+    mini->setFixedHeight(DeckLabStripRenderer::preferredHeight(DeckLabStripRenderer::Mode::Mini));
     laneRows->addWidget(mini);
     m_minis[deck - 1] = mini;
     auto* body = new QWidget(lane);
@@ -1712,7 +1736,7 @@ void WDeckLab::ensureDeckSurfaces(int deck) {
     edge->setAttribute(Qt::WA_StyledBackground);
     edge->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
     edge->setStyleSheet(QStringLiteral("background:#0D0F12;color:%1;border-left:3px solid %1;"
-                                       "font-size:14px;font-weight:700;padding-top:4px;")
+                                       "font-family:\"Barlow Semi Condensed\";font-size:16px;font-weight:700;padding-top:4px;")
                                 .arg(deckLabDeckColor(deck).name()));
     edge->setFixedWidth(18);
     bodyRow->addWidget(edge);
@@ -1730,7 +1754,7 @@ void WDeckLab::ensureDeckSurfaces(int deck) {
     strip->setObjectName(QStringLiteral("decklab-info-hit-%1").arg(deck));
     strip->setProperty("deckStrip", true);
     strip->setFocusPolicy(Qt::StrongFocus);
-    strip->setFixedHeight(86);
+    strip->setFixedHeight(DeckLabStripRenderer::preferredHeight(DeckLabStripRenderer::Mode::Full));
     strip->setAccessibleName(tr("Deck %1 full track information").arg(deck));
     strip->setAccessibleDescription(tr("Tap the deck readout to read its full title, artist and source"));
     auto infoPress = std::make_shared<std::pair<quint64, TrackPointer>>();
@@ -1768,7 +1792,7 @@ void WDeckLab::addWaveform(QWidget* widget, int deck) {
     static_cast<QBoxLayout*>(body->layout())->addWidget(widget, 1);
     widget->show();
     watch(channel(deck), "waveform_zoom", [this, deck](double zoom) {
-        if (!std::isfinite(zoom) || zoom <= 0 || zoom == m_linkedZoom ||
+        if (!util_isfinite(zoom) || zoom <= 0 || zoom == m_linkedZoom ||
                 zoom != value(channel(deck), "waveform_zoom")) return;
         m_linkedZoom = zoom;
         if (m_zoomPending) return;
@@ -1790,7 +1814,7 @@ void WDeckLab::addOverview(QWidget* widget, int deck) {
     if (!widget || deck < 1 || deck > 4) return;
     ensureDeckSurfaces(deck);
     widget->setObjectName(QStringLiteral("decklab-overview-%1").arg(deck));
-    widget->setFixedHeight(40);
+    widget->setFixedHeight(kOverviewHeight);
     widget->setAttribute(Qt::WA_TransparentForMouseEvents, false);
     widget->setFocusPolicy(Qt::NoFocus); widget->setAcceptDrops(false);
     widget->setContextMenuPolicy(Qt::NoContextMenu);
@@ -2048,7 +2072,7 @@ void WDeckLab::refreshDeck(int deck) {
         state.key = QStringLiteral("—");
     }
     const double range = d.rateRange->get();
-    state.range = std::isfinite(range) && range > 0
+    state.range = util_isfinite(range) && range > 0
             ? QStringLiteral("±%1%").arg(QString::number(range * 100, 'g', 3)) : QString();
     state.master = state.loaded && d.leader->get() > 0;
     state.sync = state.loaded && d.sync->get() > 0;
@@ -2067,7 +2091,7 @@ void WDeckLab::fillDeckClock(int deck, DeckLabStripState& state) {
     // Values that move while a deck plays: transport, tempo, clock, phase.
     const auto& d = m_deck[deck - 1];
     const double rawPosition = d.position->get();
-    const double position = std::isfinite(rawPosition) ? rawPosition : 0;
+    const double position = util_isfinite(rawPosition) ? rawPosition : 0;
     m_shownPosition[deck - 1] = position;
     const double samples = d.samples->get();
     state.playing = state.loaded && d.play->get() > 0;
@@ -2079,14 +2103,14 @@ void WDeckLab::fillDeckClock(int deck, DeckLabStripState& state) {
     state.bpm = state.loaded && bpm > 0 ? QString::number(bpm, 'f', 2) : QStringLiteral("—");
     const double ratio = d.rateRatio->get();
     double pitch = (ratio - 1) * 100;
-    if (!std::isfinite(pitch) || std::abs(pitch) < .005) pitch = 0;
+    if (!util_isfinite(pitch) || std::abs(pitch) < .005) pitch = 0;
     state.tempoCentered = state.loaded && pitch == 0;
     state.tempo = !state.loaded ? QStringLiteral("—")
             : (pitch > 0 ? QStringLiteral("+") : pitch < 0 ? QStringLiteral("−") : QString()) +
                     QString::number(std::abs(pitch), 'f', 2) + QLatin1Char('%');
     // Remaining real time at the current tempo, as the end warning uses.
     const double duration = d.duration->get();
-    const double speed = std::isfinite(ratio) && ratio > 0 ? ratio : 1;
+    const double speed = util_isfinite(ratio) && ratio > 0 ? ratio : 1;
     const double remaining = duration * (1 - std::clamp(position, 0.0, 1.0)) / speed;
     state.remaining = state.loaded && duration > 0 ? QStringLiteral("−") + timeText(remaining) : QStringLiteral("—");
     auto* factory = WaveformWidgetFactory::instance();
@@ -2169,7 +2193,7 @@ void WDeckLab::refreshControllerFx() {
             if (value(group, QStringLiteral("group_[Channel%1]_enable").arg(target)) > 0)
                 targets << QString::number(target);
         const double rawMix = value(group, "mix");
-        const double mix = std::isfinite(rawMix) ? std::clamp(rawMix, 0.0, 1.0) : 0.0;
+        const double mix = util_isfinite(rawMix) ? std::clamp(rawMix, 0.0, 1.0) : 0.0;
         const int mixPercent = int(mix * 100);
         const QString route = targets.isEmpty() ? QStringLiteral("—") : targets.join(QLatin1Char('/'));
         // A real controller step below one percent is still wet: never DRY.
@@ -2252,7 +2276,7 @@ void WDeckLab::tickDecks() {
         const auto& d = m_deck[deck - 1];
         if (d.loaded->get() <= 0) continue;
         const double rawPosition = d.position->get();
-        const double position = std::isfinite(rawPosition) ? rawPosition : 0;
+        const double position = util_isfinite(rawPosition) ? rawPosition : 0;
         if (d.play->get() > 0 || position != m_shownPosition[deck - 1]) refreshDeckClock(deck);
         if (m_stripStates[deck - 1].endWarning) {
             if (m_strips[deck - 1]) m_strips[deck - 1]->setFlash(flash);
@@ -2657,7 +2681,9 @@ void WDeckLab::updateLayers() {
         const bool shown = decks && (four || deck == m_layers[0] || deck == m_layers[1]);
         if (auto* strip = m_strips[deck - 1]) {
             strip->setMode(four ? DeckLabStripRenderer::Mode::Compact : DeckLabStripRenderer::Mode::Full);
-            setFixedHeightIf(strip, four ? 116 : 86);
+            setFixedHeightIf(strip, DeckLabStripRenderer::preferredHeight(four
+                                                    ? DeckLabStripRenderer::Mode::Compact
+                                                    : DeckLabStripRenderer::Mode::Full));
             setEnabledIf(strip, decks);
             setFocusPolicyIf(strip, decks ? Qt::StrongFocus : Qt::NoFocus);
         }
@@ -2680,7 +2706,10 @@ void WDeckLab::updateLayers() {
         setVisibleIf(m_sideHotcues[side], shown);
         setVisibleIf(m_sideUtilities[side], shown);
     }
-    setFixedHeightIf(m_deckRow, four ? 116 + 40 + 48 : 86 + 40 + 48 + 48);
+    // Readout + overview + transport (four decks) or + hotcues + utilities.
+    setFixedHeightIf(m_deckRow, four
+                    ? DeckLabStripRenderer::preferredHeight(DeckLabStripRenderer::Mode::Compact) + kOverviewHeight + 48
+                    : DeckLabStripRenderer::preferredHeight(DeckLabStripRenderer::Mode::Full) + kOverviewHeight + 48 + 48);
     setVisibleIf(m_deckRow, decks);
     for (int deck = 1; deck <= 4; ++deck) refreshDeck(deck);
     refreshLoadButtons();
