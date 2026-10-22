@@ -130,6 +130,12 @@ class WaveformMark {
             setNeedsImageUpdate();
         }
     }
+    void setSeparateCompactLabels(bool separate) {
+        if (m_separateCompactLabels != separate) {
+            m_separateCompactLabels = separate;
+            setNeedsImageUpdate();
+        }
+    }
 
     // Sets the appropriate mark colors based on the base color
     void setBaseColor(QColor baseColor, int dimBrightThreshold);
@@ -205,6 +211,7 @@ class WaveformMark {
     int m_iPriority;
     int m_iHotCue;
     bool m_letterHotcueLabels = false;
+    bool m_separateCompactLabels = false;
 
     // Whether this marker is used in the show beats/time until next marker display.
     bool m_showUntilNext;

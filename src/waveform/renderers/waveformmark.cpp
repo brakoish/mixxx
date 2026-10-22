@@ -58,11 +58,13 @@ Qt::Alignment decodeAlignmentFlags(const QString& alignString, Qt::Alignment def
     return hflags | vflags;
 }
 
-float overlappingMarkerIncrement(const float labelRectHeight, const float breadth) {
+float overlappingMarkerIncrement(const float labelRectHeight, const float breadth,
+        bool separateCompactLabels) {
     // gradually "compact" the markers if the waveform height is
     // reduced, to avoid multiple markers obscuring the waveform.
     const float threshold = 90.f; // above this, the full increment is used
     const float fullIncrement = labelRectHeight + 2.f;
+    if (separateCompactLabels && breadth < threshold) return fullIncrement;
     const float minIncrement = 2.f; // increment when most compacted
 
     return std::max(minIncrement, fullIncrement - std::max(0.f, threshold - breadth));
@@ -282,7 +284,8 @@ class MarkerGeometry {
             bool useIcon,
             Qt::Alignment align,
             float breadth,
-            int level) {
+            int level,
+            bool separateCompactLabels) {
         // If the label is 1 character long, and this character isn't a letter or a number,
         // we can assume it's a special symbol
         m_isSymbol = !useIcon && label.length() == 1 && !label[0].isLetterOrNumber();
@@ -367,7 +370,7 @@ class MarkerGeometry {
         m_labelRect.moveLeft(0.5f);
 
         const float increment = overlappingMarkerIncrement(
-                static_cast<float>(m_labelRect.height()), breadth);
+                static_cast<float>(m_labelRect.height()), breadth, separateCompactLabels);
 
         if (alignV == Qt::AlignVCenter) {
             m_labelRect.moveTop((m_imageSize.height() - m_labelRect.height()) / 2.f);
@@ -456,9 +459,14 @@ QImage WaveformMark::generateImage(float devicePixelRatio) {
     const bool useIcon = m_iconPath != "";
 
     // Determine drawing geometries
-    const MarkerGeometry markerGeometry{label, useIcon, m_align, m_breadth, m_level};
+    const MarkerGeometry markerGeometry{label, useIcon, m_align, m_breadth, m_level, m_separateCompactLabels};
 
-    m_label.setAreaRect(markerGeometry.labelRect());
+    // Opted-in compact views keep full label lanes. If those lanes are full,
+    // retain the exact marker line while omitting an otherwise clipped label.
+    const bool labelVisible = !m_separateCompactLabels || m_breadth >= 90.f ||
+            (markerGeometry.labelRect().top() >= 0.f &&
+                    markerGeometry.labelRect().bottom() <= m_breadth);
+    m_label.setAreaRect(labelVisible ? markerGeometry.labelRect() : QRectF());
 
     const QSize size{markerGeometry.getImageSize(devicePixelRatio)};
 
@@ -520,7 +528,7 @@ QImage WaveformMark::generateImage(float devicePixelRatio) {
             linePos + 1.f,
             markerGeometry.imageSize().height()));
 
-    if (useIcon || label.length() != 0) {
+    if (labelVisible && (useIcon || label.length() != 0)) {
         painter.setPen(borderColor());
 
         // Draw the label rounded rect with border

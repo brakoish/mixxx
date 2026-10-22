@@ -90,10 +90,12 @@ class BuildGuards(unittest.TestCase):
                          "Lv2PreparationUsesSelectedRateWithoutAudio", "TouchSearchUsesNativeKeyboardAndReturnsWaveforms"):
                 required += '<testcase name="%s" classname="NativeDeckLabTest" status="run"/>' % name
             for name in ("EdgeLabelsStayInsideWithoutChangingWidth", "OverwideLabelsRemainInsideAtBothEdges",
-                         "HotcueIdentifiersPreserveNumericDefaultAndSavedLabels", "LetterIdentifiersRequireExplicitSkinOptIn"):
+                         "HotcueIdentifiersPreserveNumericDefaultAndSavedLabels", "LetterIdentifiersRequireExplicitSkinOptIn",
+                         "CompactMarkerLanesRequireOptInAndPreserveTwoDeckImages",
+                         "CompactMarkerOverflowOmitsOnlyLabelAndKeepsExactLine"):
                 required += '<testcase name="%s" classname="WaveformMarkLabelTest" status="run"/>' % name
             path.write_text('<testsuites failures="0" errors="0"><testsuite>' + common + required + '</testsuite></testsuites>')
-            self.assertEqual(build_pi.test_summary(path)["enabled_passed"], 228)
+            self.assertEqual(build_pi.test_summary(path)["enabled_passed"], 230)
             path.write_text(path.read_text().replace('failures="0"', 'failures="1"'))
             with self.assertRaises(ValueError):
                 build_pi.test_summary(path)

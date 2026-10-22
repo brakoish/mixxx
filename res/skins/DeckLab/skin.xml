@@ -34,6 +34,7 @@
           <TooltipId>waveform_display</TooltipId>
           <ObjectName>DeckLabWave1</ObjectName>
           <HotcueLabelFormat>letters</HotcueLabelFormat>
+          <CompactMarkerLabels>separate</CompactMarkerLabels>
           <Channel>1</Channel>
           <BgColor>#000</BgColor>
           <BeatColor>#707070</BeatColor>
@@ -140,6 +141,7 @@
           <TooltipId>waveform_display</TooltipId>
           <ObjectName>DeckLabWave2</ObjectName>
           <HotcueLabelFormat>letters</HotcueLabelFormat>
+          <CompactMarkerLabels>separate</CompactMarkerLabels>
           <Channel>2</Channel>
           <BgColor>#000</BgColor>
           <BeatColor>#707070</BeatColor>
@@ -246,6 +248,7 @@
           <TooltipId>waveform_display</TooltipId>
           <ObjectName>DeckLabWave3</ObjectName>
           <HotcueLabelFormat>letters</HotcueLabelFormat>
+          <CompactMarkerLabels>separate</CompactMarkerLabels>
           <Channel>3</Channel>
           <BgColor>#000</BgColor>
           <BeatColor>#707070</BeatColor>
@@ -352,6 +355,7 @@
           <TooltipId>waveform_display</TooltipId>
           <ObjectName>DeckLabWave4</ObjectName>
           <HotcueLabelFormat>letters</HotcueLabelFormat>
+          <CompactMarkerLabels>separate</CompactMarkerLabels>
           <Channel>4</Channel>
           <BgColor>#000</BgColor>
           <BeatColor>#707070</BeatColor>

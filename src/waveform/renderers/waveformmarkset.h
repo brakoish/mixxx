@@ -91,6 +91,7 @@ class WaveformMarkSet {
 
     void addMark(WaveformMarkPointer pMark) {
         pMark->setLetterHotcueLabels(m_letterHotcueLabels);
+        pMark->setSeparateCompactLabels(m_separateCompactLabels);
         m_marks.push_back(pMark);
     }
 
@@ -100,6 +101,7 @@ class WaveformMarkSet {
 
   private:
     bool m_letterHotcueLabels = false;
+    bool m_separateCompactLabels = false;
     WaveformMarkPointer m_pDefaultMark;
     QList<WaveformMarkPointer> m_marks;
     // List of visible WaveformMarks sorted by the order they appear in the track

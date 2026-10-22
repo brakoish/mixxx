@@ -882,7 +882,19 @@ TEST_F(NativeDeckLabTest, DeckAndMasterFeedbackFollowRealControlsInBothLayouts) 
             ASSERT_TRUE(context->isVisible());
             EXPECT_TRUE(context->text().contains(deck%2 ? "PLAYING" : "PAUSED"));
             auto* pfl=layout==2 ? panel->findChild<QLabel*>(QStringLiteral("decklab-modes-%1").arg(deck)) : context;
-            EXPECT_TRUE(pfl->text().contains(deck%2 ? "PFL ON" : "PFL OFF"));
+            EXPECT_TRUE(pfl->text().contains(layout==2
+                            ? (deck%2 ? "HP ON" : "HP OFF")
+                            : (deck%2 ? "HP CUE ON" : "HP CUE OFF")));
+            if(layout==2) {
+                auto* bpm=panel->findChild<QLabel*>(QStringLiteral("decklab-numbers-%1").arg(deck)); ASSERT_NE(nullptr,bpm);
+                bool numeric=false; bpm->text().toDouble(&numeric); EXPECT_TRUE(numeric);
+                EXPECT_FALSE(bpm->text().contains("BPM"));
+            } else {
+                auto* source=panel->findChild<QLabel*>(QStringLiteral("decklab-source-%1").arg(deck)); ASSERT_NE(nullptr,source);
+                EXPECT_TRUE(source->toolTip().contains("ELAP"));
+                EXPECT_FALSE(source->toolTip().contains("PLAYING")); EXPECT_FALSE(source->toolTip().contains("PAUSED"));
+                EXPECT_FALSE(source->toolTip().contains('%'));
+            }
             auto* meter=panel->findChild<QProgressBar*>(QStringLiteral("decklab-level-%1").arg(deck)); ASSERT_NE(nullptr,meter);
             EXPECT_TRUE(meter->isVisible()); EXPECT_EQ(10*deck,meter->value());
             auto* level=panel->findChild<QLabel*>(QStringLiteral("decklab-level-label-%1").arg(deck)); ASSERT_NE(nullptr,level);
@@ -981,6 +993,35 @@ TEST_F(NativeDeckLabTest, ControllerFxDetailsReadAllRealUnitsWithoutControlWrite
     const QString output=qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
     if(!output.isEmpty()) EXPECT_TRUE(dialog->grab().save(QDir(output).filePath("controller-fx-details.png")));
     close->click(); QCoreApplication::processEvents(); EXPECT_EQ(externalWrites,writes);
+    QTest::qWait(150);
+    auto* summary=panel->findChild<QLabel*>("decklab-performance-effects"); ASSERT_NE(nullptr,summary);
+    EXPECT_TRUE(summary->text().startsWith("FX1"));
+    QMetaObject::invokeMethod(panel->findChild<QComboBox*>("decklab-deck-layout"),"activated",Q_ARG(int,2)); QTest::qWait(150);
+    EXPECT_EQ(QStringLiteral("FX 1 ON · 2 DRY\nFX 3 ON · 4 DRY"),summary->text());
+    for(const auto& line:summary->text().split('\n'))
+        EXPECT_LE(summary->fontMetrics().horizontalAdvance(line),summary->contentsRect().width());
+    ControlObject::set(ConfigKey("[EffectRack1_EffectUnit4]","enabled"),1); const int enabledWrites=writes;
+    QTest::qWait(150); EXPECT_EQ(enabledWrites,writes);
+    EXPECT_EQ(QStringLiteral("FX 1 ON · 2 DRY\nFX 3 ON · 4 ON"),summary->text());
+    EXPECT_TRUE(summary->toolTip().contains("FX 4; decks 4;"));
+    // A real MIDI step below one percent is still wet. Display rounding must
+    // never turn it into a false DRY indication on either summary path.
+    ControlObject::set(ConfigKey("[EffectRack1_EffectUnit1]","mix"),1.0/127);
+    ControlObject::set(ConfigKey("[EffectRack1_EffectUnit3]","mix"),1.0/127);
+    ControlObject::set(ConfigKey("[EffectRack1_EffectUnit4]","mix"),.001); const int lowMixWrites=writes;
+    QTest::qWait(150); EXPECT_EQ(lowMixWrites,writes);
+    EXPECT_EQ(QStringLiteral("FX 1 ON · 2 DRY\nFX 3 ON · 4 ON"),summary->text());
+    EXPECT_TRUE(summary->toolTip().contains("<1%"));
+    QMetaObject::invokeMethod(panel->findChild<QComboBox*>("decklab-deck-layout"),"activated",Q_ARG(int,1)); QTest::qWait(150);
+    EXPECT_TRUE(summary->text().section('\n',0,0).endsWith("<1%"));
+    EXPECT_FALSE(summary->text().section('\n',0,0).contains("DRY"));
+    QMetaObject::invokeMethod(panel->findChild<QComboBox*>("decklab-deck-layout"),"activated",Q_ARG(int,2)); QTest::qWait(150);
+    ControlObject::set(ConfigKey("[EffectRack1_EffectUnit3]","mix"),0); const int dryWrites=writes;
+    QTest::qWait(150); EXPECT_EQ(dryWrites,writes);
+    EXPECT_EQ(QStringLiteral("FX 1 ON · 2 DRY\nFX 3 DRY · 4 ON"),summary->text());
+    ControlObject::set(ConfigKey("[EffectRack1_EffectUnit4]","mix"),0); const int fourthDryWrites=writes;
+    QTest::qWait(150); EXPECT_EQ(fourthDryWrites,writes);
+    EXPECT_EQ(QStringLiteral("FX 1 ON · 2 DRY\nFX 3 DRY · 4 DRY"),summary->text());
 }
 
 TEST_F(NativeDeckLabTest, LinkedZoomFollowsTheLastStableExternalChangeWithoutFeedback) {
@@ -997,6 +1038,10 @@ TEST_F(NativeDeckLabTest, LinkedZoomFollowsTheLastStableExternalChangeWithoutFee
     for(int deck=1;deck<=4;++deck) EXPECT_DOUBLE_EQ(8,ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck),"waveform_zoom")));
     EXPECT_LE(changes-before,8);
     const int settled=changes; QTest::qWait(50); EXPECT_EQ(settled,changes);
+    QTest::qWait(150);
+    auto* zoom=panel->findChild<QLabel*>("decklab-performance-zoom"); ASSERT_NE(nullptr,zoom);
+    EXPECT_EQ(QStringLiteral("LINKED ZOOM"),zoom->text());
+    EXPECT_TRUE(zoom->toolTip().contains("current value 8"));
 }
 
 TEST_F(NativeDeckLabTest, MasterLockMissingBeatGridAndSavedLoopIndicatorsUseRealState) {

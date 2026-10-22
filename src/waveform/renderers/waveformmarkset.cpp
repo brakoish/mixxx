@@ -17,6 +17,8 @@ void WaveformMarkSet::setup(const QString& group, const QDomNode& node,
                             const WaveformSignalColors& signalColors) {
     m_letterHotcueLabels = context.selectString(node, QStringLiteral("HotcueLabelFormat"))
                                   .compare(QStringLiteral("letters"), Qt::CaseInsensitive) == 0;
+    m_separateCompactLabels = context.selectString(node, QStringLiteral("CompactMarkerLabels"))
+                                     .compare(QStringLiteral("separate"), Qt::CaseInsensitive) == 0;
     // + 3 for cue_point, loop_start_position and loop_end_position
     m_marks.reserve(kMaxNumberOfHotcues + 3);
     // Note: m_hotCueMarks does not support reserving space
@@ -61,6 +63,7 @@ void WaveformMarkSet::setup(const QString& group, const QDomNode& node,
                 auto pMark = WaveformMarkPointer::create(
                         group, defaultChild, context, i, signalColors, i);
                 pMark->setLetterHotcueLabels(m_letterHotcueLabels);
+                pMark->setSeparateCompactLabels(m_separateCompactLabels);
                 m_marks.push_front(pMark);
                 m_hotCueMarks.insert(pMark->getHotCue(), pMark);
             }
@@ -110,6 +113,7 @@ void WaveformMarkSet::setDefault(const QString& group,
                     i,
                     signalColors);
             pMark->setLetterHotcueLabels(m_letterHotcueLabels);
+            pMark->setSeparateCompactLabels(m_separateCompactLabels);
             m_marks.push_front(pMark);
             m_hotCueMarks.insert(pMark->getHotCue(), pMark);
         }

@@ -427,8 +427,8 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
         watch(kNative, "layout_decks", [menu](double) { menu->close(); });
         watch(kTab, "current", [menu](double) { menu->close(); });
         for (int actual : {deck, deck + 2}) watch(channel(actual), "track_loaded", [menu](double) { menu->close(); });
-        auto* more = button(tr("MORE"), [menu, strip] { menu->popup(strip->mapToGlobal(QPoint(0, strip->height()))); }, strip, prefix + QStringLiteral("more"));
-        more->setFixedHeight(44); more->setStyleSheet(QStringLiteral("min-height:40px;max-height:40px;padding:1px 2px;font-size:12px;"));
+        auto* more = button(tr("PLAY/CUE\nMORE"), [menu, strip] { menu->popup(strip->mapToGlobal(QPoint(0, strip->height()))); }, strip, prefix + QStringLiteral("more"));
+        more->setFixedHeight(44); more->setStyleSheet(QStringLiteral("min-height:40px;max-height:40px;padding:1px 2px;font-size:11px;"));
         append(more, 68);
         strip->setFixedHeight(44);
     } else {
@@ -506,9 +506,9 @@ void WDeckLab::showControllerFxInfo() {
             for (int deck = 1; deck <= 4; ++deck)
                 if (value(group, QStringLiteral("group_[Channel%1]_enable").arg(deck)) > 0) routes << QString::number(deck);
             block += QStringLiteral("<br>") + tr("Routed decks: %1").arg(routes.isEmpty() ? tr("none") : routes.join(QStringLiteral(", "))).toHtmlEscaped();
-            const auto& slots = chain->getEffectSlots();
-            for (int slot = 0; slot < slots.size(); ++slot) {
-                const auto effect = slots[slot];
+            const auto& effectSlots = chain->getEffectSlots();
+            for (int slot = 0; slot < effectSlots.size(); ++slot) {
+                const auto effect = effectSlots[slot];
                 const bool loaded = effect && effect->isLoaded() && effect->getManifest();
                 const QString state = loaded ? (value(QStringLiteral("[EffectRack1_EffectUnit%1_Effect%2]").arg(unit).arg(slot + 1), "enabled") > 0 ? tr("ON") : tr("OFF")) : tr("EMPTY");
                 block += QStringLiteral("<br>") + tr("Slot %1: %2 [%3]").arg(slot + 1)
@@ -1687,7 +1687,9 @@ void WDeckLab::refreshDeck(int deck) {
         m_deckMetrics[deck - 1]->setFixedHeight(28);
         m_playStates[deck - 1]->setVisible(false);
         m_playStates[deck - 1]->setText(loaded ? (playing ? tr("PLAYING") : tr("PAUSED")) : tr("EMPTY"));
-        m_numbers[deck - 1]->setText(track ? QStringLiteral("%1 <span style='font-size:11px;font-weight:400;color:#aaa'>BPM</span>").arg(bpm, 0, 'f', 2) : QStringLiteral("— <span style='font-size:11px;font-weight:400;color:#aaa'>BPM</span>"));
+        m_numbers[deck - 1]->setText(compact
+                        ? (track ? QString::number(bpm, 'f', 2) : QStringLiteral("—"))
+                        : track ? QStringLiteral("%1 <span style='font-size:11px;font-weight:400;color:#aaa'>BPM</span>").arg(bpm, 0, 'f', 2) : QStringLiteral("— <span style='font-size:11px;font-weight:400;color:#aaa'>BPM</span>"));
         m_keys[deck - 1]->setText((compact ? QStringLiteral("%1") : QStringLiteral("<span style='font-size:11px;font-weight:400;color:#aaa'>KEY</span> %1")).arg(track ? key.toHtmlEscaped() : QStringLiteral("—")));
         m_remaining[deck - 1]->setText(track ? QStringLiteral("−") + timeText(remaining) : QStringLiteral("—"));
         m_pitch[deck - 1]->setText(loaded ? (compact ? pitchText : tr("PITCH %1").arg(pitchText)) : QString());
@@ -1710,7 +1712,7 @@ void WDeckLab::refreshDeck(int deck) {
         if (value(channel(deck), "quantize") > 0) compactModes << tr("QNT");
         QString compactLoop;
         for (const auto& mode : modes) if (mode.startsWith(tr("LOOP"))) compactLoop = mode;
-        m_modes[deck - 1]->setText(compact ? tr("PFL %1 %2\n%3").arg(pfl ? tr("ON") : tr("OFF"), compactLoop, compactModes.join(QLatin1Char(' '))) : modes.join(QStringLiteral(" · ")));
+        m_modes[deck - 1]->setText(compact ? tr("HP %1 %2\n%3").arg(pfl ? tr("ON") : tr("OFF"), compactLoop, compactModes.join(QLatin1Char(' '))) : modes.join(QStringLiteral(" · ")));
         m_modes[deck - 1]->setToolTip(modes.join(QStringLiteral(" · ")));
         auto* values = static_cast<QBoxLayout*>(m_deckMetrics[deck - 1]->layout());
         auto* utility = static_cast<QBoxLayout*>(m_deckSecondary[deck - 1]->layout());
@@ -1756,10 +1758,8 @@ void WDeckLab::refreshDeck(int deck) {
             source = m_sourceNames[deck - 1];
         }
         const QString sourceLine = loaded
-                ? tr("%1 · %2 · ELAP %3 · %4%")
-                          .arg(playing ? tr("PLAYING") : tr("PAUSED"), source,
-                                  timeText(duration * std::clamp(position, 0.0, 1.0)))
-                          .arg(int(std::clamp(position, 0.0, 1.0) * 100))
+                ? tr("%1 · ELAP %2")
+                          .arg(source, timeText(duration * std::clamp(position, 0.0, 1.0)))
                 : tr("EMPTY · Choose a track in Browse");
         m_sources[deck - 1]->setText(m_sources[deck - 1]->fontMetrics().elidedText(
                 sourceLine, Qt::ElideRight, std::max(0, m_sources[deck - 1]->width() - 16)));
@@ -1780,7 +1780,7 @@ void WDeckLab::refreshDeck(int deck) {
         m_waveContexts[deck - 1]->setText(compact
                         ? QStringLiteral("<b style='font-size:12px'>D%1 · %2</b><br><span style='font-size:11px'>%3</span>")
                                   .arg(deck).arg(stateText, beatText.toHtmlEscaped())
-                        : QStringLiteral("<b style='font-size:14px'>D%1 · %2</b><br><span style='font-size:12px'>%3<br>PFL %4</span><br><span style='font-size:11px;color:#aaa'>%5</span>")
+                        : QStringLiteral("<b style='font-size:14px'>D%1 · %2</b><br><span style='font-size:12px'>%3<br>HP CUE %4</span><br><span style='font-size:11px;color:#aaa'>%5</span>")
                                   .arg(deck).arg(stateText, beatText.toHtmlEscaped(), pfl ? tr("ON") : tr("OFF"),
                                           modes.join(QStringLiteral(" · ")).toHtmlEscaped()));
         m_waveContexts[deck - 1]->setToolTip(tr("Beat index and phase relative to the stored beat grid's first marker; no bar or phrase inference"));
@@ -1801,8 +1801,9 @@ void WDeckLab::refreshDeck(int deck) {
     refreshTransport(deck, QStringLiteral("decklab-card-%1-").arg(deck));
     if (m_pairPerformance && m_pairPerformance->isVisible() && deck == (m_fourDeckLayout ? 4 : displayedDeck(1))) {
         QStringList effects;
+        QStringList activeStates;
         QStringList detailedEffects;
-        for (int unit = 1; unit <= 2; ++unit) {
+        for (int unit = 1; unit <= 4; ++unit) {
             const QString group = QStringLiteral("[EffectRack1_EffectUnit%1]").arg(unit);
             auto chain = m_effects ? m_effects->getEffectChain(group) : EffectChainPointer();
             QString name = tr("Empty");
@@ -1822,27 +1823,33 @@ void WDeckLab::refreshDeck(int deck) {
             for (int target = 1; target <= 4; ++target)
                 if (value(group, QStringLiteral("group_[Channel%1]_enable").arg(target)) > 0)
                     targets << QString::number(target);
-            const int mix = int(std::clamp(value(group, "mix"), 0.0, 1.0) * 100);
+            const double rawMix = value(group, "mix");
+            const double mix = std::isfinite(rawMix) ? std::clamp(rawMix, 0.0, 1.0) : 0.0;
+            const int mixPercent = int(mix * 100);
             const QString route = targets.isEmpty() ? QStringLiteral("—") : targets.join(QLatin1Char('/'));
-            const QString state = effectOn && value(group, "enabled") > 0 && mix > 0 && !targets.isEmpty()
-                    ? tr("%1%").arg(mix) : tr("DRY");
-            const QString prefix = tr("%1→%2 ").arg(unit).arg(route);
+            const bool active = effectOn && value(group, "enabled") > 0 && mix > 0 && !targets.isEmpty();
+            const QString state = active ? (mixPercent > 0 ? tr("%1%").arg(mixPercent) : tr("<1%")) : tr("DRY");
+            activeStates << (active ? tr("ON") : tr("DRY"));
+            const QString prefix = tr("FX%1→%2 ").arg(unit).arg(route);
             const QString suffix = QLatin1Char(' ') + state;
             const int available = std::max(8, 100 - m_pairEffects->fontMetrics().horizontalAdvance(prefix + suffix));
             const QString shortName = m_pairEffects->fontMetrics().elidedText(name, Qt::ElideRight, available);
-            effects << prefix + shortName + suffix;
+            if (unit <= 2) effects << prefix + shortName + suffix;
             detailedEffects << tr("FX %1; decks %2; %3; %4").arg(unit).arg(route, name, state);
         }
-        m_pairEffects->setText(effects.join(QLatin1Char('\n')));
+        m_pairEffects->setText(m_fourDeckLayout
+                        ? tr("FX 1 %1 · 2 %2\nFX 3 %3 · 4 %4").arg(activeStates[0], activeStates[1], activeStates[2], activeStates[3])
+                        : effects.join(QLatin1Char('\n')));
         m_pairEffects->setToolTip(detailedEffects.join(QLatin1Char('\n')));
         m_pairRMX->setText(tr("RMX · D%1\n%2").arg(m_fxDeck).arg(m_fxReleasing ? tr("TAIL") : m_fxActive ? tr("ON") : tr("DRY")));
         const double headMix = value("[Master]", "headMix");
         const int mainMix = std::isfinite(headMix) ? int(std::clamp((headMix + 1) * 50, 0.0, 100.0)) : 0;
         const bool split = value("[Master]", "headSplit") > 0;
         m_pairCue->setText(split ? tr("HP SPLIT") : mainMix == 0 ? tr("HP CUE") : mainMix == 100 ? tr("HP MAIN") : tr("HP %1% MAIN").arg(mainMix));
-        m_pairCue->setToolTip(tr("Headphones: %1% toward main output; split cue %2. Per-deck PFL shows the selected cue feeds.").arg(mainMix).arg(split ? tr("on") : tr("off")));
-        m_pairZoom->setText(tr("ZOOM %1 / %2").arg(value(channel(displayedDeck(0)), "waveform_zoom"), 0, 'g', 2)
-                                   .arg(value(channel(displayedDeck(1)), "waveform_zoom"), 0, 'g', 2));
+        m_pairCue->setToolTip(tr("Headphones: %1% toward main output; split cue %2. Per-deck HP CUE shows the selected cue feeds.").arg(mainMix).arg(split ? tr("on") : tr("off")));
+        m_pairZoom->setText(tr("LINKED ZOOM"));
+        m_pairZoom->setToolTip(tr("All four decks share the same waveform zoom; current value %1")
+                                      .arg(value(channel(1), "waveform_zoom"), 0, 'g', 2));
     }
 }
 
