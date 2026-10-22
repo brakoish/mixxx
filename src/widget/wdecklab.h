@@ -77,6 +77,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     QWidget* buildHotcues(int deck, bool followsLayer, QWidget* parent);
     void refreshHotcues(int deck, const QString& prefix);
     void showBeatgrid(int deck, bool followsLayer);
+    void showTrackInfo(int actualDeck);
     void refreshTransport(int deck, const QString& prefix);
     QWidget* buildBrowse();
     QWidget* buildSampler();
@@ -134,6 +135,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     std::array<QLabel*, 4> m_pitch{};
     std::array<QLabel*, 4> m_playStates{};
     std::array<QWidget*, 4> m_waveHeaders{};
+    std::array<QLabel*, 4> m_infoAffordances{};
     std::array<QWidget*, 4> m_deckMetrics{};
     std::array<QWidget*, 4> m_deckSecondary{};
     std::array<QLabel*, 4> m_modes{};
@@ -147,10 +149,18 @@ class WDeckLab : public QWidget, public WBaseWidget {
     QWidget* m_pairContexts = nullptr;
     QWidget* m_pairDetails = nullptr;
     QLabel* m_pairEffects = nullptr;
+    QLabel* m_pairRMX = nullptr;
+    QLabel* m_pairCue = nullptr;
+    QLabel* m_masterLevelLabel = nullptr;
+    std::array<QProgressBar*, 2> m_masterMeters{};
     QLabel* m_pairZoom = nullptr;
     double m_linkedZoom = 0;
     bool m_zoomPending = false;
     std::array<QLabel*, 4> m_waveContexts{};
+    std::array<QLabel*, 4> m_waveIdentities{};
+    std::array<QWidget*, 4> m_contextPanels{};
+    std::array<QWidget*, 4> m_meterPanels{};
+    std::array<QLabel*, 4> m_meterLabels{};
     std::array<QLabel*, 4> m_sources{};
     std::array<QString, 4> m_sourceLocations{};
     std::array<QString, 4> m_sourceNames{};
