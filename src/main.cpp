@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QDialog>
 #include <QDir>
 #include <QPixmapCache>
 #include <QString>
@@ -24,6 +25,7 @@
 #include "waveform/visualsmanager.h"
 #include "waveform/waveformwidgetfactory.h"
 #endif
+#include "decklab/decklabsignals.h"
 #include "mixxxmainwindow.h"
 #if defined(__WINDOWS__)
 #include "nativeeventhandlerwin.h"
@@ -76,6 +78,26 @@ int runMixxx(MixxxApplication* pApp, const CmdlineArgs& args) {
         pApp->processEvents();
         pApp->installEventFilter(&mainWindow);
 
+        // SIGTERM/SIGINT run the normal graceful close path (settings saved,
+        // no confirmation), so service stop/restart and shutdown are safe.
+        DeckLabTerminationSignals* pTermination = DeckLabTerminationSignals::install(&mainWindow);
+        if (pTermination) {
+            QObject::connect(pTermination,
+                    &DeckLabTerminationSignals::terminationRequested,
+                    &mainWindow,
+                    [&mainWindow](int) {
+                        // Dialogs run nested event loops; end them first.
+                        const auto windows = QApplication::topLevelWidgets();
+                        for (QWidget* pWindow : windows) {
+                            if (pWindow != &mainWindow && pWindow->isVisible() &&
+                                    (pWindow->isModal() || qobject_cast<QDialog*>(pWindow))) {
+                                pWindow->close();
+                            }
+                        }
+                        mainWindow.close();
+                    });
+        }
+
 #if defined(__WINDOWS__)
         WindowsEventHandler winEventHandler;
         pApp->installNativeEventFilter(&winEventHandler);
@@ -112,6 +134,9 @@ int runMixxx(MixxxApplication* pApp, const CmdlineArgs& args) {
             mainWindow.show();
 
             qDebug() << "Running Mixxx";
+            if (pTermination) {
+                pTermination->arm();
+            }
             exitCode = pApp->exec();
         }
     }

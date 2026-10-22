@@ -13,6 +13,7 @@ class HidEnumerator : public ControllerEnumerator {
     ~HidEnumerator() override;
 
     QList<Controller*> queryDevices() override;
+    void refreshDevices() override;
 
   private:
     QList<Controller*> m_devices;

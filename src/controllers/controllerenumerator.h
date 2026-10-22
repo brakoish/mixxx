@@ -19,6 +19,12 @@ class ControllerEnumerator : public QObject {
 
     virtual QList<Controller*> queryDevices() = 0;
 
+    /// Forget every device so the next queryDevices() reflects the devices
+    /// present now (hotplug). Called on the controller thread only after
+    /// every controller has been closed; previously returned pointers die.
+    virtual void refreshDevices() {
+    }
+
     // Sub-classes return true here if their devices must be polled to get data
     // from the controller.
     virtual bool needPolling() {

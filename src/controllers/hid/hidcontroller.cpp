@@ -70,6 +70,11 @@ QList<LegacyControllerMapping::ScreenInfo> HidController::getMappingInfoScreens(
 bool HidController::matchMapping(const MappingInfo& mapping) {
     const QList<ProductInfo>& products = mapping.getProducts();
     for (const auto& product : products) {
+        // Mappings may also list MIDI USB ids; those never describe HID.
+        if (!product.protocol.isEmpty() &&
+                product.protocol.compare(QStringLiteral("hid"), Qt::CaseInsensitive) != 0) {
+            continue;
+        }
         if (m_deviceInfo.matchProductInfo(product)) {
             return true;
         }

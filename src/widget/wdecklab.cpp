@@ -36,6 +36,8 @@
 
 #include "control/controlobject.h"
 #include "control/controlproxy.h"
+#include "decklab/decklabsystempages.h"
+#include "decklab/decklabsystemui.h"
 #include "effects/effectsmanager.h"
 #include "effects/effectchain.h"
 #include "effects/effectslot.h"
@@ -1122,8 +1124,46 @@ QWidget* WDeckLab::buildSettings() {
     auto* pages = new QStackedWidget(page);
     pages->setObjectName("decklab-settings-pages");
     auto* categorySelection = new QButtonGroup(pages);
-    const QStringList names{tr("Deck"), tr("Levels / Cue"), tr("Display"), tr("Library"), tr("Device")};
+    // Deck Lab system integration: Setup (Deck Setup) and System pages, native
+    // tool routing, banners. It only hooks the surface through these calls.
+    DeckLabSystemUi::Hooks hooks;
+    hooks.showSystem = [this, pages](DeckLabSystemPage::Section section) {
+        selectPage(4); pages->setCurrentIndex(5);
+        if (auto* system = pages->findChild<DeckLabSystemPage*>(QStringLiteral("decklab-system-page"))) system->showSection(section);
+    };
+    hooks.showDecks = [this] { selectPage(0); };
+    hooks.applyLayout = [this](int decks) {
+        const int layout = decks == 4 ? 4 : 2;
+        m_config->setValue(ConfigKey("[DeckLab]", "DeckLayout"), layout);
+        if (auto* combo = findChild<QComboBox*>("decklab-deck-layout")) combo->setCurrentIndex(std::max(0, combo->findData(layout)));
+        updateLayers();
+    };
+    hooks.legacyTool = [this](int id) {
+        if (m_clock.elapsed() - m_lastToolsReady > 2000) return false;
+        releaseEffects(); if (id != 1) selectPage(4);
+        set(kNative, "tool_request", id); set(kNative, "tool_serial", ++m_toolSerial);
+        return true;
+    };
+    hooks.beforeTool = [this] { releaseEffects(); };
+    m_systemUi = new DeckLabSystemUi(this, hooks);
+    connect(m_systemUi, &DeckLabSystemUi::toolsConnectedChanged, this, [this](bool connected) {
+        const bool wasOnline = m_toolsOnline;
+        m_toolsOnline = connected || m_clock.elapsed() - m_lastToolsReady <= 2000;
+        for (auto* b : m_toolButtons) b->setEnabled(m_toolsOnline);
+        if (wasOnline != m_toolsOnline) updateStatus();
+    });
+    const QStringList names{tr("Deck"), tr("Levels / Cue"), tr("Display"), tr("Library"), tr("Setup"), tr("System")};
     for (int index = 0; index < names.size(); ++index) {
+        if (index == 5) {
+            // Wi-Fi, Bluetooth, screen, time, storage, power, about, maintenance.
+            pages->addWidget(m_systemUi->createSystemPage(pages));
+            auto* link = button(names[index], [pages, index] { pages->setCurrentIndex(index); }, categories,
+                    QStringLiteral("decklab-settings-category-%1").arg(index));
+            link->setCheckable(true); categorySelection->addButton(link, index); link->setProperty("rail", true);
+            connect(pages, &QStackedWidget::currentChanged, link, [link, index](int page) { link->setChecked(page == index); });
+            link->setFixedHeight(52); links->addWidget(link);
+            continue;
+        }
         auto* scroll = new QScrollArea(pages);
         scroll->setObjectName(QStringLiteral("decklab-settings-scroll-%1").arg(index));
         scroll->setWidgetResizable(true);
@@ -1272,21 +1312,24 @@ QWidget* WDeckLab::buildSettings() {
             played->setChecked(m_config->getValue(ConfigKey("[Library]", "ApplyPlayedTrackColor"), true));
             rows->addWidget(played);
             for (const auto& action : {qMakePair(tr("Get music"), 2), qMakePair(tr("Sample Maker"), 3),
-                         qMakePair(tr("Record mix to USB"), 4), qMakePair(tr("Check Rekordbox USB"), 10)}) {
-                auto* b = button(action.first, [this, id = action.second] { tool(id); }, content);
+                         qMakePair(tr("Record mix to USB"), 4), qMakePair(tr("Check USB drives"), 10)}) {
+                auto* b = button(action.first, [this, id = action.second] { tool(id); }, content,
+                        action.second == 2 ? QStringLiteral("decklab-tool-get-music")
+                        : action.second == 3 ? QStringLiteral("decklab-tool-sample-maker")
+                                             : QStringLiteral("decklab-tool-%1").arg(action.second));
                 b->setEnabled(false); m_toolButtons.append(b); rows->addWidget(b);
             }
         } else {
-            rows->addWidget(new QLabel(tr("Controller audio is the normal main/cue route.\nChanges that interrupt audio are guarded by live playback state."), content));
+            // Setup: Deck Setup (controller, audio, layout) plus diagnostics.
+            rows->addWidget(m_systemUi->createSetupPanel(content));
             m_performanceStatus = new QLabel(content); rows->addWidget(m_performanceStatus);
-            for (const auto& action : {qMakePair(tr("Controller & audio setup"), 5), qMakePair(tr("Wi-Fi"), 6),
-                         qMakePair(tr("Advanced settings"), 8), qMakePair(tr("Desktop"), 9)}) {
-                auto* b = button(action.first, [this, id = action.second] {
-                    if (id == 8) { releaseEffects(); emit advancedPreferencesRequested(); } else tool(id);
-                }, content);
-                if (action.second != 8) { b->setEnabled(false); m_toolButtons.append(b); }
-                rows->addWidget(b);
-            }
+            // Small-screen type scale: secondary 15 px Medium, buttons 16 px.
+            m_performanceStatus->setStyleSheet(QStringLiteral("font-size:15px;font-weight:500;color:#9aa3af;"));
+            auto* advanced = button(tr("Advanced settings"), [this] {
+                releaseEffects(); emit advancedPreferencesRequested();
+            }, content, QStringLiteral("decklab-advanced-settings"));
+            advanced->setStyleSheet(QStringLiteral("font-size:16px;font-weight:500;min-height:34px;"));
+            rows->addWidget(advanced);
         }
         rows->addStretch(); scroll->setWidget(content);
         new DeckLabTouchScrollGuard(scroll->viewport(), content);
@@ -2112,7 +2155,8 @@ void WDeckLab::releaseEffects(bool musical, bool mute) {
 }
 void WDeckLab::tickEffects() {
     qint64 now = m_clock.elapsed();
-    if (m_toolsOnline && now - m_lastToolsReady > 2000) {
+    // The legacy companion heartbeat lapses; decklabd keeps tools online.
+    if (m_toolsOnline && now - m_lastToolsReady > 2000 && !(m_systemUi && m_systemUi->toolsConnected())) {
         m_toolsOnline = false; for (auto* b : m_toolButtons) b->setEnabled(false); updateStatus();
     }
     for (int deck = 1; deck <= 4; ++deck) refreshDeck(deck);
@@ -2142,6 +2186,9 @@ void WDeckLab::tickEffects() {
     }
 }
 void WDeckLab::tool(int id) {
+    // decklabd (apps.launch, usb.*, native System pages) first; the legacy
+    // companion SysEx bridge remains the fallback while both exist.
+    if (m_systemUi && m_systemUi->handleTool(id)) return;
     if (!m_toolsOnline || m_clock.elapsed() - m_lastToolsReady > 2000) return;
     releaseEffects();
     if (id != 1) selectPage(4);
@@ -2164,7 +2211,12 @@ void WDeckLab::setKeyNotation(int index) {
     for (int deck = 1; deck <= 4; ++deck) refreshDeck(deck);
 }
 void WDeckLab::setAudioOutputConfigured(bool configured) {
-    m_outputConfigured = configured; updateStatus();
+    m_outputConfigured = configured;
+    if (m_systemUi) m_systemUi->setAudioOutputConfigured(configured);
+    updateStatus();
+}
+void WDeckLab::attachSystem(DeckLabSystem* system) {
+    if (m_systemUi) m_systemUi->attach(system);
 }
 void WDeckLab::updateStatus() {
     int overloads = int(value("[App]", "audio_latency_overload_count"));

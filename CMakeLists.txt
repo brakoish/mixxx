@@ -1185,6 +1185,7 @@ add_library(
   src/controllers/controllerlearningeventfilter.cpp
   src/controllers/controllermanager.cpp
   src/controllers/controllermappinginfo.cpp
+  src/controllers/controllermappingmatcher.cpp
   src/controllers/legacycontrollersettings.cpp
   src/controllers/legacycontrollersettingslayout.cpp
   src/controllers/controllermappinginfoenumerator.cpp
@@ -1753,6 +1754,15 @@ add_library(
   src/widget/wlibrary.cpp
   src/widget/wdecklab.cpp
   src/widget/decklabsmoke.cpp
+  src/decklab/decklabdclient.cpp
+  src/decklab/decklabfakeservice.cpp
+  src/decklab/decklabsetupmodel.cpp
+  src/decklab/decklabsetupwizard.cpp
+  src/decklab/decklabsignals.cpp
+  src/decklab/decklabsystem.cpp
+  src/decklab/decklabsystempages.cpp
+  src/decklab/decklabsystemui.cpp
+  src/decklab/decklabui.cpp
   src/widget/wlibrarysidebar.cpp
   src/widget/wlibrarytableview.cpp
   src/widget/wlibrarytextbrowser.cpp
@@ -2772,6 +2782,7 @@ if(BUILD_TESTING)
     src/test/enginebuffertest.cpp
     src/test/decklabtest.cpp
     src/test/decklabperfenginetest.cpp
+    src/test/decklabsystemtest.cpp
     src/test/waveformmarklabeltest.cpp
     src/test/enginefilterbiquadtest.cpp
     src/test/enginemixertest.cpp

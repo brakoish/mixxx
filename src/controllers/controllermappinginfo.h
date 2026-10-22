@@ -59,6 +59,10 @@ class MappingInfo {
     inline const QString getAuthor() const {
         return m_author;
     }
+    /// The <controller id="..."> attribute, often the device's port name.
+    inline const QString getControllerId() const {
+        return m_controllerId;
+    }
 
     inline const QList<ProductInfo>& getProducts() const {
         return m_products;
@@ -67,6 +71,7 @@ class MappingInfo {
   private:
     ProductInfo parseBulkProduct(const QDomElement& element) const;
     ProductInfo parseHIDProduct(const QDomElement& element) const;
+    ProductInfo parseMidiProduct(const QDomElement& element) const;
 
     bool m_valid;
     QString m_path;
@@ -76,5 +81,6 @@ class MappingInfo {
     QString m_description;
     QString m_forumlink;
     QString m_wikilink;
+    QString m_controllerId;
     QList<ProductInfo> m_products;
 };
