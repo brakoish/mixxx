@@ -8,7 +8,8 @@ WGLWidget::WGLWidget(QWidget* pParent)
         : QWidget(pParent),
           m_pOpenGLWindow(nullptr),
           m_pContainerWidget(nullptr),
-          m_pTrackDropTarget(nullptr) {
+          m_pTrackDropTarget(nullptr),
+          m_glRenderRequested(true) {
     // When the widget is resized or moved, the QOpenGLWindow visibly resizes
     // or moves before the widgets do. This can be solved by calling
     //   setAttribute(Qt::WA_PaintOnScreen);
@@ -39,11 +40,14 @@ TrackDropTarget* WGLWidget::trackDropTarget() const {
 void WGLWidget::showEvent(QShowEvent* event) {
     if (!m_pOpenGLWindow) {
         m_pOpenGLWindow = new OpenGLWindow(this);
+        // Observe expose/resize of the native window for the render gate.
+        m_pOpenGLWindow->installEventFilter(this);
         m_pContainerWidget = createWindowContainer(m_pOpenGLWindow, this);
         m_pContainerWidget->resize(size());
         m_pContainerWidget->show();
         m_pContainerWidget->setAutoFillBackground(true);
     }
+    m_glRenderRequested = true;
     QWidget::showEvent(event);
 }
 
@@ -51,7 +55,27 @@ void WGLWidget::resizeEvent(QResizeEvent* event) {
     if (m_pContainerWidget) {
         m_pContainerWidget->resize(event->size());
     }
+    m_glRenderRequested = true;
     QWidget::resizeEvent(event);
+}
+
+bool WGLWidget::eventFilter(QObject* pWatched, QEvent* pEvent) {
+    if (pWatched == m_pOpenGLWindow) {
+        switch (pEvent->type()) {
+        case QEvent::Expose:
+        case QEvent::Show:
+        case QEvent::Resize:
+        case QEvent::ScreenChangeInternal:
+#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
+        case QEvent::DevicePixelRatioChange:
+#endif
+            m_glRenderRequested = true;
+            break;
+        default:
+            break;
+        }
+    }
+    return QWidget::eventFilter(pWatched, pEvent);
 }
 
 bool WGLWidget::isContextValid() const {

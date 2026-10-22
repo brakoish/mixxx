@@ -1655,6 +1655,7 @@ add_library(
   src/util/xml.cpp
   src/waveform/guitick.cpp
   src/waveform/overviewtype.cpp
+  src/waveform/rendergate.cpp
   src/waveform/renderers/glwaveformrenderbackground.cpp
   src/waveform/renderers/glvsynctestrenderer.cpp
   src/waveform/renderers/waveformmark.cpp

@@ -3,6 +3,7 @@
 #include "control/controlproxy.h"
 #include "moc_waveformrenderersignalbase.cpp"
 #include "util/colorcomponents.h"
+#include "waveform/rendergate.h"
 #include "waveform/waveform.h"
 #include "waveform/waveformwidgetfactory.h"
 #include "waveformwidgetrenderer.h"
@@ -156,6 +157,22 @@ void WaveformRendererSignalBase::setup(const QDomNode& node,
     setLowVisualGain(pWaveformFactory->getVisualGain(BandIndex::Low));
     setMidVisualGain(pWaveformFactory->getVisualGain(BandIndex::Mid));
     setHighVisualGain(pWaveformFactory->getVisualGain(BandIndex::High));
+}
+
+void WaveformRendererSignalBase::appendRenderState(RenderStateHasher* pHasher) const {
+    pHasher->addDouble(m_allChannelVisualGain);
+    pHasher->addDouble(m_lowVisualGain);
+    pHasher->addDouble(m_midVisualGain);
+    pHasher->addDouble(m_highVisualGain);
+    for (const auto* pControl : {m_pEQEnabled.get(),
+                 m_pLowFilterControlObject.get(),
+                 m_pMidFilterControlObject.get(),
+                 m_pHighFilterControlObject.get(),
+                 m_pLowKillControlObject.get(),
+                 m_pMidKillControlObject.get(),
+                 m_pHighKillControlObject.get()}) {
+        pHasher->addDouble(pControl ? pControl->get() : 0.0);
+    }
 }
 
 void WaveformRendererSignalBase::getGains(float* pAllGain,

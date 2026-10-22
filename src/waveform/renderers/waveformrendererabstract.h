@@ -10,6 +10,7 @@ namespace rendergraph {
 class Node;
 }
 
+class RenderStateHasher;
 class SkinContext;
 class WaveformWidgetRenderer;
 
@@ -33,6 +34,19 @@ class WaveformRendererAbstract {
     virtual void onResize() {}
     virtual void onSetTrack() {}
     virtual void update() {
+    }
+
+    /// Deck Lab render gate: add every value this renderer reads at draw
+    /// time that the owning WaveformWidgetRenderer does not already track
+    /// (ControlObject driven marks, EQ gains, ...). Called once per frame on
+    /// the GUI thread, so keep it to plain reads.
+    virtual void appendRenderState(RenderStateHasher* pHasher) const {
+        Q_UNUSED(pHasher);
+    }
+    /// True while the renderer animates by itself (time-based blinking), so
+    /// every frame must be rendered even if nothing else changes.
+    virtual bool isAnimating() const {
+        return false;
     }
 
   protected:

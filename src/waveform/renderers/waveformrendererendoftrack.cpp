@@ -49,6 +49,10 @@ void WaveformRendererEndOfTrack::onResize() {
     generateBackRects();
 }
 
+bool WaveformRendererEndOfTrack::isAnimating() const {
+    return m_pEndOfTrackControl && m_pEndOfTrackControl->toBool();
+}
+
 void WaveformRendererEndOfTrack::draw(QPainter* painter,
                                       QPaintEvent* /*event*/) {
     if (!m_pEndOfTrackControl->toBool()) {

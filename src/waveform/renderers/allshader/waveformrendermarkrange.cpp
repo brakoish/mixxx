@@ -37,6 +37,12 @@ void WaveformRenderMarkRange::draw(QPainter* painter, QPaintEvent* event) {
     DEBUG_ASSERT(false);
 }
 
+void WaveformRenderMarkRange::appendRenderState(RenderStateHasher* pHasher) const {
+    for (const auto& markRange : m_markRanges) {
+        markRange.appendRenderState(pHasher);
+    }
+}
+
 void WaveformRenderMarkRange::update() {
     GeometryNode* pChild = static_cast<GeometryNode*>(firstChild());
 

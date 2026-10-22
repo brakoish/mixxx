@@ -144,7 +144,14 @@ WaveformWidgetFactory::WaveformWidgetFactory()
           m_pVisualsManager(nullptr),
           m_frameCnt(0),
           m_actualFrameRate(0),
-          m_playMarkerPosition(WaveformWidgetRenderer::s_defaultPlayMarkerPosition) {
+          m_playMarkerPosition(WaveformWidgetRenderer::s_defaultPlayMarkerPosition),
+          m_renderGateEnabled(mixxx::decklab::renderGateEnabledFromEnvironment()),
+          m_perfLogEnabled(mixxx::decklab::perfLogEnabledFromEnvironment()),
+          m_perfTickNanos(0),
+          m_perfTicks(0),
+          m_perfTickNanosSum(0),
+          m_perfTickNanosMax(0),
+          m_perfDroppedFramesBaseline(0) {
     m_pStemSplitTracksControl = std::make_unique<ControlObject>(
             ConfigKey(kWaveformGroup, QStringLiteral("stem_split_tracks")));
     m_visualGain[AllBand] = kVisualGainDefault[AllBand];
@@ -368,6 +375,11 @@ WaveformWidgetFactory::WaveformWidgetFactory()
 #endif
     evaluateWidgets();
     m_time.start();
+    m_renderGateClock.start();
+    m_perfWindowTimer.start();
+    if (!m_renderGateEnabled) {
+        qInfo() << "DECKLAB_RENDER_GATE=0: rendering every visible waveform each frame";
+    }
 }
 
 WaveformWidgetFactory::~WaveformWidgetFactory() {
@@ -543,6 +555,9 @@ bool WaveformWidgetFactory::setWaveformWidget(WWaveformViewer* viewer,
 
     // create new holder
     WaveformWidgetHolder holder(waveformWidget, viewer, node, &parentContext);
+    holder.m_renderGate.setEnabled(m_renderGateEnabled);
+    // Touch/mouse input on the viewer forces a frame (scratch, mark hover).
+    viewer->installEventFilter(this);
     if (index == -1) {
         // add holder
         m_waveformWidgetHolders.push_back(std::move(holder));
@@ -696,6 +711,9 @@ bool WaveformWidgetFactory::setWidgetTypeFromHandle(int handleIndex, bool force)
         WWaveformViewer* viewer = holder.m_waveformViewer;
         WaveformWidgetAbstract* widget = createWaveformWidget(m_type, holder.m_waveformViewer);
         holder.m_waveformWidget = widget;
+        holder.m_renderGate = RenderGate();
+        holder.m_renderGate.setEnabled(m_renderGateEnabled);
+        holder.m_pendingSwap = false;
         viewer->setWaveformWidget(widget);
         viewer->setup(holder.m_skinNodeCache, holder.m_skinContextCache);
         viewer->setZoom(previousZoom);
@@ -766,6 +784,7 @@ void WaveformWidgetFactory::setVisualGain(BandIndex index, double gain) {
     if (index == BandIndex::AllBand && !m_overviewNormalized) {
         emit overviewScalingChanged();
     }
+    requestRenderAll();
 }
 
 double WaveformWidgetFactory::getVisualGain(BandIndex index) const {
@@ -820,25 +839,44 @@ void WaveformWidgetFactory::notifyZoomChange(WWaveformViewer* viewer) {
 void WaveformWidgetFactory::renderSelf() {
     ScopedTimer t(QStringLiteral("WaveformWidgetFactory::render() %1waveforms"),
             static_cast<int>(m_waveformWidgetHolders.size()));
+    if (m_perfLogEnabled) {
+        m_perfSlotTimer.start();
+    }
 
     if (!m_skipRender) {
         if (m_type) {   // no regular updates for an empty waveform
             // next rendered frame is displayed after next buffer swap and than after VSync
             QVarLengthArray<bool, 10> shouldRenderWaveforms(
                     static_cast<int>(m_waveformWidgetHolders.size()));
+            const qint64 nowMillis = m_renderGateClock.elapsed().toIntegerMillis();
             for (decltype(m_waveformWidgetHolders)::size_type i = 0;
                     i < m_waveformWidgetHolders.size();
                     i++) {
-                WaveformWidgetAbstract* pWaveformWidget = m_waveformWidgetHolders[i].m_waveformWidget;
+                WaveformWidgetHolder& holder = m_waveformWidgetHolders[i];
+                WaveformWidgetAbstract* pWaveformWidget = holder.m_waveformWidget;
+                // Render gate: render (and later swap) only when this frame
+                // can differ from the last one swapped. Paused, unchanged
+                // waveforms keep their last frame on screen.
+                RenderGate::Frame frame;
+                frame.nowMillis = nowMillis;
                 // Don't bother doing the pre-render work if we aren't going to
                 // render this widget.
-                bool shouldRender = shouldRenderWaveform(pWaveformWidget);
-                shouldRenderWaveforms[static_cast<int>(i)] = shouldRender;
-                if (!shouldRender) {
-                    continue;
+                frame.visible = shouldRenderWaveform(pWaveformWidget);
+                if (frame.visible) {
+                    // Calculate play position for the new Frame in following run
+                    pWaveformWidget->preRender(m_vsyncThread);
+                    // Consume both requests; neither may be short-circuited.
+                    WGLWidget* pGlw = pWaveformWidget->getGLWidget();
+                    const bool exposed = pGlw != nullptr && pGlw->takeGLRenderRequest();
+                    const bool requested = pWaveformWidget->takeRenderRequest();
+                    frame.forced = exposed || requested;
+                    if (holder.m_renderGate.isEnabled()) {
+                        frame.moving = pWaveformWidget->needsContinuousRender();
+                        frame.stateKey = pWaveformWidget->renderStateKey();
+                    }
                 }
-                // Calculate play position for the new Frame in following run
-                pWaveformWidget->preRender(m_vsyncThread);
+                shouldRenderWaveforms[static_cast<int>(i)] =
+                        RenderGate::renders(holder.m_renderGate.evaluate(frame));
             }
             //qDebug() << "prerender" << m_vsyncThread->elapsed();
 
@@ -848,11 +886,13 @@ void WaveformWidgetFactory::renderSelf() {
             for (decltype(m_waveformWidgetHolders)::size_type i = 0;
                     i < m_waveformWidgetHolders.size();
                     i++) {
-                WaveformWidgetAbstract* pWaveformWidget = m_waveformWidgetHolders[i].m_waveformWidget;
+                WaveformWidgetHolder& holder = m_waveformWidgetHolders[i];
+                WaveformWidgetAbstract* pWaveformWidget = holder.m_waveformWidget;
                 if (!shouldRenderWaveforms[static_cast<int>(i)]) {
                     continue;
                 }
                 pWaveformWidget->render();
+                holder.m_pendingSwap = true;
                 //qDebug() << "render" << i << m_vsyncThread->elapsed();
             }
         }
@@ -883,6 +923,9 @@ void WaveformWidgetFactory::renderSelf() {
     m_pVisualsManager->process(m_endOfTrackWarningTime);
     m_pGuiTick->process();
 
+    if (m_perfLogEnabled) {
+        m_perfTickNanos += m_perfSlotTimer.elapsed().toIntegerNanos();
+    }
     //qDebug() << "refresh end" << m_vsyncThread->elapsed();
 }
 
@@ -894,13 +937,22 @@ void WaveformWidgetFactory::render() {
 void WaveformWidgetFactory::swapSelf() {
     ScopedTimer t(QStringLiteral("WaveformWidgetFactory::swap() %1waveforms"),
             static_cast<int>(m_waveformWidgetHolders.size()));
+    if (m_perfLogEnabled) {
+        m_perfSlotTimer.start();
+    }
 
     // Do this in an extra slot to be sure to hit the desired interval
     if (!m_skipRender) {
         if (m_type) {   // no regular updates for an empty waveform
             // Show rendered buffer from last render() run
             //qDebug() << "swap() start" << m_vsyncThread->elapsed();
-            for (const auto& holder : std::as_const(m_waveformWidgetHolders)) {
+            for (auto& holder : m_waveformWidgetHolders) {
+                // Swap only what the last render pass drew. Skipped widgets
+                // keep showing their previous front buffer.
+                if (!holder.m_pendingSwap) {
+                    continue;
+                }
+                holder.m_pendingSwap = false;
                 WaveformWidgetAbstract* pWaveformWidget = holder.m_waveformWidget;
 
                 // Don't swap invalid / invisible widgets or widgets with an
@@ -926,6 +978,99 @@ void WaveformWidgetFactory::swapSelf() {
         // If we are using WVuMeter, this does nothing
         emit swapVuMeters();
     }
+    if (m_perfLogEnabled) {
+        finishPerfTick(m_perfSlotTimer.elapsed().toIntegerNanos());
+    }
+}
+
+void WaveformWidgetFactory::requestRenderAll() {
+    for (auto& holder : m_waveformWidgetHolders) {
+        holder.m_renderGate.requestRender();
+    }
+}
+
+bool WaveformWidgetFactory::eventFilter(QObject* pWatched, QEvent* pEvent) {
+    switch (pEvent->type()) {
+    case QEvent::MouseButtonPress:
+    case QEvent::MouseButtonRelease:
+    case QEvent::MouseButtonDblClick:
+    case QEvent::MouseMove:
+    case QEvent::TouchBegin:
+    case QEvent::TouchUpdate:
+    case QEvent::TouchEnd:
+    case QEvent::TouchCancel:
+    case QEvent::Wheel:
+    case QEvent::Enter:
+    case QEvent::Leave:
+    case QEvent::Show:
+    case QEvent::Resize:
+        for (auto& holder : m_waveformWidgetHolders) {
+            if (holder.m_waveformViewer == pWatched) {
+                holder.m_renderGate.requestRender();
+                break;
+            }
+        }
+        break;
+    default:
+        break;
+    }
+    return QObject::eventFilter(pWatched, pEvent);
+}
+
+void WaveformWidgetFactory::finishPerfTick(qint64 swapNanos) {
+    // One render + swap pair is one tick of the GUI-thread render loop.
+    const qint64 tickNanos = m_perfTickNanos + swapNanos;
+    m_perfTickNanos = 0;
+    ++m_perfTicks;
+    m_perfTickNanosSum += tickNanos;
+    m_perfTickNanosMax = std::max(m_perfTickNanosMax, tickNanos);
+
+    constexpr qint64 kPerfWindowMillis = 10000;
+    if (m_perfWindowTimer.elapsed().toIntegerMillis() < kPerfWindowMillis) {
+        return;
+    }
+    m_perfWindowTimer.start();
+    for (auto& holder : m_waveformWidgetHolders) {
+        const RenderGate::Stats& stats = holder.m_renderGate.stats();
+        const QString group = holder.m_waveformWidget
+                ? holder.m_waveformWidget->getGroup()
+                : QStringLiteral("?");
+        qInfo().noquote()
+                << QStringLiteral(
+                           "DECKLAB_PERF waveform %1 rendered=%2 "
+                           "(forced=%3 moving=%4 changed=%5 safety=%6 "
+                           "ungated=%7) skipped=%8 hidden=%9")
+                           .arg(group,
+                                   QString::number(stats.rendered()),
+                                   QString::number(stats.forced),
+                                   QString::number(stats.moving),
+                                   QString::number(stats.changed),
+                                   QString::number(stats.safety),
+                                   QString::number(stats.ungated),
+                                   QString::number(stats.skipped),
+                                   QString::number(stats.hidden));
+        holder.m_renderGate.resetStats();
+    }
+    const int droppedFrames = m_vsyncThread ? m_vsyncThread->droppedFrames() : 0;
+    const double meanMillis = m_perfTicks
+            ? static_cast<double>(m_perfTickNanosSum) /
+                    static_cast<double>(m_perfTicks) / 1e6
+            : 0.0;
+    const double maxMillis = static_cast<double>(m_perfTickNanosMax) / 1e6;
+    qInfo().noquote()
+            << QStringLiteral(
+                       "DECKLAB_PERF render-loop ticks=%1 mean=%2ms max=%3ms "
+                       "dropped=%4 gate=%5")
+                       .arg(QString::number(m_perfTicks),
+                               QString::number(meanMillis, 'f', 3),
+                               QString::number(maxMillis, 'f', 3),
+                               QString::number(droppedFrames - m_perfDroppedFramesBaseline),
+                               m_renderGateEnabled ? QStringLiteral("on")
+                                                   : QStringLiteral("off"));
+    m_perfDroppedFramesBaseline = droppedFrames;
+    m_perfTicks = 0;
+    m_perfTickNanosSum = 0;
+    m_perfTickNanosMax = 0;
 }
 
 void WaveformWidgetFactory::swap() {
@@ -1442,6 +1587,7 @@ void WaveformWidgetFactory::setUntilMarkShowBeats(bool value) {
                 m_untilMarkShowBeats);
     }
     emit untilMarkShowBeatsChanged(value);
+    requestRenderAll();
 }
 
 void WaveformWidgetFactory::setUntilMarkShowTime(bool value) {
@@ -1451,6 +1597,7 @@ void WaveformWidgetFactory::setUntilMarkShowTime(bool value) {
                 m_untilMarkShowTime);
     }
     emit untilMarkShowTimeChanged(value);
+    requestRenderAll();
 }
 
 void WaveformWidgetFactory::setUntilMarkAlign(Qt::Alignment align) {
@@ -1460,6 +1607,7 @@ void WaveformWidgetFactory::setUntilMarkAlign(Qt::Alignment align) {
                 toUntilMarkAlignIndex(m_untilMarkAlign));
     }
     emit untilMarkAlignChanged(align);
+    requestRenderAll();
 }
 
 void WaveformWidgetFactory::setUntilMarkTextPointSize(int value) {
@@ -1469,6 +1617,7 @@ void WaveformWidgetFactory::setUntilMarkTextPointSize(int value) {
                 m_untilMarkTextPointSize);
     }
     emit untilMarkTextPointSizeChanged(value);
+    requestRenderAll();
 }
 
 void WaveformWidgetFactory::setUntilMarkTextHeightLimit(float value) {
@@ -1478,6 +1627,7 @@ void WaveformWidgetFactory::setUntilMarkTextHeightLimit(float value) {
                 toUntilMarkTextHeightLimitIndex(m_untilMarkTextHeightLimit));
     }
     emit untilMarkTextHeightLimitChanged(value);
+    requestRenderAll();
 }
 
 void WaveformWidgetFactory::setStemReorderOnChange(bool value) {
@@ -1487,6 +1637,7 @@ void WaveformWidgetFactory::setStemReorderOnChange(bool value) {
                 value);
     }
     emit stemReorderOnChangeChanged(value);
+    requestRenderAll();
 }
 
 void WaveformWidgetFactory::setStemOutlineOpacity(float value) {
@@ -1496,6 +1647,7 @@ void WaveformWidgetFactory::setStemOutlineOpacity(float value) {
                 static_cast<double>(value));
     }
     emit stemOutlineOpacityChanged(value);
+    requestRenderAll();
 }
 
 void WaveformWidgetFactory::setStemOpacity(float value) {
@@ -1505,6 +1657,7 @@ void WaveformWidgetFactory::setStemOpacity(float value) {
                 static_cast<double>(value));
     }
     emit stemOpacityChanged(value);
+    requestRenderAll();
 }
 
 void WaveformWidgetFactory::setStemSplitTracks(bool value) {
@@ -1515,6 +1668,7 @@ void WaveformWidgetFactory::setStemSplitTracks(bool value) {
     }
     m_pStemSplitTracksControl->set(value ? 1.0 : 0.0);
     emit stemSplitTracksChanged(value);
+    requestRenderAll();
 }
 
 // static

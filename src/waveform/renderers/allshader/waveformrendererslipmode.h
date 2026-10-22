@@ -33,6 +33,9 @@ class allshader::WaveformRendererSlipMode final
     // Virtual for rendergraph::Node
     void preprocess() override;
 
+    // The slip outline blinks while slip mode diverges from the play position.
+    bool isAnimating() const override;
+
   private:
     std::unique_ptr<ControlProxy> m_pSlipModeControl;
 

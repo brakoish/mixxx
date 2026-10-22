@@ -14,6 +14,14 @@ class WGLWidget : public QGLWidget {
     bool shouldRender() const;
     void makeCurrentIfNeeded();
 
+    // Deck Lab render gate. QGLWidget repaints itself on expose and resize,
+    // so there is nothing extra to request on this legacy path.
+    void requestGLRender() {
+    }
+    bool takeGLRenderRequest() {
+        return false;
+    }
+
   protected:
     QPaintDevice* paintDevice() {
         return this;

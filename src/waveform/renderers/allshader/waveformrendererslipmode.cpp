@@ -74,6 +74,11 @@ void WaveformRendererSlipMode::setup(const QDomNode& node, const SkinContext& sk
     }
 }
 
+bool WaveformRendererSlipMode::isAnimating() const {
+    return m_pSlipModeControl && m_pSlipModeControl->toBool() &&
+            m_waveformRenderer->isSlipActive();
+}
+
 void WaveformRendererSlipMode::preprocess() {
     if (!preprocessInner()) {
         geometry().allocate(0);

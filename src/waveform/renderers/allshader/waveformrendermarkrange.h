@@ -35,6 +35,8 @@ class allshader::WaveformRenderMarkRange final : public ::WaveformRendererAbstra
 
     void update() override;
 
+    void appendRenderState(RenderStateHasher* pHasher) const override;
+
   private:
     void updateNode(rendergraph::GeometryNode* pChild,
             QColor color,

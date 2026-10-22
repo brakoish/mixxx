@@ -33,6 +33,9 @@ class allshader::WaveformRendererStem final
     // Virtuals for rendergraph::Node
     void preprocess() override;
 
+    /// Stem gains/mutes and stem display settings.
+    void appendRenderState(RenderStateHasher* pHasher) const override;
+
   public slots:
     void setSplitStemTracks(bool splitStemTracks) {
         if (m_splitStemTracks != splitStemTracks) {

@@ -22,6 +22,8 @@ class WaveformRenderMarkBase : public QObject, public WaveformRendererAbstract {
 
     void onResize() override;
 
+    void appendRenderState(RenderStateHasher* pHasher) const override;
+
     void setDefaultMark(const QString& group, const WaveformMarkSet::DefaultMarkerStyle& model) {
         m_marks.setDefault(group, model);
     }
@@ -48,6 +50,8 @@ class WaveformRenderMarkBase : public QObject, public WaveformRendererAbstract {
 
   private:
     const bool m_updateImagesImmediately;
+    // Bumped whenever labels, colours or the visible mark list change.
+    quint64 m_markRevision = 0;
 
     void updateMarksFromCues();
     void updateMarks();
