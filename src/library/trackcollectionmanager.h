@@ -97,6 +97,10 @@ class TrackCollectionManager: public QObject,
     SaveTrackResult saveTrack(const TrackPointer& pTrack) const;
     // Same as startLibraryScan() but don't emit the scan summary.
     void startLibraryAutoScan();
+    // Deck Lab: rescan without the progress and summary dialogs (the kiosk
+    // shows its own notice). False when a scan is already running or there is
+    // no scanner (tests).
+    bool startLibraryScanQuietly();
 
   signals:
     void libraryScanStarted();

@@ -4,9 +4,11 @@
 #include <portaudio.h>
 
 #include <QApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
 #include <QRegularExpression>
+#include <QStandardPaths>
 #include <QThread>
 #include <QTimer>
 #include <QWidget>
@@ -24,6 +26,10 @@
 #include "controllers/legacycontrollermapping.h"
 #include "controllers/legacycontrollermappingfilehandler.h"
 #include "decklab/decklabdclient.h"
+#include "library/dao/directorydao.h"
+#include "library/library_decl.h"
+#include "library/trackcollection.h"
+#include "library/trackcollectionmanager.h"
 #include "mixer/basetrackplayer.h"
 #include "mixer/playermanager.h"
 #include "mixer/previewdeck.h"
@@ -36,11 +42,16 @@
 #include "soundio/soundmanagerconfig.h"
 #include "soundio/soundmanagerutil.h"
 #include "track/track.h"
+#include "util/fileinfo.h"
 
 namespace {
 const QString kDeckLab = QStringLiteral("[DeckLab]");
 const QString kRecording = QString::fromLatin1(RECORDING_PREF_KEY);
 const QString kRecordingFolder = QStringLiteral("Deck Lab Recordings");
+// Folders the utilities write to (apps/get-music, apps/sample-maker in the appliance repo).
+const QString kDownloadFolder = QStringLiteral("Deck Lab Downloads");
+const QStringList kMusicSubfolders{QStringLiteral("New Music"), QStringLiteral("Deck Lab Samples")};
+constexpr qint64 kLoadingStaleMs = 20000;
 constexpr qint64 kMinimumRecordingFreeMb = 1024;
 
 double controlValue(const QString& group, const QString& item) {
@@ -170,9 +181,25 @@ QString playToneOnDevice(int deviceIndex, int baseChannel, int side, double samp
 DeckLabSystem::DeckLabSystem(Services services, QObject* parent, const QString& socketPath)
         : QObject(parent),
           m_services(std::move(services)),
-          m_client(new DeckLabdClient(this, socketPath)) {
+          m_client(new DeckLabdClient(this, socketPath)),
+          m_utilities(new DeckLabUtilities(DeckLabUtilities::Hooks(), this)) {
+    m_utilities->setHooks(utilityHooks());
     connect(m_client, &DeckLabdClient::readyChanged, this, &DeckLabSystem::onReady);
     connect(m_client, &DeckLabdClient::eventReceived, this, &DeckLabSystem::onEvent);
+    connect(m_utilities, &DeckLabUtilities::notice, this, &DeckLabSystem::notice);
+    if (auto* library = m_services.library.get()) {
+        connect(library,
+                &TrackCollectionManager::libraryScanSummary,
+                this,
+                [this](const LibraryScanResultSummary& result) {
+                    m_utilities->onScanSummary(result.numNewTracks, result.quiet);
+                });
+    }
+    if (auto* players = m_services.players) {
+        watchPlayers();
+        connect(players, &PlayerManagerInterface::numberOfDecksChanged, this, [this](int) { watchPlayers(); });
+        connect(players, &PlayerManagerInterface::numberOfSamplersChanged, this, [this](int) { watchPlayers(); });
+    }
     if (auto* controllers = m_services.controllers.get()) {
         connect(controllers,
                 &ControllerManager::devicesChanged,
@@ -256,7 +283,113 @@ void DeckLabSystem::onEvent(const QString& topic, const QJsonObject& data) {
         emit thermalChanged();
     } else if (topic == QStringLiteral("session.quit_requested")) {
         emit quitRequested(data.value(QStringLiteral("reason")).toString());
+    } else if (topic == QStringLiteral("apps.changed")) {
+        m_utilities->onAppsChanged(data);
     }
+}
+
+DeckLabUtilities::Hooks DeckLabSystem::utilityHooks() {
+    DeckLabUtilities::Hooks hooks;
+    hooks.playing = [this] { return anyPlaying(); };
+    hooks.recording = [] { return controlValue(kRecording, QStringLiteral("status")) > 0; };
+    hooks.loading = [this] { return anyLoading(); };
+    hooks.libraryRoots = [this] {
+        auto* library = m_services.library.get();
+        return library ? library->internalCollection()->getRootDirStrings() : QStringList();
+    };
+    hooks.addLibraryRoot = [this](const QString& folder) {
+        auto* library = m_services.library.get();
+        if (!library) {
+            return false;
+        }
+        const auto result = library->addDirectory(mixxx::FileInfo(folder));
+        return result == DirectoryDAO::AddResult::Ok || result == DirectoryDAO::AddResult::AlreadyWatching;
+    };
+    hooks.utilityFolders = [this] { return utilityFolders(); };
+    hooks.startQuietScan = [this] {
+        auto* library = m_services.library.get();
+        return library && library->startLibraryScanQuietly();
+    };
+    return hooks;
+}
+
+QStringList DeckLabSystem::utilityFolders() const {
+    QStringList folders;
+    const auto add = [&folders](const QString& path) {
+        const QFileInfo info(path);
+        // Plain folders only: never follow a link a utility did not create.
+        if (info.isDir() && !info.isSymLink()) {
+            folders.append(info.absoluteFilePath());
+        }
+    };
+    // Get Music saves into "Deck Lab Downloads" at the top of the chosen drive;
+    // only that folder becomes a library folder, never the whole drive.
+    for (const auto& value : std::as_const(m_drives)) {
+        const QString mount = value.toObject().value(QStringLiteral("mount")).toString();
+        if (mount.startsWith(QLatin1Char('/'))) {
+            add(QDir(mount).filePath(kDownloadFolder));
+        }
+    }
+    const QString music = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
+    if (!music.isEmpty()) {
+        for (const QString& folder : kMusicSubfolders) {
+            add(QDir(music).filePath(folder));
+        }
+    }
+    return folders;
+}
+
+void DeckLabSystem::watchPlayers() {
+    auto* players = m_services.players;
+    if (!players) {
+        return;
+    }
+    for (int deck = 0; deck < players->numberOfDecks(); ++deck) {
+        watchPlayer(players->getDeckBase(deck));
+    }
+    for (int sampler = 0; sampler < players->numberOfSamplers(); ++sampler) {
+        watchPlayer(players->getSampler(sampler));
+    }
+    for (int preview = 0; preview < players->numberOfPreviewDecks(); ++preview) {
+        watchPlayer(players->getPreviewDeck(preview));
+    }
+}
+
+void DeckLabSystem::watchPlayer(BaseTrackPlayer* player) {
+    if (!player || m_watchedPlayers.contains(player)) {
+        return;
+    }
+    m_watchedPlayers.insert(player);
+    // Loading starts with loadingTrack(new, old) and ends with newTrackLoaded,
+    // or playerEmpty when it failed or the deck was ejected.
+    connect(player,
+            &BaseTrackPlayer::loadingTrack,
+            this,
+            [this, player](TrackPointer newTrack, TrackPointer) {
+                if (newTrack) {
+                    m_loadingSince.insert(player, QDateTime::currentMSecsSinceEpoch());
+                } else {
+                    m_loadingSince.remove(player);
+                }
+            });
+    connect(player, &BaseTrackPlayer::newTrackLoaded, this, [this, player](TrackPointer) {
+        m_loadingSince.remove(player);
+    });
+    connect(player, &BaseTrackPlayer::playerEmpty, this, [this, player] { m_loadingSince.remove(player); });
+    connect(player, &QObject::destroyed, this, [this, player] {
+        m_watchedPlayers.remove(player);
+        m_loadingSince.remove(player);
+    });
+}
+
+bool DeckLabSystem::anyLoading() const {
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    for (auto it = m_loadingSince.cbegin(); it != m_loadingSince.cend(); ++it) {
+        if (now - it.value() < kLoadingStaleMs) {
+            return true;
+        }
+    }
+    return false;
 }
 
 QString DeckLabSystem::thermalWarning() const {

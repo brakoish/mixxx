@@ -7,6 +7,7 @@
 #include <QSemaphore>
 #include <QThread>
 #include <QThreadPool>
+#include <atomic>
 
 #include "library/dao/analysisdao.h"
 #include "library/dao/cuedao.h"
@@ -39,6 +40,11 @@ class LibraryScanner : public QThread {
     // can use this to decide whether to show the summary dialog, for example hide
     // it for the automatic scan during startup.
     void scan(bool autoscan = false);
+
+    // Deck Lab: like scan(true), but neither the progress dialog nor the
+    // summary dialog appears (the kiosk shows its own notice). Returns false
+    // when a scan is already starting or running.
+    bool scanQuietly();
 
     // Call from any thread to cancel the scan.
     void slotCancel();
@@ -132,4 +138,6 @@ class LibraryScanner : public QThread {
 
     bool m_canceled;
     bool m_manualScan;
+    // Set by the caller's thread before startScan, read in the scanner thread.
+    std::atomic<bool> m_quietScan{false};
 };

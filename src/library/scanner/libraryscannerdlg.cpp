@@ -156,8 +156,14 @@ void LibraryScannerDlg::slotCancel() {
 }
 
 void LibraryScannerDlg::slotScanStarted() {
-    m_bCancelled = false;
+    // A suppressed (quiet) scan behaves as if the dialog had been dismissed.
+    m_bCancelled = m_suppressNext;
+    m_suppressNext = false;
     m_timer.start();
+}
+
+void LibraryScannerDlg::suppressNextScan() {
+    m_suppressNext = true;
 }
 
 void LibraryScannerDlg::slotScanFinished() {

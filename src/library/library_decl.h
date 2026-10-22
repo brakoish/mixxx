@@ -30,4 +30,6 @@ struct LibraryScanResultSummary {
     int numNewMissingTracks;
     int numRediscoveredTracks;
     int tracksTotal;
+    // Deck Lab: started by LibraryScanner::scanQuietly(); no summary dialog.
+    bool quiet = false;
 };

@@ -31,7 +31,7 @@
   ],
   "input_sha256": {
     ".github/workflows/decklab-pi.yml": "47687c75d8245ecd0be521275cc6871e241d94de9c06ecae8f17c4e2429b124e",
-    "CMakeLists.txt": "21b47d842c3395b37e56a6260a92acbb132ff498292bc0052c53c2d548581ee8",
+    "CMakeLists.txt": "f72575dfaa8c59f53bc93474c806bfa1d049f1406154f3b9851679debd9d76f0",
     "packaging/flatpak/modules/benchmark.yaml": "a85079134b2e8e9a2f837d400030039293e41870d4bf79d761cb4126309591f1",
     "packaging/flatpak/modules/chromaprint.yaml": "b0507a6d98aa75d7d37b7fc33f7fc2f03291ebd59a40711897dfbb0e398b30f2",
     "packaging/flatpak/modules/fdk-aac-free.yaml": "b136e1164587f580267e46cd98afe5fe021ee0e0aa450bffe720ea298b81c6db",
@@ -81,7 +81,7 @@
     "src/library/librarycontrol.cpp": "4cb09db45160a7a7e57c94f1f97743f84d3c31425fa147898dc174893f9aae9a",
     "src/library/rekordbox/rekordboxfeature.cpp": "e353ff8401ca991f782cd79b6f63be6f88053bd2c1f3c819eede4e203946b43f",
     "src/library/rekordbox/rekordboxfeature.h": "d0e911063eee9c36447d64d260844c901e30d518ef62192794a728625e04a821",
-    "src/mixxxmainwindow.cpp": "283231618f6274c926802e14a31ee25ffed3a8a478f97ebea4f2aea7f02c75e4",
+    "src/mixxxmainwindow.cpp": "113f6b9f7ca17681aef37cc04d3f48121a538703f4a02e970198646d4b9f23b5",
     "src/skin/legacy/legacyskinparser.cpp": "254c50570df8b039f87bd16c2d178a20f31858df960f15a2c6c267a9d9041f7f",
     "src/skin/legacy/legacyskinparser.h": "1e8e11e088f90d8002364f9aaf9319fd7efcb1f89a78cb5db404bd055bf4b98d",
     "src/soundio/soundmanager.cpp": "f3afbedb6bc64a7845e610bec621ae4aa68a13a7ba72f0dec12c1e3b089d8b34",
@@ -109,7 +109,7 @@
     "src/widget/wtracktableview.cpp": "fca03c52a7a45d0a7e6e7b2bdd3071bd405d223d0dbf5dd12b29e23ec105335b",
     "src/widget/wtracktableview.h": "0e80941690d881c8318588120e0300a788c716dc2eaa43688e8e8e7c977becec",
     "src/widget/wtracktableviewheader.cpp": "46920006e0909ba2ccabf69a68640976b1ee3bced6a4e644cc1ff951f04c87cb",
-    "tools/decklab/build_pi.py": "935739eee6cbbfc03c2448add9e95496560fffcdc05d5a6c2e66db7da56d34b7",
+    "tools/decklab/build_pi.py": "1f71fb07b649f67e797bbd5d40b200ddd68ad5a10e2101f0ed7246d6d66e8984",
     "tools/decklab/test_build_pi.py": "2ced1e3176035a3d7f2af00dfd37fa08b2fa71ec930a4eb219e6c8110f488b30",
     "tools/decklab/test_dsp.py": "b496a2f0310cf8c3d1350cb651830a9d11c1978e66c98b74b4308f17744bb1e4"
   },

@@ -3,9 +3,12 @@
 // matching, Deck Setup policy and persistence, eject safety, System pages and
 // the first-run flow. Only generated fixtures and bundled mappings are used:
 // no hardware, host services, personal media or network.
+#include <QDateTime>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLocalServer>
@@ -407,6 +410,124 @@ TEST_F(DeckLabSystemTest, EjectIsRefusedWhileALoadedTrackLivesOnThatDrive) {
     ASSERT_TRUE(QTest::qWaitFor([&] { return ejected; }, 2000));
     EXPECT_TRUE(fake.calls.contains(QStringLiteral("usb.eject")));
     EXPECT_TRUE(QTest::qWaitFor([&] { return system.usbDrives().size() == 1; }, 2000));
+}
+
+// --------------------------------------------- utilities (Get Music etc.) --
+
+// Replaces the old Ctrl+Shift+L injection: when decklabd reports that the
+// utility window closed, Mixxx adds the utility's download folder to the
+// library if needed and starts one quiet rescan, never while a deck loads.
+// While a utility is open it publishes the deck state Sample Maker checks.
+TEST_F(DeckLabSystemTest, UtilityCloseAddsDownloadFolderAndRescansAfterDeckLoads) {
+    const QString musicRoot = m_dir.filePath(QStringLiteral("Music"));
+    const QString downloads = m_dir.filePath(QStringLiteral("media/0000-TEST/Deck Lab Downloads"));
+    const QString samples = musicRoot + QStringLiteral("/Deck Lab Samples");
+    ASSERT_TRUE(QDir().mkpath(downloads));
+    ASSERT_TRUE(QDir().mkpath(samples));
+    bool playing = false;
+    bool recording = false;
+    bool loading = false;
+    QStringList roots{musicRoot};
+    QStringList added;
+    int scans = 0;
+    DeckLabUtilities::Hooks hooks;
+    hooks.playing = [&] { return playing; };
+    hooks.recording = [&] { return recording; };
+    hooks.loading = [&] { return loading; };
+    hooks.libraryRoots = [&] { return roots; };
+    hooks.addLibraryRoot = [&](const QString& folder) {
+        added.append(folder);
+        roots.append(folder);
+        return true;
+    };
+    hooks.utilityFolders = [&] { return QStringList{downloads, samples}; };
+    hooks.startQuietScan = [&] {
+        ++scans;
+        return true;
+    };
+
+    // The real decklabd client and DeckLabSystem, fed by the canned service.
+    DeckLabFakeService fake;
+    ASSERT_TRUE(fake.listen(socketPath()));
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, socketPath());
+    system.utilities()->setHooks(hooks);
+    system.utilities()->setStateDirectory(m_dir.filePath(QStringLiteral("run/decklab")));
+    QStringList notices;
+    QObject::connect(&system, &DeckLabSystem::notice, &system, [&](const QString& text) { notices.append(text); });
+    system.start();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.isReady(); }, 3000));
+
+    // Open: deck state for Sample Maker, refreshed every second, on tmpfs in the kiosk.
+    fake.pushEvent(QStringLiteral("apps.changed"), QJsonObject{{QStringLiteral("app"), QStringLiteral("sample-maker")}});
+    const QString stateFile = system.utilities()->stateFile();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return QFileInfo::exists(stateFile); }, 2000));
+    const auto readState = [&] {
+        QFile file(stateFile);
+        return file.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(file.readAll()).object() : QJsonObject();
+    };
+    QJsonObject state = readState();
+    EXPECT_EQ(1, state.value(QStringLiteral("schema")).toInt());
+    EXPECT_FALSE(state.value(QStringLiteral("playing")).toBool(true));
+    EXPECT_FALSE(state.value(QStringLiteral("recording")).toBool(true));
+    EXPECT_EQ(QStringLiteral("sample-maker"), state.value(QStringLiteral("app")).toString());
+    EXPECT_NEAR(QDateTime::currentMSecsSinceEpoch() / 1000.0, state.value(QStringLiteral("updated_at")).toDouble(), 5.0);
+    playing = true;
+    recording = true;
+    ASSERT_TRUE(QTest::qWaitFor([&] { return readState().value(QStringLiteral("playing")).toBool(); }, 3000));
+    EXPECT_TRUE(readState().value(QStringLiteral("recording")).toBool());
+    playing = false;
+    recording = false;
+    EXPECT_EQ(0, scans);
+    EXPECT_EQ(QStringLiteral("sample-maker"), system.utilities()->openApp());
+
+    // Close while a deck loads a track: the state file goes, the rescan waits.
+    loading = true;
+    fake.pushEvent(QStringLiteral("apps.changed"), QJsonObject{{QStringLiteral("app"), QJsonValue::Null}});
+    ASSERT_TRUE(QTest::qWaitFor([&] { return !QFileInfo::exists(stateFile); }, 2000));
+    QTest::qWait(DeckLabUtilities::kLoadingRetryMs * 2 + 100);
+    EXPECT_EQ(0, scans);
+    EXPECT_TRUE(system.utilities()->refreshPending());
+    EXPECT_TRUE(notices.isEmpty());
+    loading = false;
+    ASSERT_TRUE(QTest::qWaitFor([&] { return scans == 1; }, 2000));
+    // Only the download folder was new: Deck Lab Samples is already under Music.
+    EXPECT_EQ(QStringList{QDir::cleanPath(downloads)}, added);
+    EXPECT_EQ(QStringList{QStringLiteral("Looking for new tracks…")}, notices);
+    EXPECT_TRUE(system.utilities()->ownsScan());
+
+    // Only our quiet scan reports, once.
+    system.utilities()->onScanSummary(5, false);
+    EXPECT_EQ(1, notices.size());
+    system.utilities()->onScanSummary(3, true);
+    EXPECT_EQ(QStringLiteral("3 new tracks are in your library."), notices.last());
+    system.utilities()->onScanSummary(3, true);
+    EXPECT_EQ(2, notices.size());
+
+    // The next close only rescans; nothing is added twice.
+    fake.pushEvent(QStringLiteral("apps.changed"), QJsonObject{{QStringLiteral("app"), QJsonValue::Null}});
+    ASSERT_TRUE(QTest::qWaitFor([&] { return scans == 2; }, 2000));
+    EXPECT_EQ(1, added.size());
+    system.utilities()->onScanSummary(0, true);
+    EXPECT_EQ(QStringLiteral("No new tracks found."), notices.last());
+    EXPECT_FALSE(system.utilities()->publishNow()) << "nothing is published while no utility is open";
+
+    // A scan that could not start says nothing.
+    hooks.startQuietScan = [] { return false; };
+    system.utilities()->setHooks(hooks);
+    const int before = notices.size();
+    system.utilities()->onAppsChanged(QJsonObject{{QStringLiteral("app"), QJsonValue::Null}});
+    EXPECT_EQ(before, notices.size());
+
+    // Folder coverage is by path components, not text prefixes.
+    EXPECT_EQ(QStringList({QStringLiteral("/media/decklab/A/Deck Lab Downloads"), QStringLiteral("/srv/Musical")}),
+            DeckLabUtilities::missingRoots({QStringLiteral("/media/decklab/A/Deck Lab Downloads/"),
+                                                   QStringLiteral("/srv/Music/New Music"),
+                                                   QStringLiteral("/srv/Musical"),
+                                                   QStringLiteral("/srv/Music"),
+                                                   QString()},
+                    {QStringLiteral("/srv/Music/")}));
 }
 
 // ------------------------------------------------------------ persistence --

@@ -22,6 +22,8 @@ class LibraryScannerDlg : public QDialog {
     void slotCancel();
     void slotScanFinished();
     void slotScanStarted();
+    // Deck Lab: keep the dialog hidden for the scan that starts next.
+    void suppressNextScan();
 
   signals:
     void scanCancelled();
@@ -38,4 +40,5 @@ class LibraryScannerDlg : public QDialog {
     int m_tasksDone;
     int m_tasksTotal;
     bool m_showNoTasksQueuedWarning;
+    bool m_suppressNext = false;
 };

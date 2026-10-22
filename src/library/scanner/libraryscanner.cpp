@@ -225,6 +225,13 @@ void LibraryScanner::slotStartScan() {
 
     m_scannerGlobal->startTimer();
 
+    if (m_quietScan) {
+        // Queued before scanStarted reaches the dialog (same threads, same order),
+        // so the progress dialog never shows for this scan.
+        QMetaObject::invokeMethod(m_pProgressDlg.get(),
+                &LibraryScannerDlg::suppressNextScan,
+                Qt::QueuedConnection);
+    }
     emit scanStarted();
 
     // First, we're going to mark all the directories that we've previously
@@ -494,6 +501,7 @@ void LibraryScanner::slotFinishUnhashedScan() {
     qInfo() << "-------------------------------------------------------";
 
     LibraryScanResultSummary result;
+    result.quiet = m_quietScan;
     result.durationString = durationString;
     result.numNewTracks = numNewTracks;
     result.numMovedTracks = m_numRelocatedTracks;
@@ -514,8 +522,19 @@ void LibraryScanner::slotFinishUnhashedScan() {
 void LibraryScanner::scan(bool autoscan) {
     if (changeScannerState(STARTING)) {
         m_manualScan = autoscan;
+        m_quietScan = false;
         emit startScan();
     }
+}
+
+bool LibraryScanner::scanQuietly() {
+    if (!changeScannerState(STARTING)) {
+        return false;
+    }
+    m_manualScan = true;
+    m_quietScan = true;
+    emit startScan();
+    return true;
 }
 
 // this is called after pressing the cancel button in the scanner

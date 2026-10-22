@@ -78,6 +78,8 @@ SYSTEM_SETUP_TESTS = frozenset({
     "TerminationSignalBecomesOneGracefulQtRequest",
     "SystemPagesShowServiceStateAndRefuseUnsafeEject",
     "FirstRunFlowCompletesWithoutAControllerAndSetsTheFlag",
+    # Get Music / Sample Maker lifecycle (getmusic-plus).
+    "UtilityCloseAddsDownloadFolderAndRescansAfterDeckLoads",
 })
 
 

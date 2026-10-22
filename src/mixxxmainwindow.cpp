@@ -1243,6 +1243,10 @@ void MixxxMainWindow::slotHelpAbout() {
 }
 
 void MixxxMainWindow::slotLibraryScanSummaryDlg(const LibraryScanResultSummary& result) {
+    // Deck Lab's rescan after a utility closes reports through its own notice.
+    if (result.quiet) {
+        return;
+    }
     if (!m_pCoreServices->getSettings()->getValue<bool>(
                 mixxx::library::prefs::kShowScanSummaryConfigKey, true)) {
         return;
@@ -1415,6 +1419,7 @@ bool MixxxMainWindow::loadConfiguredSkin() {
                 services.sound = sound;
                 services.controllers = m_pCoreServices->getControllerManager();
                 services.players = m_pCoreServices->getPlayerManager().get();
+                services.library = m_pCoreServices->getTrackCollectionManager();
                 system = new DeckLabSystem(services, this);
                 system->start();
             }

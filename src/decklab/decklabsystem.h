@@ -3,6 +3,7 @@
 
 #include <QHash>
 #include <QJsonArray>
+#include <QSet>
 #include <QJsonObject>
 #include <QObject>
 #include <QStringList>
@@ -13,12 +14,15 @@
 #include "controllers/controllermappinginfo.h"
 #include "controllers/controllermappingmatcher.h"
 #include "decklab/decklabsetupmodel.h"
+#include "decklab/decklabutilities.h"
 #include "preferences/usersettings.h"
 
+class BaseTrackPlayer;
 class ControllerManager;
 class DeckLabdClient;
 class PlayerManagerInterface;
 class SoundManager;
+class TrackCollectionManager;
 
 /// Application-wide Deck Lab system integration: the decklabd connection,
 /// cached host state (USB, devices, thermal) and the in-process Deck Setup
@@ -33,6 +37,8 @@ class DeckLabSystem : public QObject {
         std::shared_ptr<SoundManager> sound;
         std::shared_ptr<ControllerManager> controllers;
         PlayerManagerInterface* players = nullptr;
+        /// Library folders and the quiet rescan after a utility closes.
+        std::shared_ptr<TrackCollectionManager> library;
     };
     struct ControllerInfo {
         QString key;       // vid:pid[:serial] (decklabd) or the Mixxx name
@@ -56,6 +62,10 @@ class DeckLabSystem : public QObject {
     void start();
     DeckLabdClient* client() const {
         return m_client;
+    }
+    /// Get Music / Sample Maker lifecycle: deck state for them, rescan after them.
+    DeckLabUtilities* utilities() const {
+        return m_utilities;
     }
     bool isReady() const;
     UserSettingsPointer config() const {
@@ -168,9 +178,17 @@ class DeckLabSystem : public QObject {
     void reapplyAudio(const decklab::DeviceProfile& profile);
     void forgetMissingRecordingDrive();
     bool preferencesOpen() const;
+    DeckLabUtilities::Hooks utilityHooks();
+    QStringList utilityFolders() const;
+    void watchPlayers();
+    void watchPlayer(BaseTrackPlayer* player);
+    bool anyLoading() const;
 
     Services m_services;
     DeckLabdClient* m_client;
+    DeckLabUtilities* m_utilities;
+    QSet<BaseTrackPlayer*> m_watchedPlayers;
+    QHash<BaseTrackPlayer*, qint64> m_loadingSince;
     std::function<QList<decklab::LoadedTrack>()> m_loadedTracksProvider;
     QJsonArray m_drives;
     QJsonObject m_devices;

@@ -177,6 +177,11 @@ void TrackCollectionManager::startLibraryAutoScan() {
     m_pScanner->scan(true);
 }
 
+bool TrackCollectionManager::startLibraryScanQuietly() {
+    // No assertion: native tests run without a scanner.
+    return m_pScanner && m_pScanner->scanQuietly();
+}
+
 void TrackCollectionManager::startLibraryScan() {
     VERIFY_OR_DEBUG_ASSERT(m_pScanner) {
         return;
