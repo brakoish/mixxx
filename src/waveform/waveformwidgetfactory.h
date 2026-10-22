@@ -12,6 +12,7 @@
 #include "util/singleton.h"
 #include "waveform/rendergate.h"
 #include "waveform/renderers/allshader/waveformrenderersignalbase.h"
+#include "waveform/vsyncpll.h"
 #include "waveform/widgets/waveformwidgettype.h"
 #include "waveform/widgets/waveformwidgetvars.h"
 
@@ -23,6 +24,7 @@ class VSyncThread;
 class GuiTick;
 class VisualsManager;
 class ControlObject;
+class QTimer;
 
 class WaveformWidgetAbstractHandle {
   public:
@@ -300,6 +302,7 @@ class WaveformWidgetFactory : public QObject,
     void swap();
     void swapAndRender();
     void slotFrameSwapped();
+    void slotPllLockWatchdog();
 
   private:
     void renderSelf();
@@ -307,6 +310,12 @@ class WaveformWidgetFactory : public QObject,
     /// Forces the next frame of every waveform (settings shared by all).
     void requestRenderAll();
     void finishPerfTick(qint64 swapNanos);
+    void logVSyncPerf();
+    /// Deck Lab idle-aware PLL: repaint the shared GL window (ST_PLL only).
+    void requestPllKeepalivePaint();
+    /// A widget that renders every frame without a render gate (spinny,
+    /// GL VU meter) keeps the PLL keepalive running, as upstream.
+    bool hasUngatedVSyncWidgets() const;
 
     void addHandle(
             QHash<WaveformWidgetType::Type, QList<WaveformWidgetBackend>>&
@@ -397,4 +406,22 @@ class WaveformWidgetFactory : public QObject,
     bool m_perfSwapTimerStarted;
     std::vector<qint64> m_perfSwapIntervals;
     std::vector<qint64> m_perfScratch;
+
+    // Deck Lab idle-aware PLL (ST_PLL with a shared GL window). See
+    // waveform/vsyncpll.h.
+    bool m_pllKeepaliveEnabled;
+    // Something moved, changed or was forced in the last render pass.
+    bool m_renderPassActive;
+    mixxx::decklab::VSyncKeepalive m_pllKeepalive;
+    mixxx::decklab::VSyncLockWatchdog m_pllLockWatchdog;
+    QTimer* m_pPllLockWatchdogTimer;
+    PerformanceTimer m_pllLockWatchdogClock;
+    // The shared QOpenGLWindow, observed to time its paints.
+    QObject* m_pPllKeepaliveWindow;
+    PerformanceTimer m_pllKeepalivePaintTimer;
+    bool m_pllKeepalivePaintStarted;
+    // Perf log baselines for the per-window vsync counters.
+    mixxx::decklab::VSyncPll::Stats m_perfPllStatsBaseline;
+    mixxx::decklab::VSyncKeepalive::Stats m_perfKeepaliveStatsBaseline;
+    quint64 m_perfSkippedSlotsBaseline;
 };

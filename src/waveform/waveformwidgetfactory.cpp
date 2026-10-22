@@ -11,9 +11,11 @@
 #include <QGLShaderProgram>
 #endif
 
+#include <QMetaMethod>
 #include <QOpenGLFunctions>
 #include <QRegularExpression>
 #include <QStringList>
+#include <QTimer>
 #include <QWidget>
 #include <QWindow>
 
@@ -85,6 +87,28 @@ const ConfigKey kFrameRateKey =
         ConfigKey(kWaveformGroup, QStringLiteral("FrameRate"));
 const ConfigKey kVSyncKey = ConfigKey(kWaveformGroup, QStringLiteral("VSync"));
 
+// Deck Lab idle-aware PLL: a shared-window paint that took this long waited
+// inside the driver for a vblank (its swap queue was full). An unqueued paint
+// of the 3x3 window returns in well under a millisecond; a queued one in steady
+// state waits about two thirds of a frame.
+constexpr qint64 kPllKeepaliveBlockedMicros = 2000;
+constexpr int kPllLockWatchdogIntervalMillis = 100;
+
+QString vsyncModeName(int mode) {
+    switch (mode) {
+    case VSyncThread::ST_DEFAULT:
+        return QStringLiteral("default");
+    case VSyncThread::ST_FREE:
+        return QStringLiteral("free");
+    case VSyncThread::ST_PLL:
+        return QStringLiteral("pll");
+    case VSyncThread::ST_TIMER:
+        return QStringLiteral("timer");
+    default:
+        return QString::number(mode);
+    }
+}
+
 ConfigKey visualGainKey(int index) {
     return ConfigKey(kWaveformGroup, QStringLiteral("VisualGain_") + QString::number(index));
 }
@@ -153,7 +177,13 @@ WaveformWidgetFactory::WaveformWidgetFactory()
           m_perfTickNanosSum(0),
           m_perfTickNanosMax(0),
           m_perfDroppedFramesBaseline(0),
-          m_perfSwapTimerStarted(false) {
+          m_perfSwapTimerStarted(false),
+          m_pllKeepaliveEnabled(false),
+          m_renderPassActive(false),
+          m_pPllLockWatchdogTimer(nullptr),
+          m_pPllKeepaliveWindow(nullptr),
+          m_pllKeepalivePaintStarted(false),
+          m_perfSkippedSlotsBaseline(0) {
     if (m_perfLogEnabled) {
         m_perfSwapIntervals.reserve(2048);
         m_perfScratch.reserve(2048);
@@ -849,6 +879,7 @@ void WaveformWidgetFactory::renderSelf() {
         m_perfSlotTimer.start();
     }
 
+    m_renderPassActive = false;
     if (!m_skipRender) {
         if (m_type) {   // no regular updates for an empty waveform
             // next rendered frame is displayed after next buffer swap and than after VSync
@@ -881,8 +912,15 @@ void WaveformWidgetFactory::renderSelf() {
                         frame.stateKey = pWaveformWidget->renderStateKey();
                     }
                 }
-                shouldRenderWaveforms[static_cast<int>(i)] =
-                        RenderGate::renders(holder.m_renderGate.evaluate(frame));
+                const RenderGate::Decision decision = holder.m_renderGate.evaluate(frame);
+                shouldRenderWaveforms[static_cast<int>(i)] = RenderGate::renders(decision);
+                // Safety refreshes are single frames; they need no vblank lock.
+                if (decision == RenderGate::Decision::Forced ||
+                        decision == RenderGate::Decision::Moving ||
+                        decision == RenderGate::Decision::Changed ||
+                        decision == RenderGate::Decision::Ungated) {
+                    m_renderPassActive = true;
+                }
             }
             //qDebug() << "prerender" << m_vsyncThread->elapsed();
 
@@ -1004,6 +1042,17 @@ void WaveformWidgetFactory::requestRenderAll() {
 }
 
 bool WaveformWidgetFactory::eventFilter(QObject* pWatched, QEvent* pEvent) {
+    if (pWatched != nullptr && pWatched == m_pPllKeepaliveWindow) {
+        // A paint of the shared GL window starts here and ends with its
+        // frameSwapped (Deck Lab idle-aware PLL). QPaintDeviceWindow paints on
+        // an update request, a paint event and an expose.
+        if (pEvent->type() == QEvent::UpdateRequest || pEvent->type() == QEvent::Paint ||
+                pEvent->type() == QEvent::Expose) {
+            m_pllKeepalivePaintTimer.start();
+            m_pllKeepalivePaintStarted = true;
+        }
+        return QObject::eventFilter(pWatched, pEvent);
+    }
     switch (pEvent->type()) {
     case QEvent::MouseButtonPress:
     case QEvent::MouseButtonRelease:
@@ -1073,6 +1122,7 @@ void WaveformWidgetFactory::finishPerfTick(qint64 swapNanos) {
             }
         }
     }
+    logVSyncPerf();
     {
         // Frame pacing over the window: mean, 95th percentile and maximum of
         // the swap slot intervals, and how many exceeded 1.5 frame periods.
@@ -1136,6 +1186,68 @@ void WaveformWidgetFactory::finishPerfTick(qint64 swapNanos) {
     m_perfTickNanosMax = 0;
 }
 
+void WaveformWidgetFactory::logVSyncPerf() {
+    if (!m_vsyncThread) {
+        return;
+    }
+    const VSyncThread::PllSnapshot snapshot = m_vsyncThread->pllSnapshot();
+    if (!m_pllKeepaliveEnabled && !snapshot.fellBack) {
+        return; // not ST_PLL
+    }
+    const mixxx::decklab::VSyncPll::Stats& pll = snapshot.stats;
+    const mixxx::decklab::VSyncPll::Stats& pllBase = m_perfPllStatsBaseline;
+    const mixxx::decklab::VSyncKeepalive::Stats& keep = m_pllKeepalive.stats();
+    const mixxx::decklab::VSyncKeepalive::Stats& keepBase = m_perfKeepaliveStatsBaseline;
+    QString state;
+    if (snapshot.fellBack) {
+        state = QStringLiteral("fallback");
+    } else if (snapshot.initializing) {
+        state = QStringLiteral("init");
+    } else if (m_pllKeepalive.running()) {
+        state = QStringLiteral("locked");
+    } else {
+        state = QStringLiteral("freewheel");
+    }
+    // Per 10 s window: referenced = vblank samples the loop used,
+    // unreferenced = paints that did not wait (ignored), relocks/snaps =
+    // resumes after a gap (snaps: the slots had to cross the vblank),
+    // skipped = slots moved on so that no vblank interval got two,
+    // paints/refills = keepalive repaints per slot / to refill the swap
+    // queue, starts/stops = keepalive runs (refreshes: idle phase checks).
+    qInfo().noquote()
+            << QStringLiteral(
+                       "DECKLAB_PERF vsync mode=%1 state=%2 period=%3us rate=%4Hz "
+                       "err=%5us referenced=%6 unreferenced=%7 duplicates=%8 "
+                       "relocks=%9 snaps=%10 skipped=%11 keepalive=%12 paints=%13 "
+                       "refills=%14 starts=%15 stops=%16 refreshes=%17")
+                       .arg(vsyncModeName(m_vsyncThread->vsyncMode()),
+                               state,
+                               QString::number(snapshot.periodMicros, 'f', 2),
+                               QString::number(snapshot.periodMicros > 0
+                                               ? 1e6 / snapshot.periodMicros
+                                               : 0.0,
+                                       'f',
+                                       4),
+                               QString::number(std::llround(snapshot.lastPhaseErrorMicros)),
+                               QString::number((pll.tracked + pll.relocks) -
+                                       (pllBase.tracked + pllBase.relocks)),
+                               QString::number(pll.unreferenced - pllBase.unreferenced),
+                               QString::number(pll.duplicates - pllBase.duplicates),
+                               QString::number(pll.relocks - pllBase.relocks))
+                       .arg(QString::number(pll.snaps - pllBase.snaps),
+                               QString::number(snapshot.skippedSlots - m_perfSkippedSlotsBaseline),
+                               m_pllKeepalive.running() ? QStringLiteral("on")
+                                                        : QStringLiteral("off"),
+                               QString::number(keep.slotPaints - keepBase.slotPaints),
+                               QString::number(keep.refillPaints - keepBase.refillPaints),
+                               QString::number(keep.starts - keepBase.starts),
+                               QString::number(keep.stops - keepBase.stops),
+                               QString::number(keep.refreshes - keepBase.refreshes));
+    m_perfPllStatsBaseline = pll;
+    m_perfKeepaliveStatsBaseline = keep;
+    m_perfSkippedSlotsBaseline = snapshot.skippedSlots;
+}
+
 void WaveformWidgetFactory::swap() {
     swapSelf();
     m_vsyncThread->vsyncSlotFinished();
@@ -1143,8 +1255,16 @@ void WaveformWidgetFactory::swap() {
 
 void WaveformWidgetFactory::swapAndRender() {
     // used for PLL
-    WGLWidget* widget = SharedGLContext::getWidget();
-    widget->getOpenGLWindow()->update();
+    m_vsyncThread->markSlotStart();
+    // Deck Lab: repaint the shared window only while something moves (or for
+    // 500 ms after). Idle, the loop freewheels on its measured period and the
+    // GUI thread, X server and GPU do no work for it. Upstream repainted every
+    // slot.
+    if (m_pllKeepaliveEnabled &&
+            m_pllKeepalive.onSlot(m_renderGateClock.elapsed().toIntegerMillis(),
+                    m_renderPassActive || hasUngatedVSyncWidgets())) {
+        requestPllKeepalivePaint();
+    }
 
     swapSelf();
     renderSelf();
@@ -1154,14 +1274,87 @@ void WaveformWidgetFactory::swapAndRender() {
 
 void WaveformWidgetFactory::slotFrameSwapped() {
 #ifdef MIXXX_USE_QOPENGL
+    if (!m_pllKeepaliveEnabled || !m_vsyncThread) {
+        return;
+    }
+    // Deck Lab: only a paint that waited in the driver for a vblank (its swap
+    // queue was full) tells where the vblank is. See waveform/vsyncpll.h.
+    const bool blocked = m_pllKeepalivePaintStarted &&
+            m_pllKeepalivePaintTimer.elapsed().toIntegerMicros() >=
+                    kPllKeepaliveBlockedMicros;
+    m_pllKeepalivePaintStarted = false;
+    m_pllLockWatchdog.onFrameSwapped();
+    // update the phase-locked-loop
+    m_vsyncThread->updatePLL(blocked);
     if (m_vsyncThread->pllInitializing()) {
         // continuously trigger redraws during PLL init
-        WGLWidget* widget = SharedGLContext::getWidget();
+        requestPllKeepalivePaint();
+    } else if (m_pllKeepalive.onFrameSwapped(blocked)) {
+        // This paint did not wait, so the queue is not full: paint again now.
+        requestPllKeepalivePaint();
+    }
+#endif
+}
+
+void WaveformWidgetFactory::requestPllKeepalivePaint() {
+#ifdef MIXXX_USE_QOPENGL
+    WGLWidget* widget = SharedGLContext::getWidget();
+    if (widget && widget->getOpenGLWindow()) {
         widget->getOpenGLWindow()->update();
     }
-    // update the phase-locked-loop
-    m_vsyncThread->updatePLL();
 #endif
+}
+
+bool WaveformWidgetFactory::hasUngatedVSyncWidgets() const {
+    static const QMetaMethod renderSpinniesSignal =
+            QMetaMethod::fromSignal(&WaveformWidgetFactory::renderSpinnies);
+    static const QMetaMethod renderVuMetersSignal =
+            QMetaMethod::fromSignal(&WaveformWidgetFactory::renderVuMeters);
+    return isSignalConnected(renderSpinniesSignal) || isSignalConnected(renderVuMetersSignal);
+}
+
+void WaveformWidgetFactory::slotPllLockWatchdog() {
+    if (!m_vsyncThread || !m_pPllLockWatchdogTimer) {
+        return;
+    }
+    const qint64 elapsedMillis = m_pllLockWatchdogClock.restart().toIntegerMillis();
+    bool exposed = false;
+#ifdef MIXXX_USE_QOPENGL
+    if (auto* pWindow = qobject_cast<QWindow*>(m_pPllKeepaliveWindow)) {
+        exposed = pWindow->isExposed();
+    }
+#endif
+    const auto state = m_pllLockWatchdog.tick(
+            elapsedMillis, exposed, m_vsyncThread->pllInitializing());
+    if (state == mixxx::decklab::VSyncLockWatchdog::State::Waiting) {
+        return;
+    }
+    m_pPllLockWatchdogTimer->stop();
+    if (state == mixxx::decklab::VSyncLockWatchdog::State::Locked) {
+        const VSyncThread::PllSnapshot snapshot = m_vsyncThread->pllSnapshot();
+        qInfo().noquote() << QStringLiteral(
+                "DECKLAB_VSYNC pll locked period=%1us rate=%2Hz after %3 ms "
+                "(%4 frameSwapped)")
+                                     .arg(QString::number(snapshot.periodMicros, 'f', 2),
+                                             QString::number(snapshot.periodMicros > 0
+                                                             ? 1e6 / snapshot.periodMicros
+                                                             : 0.0,
+                                                     'f',
+                                                     4),
+                                             QString::number(m_pllLockWatchdog.totalMillis()),
+                                             QString::number(m_pllLockWatchdog.framesSwapped()));
+        return;
+    }
+    m_pllKeepaliveEnabled = false;
+    m_vsyncThread->fallBackToTimer();
+    qWarning().noquote() << QStringLiteral(
+            "DECKLAB_VSYNC pll did not lock within %1 ms (%2 frameSwapped, "
+            "window exposed for %3 ms): falling back to timer mode, swap "
+            "interval stays %4")
+                                    .arg(QString::number(m_pllLockWatchdog.totalMillis()),
+                                            QString::number(m_pllLockWatchdog.framesSwapped()),
+                                            QString::number(m_pllLockWatchdog.exposedMillis()),
+                                            QString::number(getSurfaceFormat().swapInterval()));
 }
 
 void WaveformWidgetFactory::addHandle(
@@ -1456,9 +1649,14 @@ int WaveformWidgetFactory::findIndexOf(WWaveformViewer* viewer) const {
 
 void WaveformWidgetFactory::startVSync(
         GuiTick* pGuiTick, VisualsManager* pVisualsManager, bool useQML) {
+    // DECKLAB_VSYNC=pll|timer overrides [Waveform] VSync, here and for the
+    // swap interval in getSurfaceFormat().
+    const int configuredMode = m_config->getValue(kVSyncKey, 0);
+    const auto vsyncOverride = mixxx::decklab::vsyncOverrideFromEnvironment();
     const auto vSyncMode = useQML
             ? VSyncThread::ST_TIMER
-            : static_cast<VSyncThread::VSyncMode>(m_config->getValue(kVSyncKey, 0));
+            : static_cast<VSyncThread::VSyncMode>(
+                      mixxx::decklab::effectiveVSyncMode(configuredMode, vsyncOverride));
 
     m_pGuiTick = pGuiTick;
     m_pVisualsManager = pVisualsManager;
@@ -1466,19 +1664,54 @@ void WaveformWidgetFactory::startVSync(
     m_vsyncThread->setObjectName(QStringLiteral("VSync"));
     m_vsyncThread->setSyncIntervalTimeMicros(static_cast<int>(1e6 / m_frameRate));
 
-#ifdef MIXXX_USE_QOPENGL
+    QString source = QStringLiteral("config");
+    if (useQML) {
+        source = QStringLiteral("qml");
+    } else if (vsyncOverride != mixxx::decklab::VSyncOverride::None) {
+        source = QStringLiteral("env DECKLAB_VSYNC=") +
+                mixxx::decklab::vsyncOverrideName(vsyncOverride);
+    }
+    qInfo().noquote() << QStringLiteral(
+            "DECKLAB_VSYNC mode=%1 source=%2 config=%3 swap_interval=%4 fps=%5")
+                                 .arg(vsyncModeName(m_vsyncThread->vsyncMode()),
+                                         source,
+                                         QString::number(configuredMode),
+                                         QString::number(
+                                                 getSurfaceFormat(m_config).swapInterval()),
+                                         QString::number(m_frameRate));
+
     if (m_vsyncThread->vsyncMode() == VSyncThread::ST_PLL) {
+#ifdef MIXXX_USE_QOPENGL
         WGLWidget* widget = SharedGLContext::getWidget();
-        if (widget) {
+        if (widget && widget->getOpenGLWindow()) {
             connect(widget->getOpenGLWindow(),
                     &QOpenGLWindow::frameSwapped,
                     this,
                     &WaveformWidgetFactory::slotFrameSwapped,
                     Qt::DirectConnection);
+            // Time the shared-window paints (Deck Lab idle-aware PLL).
+            m_pPllKeepaliveWindow = widget->getOpenGLWindow();
+            m_pPllKeepaliveWindow->installEventFilter(this);
+            m_pllKeepaliveEnabled = true;
             widget->show();
         }
-    }
 #endif
+        if (m_pllKeepaliveEnabled) {
+            // Startup safety: timer mode if the loop does not lock.
+            m_pPllLockWatchdogTimer = new QTimer(this);
+            m_pPllLockWatchdogTimer->setInterval(kPllLockWatchdogIntervalMillis);
+            connect(m_pPllLockWatchdogTimer,
+                    &QTimer::timeout,
+                    this,
+                    &WaveformWidgetFactory::slotPllLockWatchdog);
+            m_pllLockWatchdogClock.start();
+            m_pPllLockWatchdogTimer->start();
+        } else {
+            qWarning() << "DECKLAB_VSYNC pll needs the shared OpenGL window, "
+                          "which does not exist: falling back to timer mode";
+            m_vsyncThread->fallBackToTimer();
+        }
+    }
 
     connect(m_vsyncThread,
             &VSyncThread::vsyncRender,
@@ -1595,9 +1828,13 @@ QString WaveformWidgetAbstractHandle::getDisplayName(WaveformWidgetType::Type ty
 QSurfaceFormat WaveformWidgetFactory::getSurfaceFormat(UserSettingsPointer pConfig) {
     // The first call should pass the config to set the vsync mode. Subsequent
     // calls will use the value as set on the first call.
-    static const VSyncThread::VSyncMode vsyncMode = pConfig
-            ? pConfig->getValue(kVSyncKey, VSyncThread::ST_DEFAULT)
-            : VSyncThread::ST_DEFAULT;
+    // DECKLAB_VSYNC=pll|timer overrides [Waveform] VSync, as in startVSync().
+    static const VSyncThread::VSyncMode vsyncMode =
+            static_cast<VSyncThread::VSyncMode>(mixxx::decklab::effectiveVSyncMode(
+                    pConfig ? pConfig->getValue(
+                                      kVSyncKey, static_cast<int>(VSyncThread::ST_DEFAULT))
+                            : static_cast<int>(VSyncThread::ST_DEFAULT),
+                    mixxx::decklab::vsyncOverrideFromEnvironment()));
 
     QSurfaceFormat format;
     // Qt5 requires at least OpenGL 2.1 or OpenGL ES 2.0, default is 2.0

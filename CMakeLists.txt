@@ -1702,6 +1702,7 @@ add_library(
   src/waveform/sharedglcontext.cpp
   src/waveform/visualplayposition.cpp
   src/waveform/visualsmanager.cpp
+  src/waveform/vsyncpll.cpp
   src/waveform/vsyncthread.cpp
   src/waveform/waveform.cpp
   src/waveform/waveformfactory.cpp
@@ -2797,6 +2798,7 @@ if(BUILD_TESTING)
     src/test/decklabusbfirsttest.cpp
     src/test/decklabstemgesturestest.cpp
     src/test/decklabstemstest.cpp
+    src/test/decklabvsynctest.cpp
     src/test/waveformmarklabeltest.cpp
     src/test/enginefilterbiquadtest.cpp
     src/test/enginemixertest.cpp

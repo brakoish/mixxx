@@ -3,10 +3,12 @@
 #include <QPair>
 #include <QSemaphore>
 #include <QThread>
+#include <atomic>
 #include <mutex>
 
 #include "util/performancetimer.h"
 #include "waveform/isynctimeprovider.h"
+#include "waveform/vsyncpll.h"
 
 class WGLWidget;
 
@@ -22,6 +24,19 @@ class VSyncThread : public QThread, public VSyncTimeProvider {
         ST_PLL,                           // 5
         ST_TIMER,                         // 6
         ST_COUNT                          // Dummy Type at last, counting possible types
+    };
+
+    static_assert(mixxx::decklab::kVSyncModePll == ST_PLL);
+    static_assert(mixxx::decklab::kVSyncModeTimer == ST_TIMER);
+
+    /// ST_PLL loop state for the Deck Lab perf log.
+    struct PllSnapshot {
+        bool initializing = true;
+        bool fellBack = false;
+        double periodMicros = 0.0;
+        double lastPhaseErrorMicros = 0.0;
+        mixxx::decklab::VSyncPll::Stats stats;
+        quint64 skippedSlots = 0;
     };
 
     VSyncThread(QObject* pParent, VSyncMode vSyncMode);
@@ -45,10 +60,19 @@ class VSyncThread : public QThread, public VSyncTimeProvider {
     std::chrono::microseconds getSyncInterval() const override {
         return std::chrono::microseconds(m_syncIntervalTimeMicros);
     }
-    void updatePLL();
+    /// After a frameSwapped of the shared GL window (GUI thread).
+    /// vblankReferenced: the paint waited for a vblank (Deck Lab, see
+    /// waveform/vsyncpll.h). Other samples only count during init.
+    void updatePLL(bool vblankReferenced = true);
     bool pllInitializing() const;
+    /// Start of a vsyncSwapAndRender slot on the GUI thread (ST_PLL).
+    void markSlotStart();
+    /// Leaves the PLL loop for the timer loop (startup safety, GUI thread).
+    /// The swap interval stays as the GL contexts were created.
+    void fallBackToTimer();
+    PllSnapshot pllSnapshot();
     VSyncMode vsyncMode() const {
-        return m_vSyncMode;
+        return m_vSyncMode.load();
     }
   signals:
     void vsyncSwapAndRender();
@@ -62,7 +86,7 @@ class VSyncThread : public QThread, public VSyncTimeProvider {
     bool m_bDoRendering;
     int m_syncIntervalTimeMicros;
     int m_waitToSwapMicros;
-    enum VSyncMode m_vSyncMode;
+    std::atomic<VSyncMode> m_vSyncMode;
     bool m_syncOk;
     int m_droppedFrames;
     int m_swapWait;
@@ -74,11 +98,12 @@ class VSyncThread : public QThread, public VSyncTimeProvider {
     // phase locked loop
     std::mutex m_pllMutex;
     PerformanceTimer m_pllTimer;
-    std::atomic<int> m_pllInitCnt;
+    mixxx::decklab::VSyncPll m_pll;          // guarded by m_pllMutex
+    std::atomic<bool> m_pllInitializing;
     std::atomic<bool> m_pllPendingUpdate;
-    double m_pllInitSum;
-    double m_pllInitAvg;
-    double m_pllPhaseOut;
-    double m_pllDeltaOut;
+    std::atomic<bool> m_pllFallBackRequested;
+    std::atomic<bool> m_pllFellBack;
+    std::atomic<qint64> m_lastSlotStartMicros; // m_pllTimer, -1 before the first slot
+    std::atomic<quint64> m_skippedSlots;
     double m_pllLogging;
 };
