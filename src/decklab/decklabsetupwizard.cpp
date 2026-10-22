@@ -804,7 +804,6 @@ void DeckLabSetupWizard::renderMapping() {
 
 // ---------------------------------------------------------------- Picker --
 void DeckLabSetupWizard::buildPicker(QWidget* page) {
-    m_picker = page;
     auto* layout = vbox(page, 0, 6);
     layout->setContentsMargins(16, 10, 16, 8);
     auto* top = hbox(8);
