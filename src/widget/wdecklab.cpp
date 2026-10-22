@@ -936,9 +936,14 @@ void WDeckLab::selectPage(int page) {
     releaseTouchCue();
     m_page = page;
     // Decks gets larger targets without moving companion utility windows.
-    for (auto* tab : m_tabs) tab->setFixedHeight(page == 0 ? 44 : 40);
-    if (auto* usb = findChild<QPushButton*>(QStringLiteral("decklab-usb")))
+    for (auto* tab : m_tabs) {
+        tab->ensurePolished();
+        tab->setFixedHeight(page == 0 ? 44 : 40);
+    }
+    if (auto* usb = findChild<QPushButton*>(QStringLiteral("decklab-usb"))) {
+        usb->ensurePolished();
         usb->setFixedHeight(page == 0 ? 44 : 40);
+    }
     // Keep the existing mapping's public page numbers: 4 = tools, 5 = settings.
     set(kTab, "current", page == 4 ? 5 : page);
     for (int n = 0; n < 5; ++n) m_tabs[n]->setChecked(n == page);
