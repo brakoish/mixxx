@@ -4,6 +4,7 @@
 #include <QColor>
 #include <QFont>
 #include <QList>
+#include <QPixmap>
 #include <QPushButton>
 #include <QRegion>
 #include <QString>
@@ -83,9 +84,18 @@ struct DeckLabStripState {
     bool operator==(const DeckLabStripState&) const = default;
 };
 
+// Loads the Deck Lab typefaces bundled with the skin (Barlow and Barlow Semi
+// Condensed, OFL) once per process. Linux builds do not install res/fonts.
+void deckLabLoadFonts(const QString& resourcePath);
+
 // Painting and partial-update geometry shared by the full deck readout, the
 // compact four-deck readout and the one-line readout above waveforms on
 // other pages. No layouts, style sheets or rich text are involved.
+//
+// On-device sizes are binding (800x480 at about 133 ppi): hero numerals 36,
+// readouts 24, titles 18, body 16, secondary 15 (Medium, muted), labels 14
+// (SemiBold, uppercase). Nothing is smaller and nothing is shrunk to fit:
+// text is elided and lower-priority items are dropped instead.
 class DeckLabStripRenderer {
   public:
     enum class Mode {
@@ -104,16 +114,31 @@ class DeckLabStripRenderer {
         Key,
         Time
     };
+    static constexpr int kHero = 36;
+    static constexpr int kReadout = 24;
+    static constexpr int kTitle = 18;
+    static constexpr int kBody = 16;
+    static constexpr int kSecondary = 15;
+    static constexpr int kLabel = 14;
+    static int preferredHeight(Mode mode) {
+        return mode == Mode::Mini ? 30 : mode == Mode::Compact ? 138 : 104;
+    }
     void setMode(Mode mode) {
         m_mode = mode;
+        layout();
     }
     Mode mode() const {
         return m_mode;
     }
     void setSize(const QSize& size) {
         m_size = size;
+        layout();
     }
-    void setFamily(const QString& family);
+    // Family used only when the bundled typefaces are missing.
+    void setFamily(const QString& fallback) {
+        m_fallback = fallback;
+        layout();
+    }
     // Stores the new state and returns the region that changed.
     QRegion setState(const DeckLabStripState& next);
     QRegion setFlash(bool on);
@@ -123,27 +148,37 @@ class DeckLabStripRenderer {
     const DeckLabStripState& state() const {
         return m_state;
     }
-    QRect rect(Part part) const;
+    QRect rect(Part part) const {
+        return m_rects[static_cast<int>(part)];
+    }
     void paint(QPainter& painter, const QRect& dirty, bool pressed, bool focused) const;
     // Lit deck modes as words, for accessibility and verification.
     QString modesText() const;
-    // Parts whose text cannot be shown at its minimum readable size.
+    // Parts that cannot be shown at their binding size in this geometry.
     QStringList overflowingParts() const;
+    QFont uiFont(int pixels, QFont::Weight weight) const;
+    QFont numeralFont(int pixels) const;
+    QFont labelFont() const;
 
   private:
-    QFont font(int pixels, QFont::Weight weight, bool caption = false) const;
-    int left() const;
+    void layout();
+    // Key box shifted left when a long clock needs the room.
+    int clockExcess() const;
     void paintBadge(QPainter& painter) const;
     void paintTransport(QPainter& painter, const QRect& area) const;
-    void paintTitle(QPainter& painter, const QRect& area, int pixels) const;
+    void paintTitle(QPainter& painter, const QRect& area) const;
     void paintPhase(QPainter& painter) const;
-    int paintChip(QPainter& painter, int x, int y, int height, const QString& text, bool on,
-            const QColor& lit, bool alignRight, bool outlined = false) const;
+    void paintValues(QPainter& painter, const QRect& dirty) const;
+    void paintLamps(QPainter& painter) const;
+    int paintChip(QPainter& painter, int x, int y, const QString& text, bool on,
+            const QColor& lit, bool outlined = false) const;
+    int chipWidth(const QString& text) const;
     Mode m_mode = Mode::Full;
     QSize m_size;
-    QString m_family;
+    QString m_fallback;
     DeckLabStripState m_state;
     bool m_flash = false;
+    std::array<QRect, 9> m_rects{};
 };
 
 // Tap target for one deck: the readout opens full track information (or
@@ -242,10 +277,14 @@ class DeckLabChipButton final : public QPushButton {
 // playhead (played bars graphite, unplayed white). Display only.
 class DeckLabMark final : public QWidget {
   public:
-    explicit DeckLabMark(QWidget* parent = nullptr);
+    // iconPath: the brand's pixel-grid mark; painted from geometry if missing.
+    explicit DeckLabMark(const QString& iconPath, QWidget* parent = nullptr);
 
   protected:
     void paintEvent(QPaintEvent* event) override;
+
+  private:
+    QPixmap m_icon;
 };
 
 // Painted segment level meter for the Decks page. It is polled by the display
