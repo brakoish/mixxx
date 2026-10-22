@@ -2,11 +2,11 @@
 <skin>
   <manifest>
     <title>Deck Lab</title>
-    <author>Deck Lab contributors</author>
+    <author>Deck Lab contributors; derived from the Pioneered skin by Sven Boekelder</author>
     <version>1.0.0-native-candidate</version>
     <description>Native controller-first touchscreen appliance</description>
     <language>*</language>
-    <license>GPL-2.0-or-later</license>
+    <license>GPL-3.0-or-later</license>
     <attributes>
       <attribute config_key="[Master],num_decks">4</attribute>
       <attribute config_key="[Master],num_samplers">16</attribute>
@@ -36,11 +36,12 @@
           <HotcueLabelFormat>letters</HotcueLabelFormat>
           <CompactMarkerLabels>separate</CompactMarkerLabels>
           <Channel>1</Channel>
-          <BgColor>#000</BgColor>
+          <BgColor>#0d0f12</BgColor>
           <BeatColor>#707070</BeatColor>
           <PrerollColor>#1c1c22</PrerollColor>
-          <PlayPosColor>#d74448</PlayPosColor>
-          <SignalColor>#32323c</SignalColor>
+          <PlayPosColor>#ff3d2e</PlayPosColor>
+          <EndOfTrackColor>#ff3d2e</EndOfTrackColor>
+          <SignalColor>#35c8f0</SignalColor>
           <SignalLowColor>#004ee4</SignalLowColor>
           <SignalMidColor>#c95a00</SignalMidColor>
           <SignalHighColor>#f6e9d3</SignalHighColor>
@@ -143,11 +144,12 @@
           <HotcueLabelFormat>letters</HotcueLabelFormat>
           <CompactMarkerLabels>separate</CompactMarkerLabels>
           <Channel>2</Channel>
-          <BgColor>#000</BgColor>
+          <BgColor>#0d0f12</BgColor>
           <BeatColor>#707070</BeatColor>
           <PrerollColor>#1c1c22</PrerollColor>
-          <PlayPosColor>#d74448</PlayPosColor>
-          <SignalColor>#32323c</SignalColor>
+          <PlayPosColor>#ff3d2e</PlayPosColor>
+          <EndOfTrackColor>#ff3d2e</EndOfTrackColor>
+          <SignalColor>#f5a524</SignalColor>
           <SignalLowColor>#004ee4</SignalLowColor>
           <SignalMidColor>#c95a00</SignalMidColor>
           <SignalHighColor>#f6e9d3</SignalHighColor>
@@ -250,11 +252,12 @@
           <HotcueLabelFormat>letters</HotcueLabelFormat>
           <CompactMarkerLabels>separate</CompactMarkerLabels>
           <Channel>3</Channel>
-          <BgColor>#000</BgColor>
+          <BgColor>#0d0f12</BgColor>
           <BeatColor>#707070</BeatColor>
           <PrerollColor>#1c1c22</PrerollColor>
-          <PlayPosColor>#d74448</PlayPosColor>
-          <SignalColor>#32323c</SignalColor>
+          <PlayPosColor>#ff3d2e</PlayPosColor>
+          <EndOfTrackColor>#ff3d2e</EndOfTrackColor>
+          <SignalColor>#b5e61d</SignalColor>
           <SignalLowColor>#004ee4</SignalLowColor>
           <SignalMidColor>#c95a00</SignalMidColor>
           <SignalHighColor>#f6e9d3</SignalHighColor>
@@ -357,11 +360,12 @@
           <HotcueLabelFormat>letters</HotcueLabelFormat>
           <CompactMarkerLabels>separate</CompactMarkerLabels>
           <Channel>4</Channel>
-          <BgColor>#000</BgColor>
+          <BgColor>#0d0f12</BgColor>
           <BeatColor>#707070</BeatColor>
           <PrerollColor>#1c1c22</PrerollColor>
-          <PlayPosColor>#d74448</PlayPosColor>
-          <SignalColor>#32323c</SignalColor>
+          <PlayPosColor>#ff3d2e</PlayPosColor>
+          <EndOfTrackColor>#ff3d2e</EndOfTrackColor>
+          <SignalColor>#c77dff</SignalColor>
           <SignalLowColor>#004ee4</SignalLowColor>
           <SignalMidColor>#c95a00</SignalMidColor>
           <SignalHighColor>#f6e9d3</SignalHighColor>
@@ -477,15 +481,16 @@
         <Overview>
           <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Normalize>true</Normalize>
-          <LabelFontSize>11</LabelFontSize>
+          <LabelFontSize>14</LabelFontSize>
           <Channel>1</Channel>
           <Connection>
             <ConfigKey>[Channel1],playposition</ConfigKey>
             <ConnectValueFromWidget>false</ConnectValueFromWidget>
           </Connection>
-          <BgColor>#000</BgColor>
-          <PlayPosColor>#ffffff</PlayPosColor>
-          <SignalColor>#32323c</SignalColor>
+          <BgColor>#0d0f12</BgColor>
+          <PlayPosColor>#ff3d2e</PlayPosColor>
+          <EndOfTrackColor>#ff3d2e</EndOfTrackColor>
+          <SignalColor>#35c8f0</SignalColor>
           <SignalLowColor>#004ee4</SignalLowColor>
           <SignalMidColor>#c95a00</SignalMidColor>
           <SignalHighColor>#f6e9d3</SignalHighColor>
@@ -586,15 +591,16 @@
         <Overview>
           <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Normalize>true</Normalize>
-          <LabelFontSize>11</LabelFontSize>
+          <LabelFontSize>14</LabelFontSize>
           <Channel>2</Channel>
           <Connection>
             <ConfigKey>[Channel2],playposition</ConfigKey>
             <ConnectValueFromWidget>false</ConnectValueFromWidget>
           </Connection>
-          <BgColor>#000</BgColor>
-          <PlayPosColor>#ffffff</PlayPosColor>
-          <SignalColor>#32323c</SignalColor>
+          <BgColor>#0d0f12</BgColor>
+          <PlayPosColor>#ff3d2e</PlayPosColor>
+          <EndOfTrackColor>#ff3d2e</EndOfTrackColor>
+          <SignalColor>#f5a524</SignalColor>
           <SignalLowColor>#004ee4</SignalLowColor>
           <SignalMidColor>#c95a00</SignalMidColor>
           <SignalHighColor>#f6e9d3</SignalHighColor>
@@ -695,15 +701,16 @@
         <Overview>
           <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Normalize>true</Normalize>
-          <LabelFontSize>11</LabelFontSize>
+          <LabelFontSize>14</LabelFontSize>
           <Channel>3</Channel>
           <Connection>
             <ConfigKey>[Channel3],playposition</ConfigKey>
             <ConnectValueFromWidget>false</ConnectValueFromWidget>
           </Connection>
-          <BgColor>#000</BgColor>
-          <PlayPosColor>#ffffff</PlayPosColor>
-          <SignalColor>#32323c</SignalColor>
+          <BgColor>#0d0f12</BgColor>
+          <PlayPosColor>#ff3d2e</PlayPosColor>
+          <EndOfTrackColor>#ff3d2e</EndOfTrackColor>
+          <SignalColor>#b5e61d</SignalColor>
           <SignalLowColor>#004ee4</SignalLowColor>
           <SignalMidColor>#c95a00</SignalMidColor>
           <SignalHighColor>#f6e9d3</SignalHighColor>
@@ -804,15 +811,16 @@
         <Overview>
           <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Normalize>true</Normalize>
-          <LabelFontSize>11</LabelFontSize>
+          <LabelFontSize>14</LabelFontSize>
           <Channel>4</Channel>
           <Connection>
             <ConfigKey>[Channel4],playposition</ConfigKey>
             <ConnectValueFromWidget>false</ConnectValueFromWidget>
           </Connection>
-          <BgColor>#000</BgColor>
-          <PlayPosColor>#ffffff</PlayPosColor>
-          <SignalColor>#32323c</SignalColor>
+          <BgColor>#0d0f12</BgColor>
+          <PlayPosColor>#ff3d2e</PlayPosColor>
+          <EndOfTrackColor>#ff3d2e</EndOfTrackColor>
+          <SignalColor>#c77dff</SignalColor>
           <SignalLowColor>#004ee4</SignalLowColor>
           <SignalMidColor>#c95a00</SignalMidColor>
           <SignalHighColor>#f6e9d3</SignalHighColor>

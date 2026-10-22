@@ -1764,6 +1764,7 @@ add_library(
   src/decklab/decklabsystempages.cpp
   src/decklab/decklabsystemui.cpp
   src/decklab/decklabui.cpp
+  src/widget/decklabdeckwidgets.cpp
   src/widget/wlibrarysidebar.cpp
   src/widget/wlibrarytableview.cpp
   src/widget/wlibrarytextbrowser.cpp

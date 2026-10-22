@@ -28,7 +28,7 @@ companion retains focused OS/media tools; their explicit control handshake is
 versioned alongside the controller overlays in the separate Deck Lab repo.
 No personal profiles, music, libraries or appliance credentials belong here.
 Original upstream licenses/notices remain intact. Waveform skin markup is
-adapted from Pioneered by Sven Boekelder (GPL-2.0-or-later); the new UI is native
+adapted from Pioneered by Sven Boekelder (GPL-3.0, as is this adapted skin); the new UI is native
 Qt Widgets, not a renamed copy of the desktop skin.
 
 The native candidate is not selected or installed automatically on the Pi.

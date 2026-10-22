@@ -503,6 +503,14 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                         failures->append("Empty collection offers Load without a track selection");
             }
             if (!surface->grab().save(QDir(output).filePath(QStringLiteral("app-screen-%1.png").arg(*step, 2, 10, QLatin1Char('0'))))) failures->append("Screenshot failed");
+            if (*step == 18) {
+                // Wider HDMI touch panels must scale cleanly, not break.
+                surface->setFixedSize(1024, 600);
+                for (int pass = 0; pass < 3; ++pass) QCoreApplication::processEvents();
+                if (!surface->grab().save(QDir(output).filePath(QStringLiteral("app-decks-1024x600.png")))) failures->append("Screenshot failed");
+                surface->setFixedSize(800, 480);
+                for (int pass = 0; pass < 3; ++pass) QCoreApplication::processEvents();
+            }
             ++*step;
         });
     });
