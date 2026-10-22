@@ -6,7 +6,7 @@
 
 #include "waveform/waveform.h"
 
-/// Deck Lab: prebuilt geometry for the scrolling RGB waveform (pi4-perf).
+/// Deck Lab: prebuilt geometry for the scrolling waveforms (pi4-perf).
 ///
 /// Upstream builds the vertices of every visible pixel column on the CPU in
 /// every frame and the OpenGL backend uploads them again from client memory.
@@ -24,7 +24,7 @@
 ///
 /// Colour, height, the EQ and visual gains, the deck gain and the theme
 /// colours are applied by the vertex shader from uniforms, so changing them
-/// costs nothing. A vertex stores the raw 0..255 band maxima instead.
+/// costs nothing. A vertex stores the raw 0..255 maxima instead.
 ///
 /// The cache rebuilds every chunk only when the waveform object, the visual
 /// frames per pixel (zoom or tempo), the device pixel ratio, the width or the
@@ -32,12 +32,27 @@
 /// being analysed are rebuilt once more data arrived.
 ///
 /// This class has no OpenGL dependency, so its output can be tested and
-/// compared against the upstream renderer without a GPU.
+/// compared against the upstream renderers without a GPU.
 class WaveformColumnCache {
   public:
     static constexpr int kColumnsPerChunk = 128;
     /// The axis line occupies the first rectangle of the vertex array.
     static constexpr int kAxisVertices = 6;
+
+    /// Which upstream allshader renderer the geometry reproduces.
+    enum class Kind {
+        /// WaveformRendererRGB: one rectangle per column (two with the
+        /// stereo split option), coloured from the band maxima.
+        RGB,
+        /// WaveformRendererSimple: one rectangle per column from the left
+        /// channel's "all" maximum, one colour.
+        Simple,
+        /// WaveformRendererFiltered (plain and RGB stacked): three planes,
+        /// low, mid and high, each one rectangle per column with the top edge
+        /// from the left and the bottom edge from the right channel. Drawn in
+        /// plane order like upstream.
+        Filtered,
+    };
 
     /// Interleaved vertex as uploaded to the GPU (12 bytes).
     struct Vertex {
@@ -48,7 +63,8 @@ class WaveformColumnCache {
         /// line (one-sided rectangles), +1 bottom. For the axis line the
         /// height is 0.5.
         float sign;
-        /// Raw per-column maxima (0..255), unscaled.
+        /// Raw maxima (0..255), unscaled. RGB: per column bands and all.
+        /// Simple: `all`. Filtered: `low` holds this edge's band value.
         quint8 low;
         quint8 mid;
         quint8 high;
@@ -70,6 +86,17 @@ class WaveformColumnCache {
         quint64 bytesDirty = 0;
     };
 
+    explicit WaveformColumnCache(Kind kind = Kind::RGB)
+            : m_kind(kind) {
+    }
+
+    Kind kind() const {
+        return m_kind;
+    }
+    int planeCount() const {
+        return m_kind == Kind::Filtered ? 3 : 1;
+    }
+
     /// Prepares the columns [firstColumn, firstColumn + pixelLength).
     /// `length` is the logical widget length (for the axis line).
     /// Returns false if nothing can be drawn.
@@ -88,7 +115,8 @@ class WaveformColumnCache {
         return !m_pWaveform.isNull();
     }
 
-    /// CPU copy of the whole vertex buffer (axis line, then the slots).
+    /// CPU copy of the whole vertex buffer (axis line, then the slots of
+    /// plane 0, then the slots of the next planes).
     const std::vector<Vertex>& vertices() const {
         return m_vertices;
     }
@@ -101,11 +129,15 @@ class WaveformColumnCache {
     int slotCount() const {
         return m_slotCount;
     }
-    int slotFirstVertex(int slot) const {
-        return kAxisVertices + slot * kColumnsPerChunk * m_verticesPerColumn;
-    }
     int slotVertexCount() const {
         return kColumnsPerChunk * m_verticesPerColumn;
+    }
+    /// Vertices between the same slot of two consecutive planes.
+    int planeStride() const {
+        return m_slotCount * slotVertexCount();
+    }
+    int slotFirstVertex(int slot, int plane = 0) const {
+        return kAxisVertices + plane * planeStride() + slot * slotVertexCount();
     }
 
     /// True once after the vertex array was resized: the GPU buffer must be
@@ -124,8 +156,9 @@ class WaveformColumnCache {
     /// Marks everything as uploaded.
     void clearDirty();
 
-    /// Vertex ranges of the visible columns, in draw order (at most two,
-    /// because consecutive chunks live in consecutive slots of the ring).
+    /// Vertex ranges of the visible columns of plane 0, in draw order (at
+    /// most two, because consecutive chunks live in consecutive slots of the
+    /// ring). Plane p's ranges are offset by p * planeStride().
     const Ranges& drawRanges() const {
         return m_drawRanges;
     }
@@ -156,6 +189,7 @@ class WaveformColumnCache {
     void buildChunk(int chunk, Slot* pSlot, int completion);
     void buildAxis(int length);
 
+    const Kind m_kind;
     ConstWaveformPointer m_pWaveform;
     int m_dataSize = 0;
     double m_visualIncrementPerPixel = 0.0;

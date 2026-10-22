@@ -1,4 +1,4 @@
-#include "waveform/renderers/allshader/waveformrendererrgbcached.h"
+#include "waveform/renderers/allshader/waveformrenderercached.h"
 
 #include <QOpenGLContext>
 #include <QOpenGLShaderProgram>
@@ -14,11 +14,14 @@ namespace allshader {
 
 namespace {
 
-// The vertex shader applies, per vertex, exactly what
-// WaveformRendererRGB::preprocessInner() computes per column on the CPU, in
-// the same operation order. GLSL without a #version line, like the other
-// inline Mixxx shaders: Qt defines the precision qualifiers away on desktop
-// OpenGL and keeps them on OpenGL ES.
+// The vertex shader applies, per vertex, exactly what the upstream renderers
+// compute per column on the CPU, in the same operation order:
+// - mode 0, WaveformRendererRGB::preprocessInner()
+// - mode 1, WaveformRendererSimple::preprocessInner()
+// - mode 2, one band of WaveformRendererFiltered::preprocessInner()
+// GLSL without a #version line, like the other inline Mixxx shaders: Qt
+// defines the precision qualifiers away on desktop OpenGL and keeps them on
+// OpenGL ES.
 const char kVertexShader[] = R"--(
 uniform highp mat4 matrix;
 uniform highp float offsetX;
@@ -29,6 +32,9 @@ uniform highp vec3 lowColor;
 uniform highp vec3 midColor;
 uniform highp vec3 highColor;
 uniform highp vec3 axisColor;
+uniform highp vec3 solidColor;
+uniform highp float planeGain;
+uniform highp float mode;
 uniform highp float axisMode;
 attribute highp vec2 position;
 attribute highp vec4 bands;
@@ -41,6 +47,14 @@ void main()
         vColor = axisColor;
         y = halfBreadth + position.y * 0.5;
         x = position.x;
+    } else if (mode > 1.5) {
+        vColor = solidColor;
+        y = halfBreadth + position.y * (heightFactor * (bands.x * planeGain));
+        x = position.x + offsetX;
+    } else if (mode > 0.5) {
+        vColor = solidColor;
+        y = halfBreadth + position.y * (heightFactor * bands.w);
+        x = position.x + offsetX;
     } else {
         highp float maxLow = bands.x * bandGain.x;
         highp float maxMid = bands.y * bandGain.y;
@@ -78,30 +92,47 @@ QVector3D rgbOf(float r, float g, float b) {
 
 } // namespace
 
-WaveformRendererRGBCached::WaveformRendererRGBCached(WaveformWidgetRenderer* waveformWidget,
+// static
+WaveformColumnCache::Kind WaveformRendererCached::kindOf(Style style) {
+    switch (style) {
+    case Style::Simple:
+        return WaveformColumnCache::Kind::Simple;
+    case Style::Filtered:
+    case Style::Stacked:
+        return WaveformColumnCache::Kind::Filtered;
+    case Style::RGB:
+        break;
+    }
+    return WaveformColumnCache::Kind::RGB;
+}
+
+WaveformRendererCached::WaveformRendererCached(WaveformWidgetRenderer* waveformWidget,
+        Style style,
         ::WaveformRendererAbstract::PositionSource type,
         WaveformRendererSignalBase::Options options)
         : WaveformRendererSignalBase(waveformWidget),
-          m_isSlipRenderer(type == ::WaveformRendererAbstract::Slip),
-          m_options(options) {
+          m_style(style),
+          m_isSlipRenderer(style == Style::RGB && type == ::WaveformRendererAbstract::Slip),
+          m_options(style == Style::RGB ? options : WaveformRendererSignalBase::Options()),
+          m_cache(kindOf(style)) {
     setUsePreprocess(true);
 }
 
-WaveformRendererRGBCached::~WaveformRendererRGBCached() {
+WaveformRendererCached::~WaveformRendererCached() {
     releaseBuffer();
 }
 
 // static
-const char* WaveformRendererRGBCached::vertexShaderSource() {
+const char* WaveformRendererCached::vertexShaderSource() {
     return kVertexShader;
 }
 
 // static
-const char* WaveformRendererRGBCached::fragmentShaderSource() {
+const char* WaveformRendererCached::fragmentShaderSource() {
     return kFragmentShader;
 }
 
-void WaveformRendererRGBCached::releaseBuffer() {
+void WaveformRendererCached::releaseBuffer() {
     // Nodes are destroyed with their widget's context current (see
     // ~allshader::WaveformWidget). Without a context the buffer goes away
     // with the context itself.
@@ -112,32 +143,32 @@ void WaveformRendererRGBCached::releaseBuffer() {
     m_bufferVertices = 0;
 }
 
-void WaveformRendererRGBCached::setAxesColor(const QColor& axesColor) {
+void WaveformRendererCached::setAxesColor(const QColor& axesColor) {
     getRgbF(axesColor, &m_axesColor_r, &m_axesColor_g, &m_axesColor_b, &m_axesColor_a);
 }
 
-void WaveformRendererRGBCached::setLowColor(const QColor& lowColor) {
+void WaveformRendererCached::setLowColor(const QColor& lowColor) {
     getRgbF(lowColor, &m_rgbLowColor_r, &m_rgbLowColor_g, &m_rgbLowColor_b);
 }
 
-void WaveformRendererRGBCached::setMidColor(const QColor& midColor) {
+void WaveformRendererCached::setMidColor(const QColor& midColor) {
     getRgbF(midColor, &m_rgbMidColor_r, &m_rgbMidColor_g, &m_rgbMidColor_b);
 }
 
-void WaveformRendererRGBCached::setHighColor(const QColor& highColor) {
+void WaveformRendererCached::setHighColor(const QColor& highColor) {
     getRgbF(highColor, &m_rgbHighColor_r, &m_rgbHighColor_g, &m_rgbHighColor_b);
 }
 
-void WaveformRendererRGBCached::onSetup(const QDomNode&) {
+void WaveformRendererCached::onSetup(const QDomNode&) {
 }
 
-void WaveformRendererRGBCached::preprocess() {
+void WaveformRendererCached::preprocess() {
     m_hasFrame = preprocessInner();
 }
 
-bool WaveformRendererRGBCached::preprocessInner() {
-    // Mirrors allshader::WaveformRendererRGB::preprocessInner(); only the
-    // per-column work moved to WaveformColumnCache and the vertex shader.
+bool WaveformRendererCached::preprocessInner() {
+    // Mirrors the upstream preprocessInner() functions; only the per-column
+    // work moved to WaveformColumnCache and the vertex shader.
     TrackPointer pTrack = m_waveformRenderer->getTrackInfo();
     if (!pTrack) {
         m_cache.clear();
@@ -217,27 +248,42 @@ bool WaveformRendererRGBCached::preprocessInner() {
     m_uniforms.halfBreadth = halfBreadth;
     m_uniforms.heightFactor = allGain * halfBreadth / m_maxValue;
     m_uniforms.bandGain = QVector3D(lowGain, midGain, highGain);
-    m_uniforms.lowColor = rgbOf(static_cast<float>(m_rgbLowColor_r),
-            static_cast<float>(m_rgbLowColor_g),
-            static_cast<float>(m_rgbLowColor_b));
-    m_uniforms.midColor = rgbOf(static_cast<float>(m_rgbMidColor_r),
-            static_cast<float>(m_rgbMidColor_g),
-            static_cast<float>(m_rgbMidColor_b));
-    m_uniforms.highColor = rgbOf(static_cast<float>(m_rgbHighColor_r),
-            static_cast<float>(m_rgbHighColor_g),
-            static_cast<float>(m_rgbHighColor_b));
+    if (m_style == Style::Filtered) {
+        m_uniforms.lowColor = rgbOf(static_cast<float>(m_lowColor_r),
+                static_cast<float>(m_lowColor_g),
+                static_cast<float>(m_lowColor_b));
+        m_uniforms.midColor = rgbOf(static_cast<float>(m_midColor_r),
+                static_cast<float>(m_midColor_g),
+                static_cast<float>(m_midColor_b));
+        m_uniforms.highColor = rgbOf(static_cast<float>(m_highColor_r),
+                static_cast<float>(m_highColor_g),
+                static_cast<float>(m_highColor_b));
+    } else {
+        m_uniforms.lowColor = rgbOf(static_cast<float>(m_rgbLowColor_r),
+                static_cast<float>(m_rgbLowColor_g),
+                static_cast<float>(m_rgbLowColor_b));
+        m_uniforms.midColor = rgbOf(static_cast<float>(m_rgbMidColor_r),
+                static_cast<float>(m_rgbMidColor_g),
+                static_cast<float>(m_rgbMidColor_b));
+        m_uniforms.highColor = rgbOf(static_cast<float>(m_rgbHighColor_r),
+                static_cast<float>(m_rgbHighColor_g),
+                static_cast<float>(m_rgbHighColor_b));
+    }
+    m_uniforms.signalColor = rgbOf(static_cast<float>(m_signalColor_r),
+            static_cast<float>(m_signalColor_g),
+            static_cast<float>(m_signalColor_b));
     m_uniforms.axisColor = rgbOf(static_cast<float>(m_axesColor_r),
             static_cast<float>(m_axesColor_g),
             static_cast<float>(m_axesColor_b));
     return true;
 }
 
-void WaveformRendererRGBCached::initializeGL() {
+void WaveformRendererCached::initializeGL() {
     m_pProgram = std::make_unique<QOpenGLShaderProgram>();
     if (!m_pProgram->addShaderFromSourceCode(QOpenGLShader::Vertex, kVertexShader) ||
             !m_pProgram->addShaderFromSourceCode(QOpenGLShader::Fragment, kFragmentShader) ||
             !m_pProgram->link()) {
-        qWarning() << "WaveformRendererRGBCached: shader program failed;"
+        qWarning() << "WaveformRendererCached: shader program failed;"
                    << "set DECKLAB_WAVEFORM_CACHE=0 to use the upstream renderer."
                    << m_pProgram->log();
         m_programFailed = true;
@@ -252,12 +298,15 @@ void WaveformRendererRGBCached::initializeGL() {
     m_midColorLocation = m_pProgram->uniformLocation("midColor");
     m_highColorLocation = m_pProgram->uniformLocation("highColor");
     m_axisColorLocation = m_pProgram->uniformLocation("axisColor");
+    m_solidColorLocation = m_pProgram->uniformLocation("solidColor");
+    m_planeGainLocation = m_pProgram->uniformLocation("planeGain");
+    m_modeLocation = m_pProgram->uniformLocation("mode");
     m_axisModeLocation = m_pProgram->uniformLocation("axisMode");
     m_positionLocation = m_pProgram->attributeLocation("position");
     m_bandsLocation = m_pProgram->attributeLocation("bands");
 }
 
-void WaveformRendererRGBCached::uploadDirty() {
+void WaveformRendererCached::uploadDirty() {
     const auto& vertices = m_cache.vertices();
     constexpr int kVertexSize = static_cast<int>(sizeof(WaveformColumnCache::Vertex));
     if (m_buffer == 0) {
@@ -287,21 +336,29 @@ void WaveformRendererRGBCached::uploadDirty() {
         if (!m_cache.isSlotDirty(slot)) {
             continue;
         }
-        const int first = m_cache.slotFirstVertex(slot);
-        glBufferSubData(GL_ARRAY_BUFFER,
-                static_cast<qopengl_GLintptr>(first) * kVertexSize,
-                static_cast<qopengl_GLsizeiptr>(slotVertices) * kVertexSize,
-                vertices.data() + first);
+        for (int plane = 0; plane < m_cache.planeCount(); ++plane) {
+            const int first = m_cache.slotFirstVertex(slot, plane);
+            glBufferSubData(GL_ARRAY_BUFFER,
+                    static_cast<qopengl_GLintptr>(first) * kVertexSize,
+                    static_cast<qopengl_GLsizeiptr>(slotVertices) * kVertexSize,
+                    vertices.data() + first);
+        }
     }
     m_cache.clearDirty();
 }
 
-void WaveformRendererRGBCached::paintGL() {
+void WaveformRendererCached::drawPlane(int plane) {
+    const int planeOffset = plane * m_cache.planeStride();
+    for (const auto& range : m_cache.drawRanges()) {
+        glDrawArrays(GL_TRIANGLES, range.firstVertex + planeOffset, range.vertexCount);
+    }
+}
+
+void WaveformRendererCached::paintGL() {
     if (!m_hasFrame || m_programFailed || !m_pProgram) {
         return;
     }
-    const auto& ranges = m_cache.drawRanges();
-    if (ranges.isEmpty() || m_cache.vertexCount() == 0) {
+    if (m_cache.drawRanges().isEmpty() || m_cache.vertexCount() == 0) {
         return;
     }
     if (!m_pProgram->bind()) {
@@ -338,16 +395,40 @@ void WaveformRendererRGBCached::paintGL() {
     glEnable(GL_BLEND);
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
-    // The axis line first (screen space), then the columns over it, as in
-    // the upstream single draw call.
+    // The axis line first (screen space), then the columns over it, as the
+    // upstream renderers order their single vertex array.
     m_pProgram->setUniformValue(m_axisModeLocation, 1.0f);
     m_pProgram->setUniformValue(m_offsetLocation, 0.0f);
     glDrawArrays(GL_TRIANGLES, 0, WaveformColumnCache::kAxisVertices);
 
     m_pProgram->setUniformValue(m_axisModeLocation, 0.0f);
     m_pProgram->setUniformValue(m_offsetLocation, m_uniforms.offsetX);
-    for (const auto& range : ranges) {
-        glDrawArrays(GL_TRIANGLES, range.firstVertex, range.vertexCount);
+    switch (m_style) {
+    case Style::RGB:
+        m_pProgram->setUniformValue(m_modeLocation, kModeRgb);
+        drawPlane(0);
+        break;
+    case Style::Simple:
+        m_pProgram->setUniformValue(m_modeLocation, kModeSolid);
+        m_pProgram->setUniformValue(m_solidColorLocation, m_uniforms.signalColor);
+        drawPlane(0);
+        break;
+    case Style::Filtered:
+    case Style::Stacked: {
+        // Low, mid, high: each band over the previous one, like upstream.
+        m_pProgram->setUniformValue(m_modeLocation, kModeBandPlane);
+        const QVector3D colors[3] = {
+                m_uniforms.lowColor, m_uniforms.midColor, m_uniforms.highColor};
+        const float gains[3] = {m_uniforms.bandGain.x(),
+                m_uniforms.bandGain.y(),
+                m_uniforms.bandGain.z()};
+        for (int plane = 0; plane < 3; ++plane) {
+            m_pProgram->setUniformValue(m_solidColorLocation, colors[plane]);
+            m_pProgram->setUniformValue(m_planeGainLocation, gains[plane]);
+            drawPlane(plane);
+        }
+        break;
+    }
     }
 
     glDisableVertexAttribArray(static_cast<GLuint>(m_positionLocation));

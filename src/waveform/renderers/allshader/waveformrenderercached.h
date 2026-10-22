@@ -11,34 +11,45 @@
 class QOpenGLShaderProgram;
 
 namespace allshader {
-class WaveformRendererRGBCached;
+class WaveformRendererCached;
 } // namespace allshader
 
-/// Deck Lab (pi4-perf): the RGB waveform of allshader::WaveformRendererRGB,
-/// drawn from geometry that is built once per chunk of columns instead of
-/// once per frame (see WaveformColumnCache). Per frame it only computes the
-/// first visible column and sets a handful of uniforms: the scroll offset,
-/// the gains and the colours. Vertex data is uploaded to a buffer object only
-/// when a chunk is (re)built, about once a second while a deck plays.
+/// Deck Lab (pi4-perf): the scrolling waveforms of the allshader RGB, Simple,
+/// Filtered and RGB Stacked renderers, drawn from geometry that is built once
+/// per chunk of columns instead of once per frame (see WaveformColumnCache).
+/// Per frame it only computes the first visible column and sets a handful of
+/// uniforms: the scroll offset, the gains and the colours. Vertex data is
+/// uploaded to a buffer object only when a chunk is (re)built, about once a
+/// second while a deck plays.
 ///
-/// The output matches the upstream renderer: same columns, same sampling,
+/// The output matches the upstream renderers: same columns, same sampling,
 /// same colours and heights, applied in the vertex shader with the same
-/// operation order. DECKLAB_WAVEFORM_CACHE=0 selects the upstream renderer.
-class allshader::WaveformRendererRGBCached final
+/// operation order. DECKLAB_WAVEFORM_CACHE=0 selects the upstream renderers.
+class allshader::WaveformRendererCached final
         : public allshader::WaveformRendererSignalBase,
           public rendergraph::OpenGLNode {
   public:
-    explicit WaveformRendererRGBCached(WaveformWidgetRenderer* waveformWidget,
+    /// The upstream renderer this one replaces.
+    enum class Style {
+        RGB,      ///< allshader::WaveformRendererRGB
+        Simple,   ///< allshader::WaveformRendererSimple
+        Filtered, ///< allshader::WaveformRendererFiltered
+        Stacked,  ///< allshader::WaveformRendererFiltered, RGB stacked colours
+    };
+
+    explicit WaveformRendererCached(WaveformWidgetRenderer* waveformWidget,
+            Style style,
             ::WaveformRendererAbstract::PositionSource type =
                     ::WaveformRendererAbstract::Play,
             WaveformRendererSignalBase::Options options =
                     WaveformRendererSignalBase::Option::None);
-    ~WaveformRendererRGBCached() override;
+    ~WaveformRendererCached() override;
 
     void onSetup(const QDomNode& node) override;
 
+    /// Like upstream, only the RGB renderer draws the slip waveform.
     bool supportsSlip() const override {
-        return true;
+        return m_style == Style::RGB;
     }
 
     // rendergraph::BaseNode / OpenGLNode
@@ -46,6 +57,7 @@ class allshader::WaveformRendererRGBCached final
     void initializeGL() override;
     void paintGL() override;
 
+    // The setters of allshader::WaveformRendererRGB.
     void setAxesColor(const QColor& axesColor);
     void setLowColor(const QColor& lowColor);
     void setMidColor(const QColor& midColor);
@@ -58,12 +70,25 @@ class allshader::WaveformRendererRGBCached final
         float offsetX = 0.f;
         float halfBreadth = 0.f;
         float heightFactor = 0.f;
+        /// EQ gains (low, mid, high).
         QVector3D bandGain;
+        /// RGB: band colours mixed per column. Filtered/Stacked: the colour
+        /// of each band plane.
         QVector3D lowColor;
         QVector3D midColor;
         QVector3D highColor;
+        /// Simple: the one signal colour.
+        QVector3D signalColor;
         QVector3D axisColor;
     };
+    /// Shader modes (uniform `mode`).
+    static constexpr float kModeRgb = 0.f;
+    static constexpr float kModeSolid = 1.f;     // Simple
+    static constexpr float kModeBandPlane = 2.f; // Filtered, Stacked
+
+    Style style() const {
+        return m_style;
+    }
     /// Valid after preprocess(); false when nothing is drawn this frame.
     bool hasFrame() const {
         return m_hasFrame;
@@ -85,10 +110,13 @@ class allshader::WaveformRendererRGBCached final
     static const char* fragmentShaderSource();
 
   private:
+    static WaveformColumnCache::Kind kindOf(Style style);
     bool preprocessInner();
     void uploadDirty();
     void releaseBuffer();
+    void drawPlane(int plane);
 
+    const Style m_style;
     const bool m_isSlipRenderer;
     const WaveformRendererSignalBase::Options m_options;
 
@@ -109,9 +137,12 @@ class allshader::WaveformRendererRGBCached final
     int m_midColorLocation = -1;
     int m_highColorLocation = -1;
     int m_axisColorLocation = -1;
+    int m_solidColorLocation = -1;
+    int m_planeGainLocation = -1;
+    int m_modeLocation = -1;
     int m_axisModeLocation = -1;
     int m_positionLocation = -1;
     int m_bandsLocation = -1;
 
-    DISALLOW_COPY_AND_ASSIGN(WaveformRendererRGBCached);
+    DISALLOW_COPY_AND_ASSIGN(WaveformRendererCached);
 };

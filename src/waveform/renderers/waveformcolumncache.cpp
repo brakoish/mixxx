@@ -42,8 +42,8 @@ void WaveformColumnCache::reset(int pixelLength) {
     // slot on each side keeps the chunk just behind and prefetches the chunk
     // just ahead without ever evicting a visible one.
     const int slotCount = (pixelLength + kColumnsPerChunk - 1) / kColumnsPerChunk + 3;
-    const auto vertexCount = static_cast<std::size_t>(
-            kAxisVertices + slotCount * kColumnsPerChunk * m_verticesPerColumn);
+    const auto vertexCount = static_cast<std::size_t>(kAxisVertices +
+            planeCount() * slotCount * kColumnsPerChunk * m_verticesPerColumn);
     if (slotCount != m_slotCount || vertexCount != m_vertices.size()) {
         m_slotCount = slotCount;
         m_slots.assign(static_cast<std::size_t>(slotCount), Slot());
@@ -169,10 +169,15 @@ void WaveformColumnCache::buildChunk(int chunk, Slot* pSlot, int completion) {
     const float invDevicePixelRatio = 1.f / m_devicePixelRatio;
     const float halfPixelSize = 0.5f / m_devicePixelRatio;
     const bool split = m_splitStereo && !m_slip;
-    const bool splitChannels = m_splitStereo;
+    // RGB without the split option takes the maximum over both channels,
+    // every other layout keeps the channels apart.
+    const bool splitChannels = m_splitStereo || m_kind != Kind::RGB;
     const float bottomSign = m_slip ? 0.f : 1.f;
 
     Vertex* pWrite = m_vertices.data() + slotFirstVertex(slotIndex);
+    Vertex* pPlaneWrite[3] = {pWrite,
+            m_kind == Kind::Filtered ? m_vertices.data() + slotFirstVertex(slotIndex, 1) : nullptr,
+            m_kind == Kind::Filtered ? m_vertices.data() + slotFirstVertex(slotIndex, 2) : nullptr};
     const int chunkStart = chunk * kColumnsPerChunk;
     int maxIndexUsed = -1;
     for (int column = chunkStart; column < chunkStart + kColumnsPerChunk; ++column) {
@@ -203,6 +208,36 @@ void WaveformColumnCache::buildChunk(int chunk, Slot* pSlot, int completion) {
         const float fpos = static_cast<float>(column) * invDevicePixelRatio;
         const float x1 = fpos - halfPixelSize;
         const float x2 = fpos + halfPixelSize;
+        if (m_kind == Kind::Simple) {
+            // WaveformRendererSimple: the left channel's maximum, mirrored.
+            const quint8 all = u8maxAll[0];
+            *pWrite++ = Vertex{x1, -1.f, 0, 0, 0, all};
+            *pWrite++ = Vertex{x2, -1.f, 0, 0, 0, all};
+            *pWrite++ = Vertex{x1, 1.f, 0, 0, 0, all};
+            *pWrite++ = Vertex{x1, 1.f, 0, 0, 0, all};
+            *pWrite++ = Vertex{x2, 1.f, 0, 0, 0, all};
+            *pWrite++ = Vertex{x2, -1.f, 0, 0, 0, all};
+            continue;
+        }
+        if (m_kind == Kind::Filtered) {
+            // WaveformRendererFiltered: per band, the top edge from the left
+            // channel and the bottom edge from the right channel.
+            const quint8 bands[3][2] = {{u8maxLow[0], u8maxLow[1]},
+                    {u8maxMid[0], u8maxMid[1]},
+                    {u8maxHigh[0], u8maxHigh[1]}};
+            for (int band = 0; band < 3; ++band) {
+                const quint8 top = bands[band][0];
+                const quint8 bottom = bands[band][1];
+                Vertex*& pBand = pPlaneWrite[band];
+                *pBand++ = Vertex{x1, -1.f, top, 0, 0, 0};
+                *pBand++ = Vertex{x2, -1.f, top, 0, 0, 0};
+                *pBand++ = Vertex{x1, 1.f, bottom, 0, 0, 0};
+                *pBand++ = Vertex{x1, 1.f, bottom, 0, 0, 0};
+                *pBand++ = Vertex{x2, 1.f, bottom, 0, 0, 0};
+                *pBand++ = Vertex{x2, -1.f, top, 0, 0, 0};
+            }
+            continue;
+        }
         const int rectangles = split ? 2 : 1;
         for (int chn = 0; chn < rectangles; ++chn) {
             const quint8 low = u8maxLow[chn];
@@ -237,7 +272,8 @@ void WaveformColumnCache::buildChunk(int chunk, Slot* pSlot, int completion) {
     m_slotDirty[static_cast<std::size_t>(slotIndex)] = 1;
     ++m_stats.chunksBuilt;
     m_stats.columnsBuilt += kColumnsPerChunk;
-    m_stats.bytesDirty += static_cast<quint64>(slotVertexCount()) * sizeof(Vertex);
+    m_stats.bytesDirty += static_cast<quint64>(planeCount()) *
+            static_cast<quint64>(slotVertexCount()) * sizeof(Vertex);
 }
 
 void WaveformColumnCache::buildAxis(int length) {

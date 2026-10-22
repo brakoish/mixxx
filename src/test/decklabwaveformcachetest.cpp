@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Deck Lab pi4-perf: the cached RGB waveform renderer against the upstream
-// renderer (pixel compare at several positions, zooms, sizes and gains),
-// cache invalidation and upload volume, and a report-only CPU benchmark of
-// the renderers per frame.
+// Deck Lab pi4-perf: the cached waveform renderer against the upstream
+// allshader RGB, Simple, Filtered and Stacked renderers (pixel compare at
+// several positions, zooms, sizes and gains), cache invalidation and upload
+// volume, and a report-only CPU benchmark of the renderers per frame.
 //
 // The pixel compare rasterises what each renderer submits: the upstream
 // vertex array, and the cached vertex buffer with the vertex shader applied
@@ -14,6 +14,7 @@
 // compares the pixels the GPU produced.
 #include <gtest/gtest.h>
 
+#include <QDomDocument>
 #include <QElapsedTimer>
 #include <QImage>
 #include <QOffscreenSurface>
@@ -30,15 +31,20 @@
 #include "controllers/decklabbridgegate.h"
 #include "rendergraph/engine.h"
 #include "rendergraph/geometry.h"
+#include "rendergraph/geometrynode.h"
+#include "skin/legacy/skincontext.h"
 #include "test/mixxxtest.h"
 #include "track/beats.h"
 #include "track/track.h"
 #include "waveform/isynctimeprovider.h"
 #include "waveform/rendergate.h"
 #include "waveform/renderers/allshader/waveformrenderbeat.h"
+#include "waveform/renderers/allshader/waveformrenderercached.h"
+#include "waveform/renderers/allshader/waveformrendererfiltered.h"
 #include "waveform/renderers/allshader/waveformrendererrgb.h"
-#include "waveform/renderers/allshader/waveformrendererrgbcached.h"
+#include "waveform/renderers/allshader/waveformrenderersimple.h"
 #include "waveform/renderers/waveformcolumncache.h"
+#include "waveform/renderers/waveformsignalcolors.h"
 #include "waveform/renderers/waveformwidgetrenderer.h"
 #include "waveform/visualplayposition.h"
 #include "waveform/waveform.h"
@@ -47,6 +53,8 @@ namespace {
 
 using Options = allshader::WaveformRendererSignalBase::Options;
 using Option = allshader::WaveformRendererSignalBase::Option;
+using Cached = allshader::WaveformRendererCached;
+using Style = allshader::WaveformRendererCached::Style;
 
 class NoVSyncDelay final : public VSyncTimeProvider {
   public:
@@ -65,6 +73,7 @@ constexpr int kHeight = 96;
 
 /// Deterministic, music-like waveform data: a kick every 0.469 s (128 BPM),
 /// a busy mid and high band, breakdowns with silence, and full-scale peaks.
+/// The right channel differs from the left (for Filtered and Simple).
 WaveformPointer makeWaveform() {
     auto pWaveform = WaveformPointer(new Waveform(kSampleRate, kTrackFrames, 441, -1, 0));
     WaveformData* pData = pWaveform->data();
@@ -159,10 +168,10 @@ class Raster {
 
 struct Comparison {
     int pixels = 0;
-    int drawn = 0;        // non-background pixels in the upstream image
+    int drawn = 0;     // non-background pixels in the upstream image
     int identical = 0;
-    int offByOne = 0;     // every channel within 1/255
-    int different = 0;    // some channel off by more than 1/255
+    int offByOne = 0;  // every channel within 1/255
+    int different = 0; // some channel off by more than 1/255
 };
 
 Comparison compare(const std::vector<quint32>& expected, const std::vector<quint32>& actual) {
@@ -196,10 +205,10 @@ std::ostream& operator<<(std::ostream& os, const Comparison& c) {
               << " offByOne=" << c.offByOne << " different=" << c.different;
 }
 
-/// What the upstream renderer submitted this frame.
-std::vector<quint32> rasterizeUpstream(allshader::WaveformRendererRGB* pRenderer, int width) {
+/// What an upstream renderer submitted this frame (one colour per rectangle).
+std::vector<quint32> rasterizeUpstream(rendergraph::GeometryNode* pNode, int width) {
     Raster raster(width, kHeight);
-    rendergraph::Geometry& geometry = pRenderer->geometry();
+    rendergraph::Geometry& geometry = pNode->geometry();
     const auto* pVertices = geometry.vertexDataAs<rendergraph::Geometry::RGBColoredPoint2D>();
     for (int i = 0; i + 5 < geometry.vertexCount(); i += 6) {
         float x1 = pVertices[i].position2D.x();
@@ -226,12 +235,19 @@ struct EmulatedVertex {
     float b;
 };
 
-/// The vertex shader of WaveformRendererRGBCached, on the CPU, in the same
+struct DrawState {
+    bool axisMode = false;
+    float mode = Cached::kModeRgb;
+    QVector3D solidColor;
+    float planeGain = 1.f;
+};
+
+/// The vertex shader of WaveformRendererCached, on the CPU, in the same
 /// operation order.
 EmulatedVertex emulateVertex(const WaveformColumnCache::Vertex& vertex,
-        const allshader::WaveformRendererRGBCached::FrameUniforms& u,
-        bool axisMode) {
-    if (axisMode) {
+        const Cached::FrameUniforms& u,
+        const DrawState& state) {
+    if (state.axisMode) {
         return EmulatedVertex{vertex.x,
                 u.halfBreadth + vertex.sign * 0.5f,
                 u.axisColor.x(),
@@ -242,6 +258,21 @@ EmulatedVertex emulateVertex(const WaveformColumnCache::Vertex& vertex,
     const float mid = static_cast<float>(vertex.mid);
     const float high = static_cast<float>(vertex.high);
     const float all = static_cast<float>(vertex.all);
+    const float x = vertex.x + u.offsetX;
+    if (state.mode > 1.5f) {
+        return EmulatedVertex{x,
+                u.halfBreadth + vertex.sign * (u.heightFactor * (low * state.planeGain)),
+                state.solidColor.x(),
+                state.solidColor.y(),
+                state.solidColor.z()};
+    }
+    if (state.mode > 0.5f) {
+        return EmulatedVertex{x,
+                u.halfBreadth + vertex.sign * (u.heightFactor * all),
+                state.solidColor.x(),
+                state.solidColor.y(),
+                state.solidColor.z()};
+    }
     const float maxLow = low * u.bandGain.x();
     const float maxMid = mid * u.bandGain.y();
     const float maxHigh = high * u.bandGain.z();
@@ -265,21 +296,19 @@ EmulatedVertex emulateVertex(const WaveformColumnCache::Vertex& vertex,
         blue *= normFactor;
     }
     const float y = u.halfBreadth + vertex.sign * (u.heightFactor * eqGain * all);
-    return EmulatedVertex{vertex.x + u.offsetX, y, red, green, blue};
+    return EmulatedVertex{x, y, red, green, blue};
 }
 
 void rasterizeRectangles(Raster* pRaster,
         const std::vector<WaveformColumnCache::Vertex>& vertices,
         int first,
         int count,
-        const allshader::WaveformRendererRGBCached::FrameUniforms& uniforms,
-        bool axisMode) {
+        const Cached::FrameUniforms& uniforms,
+        const DrawState& state) {
     for (int i = first; i + 5 < first + count; i += 6) {
         EmulatedVertex corners[6];
         for (int k = 0; k < 6; ++k) {
-            corners[k] = emulateVertex(vertices[static_cast<std::size_t>(i + k)],
-                    uniforms,
-                    axisMode);
+            corners[k] = emulateVertex(vertices[static_cast<std::size_t>(i + k)], uniforms, state);
         }
         float x1 = corners[0].x;
         float x2 = x1;
@@ -295,27 +324,56 @@ void rasterizeRectangles(Raster* pRaster,
     }
 }
 
-/// What the cached renderer would draw this frame.
-std::vector<quint32> rasterizeCached(allshader::WaveformRendererRGBCached* pRenderer, int width) {
+/// What the cached renderer draws this frame (mirrors its paintGL()).
+std::vector<quint32> rasterizeCached(Cached* pRenderer, int width) {
     Raster raster(width, kHeight);
     if (!pRenderer->hasFrame()) {
         return raster.pixels();
     }
     const WaveformColumnCache& cache = pRenderer->columnCache();
     const auto& uniforms = pRenderer->frameUniforms();
+    DrawState axis;
+    axis.axisMode = true;
     rasterizeRectangles(&raster,
             cache.vertices(),
             0,
             WaveformColumnCache::kAxisVertices,
             uniforms,
-            true);
-    for (const auto& range : cache.drawRanges()) {
-        rasterizeRectangles(&raster,
-                cache.vertices(),
-                range.firstVertex,
-                range.vertexCount,
-                uniforms,
-                false);
+            axis);
+    const auto drawPlane = [&](int plane, const DrawState& state) {
+        for (const auto& range : cache.drawRanges()) {
+            rasterizeRectangles(&raster,
+                    cache.vertices(),
+                    range.firstVertex + plane * cache.planeStride(),
+                    range.vertexCount,
+                    uniforms,
+                    state);
+        }
+    };
+    DrawState state;
+    switch (pRenderer->style()) {
+    case Style::RGB:
+        state.mode = Cached::kModeRgb;
+        drawPlane(0, state);
+        break;
+    case Style::Simple:
+        state.mode = Cached::kModeSolid;
+        state.solidColor = uniforms.signalColor;
+        drawPlane(0, state);
+        break;
+    case Style::Filtered:
+    case Style::Stacked: {
+        state.mode = Cached::kModeBandPlane;
+        const QVector3D colors[3] = {uniforms.lowColor, uniforms.midColor, uniforms.highColor};
+        const float gains[3] = {
+                uniforms.bandGain.x(), uniforms.bandGain.y(), uniforms.bandGain.z()};
+        for (int plane = 0; plane < 3; ++plane) {
+            state.solidColor = colors[plane];
+            state.planeGain = gains[plane];
+            drawPlane(plane, state);
+        }
+        break;
+    }
     }
     return raster.pixels();
 }
@@ -340,6 +398,7 @@ class DeckLabWaveformCacheTest : public MixxxTest {
     std::unique_ptr<WaveformWidgetRenderer> m_pRenderer;
     QSharedPointer<VisualPlayPosition> m_pPosition;
     NoVSyncDelay m_vsync;
+    WaveformSignalColors m_colors;
     int m_width = 800;
 
     void SetUp() override {
@@ -353,6 +412,20 @@ class DeckLabWaveformCacheTest : public MixxxTest {
         m_killLow.set(0.0);
         m_killMid.set(0.0);
         m_killHigh.set(0.0);
+        // Skin colours like the Deck Lab theme (signal, filtered bands, RGB
+        // bands, axis).
+        SkinContext context(config(), QString());
+        QDomDocument document;
+        ASSERT_TRUE(document.setContent(QStringLiteral(
+                "<Waveform><SignalColor>#c8a050</SignalColor>"
+                "<SignalLowColor>#d0402c</SignalLowColor>"
+                "<SignalMidColor>#3fa86a</SignalMidColor>"
+                "<SignalHighColor>#3c74e8</SignalHighColor>"
+                "<SignalRGBLowColor>#f52a1e</SignalRGBLowColor>"
+                "<SignalRGBMidColor>#35c850</SignalRGBMidColor>"
+                "<SignalRGBHighColor>#2e6bff</SignalRGBHighColor>"
+                "<AxesColor>#2c313a</AxesColor></Waveform>")));
+        m_colors.setup(document.documentElement(), context);
         m_pWaveform = makeWaveform();
         m_pTrack = makeTrack(m_pWaveform);
         m_pPosition = VisualPlayPosition::getVisualPlayPosition(m_group);
@@ -373,9 +446,10 @@ class DeckLabWaveformCacheTest : public MixxxTest {
         m_pRenderer->setTrack(m_pTrack);
     }
 
-    /// Track position (0..1) of a play position `pixels` track pixels away.
+    /// The change of play position (0..1) that scrolls one track pixel.
     double trackPixel() const {
-        return m_pRenderer->getAudioSamplePerPixel() * 2.0 / (static_cast<double>(kTrackFrames) * 2.0);
+        return m_pRenderer->getAudioSamplePerPixel() * 2.0 /
+                (static_cast<double>(kTrackFrames) * 2.0);
     }
 
     void setPosition(double playPosition, double slipPosition) {
@@ -396,19 +470,51 @@ class DeckLabWaveformCacheTest : public MixxxTest {
     }
 
     template<typename T_Renderer>
-    std::unique_ptr<T_Renderer> makeSignalRenderer(
-            ::WaveformRendererAbstract::PositionSource source, Options options) {
-        auto pRenderer = std::make_unique<T_Renderer>(m_pRenderer.get(), source, options);
+    T_Renderer* prepared(T_Renderer* pRenderer) {
         EXPECT_TRUE(pRenderer->init());
-        pRenderer->setAxesColor(QColor(0x2c, 0x31, 0x3a));
-        pRenderer->setLowColor(QColor(0xf5, 0x2a, 0x1e));
-        pRenderer->setMidColor(QColor(0x35, 0xc8, 0x50));
-        pRenderer->setHighColor(QColor(0x2e, 0x6b, 0xff));
+        pRenderer->setSignalColors(m_colors);
         return pRenderer;
     }
 
-    Comparison compareFrame(allshader::WaveformRendererRGB* pUpstream,
-            allshader::WaveformRendererRGBCached* pCached) {
+    std::unique_ptr<allshader::WaveformRendererRGB> makeUpstreamRgb(
+            ::WaveformRendererAbstract::PositionSource source = ::WaveformRendererAbstract::Play,
+            Options options = Options()) {
+        auto pRenderer = std::make_unique<allshader::WaveformRendererRGB>(
+                m_pRenderer.get(), source, options);
+        prepared(pRenderer.get());
+        return pRenderer;
+    }
+
+    std::unique_ptr<Cached> makeCached(Style style,
+            ::WaveformRendererAbstract::PositionSource source = ::WaveformRendererAbstract::Play,
+            Options options = Options()) {
+        auto pRenderer = std::make_unique<Cached>(m_pRenderer.get(), style, source, options);
+        prepared(pRenderer.get());
+        return pRenderer;
+    }
+
+    /// The upstream renderer for a cached style (RGB only plays).
+    std::unique_ptr<rendergraph::GeometryNode> makeUpstream(Style style) {
+        switch (style) {
+        case Style::Simple: {
+            auto pRenderer = std::make_unique<allshader::WaveformRendererSimple>(m_pRenderer.get());
+            prepared(pRenderer.get());
+            return pRenderer;
+        }
+        case Style::Filtered:
+        case Style::Stacked: {
+            auto pRenderer = std::make_unique<allshader::WaveformRendererFiltered>(
+                    m_pRenderer.get(), style == Style::Stacked);
+            prepared(pRenderer.get());
+            return pRenderer;
+        }
+        case Style::RGB:
+            break;
+        }
+        return makeUpstreamRgb();
+    }
+
+    Comparison compareFrame(rendergraph::GeometryNode* pUpstream, Cached* pCached) {
         pUpstream->preprocess();
         pCached->preprocess();
         return compare(rasterizeUpstream(pUpstream, m_width), rasterizeCached(pCached, m_width));
@@ -427,6 +533,20 @@ class DeckLabWaveformCacheTest : public MixxxTest {
     }
 };
 
+const char* styleName(Style style) {
+    switch (style) {
+    case Style::RGB:
+        return "rgb";
+    case Style::Simple:
+        return "simple";
+    case Style::Filtered:
+        return "filtered";
+    case Style::Stacked:
+        return "stacked";
+    }
+    return "?";
+}
+
 TEST_F(DeckLabWaveformCacheTest, PixelCompareMatchesUpstreamAtPositionsZoomsAndSizes) {
     struct Scenario {
         int width;
@@ -436,22 +556,20 @@ TEST_F(DeckLabWaveformCacheTest, PixelCompareMatchesUpstreamAtPositionsZoomsAndS
     };
     const Scenario scenarios[] = {
             {800, 3.0, 0.37, Options()},
-            {800, 3.0, 0.0, Options()},       // track start: negative columns
-            {800, 3.0, 0.9995, Options()},    // track end: columns past the data
+            {800, 3.0, 0.0, Options()},    // track start: negative columns
+            {800, 3.0, 0.9995, Options()}, // track end: columns past the data
             {800, 1.0, 0.52, Options()},
             {800, 7.5, 0.11, Options()},
             {800, 10.0, 0.73, Options()},
-            {383, 3.0, 0.61, Options()},      // odd width: half-pixel play marker
-            {392, 2.0, 0.25, Options()},      // side-by-side four-deck width
+            {383, 3.0, 0.61, Options()}, // odd width: half-pixel play marker
+            {392, 2.0, 0.25, Options()}, // side-by-side four-deck width
             {800, 3.0, 0.44, Options(Option::SplitStereoSignal)},
     };
     for (const auto& scenario : scenarios) {
         createRenderer(scenario.width);
         m_pRenderer->setZoom(scenario.zoom);
-        auto pUpstream = makeSignalRenderer<allshader::WaveformRendererRGB>(
-                ::WaveformRendererAbstract::Play, scenario.options);
-        auto pCached = makeSignalRenderer<allshader::WaveformRendererRGBCached>(
-                ::WaveformRendererAbstract::Play, scenario.options);
+        auto pUpstream = makeUpstreamRgb(::WaveformRendererAbstract::Play, scenario.options);
+        auto pCached = makeCached(Style::RGB, ::WaveformRendererAbstract::Play, scenario.options);
         setPosition(scenario.position, scenario.position);
         const Comparison c = compareFrame(pUpstream.get(), pCached.get());
         const std::string label = "width " + std::to_string(scenario.width) + " zoom " +
@@ -464,11 +582,60 @@ TEST_F(DeckLabWaveformCacheTest, PixelCompareMatchesUpstreamAtPositionsZoomsAndS
     }
 }
 
+TEST_F(DeckLabWaveformCacheTest, SimpleFilteredAndStackedMatchUpstream) {
+    struct Scenario {
+        int width;
+        double zoom;
+        double position;
+    };
+    const Scenario scenarios[] = {
+            {800, 3.0, 0.37},
+            {800, 3.0, 0.0},
+            {800, 1.0, 0.9995},
+            {383, 6.0, 0.61},
+    };
+    for (const Style style : {Style::Simple, Style::Filtered, Style::Stacked}) {
+        for (const auto& scenario : scenarios) {
+            createRenderer(scenario.width);
+            m_pRenderer->setZoom(scenario.zoom);
+            auto pUpstream = makeUpstream(style);
+            auto pCached = makeCached(style);
+            EXPECT_FALSE(pCached->supportsSlip());
+            const std::string label = std::string(styleName(style)) + " width " +
+                    std::to_string(scenario.width) + " zoom " +
+                    std::to_string(scenario.zoom) + " position " +
+                    std::to_string(scenario.position);
+            double position = scenario.position;
+            for (int frame = 0; frame < 40; ++frame) {
+                setPosition(position, position);
+                if (frame == 20) {
+                    // EQ and deck gain only change uniforms.
+                    m_eqLow.set(0.4);
+                    m_eqMid.set(1.7);
+                    m_killHigh.set(1.0);
+                    m_totalGain.set(0.6);
+                    m_pRenderer->onPreRender(&m_vsync);
+                }
+                const Comparison c = compareFrame(pUpstream.get(), pCached.get());
+                if (frame == 0) {
+                    ASSERT_TRUE(pCached->hasFrame()) << label;
+                    EXPECT_GT(c.drawn, c.pixels / 20) << label << ": nothing drawn";
+                }
+                expectMatches(c, label + " frame " + std::to_string(frame));
+                position += trackPixel() * 2.45;
+            }
+            m_eqLow.set(1.0);
+            m_eqMid.set(1.0);
+            m_killHigh.set(0.0);
+            m_totalGain.set(1.0);
+            EXPECT_EQ(1u, pCached->takeCacheStats().resets) << label;
+        }
+    }
+}
+
 TEST_F(DeckLabWaveformCacheTest, ScrollingAndScratchingReuseChunksAndStayIdentical) {
-    auto pUpstream = makeSignalRenderer<allshader::WaveformRendererRGB>(
-            ::WaveformRendererAbstract::Play, Options());
-    auto pCached = makeSignalRenderer<allshader::WaveformRendererRGBCached>(
-            ::WaveformRendererAbstract::Play, Options());
+    auto pUpstream = makeUpstreamRgb();
+    auto pCached = makeCached(Style::RGB);
     double position = 0.2;
     setPosition(position, position);
     pCached->preprocess();
@@ -520,10 +687,8 @@ TEST_F(DeckLabWaveformCacheTest, ScrollingAndScratchingReuseChunksAndStayIdentic
 }
 
 TEST_F(DeckLabWaveformCacheTest, GainsColoursAndHeightNeverRebuildGeometry) {
-    auto pUpstream = makeSignalRenderer<allshader::WaveformRendererRGB>(
-            ::WaveformRendererAbstract::Play, Options());
-    auto pCached = makeSignalRenderer<allshader::WaveformRendererRGBCached>(
-            ::WaveformRendererAbstract::Play, Options());
+    auto pUpstream = makeUpstreamRgb();
+    auto pCached = makeCached(Style::RGB);
     setPosition(0.4, 0.4);
     expectMatches(compareFrame(pUpstream.get(), pCached.get()), "neutral");
     pCached->preprocess(); // prefetches the next chunk
@@ -565,10 +730,8 @@ TEST_F(DeckLabWaveformCacheTest, GainsColoursAndHeightNeverRebuildGeometry) {
 }
 
 TEST_F(DeckLabWaveformCacheTest, ZoomTempoWidthAndTrackChangesRebuild) {
-    auto pUpstream = makeSignalRenderer<allshader::WaveformRendererRGB>(
-            ::WaveformRendererAbstract::Play, Options());
-    auto pCached = makeSignalRenderer<allshader::WaveformRendererRGBCached>(
-            ::WaveformRendererAbstract::Play, Options());
+    auto pUpstream = makeUpstreamRgb();
+    auto pCached = makeCached(Style::RGB);
     setPosition(0.3, 0.3);
     pCached->preprocess();
     pCached->takeCacheStats();
@@ -617,10 +780,8 @@ TEST_F(DeckLabWaveformCacheTest, ChunksDuringAnalysisAreRebuiltAsDataArrives) {
     auto pTrack = makeTrack(pWaveform);
     m_pRenderer->setTrack(pTrack);
 
-    auto pUpstream = makeSignalRenderer<allshader::WaveformRendererRGB>(
-            ::WaveformRendererAbstract::Play, Options());
-    auto pCached = makeSignalRenderer<allshader::WaveformRendererRGBCached>(
-            ::WaveformRendererAbstract::Play, Options());
+    auto pUpstream = makeUpstreamRgb();
+    auto pCached = makeCached(Style::RGB);
     // Look at the analysis front.
     const double front = static_cast<double>(analysed) / dataSize;
     setPosition(front, front);
@@ -649,10 +810,8 @@ TEST_F(DeckLabWaveformCacheTest, ChunksDuringAnalysisAreRebuiltAsDataArrives) {
 }
 
 TEST_F(DeckLabWaveformCacheTest, SlipRendererMatchesUpstream) {
-    auto pUpstream = makeSignalRenderer<allshader::WaveformRendererRGB>(
-            ::WaveformRendererAbstract::Slip, Options());
-    auto pCached = makeSignalRenderer<allshader::WaveformRendererRGBCached>(
-            ::WaveformRendererAbstract::Slip, Options());
+    auto pUpstream = makeUpstreamRgb(::WaveformRendererAbstract::Slip);
+    auto pCached = makeCached(Style::RGB, ::WaveformRendererAbstract::Slip);
     // Slip inactive: nothing drawn by either.
     setPosition(0.5, 0.5);
     pCached->preprocess();
@@ -695,9 +854,10 @@ TEST_F(DeckLabWaveformCacheTest, RendererTimingsReportMeanAndP95) {
     std::vector<qint64> scratch;
     EXPECT_EQ(-1, RendererTimings::percentile95({}, &scratch));
     EXPECT_EQ(7, RendererTimings::percentile95({7}, &scratch));
-    EXPECT_EQ(19, RendererTimings::percentile95({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
-                                                        15, 16, 17, 18, 19, 20},
-                          &scratch));
+    EXPECT_EQ(19,
+            RendererTimings::percentile95(
+                    {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20},
+                    &scratch));
 }
 
 TEST_F(DeckLabWaveformCacheTest, KillSwitchDefaultsToTheCache) {
@@ -776,22 +936,26 @@ TEST_F(DeckLabWaveformCacheTest, GpuPixelCompareWhenOpenGLIsAvailable) {
     }
     RecordProperty("gpu_pixel_compare", "run");
     struct Scenario {
+        Style style;
         double zoom;
         double position;
     };
-    for (const Scenario scenario : {Scenario{3.0, 0.37}, Scenario{1.0, 0.0}, Scenario{6.0, 0.81}}) {
+    for (const Scenario scenario : {Scenario{Style::RGB, 3.0, 0.37},
+                 Scenario{Style::RGB, 1.0, 0.0},
+                 Scenario{Style::RGB, 6.0, 0.81},
+                 Scenario{Style::Filtered, 3.0, 0.37},
+                 Scenario{Style::Stacked, 3.0, 0.52},
+                 Scenario{Style::Simple, 3.0, 0.61}}) {
         m_pRenderer->setZoom(scenario.zoom);
         setPosition(scenario.position, scenario.position);
-        auto pUpstream = makeSignalRenderer<allshader::WaveformRendererRGB>(
-                ::WaveformRendererAbstract::Play, Options());
-        auto pCached = makeSignalRenderer<allshader::WaveformRendererRGBCached>(
-                ::WaveformRendererAbstract::Play, Options());
-        const QImage upstream = renderWithGl(&context, std::move(pUpstream), m_width);
-        const QImage cached = renderWithGl(&context, std::move(pCached), m_width);
+        const QImage upstream =
+                renderWithGl(&context, makeUpstream(scenario.style), m_width);
+        const QImage cached = renderWithGl(&context, makeCached(scenario.style), m_width);
         const Comparison c = compare(imagePixels(upstream), imagePixels(cached));
-        const std::string label = "gpu zoom " + std::to_string(scenario.zoom) + " position " +
+        const std::string label = std::string("gpu ") + styleName(scenario.style) + " zoom " +
+                std::to_string(scenario.zoom) + " position " +
                 std::to_string(scenario.position);
-        EXPECT_GT(c.drawn, c.pixels / 10) << label;
+        EXPECT_GT(c.drawn, c.pixels / 20) << label;
         // Different shader code may round the last bit differently on the
         // GPU (column edges sit exactly on pixel centres upstream). Allow 1%.
         EXPECT_LE(c.different * 100, c.pixels) << label << ": " << c;
@@ -820,69 +984,74 @@ BenchResult summarize(std::vector<qint64>* pSamples) {
 }
 
 // Report only, never a gate: CPU per frame of the upstream and the cached
-// signal renderer and of the beat grid renderer while a deck plays.
+// signal renderers and of the beat grid renderer while a deck plays.
 TEST_F(DeckLabWaveformCacheTest, BenchmarkRendererCpuPerFrameReportOnly) {
-    for (const int width : {800, 392}) {
-        createRenderer(width);
-        auto pUpstream = makeSignalRenderer<allshader::WaveformRendererRGB>(
-                ::WaveformRendererAbstract::Play, Options());
-        auto pCached = makeSignalRenderer<allshader::WaveformRendererRGBCached>(
-                ::WaveformRendererAbstract::Play, Options());
-        allshader::WaveformRenderBeat beat(m_pRenderer.get(), ::WaveformRendererAbstract::Play);
-        std::vector<qint64> upstreamNanos;
-        std::vector<qint64> cachedNanos;
-        std::vector<qint64> beatNanos;
-        constexpr int kFrames = 1200;
-        upstreamNanos.reserve(kFrames);
-        cachedNanos.reserve(kFrames);
-        beatNanos.reserve(kFrames);
-        double position = 0.1;
-        // Warm up both renderers.
-        setPosition(position, position);
-        pUpstream->preprocess();
-        pCached->preprocess();
-        pCached->takeCacheStats();
-        quint64 upstreamBytes = 0;
-        QElapsedTimer timer;
-        for (int frame = 0; frame < kFrames; ++frame) {
-            position += trackPixel() * 2.45;
+    for (const Style style : {Style::RGB, Style::Filtered}) {
+        for (const int width : {800, 392}) {
+            createRenderer(width);
+            auto pUpstream = makeUpstream(style);
+            auto pCached = makeCached(style);
+            allshader::WaveformRenderBeat beat(
+                    m_pRenderer.get(), ::WaveformRendererAbstract::Play);
+            std::vector<qint64> upstreamNanos;
+            std::vector<qint64> cachedNanos;
+            std::vector<qint64> beatNanos;
+            constexpr int kFrames = 1200;
+            upstreamNanos.reserve(kFrames);
+            cachedNanos.reserve(kFrames);
+            beatNanos.reserve(kFrames);
+            double position = 0.1;
+            // Warm up both renderers.
             setPosition(position, position);
-            timer.start();
             pUpstream->preprocess();
-            upstreamNanos.push_back(timer.nsecsElapsed());
-            upstreamBytes += static_cast<quint64>(pUpstream->geometry().vertexCount()) * 20u;
-            timer.start();
             pCached->preprocess();
-            cachedNanos.push_back(timer.nsecsElapsed());
-            timer.start();
-            beat.preprocess();
-            beatNanos.push_back(timer.nsecsElapsed());
+            pCached->takeCacheStats();
+            quint64 upstreamBytes = 0;
+            QElapsedTimer timer;
+            for (int frame = 0; frame < kFrames; ++frame) {
+                position += trackPixel() * 2.45;
+                setPosition(position, position);
+                timer.start();
+                pUpstream->preprocess();
+                upstreamNanos.push_back(timer.nsecsElapsed());
+                upstreamBytes += static_cast<quint64>(pUpstream->geometry().vertexCount()) * 20u;
+                timer.start();
+                pCached->preprocess();
+                cachedNanos.push_back(timer.nsecsElapsed());
+                timer.start();
+                beat.preprocess();
+                beatNanos.push_back(timer.nsecsElapsed());
+            }
+            const WaveformColumnCache::Stats stats = pCached->takeCacheStats();
+            const BenchResult upstream = summarize(&upstreamNanos);
+            const BenchResult cached = summarize(&cachedNanos);
+            const BenchResult beats = summarize(&beatNanos);
+            const QString line =
+                    QStringLiteral(
+                            "DECKLAB_BENCH %1 width=%2 frames=%3 upstream mean=%4us "
+                            "p95=%5us upload=%6B/frame | cached mean=%7us p95=%8us "
+                            "upload=%9B/frame")
+                            .arg(QLatin1String(styleName(style)),
+                                    QString::number(width),
+                                    QString::number(kFrames),
+                                    QString::number(upstream.meanMicros, 'f', 1),
+                                    QString::number(upstream.p95Micros, 'f', 1),
+                                    QString::number(upstreamBytes / kFrames),
+                                    QString::number(cached.meanMicros, 'f', 1),
+                                    QString::number(cached.p95Micros, 'f', 1),
+                                    QString::number(stats.bytesDirty / kFrames)) +
+                    QStringLiteral(" chunks=%1 | beat mean=%2us p95=%3us")
+                            .arg(QString::number(stats.chunksBuilt),
+                                    QString::number(beats.meanMicros, 'f', 1),
+                                    QString::number(beats.p95Micros, 'f', 1));
+            std::cout << line.toStdString() << std::endl;
+            RecordProperty(QStringLiteral("bench_%1_%2")
+                                   .arg(QLatin1String(styleName(style)), QString::number(width))
+                                   .toStdString(),
+                    line.toStdString());
+            EXPECT_TRUE(pCached->hasFrame());
+            EXPECT_GT(upstreamBytes, 0u);
         }
-        const WaveformColumnCache::Stats stats = pCached->takeCacheStats();
-        const BenchResult upstream = summarize(&upstreamNanos);
-        const BenchResult cached = summarize(&cachedNanos);
-        const BenchResult beats = summarize(&beatNanos);
-        const QString line =
-                QStringLiteral(
-                        "DECKLAB_BENCH width=%1 frames=%2 signal-upstream mean=%3us "
-                        "p95=%4us upload=%5B/frame | signal-cached mean=%6us p95=%7us "
-                        "upload=%8B/frame chunks=%9 | beat mean=%10us p95=%11us")
-                        .arg(QString::number(width),
-                                QString::number(kFrames),
-                                QString::number(upstream.meanMicros, 'f', 1),
-                                QString::number(upstream.p95Micros, 'f', 1),
-                                QString::number(upstreamBytes / kFrames),
-                                QString::number(cached.meanMicros, 'f', 1),
-                                QString::number(cached.p95Micros, 'f', 1),
-                                QString::number(stats.bytesDirty / kFrames),
-                                QString::number(stats.chunksBuilt))
-                        .arg(QString::number(beats.meanMicros, 'f', 1),
-                                QString::number(beats.p95Micros, 'f', 1));
-        std::cout << line.toStdString() << std::endl;
-        RecordProperty(QStringLiteral("bench_width_%1").arg(width).toStdString(),
-                line.toStdString());
-        EXPECT_TRUE(pCached->hasFrame());
-        EXPECT_GT(upstreamBytes, 0u);
     }
 }
 

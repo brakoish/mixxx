@@ -2013,7 +2013,7 @@ if(QOPENGL)
       src/waveform/renderers/allshader/waveformrendererhsv.cpp
       src/waveform/renderers/allshader/waveformrendererpreroll.cpp
       src/waveform/renderers/allshader/waveformrendererrgb.cpp
-      src/waveform/renderers/allshader/waveformrendererrgbcached.cpp
+      src/waveform/renderers/allshader/waveformrenderercached.cpp
       src/waveform/renderers/allshader/waveformrenderertextured.cpp
       src/waveform/renderers/allshader/waveformrenderersignalbase.cpp
       src/waveform/renderers/allshader/waveformrenderersimple.cpp

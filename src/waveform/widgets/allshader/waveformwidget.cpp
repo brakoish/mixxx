@@ -12,7 +12,7 @@
 #include "waveform/renderers/allshader/waveformrendererhsv.h"
 #include "waveform/renderers/allshader/waveformrendererpreroll.h"
 #include "waveform/renderers/allshader/waveformrendererrgb.h"
-#include "waveform/renderers/allshader/waveformrendererrgbcached.h"
+#include "waveform/renderers/allshader/waveformrenderercached.h"
 #include "waveform/renderers/allshader/waveformrenderersimple.h"
 #include "waveform/renderers/allshader/waveformrendererslipmode.h"
 #include "waveform/renderers/allshader/waveformrendererstem.h"
@@ -184,15 +184,31 @@ WaveformWidget::addWaveformSignalRenderer(WaveformWidgetType::Type type,
     }
 #endif
 
+    // Deck Lab (pi4-perf): geometry built once per chunk of columns instead
+    // of every frame. DECKLAB_WAVEFORM_CACHE=0 selects the upstream renderers.
+    if (mixxx::decklab::waveformCacheEnabledFromEnvironment()) {
+        switch (type) {
+        case ::WaveformWidgetType::Simple:
+            return addWaveformSignalRenderer<WaveformRendererCached>(
+                    WaveformRendererCached::Style::Simple);
+        case ::WaveformWidgetType::RGB:
+            return addWaveformSignalRenderer<WaveformRendererCached>(
+                    WaveformRendererCached::Style::RGB, positionSource, options);
+        case ::WaveformWidgetType::Filtered:
+            return addWaveformSignalRenderer<WaveformRendererCached>(
+                    WaveformRendererCached::Style::Filtered);
+        case ::WaveformWidgetType::Stacked:
+            return addWaveformSignalRenderer<WaveformRendererCached>(
+                    WaveformRendererCached::Style::Stacked);
+        default:
+            break;
+        }
+    }
+
     switch (type) {
     case ::WaveformWidgetType::Simple:
         return addWaveformSignalRenderer<WaveformRendererSimple>();
     case ::WaveformWidgetType::RGB:
-        // Deck Lab (pi4-perf): geometry built once per chunk of columns
-        // instead of every frame. DECKLAB_WAVEFORM_CACHE=0 selects upstream.
-        if (mixxx::decklab::waveformCacheEnabledFromEnvironment()) {
-            return addWaveformSignalRenderer<WaveformRendererRGBCached>(positionSource, options);
-        }
         return addWaveformSignalRenderer<WaveformRendererRGB>(positionSource, options);
     case ::WaveformWidgetType::HSV:
         return addWaveformSignalRenderer<WaveformRendererHSV>();
@@ -283,7 +299,7 @@ QString WaveformWidget::takePerfReport() {
     WaveformColumnCache::Stats cache;
     bool cached = false;
     for (auto* pSignal : {m_pWaveformRendererSignal, m_pWaveformRendererSlipSignal}) {
-        auto* pCached = dynamic_cast<WaveformRendererRGBCached*>(pSignal);
+        auto* pCached = dynamic_cast<WaveformRendererCached*>(pSignal);
         if (!pCached) {
             continue;
         }
