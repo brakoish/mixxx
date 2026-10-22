@@ -1729,8 +1729,10 @@ void WDeckLab::refreshDeck(int deck) {
         const bool compactTitle = m_page == 0 && m_fourDeckLayout;
         if (!track && compactTitle) title = tr("Browse tracks");
         m_titles[deck - 1]->setWordWrap(compactTitle);
-        m_titles[deck - 1]->setText(m_titles[deck - 1]->fontMetrics().elidedText(title, Qt::ElideRight,
-                std::max(0, (m_titles[deck - 1]->width() - 18) * (compactTitle ? 2 : 1))));
+        // Fixed empty guidance fits its final card; do not elide against a
+        // newly revealed upper deck's not-yet-settled width of zero.
+        m_titles[deck - 1]->setText(track ? m_titles[deck - 1]->fontMetrics().elidedText(title, Qt::ElideRight,
+                std::max(0, (m_titles[deck - 1]->width() - 18) * (compactTitle ? 2 : 1))) : title);
         m_titles[deck - 1]->setToolTip(QStringLiteral("<span>%1</span>").arg(title.toHtmlEscaped()));
         if (m_waveNumbers[deck - 1]) {
             m_waveNumbers[deck - 1]->setVisible(m_page != 0);
