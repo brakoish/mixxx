@@ -134,6 +134,20 @@ class DeckLabTouchScrollGuard final : public QObject {
                 if (!press) m_touchDragged = false;
                 if (suppress) {
                     if (auto* button = qobject_cast<QAbstractButton*>(watched)) button->setDown(false);
+                    if (!press) {
+                        if (auto* viewport = qobject_cast<QWidget*>(watched);
+                                viewport && qobject_cast<QAbstractItemView*>(viewport->parentWidget())) {
+                            // Item views must receive a release to clear their
+                            // native press/drag state. Cancel outside every row
+                            // so the swipe cannot click an index. This internal
+                            // nonsynthesized event bypasses this filter.
+                            const QPoint outside(-10, -10);
+                            QMouseEvent cancel(QEvent::MouseButtonRelease, outside,
+                                    viewport->mapToGlobal(outside), mouse->button(),
+                                    mouse->buttons(), mouse->modifiers());
+                            QCoreApplication::sendEvent(viewport, &cancel);
+                        }
+                    }
                     return true;
                 }
             }
