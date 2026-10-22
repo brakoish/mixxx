@@ -494,13 +494,7 @@ void WOverview::updateCues(const QList<CuePointer> &loadedCues) {
             if ((currentCue->getType() == mixxx::CueType::HotCue ||
                         currentCue->getType() == mixxx::CueType::Loop) &&
                     hotcueNumber != Cue::kNoHotCue) {
-                // Prepend the hotcue number to hotcues' labels
-                QString newLabel = currentCue->getLabel();
-                if (newLabel.isEmpty()) {
-                    newLabel = QString::number(hotcueNumber + 1);
-                } else {
-                    newLabel = QString("%1: %2").arg(hotcueNumber + 1).arg(newLabel);
-                }
+                const QString newLabel = m_marks.hotcueLabel(hotcueNumber, currentCue->getLabel());
 
                 if (pMark->m_text != newLabel) {
                     pMark->m_text = newLabel;
@@ -1089,7 +1083,7 @@ void WOverview::drawMarks(QPainter* pPainter, const float offset, const float ga
             // ellipsis character, so always show at least the hotcue number if
             // the label does not fit.
             if ((text.isEmpty() || text == "…") && pMark->getHotCue() != Cue::kNoHotCue) {
-                text = QString::number(pMark->getHotCue() + 1);
+                text = m_marks.hotcueLabel(pMark->getHotCue());
             }
 
             QRectF textRect = fontMetrics.boundingRect(text);

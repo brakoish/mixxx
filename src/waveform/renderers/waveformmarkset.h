@@ -29,6 +29,12 @@ class WaveformMarkSet {
                const SkinContext& context,
                const WaveformSignalColors& signalColors);
 
+    // Display identifiers only; the cue's stored label is never modified.
+    static QString formatHotcueLabel(int hotCue, const QString& label, bool letters);
+    QString hotcueLabel(int hotCue, const QString& label = QString()) const {
+        return formatHotcueLabel(hotCue, label, m_letterHotcueLabels);
+    }
+
     template<typename Receiver, typename Slot>
     void connectSamplePositionChanged(Receiver receiver, Slot slot) const {
         for (const auto& pMark : std::as_const(m_marks)) {
@@ -84,6 +90,7 @@ class WaveformMarkSet {
     }
 
     void addMark(WaveformMarkPointer pMark) {
+        pMark->setLetterHotcueLabels(m_letterHotcueLabels);
         m_marks.push_back(pMark);
     }
 
@@ -92,6 +99,7 @@ class WaveformMarkSet {
             const WaveformSignalColors& signalColors = {});
 
   private:
+    bool m_letterHotcueLabels = false;
     WaveformMarkPointer m_pDefaultMark;
     QList<WaveformMarkPointer> m_marks;
     // List of visible WaveformMarks sorted by the order they appear in the track

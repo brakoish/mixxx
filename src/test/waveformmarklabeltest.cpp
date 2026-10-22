@@ -2,11 +2,39 @@
 #include <gtest/gtest.h>
 
 #include <QFont>
+#include <QDomDocument>
 
 #include "test/mixxxtest.h"
 #include "waveform/waveformmarklabel.h"
+#include "waveform/renderers/waveformmarkset.h"
 
 class WaveformMarkLabelTest : public MixxxTest {};
+
+TEST_F(WaveformMarkLabelTest, HotcueIdentifiersPreserveNumericDefaultAndSavedLabels) {
+    EXPECT_EQ(QStringLiteral("1"), WaveformMarkSet::formatHotcueLabel(0, QString(), false));
+    EXPECT_EQ(QStringLiteral("8: Drop"), WaveformMarkSet::formatHotcueLabel(7, QStringLiteral("Drop"), false));
+    EXPECT_EQ(QStringLiteral("A"), WaveformMarkSet::formatHotcueLabel(0, QString(), true));
+    EXPECT_EQ(QStringLiteral("H: Drop"), WaveformMarkSet::formatHotcueLabel(7, QStringLiteral("Drop"), true));
+    EXPECT_EQ(QStringLiteral("9: Later"), WaveformMarkSet::formatHotcueLabel(8, QStringLiteral("Later"), true));
+    EXPECT_EQ(QStringLiteral("CUE"), WaveformMarkSet::formatHotcueLabel(-1, QStringLiteral("CUE"), true));
+    const QString savedLabel = QString::fromUtf8("Chorus · deuxième");
+    EXPECT_EQ(QStringLiteral("B: ") + savedLabel, WaveformMarkSet::formatHotcueLabel(1, savedLabel, true));
+    EXPECT_EQ(QString::fromUtf8("Chorus · deuxième"), savedLabel);
+}
+
+TEST_F(WaveformMarkLabelTest, LetterIdentifiersRequireExplicitSkinOptIn) {
+    SkinContext context(config(), QString());
+    for (const QString& format : {QString(), QStringLiteral("letters"), QStringLiteral("unknown")}) {
+        QDomDocument document;
+        const QString xml = format.isEmpty() ? QStringLiteral("<Visual/>") :
+                                              QStringLiteral("<Visual><HotcueLabelFormat>%1</HotcueLabelFormat></Visual>").arg(format);
+        ASSERT_TRUE(document.setContent(xml));
+        WaveformMarkSet marks;
+        marks.setup(QStringLiteral("[Channel1]"), document.documentElement(), context, {});
+        EXPECT_EQ(format == QStringLiteral("letters") ? QStringLiteral("A: Intro") : QStringLiteral("1: Intro"),
+                marks.hotcueLabel(0, QStringLiteral("Intro")));
+    }
+}
 
 TEST_F(WaveformMarkLabelTest, EdgeLabelsStayInsideWithoutChangingWidth) {
     QFont font;

@@ -15,6 +15,8 @@ WaveformMarkSet::~WaveformMarkSet() {
 void WaveformMarkSet::setup(const QString& group, const QDomNode& node,
                             const SkinContext& context,
                             const WaveformSignalColors& signalColors) {
+    m_letterHotcueLabels = context.selectString(node, QStringLiteral("HotcueLabelFormat"))
+                                  .compare(QStringLiteral("letters"), Qt::CaseInsensitive) == 0;
     // + 3 for cue_point, loop_start_position and loop_end_position
     m_marks.reserve(kMaxNumberOfHotcues + 3);
     // Note: m_hotCueMarks does not support reserving space
@@ -58,11 +60,20 @@ void WaveformMarkSet::setup(const QString& group, const QDomNode& node,
                 // qDebug() << "WaveformRenderMark::setup - Automatic mark" << hotCueControlItem;
                 auto pMark = WaveformMarkPointer::create(
                         group, defaultChild, context, i, signalColors, i);
+                pMark->setLetterHotcueLabels(m_letterHotcueLabels);
                 m_marks.push_front(pMark);
                 m_hotCueMarks.insert(pMark->getHotCue(), pMark);
             }
         }
     }
+}
+
+QString WaveformMarkSet::formatHotcueLabel(int hotCue, const QString& label, bool letters) {
+    if (hotCue < 0) return label;
+    const QString identifier = letters && hotCue < 8
+            ? QString(QChar(QLatin1Char('A').unicode() + hotCue))
+            : QString::number(hotCue + 1);
+    return label.isEmpty() ? identifier : QStringLiteral("%1: %2").arg(identifier, label);
 }
 
 void WaveformMarkSet::setDefault(const QString& group,
@@ -98,6 +109,7 @@ void WaveformMarkSet::setDefault(const QString& group,
                     i,
                     i,
                     signalColors);
+            pMark->setLetterHotcueLabels(m_letterHotcueLabels);
             m_marks.push_front(pMark);
             m_hotCueMarks.insert(pMark->getHotCue(), pMark);
         }

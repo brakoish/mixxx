@@ -33,6 +33,7 @@
         <Visual>
           <TooltipId>waveform_display</TooltipId>
           <ObjectName>DeckLabWave1</ObjectName>
+          <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Channel>1</Channel>
           <BgColor>#000</BgColor>
           <BeatColor>#707070</BeatColor>
@@ -138,6 +139,7 @@
         <Visual>
           <TooltipId>waveform_display</TooltipId>
           <ObjectName>DeckLabWave2</ObjectName>
+          <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Channel>2</Channel>
           <BgColor>#000</BgColor>
           <BeatColor>#707070</BeatColor>
@@ -243,6 +245,7 @@
         <Visual>
           <TooltipId>waveform_display</TooltipId>
           <ObjectName>DeckLabWave3</ObjectName>
+          <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Channel>3</Channel>
           <BgColor>#000</BgColor>
           <BeatColor>#707070</BeatColor>
@@ -348,6 +351,7 @@
         <Visual>
           <TooltipId>waveform_display</TooltipId>
           <ObjectName>DeckLabWave4</ObjectName>
+          <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Channel>4</Channel>
           <BgColor>#000</BgColor>
           <BeatColor>#707070</BeatColor>
@@ -467,6 +471,7 @@
       </SearchBox>
       <Overviews>
         <Overview>
+          <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Normalize>true</Normalize>
           <LabelFontSize>11</LabelFontSize>
           <Channel>1</Channel>
@@ -571,6 +576,7 @@
           <PlayedOverlayColor>#60303030</PlayedOverlayColor>
         </Overview>
         <Overview>
+          <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Normalize>true</Normalize>
           <LabelFontSize>11</LabelFontSize>
           <Channel>2</Channel>
@@ -675,6 +681,7 @@
           <PlayedOverlayColor>#60303030</PlayedOverlayColor>
         </Overview>
         <Overview>
+          <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Normalize>true</Normalize>
           <LabelFontSize>11</LabelFontSize>
           <Channel>3</Channel>
@@ -779,6 +786,7 @@
           <PlayedOverlayColor>#60303030</PlayedOverlayColor>
         </Overview>
         <Overview>
+          <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Normalize>true</Normalize>
           <LabelFontSize>11</LabelFontSize>
           <Channel>4</Channel>

@@ -134,5 +134,31 @@ a candidate does not change the currently tested Pi executable.
 The bundle uses the upstream application ID. A different Flatpak branch is not
 a separate personal profile: use an explicitly separate `--settings-path` for
 future QA and keep production databases closed/backed up before any deliberate
-deployment. The current tested appliance remains on its selected `rt1`
-executable until a later supervised acceptance/promotion decision.
+deployment. The original tested appliance remains recoverable on its selected
+`rt1` executable. Deliberate native Pi trials and their recovery selections are
+recorded in the companion appliance repository's `versions.json`; this build
+never selects one automatically.
+
+## Native Deck Lab performance surface
+
+The `codex/native-appliance` branch adds a native 800×480 controller-first UI.
+Its two-channel view stacks two real waveform viewers with a shared center and
+linked zoom above two deck-information cards. Actual cue colors, A–H access,
+read-only whole-track overviews, loop controls and explicit transport/Sync states
+remain connected to the existing engine. A four-channel mapping or manual choice
+selects four direct cards; upper software layers alone do not imply four physical
+mixer channels. The helper sends controller capability independently of software
+deck count. Unknown hardware retains a manual layout choice.
+
+Touch hot cues jump on release while preserving playback state. An empty pad can
+set a cue while paused; it is disabled while playing. This does not replace the
+controller mapping's held-preview behavior. Gesture guards capture the actual
+deck, loaded track and interaction epoch, rejecting stale releases after a page,
+layout, layer, track or touch-context change. One-shot Beat Sync matches tempo and
+phase without enabling persistent Sync Lock. Musical position is grid-relative
+BEAT, not an inferred bar or phrase.
+
+Deck Lab opts into `<HotcueLabelFormat>letters</HotcueLabelFormat>` for waveform
+and overview cue identifiers. Other skins keep numeric labels. Stored cue names
+are not changed. Its optional preroll color and overview normalization are visual
+only and do not affect audio gain or other skins' defaults.

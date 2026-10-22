@@ -86,8 +86,17 @@ def test_summary(path):
                     "BrowseLoadCancelsChangedTargetAndOffersFourDirectDestinations", "LayoutRoundTripsKeepModeAndPitchReadoutsInsideEachDeck",
                     "BrowseToolsMatchPlayingFourthDeckAndGuardStaleUnload",
                     "SideUtilitiesOperateRealLoopsAndModesWithoutRetargetingHeldActions",
+                    "TouchHotcuesSetAndJumpWithoutPreviewOrRetargeting",
+                    "MorePanelKeepsHeldCueAndFullTrackInformationAccessible",
+                    "LinkedZoomFollowsTheLastStableExternalChangeWithoutFeedback",
+                    "MasterLockMissingBeatGridAndSavedLoopIndicatorsUseRealState",
+                    "NativeComboPopupRowsHaveTouchHeight",
+                    "FourthDeckCuePopupTargetsActualDecksAndCancelsChangedContext",
+                    "BeatgridEditorUsesRealGridControlsAndRefusesUnsafeRelease",
+                    "SharedTrackGridEditingRequiresEveryAliasedDeckToBeQuiet",
                     "Lv2PreparationUsesSelectedRateWithoutAudio", "TouchSearchUsesNativeKeyboardAndReturnsWaveforms"}.issubset(native_ui)
-            or not {"EdgeLabelsStayInsideWithoutChangingWidth", "OverwideLabelsRemainInsideAtBothEdges"}.issubset(edge_labels)
+            or not {"EdgeLabelsStayInsideWithoutChangingWidth", "OverwideLabelsRemainInsideAtBothEdges",
+                    "HotcueIdentifiersPreserveNumericDefaultAndSavedLabels", "LetterIdentifiersRequireExplicitSkinOptIn"}.issubset(edge_labels)
             or any(case.find("skipped") is not None for case in enabled)):
         raise ValueError("Native regression suite incomplete or failed")
     return {"enabled_passed": len(enabled),

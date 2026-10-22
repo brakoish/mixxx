@@ -6,6 +6,7 @@
 
 #include "skin/legacy/skincontext.h"
 #include "waveform/renderers/waveformsignalcolors.h"
+#include "waveform/renderers/waveformmarkset.h"
 #include "widget/wimagestore.h"
 #include "widget/wskincolor.h"
 
@@ -449,15 +450,8 @@ QImage WaveformMark::generateImage(float devicePixelRatio) {
         }
     }
 
-    QString label = m_text;
-
-    // Determine mark text.
-    if (getHotCue() >= 0) {
-        if (!label.isEmpty()) {
-            label.prepend(": ");
-        }
-        label.prepend(QString::number(getHotCue() + 1));
-    }
+    const QString label = WaveformMarkSet::formatHotcueLabel(
+            getHotCue(), m_text, m_letterHotcueLabels);
 
     const bool useIcon = m_iconPath != "";
 
