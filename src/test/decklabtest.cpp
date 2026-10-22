@@ -8,6 +8,7 @@
 #include <QDomDocument>
 #include <QFile>
 #include <QFontDatabase>
+#include <QFontInfo>
 #include <QDialog>
 #include <QComboBox>
 #include <QLabel>
@@ -234,8 +235,8 @@ TEST_F(NativeDeckLabTest, WholeTrackOverviewFollowsPositionAcrossDecksLayoutsAnd
             if(overview->isVisible()) {
                 const QImage image=overview->grab().toImage(); const int x=int((overview->width()-1)*overview->getControlParameterDisplay());
                 // The playhead is the brand's live red.
-                EXPECT_EQ(QColor(0xff,0x3d,0x2e),image.pixelColor(x,20));
-                EXPECT_EQ(40,overview->height());
+                EXPECT_EQ(QColor(0xff,0x3d,0x2e),image.pixelColor(x,22));
+                EXPECT_EQ(44,overview->height());
             }
             EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey(group,"play")));
         }
@@ -525,12 +526,47 @@ TEST_F(NativeDeckLabTest, LongMetadataCannotHideTempoOrExpandSurface) {
     EXPECT_TRUE(strip(1)->state().title.endsWith("<b>Title</b>"));
     EXPECT_TRUE(strip(1)->state().bpm.contains("128"));
     EXPECT_TRUE(strip(1)->renderer().overflowingParts().isEmpty()) << strip(1)->renderer().overflowingParts().join(',').toStdString();
-    EXPECT_EQ(86, strip(1)->height());
+    // Readout heights follow the on-device text scale (36/24/18/16/14 px).
+    EXPECT_EQ(104, strip(1)->height());
     auto* mini=panel->findChild<DeckLabMiniStrip*>("decklab-mini-1"); ASSERT_NE(nullptr,mini);
     EXPECT_FALSE(mini->isVisible());
     panel->selectPage(3); QTest::qWait(150);
-    EXPECT_TRUE(mini->isVisible()); EXPECT_EQ(22, mini->height());
+    EXPECT_TRUE(mini->isVisible()); EXPECT_EQ(30, mini->height());
     EXPECT_TRUE(mini->state().bpm.contains("128")); EXPECT_EQ(QSize(800,480),panel->size());
+}
+
+TEST_F(NativeDeckLabTest, DeckTextFollowsTheOnDeviceScale) {
+    // The skin bundles Barlow and Barlow Semi Condensed (OFL).
+    const QStringList families = QFontDatabase::families();
+    EXPECT_TRUE(families.contains(QStringLiteral("Barlow")));
+    EXPECT_TRUE(families.contains(QStringLiteral("Barlow Semi Condensed")));
+    loadGenerated(1, 128, mixxx::track::io::key::A_MINOR); ProcessBuffer(); QTest::qWait(150);
+    panel->selectPage(0);
+    QMetaObject::invokeMethod(panel->findChild<QComboBox*>("decklab-deck-layout"), "activated", Q_ARG(int, 1));
+    QTest::qWait(100); settle();
+    ASSERT_EQ(DeckLabStripRenderer::Mode::Full, strip(1)->mode());
+    // Hero numerals 36, readouts 24, labels 14 SemiBold; nothing smaller.
+    const auto& renderer = strip(1)->renderer();
+    EXPECT_EQ(36, renderer.numeralFont(DeckLabStripRenderer::kHero).pixelSize());
+    EXPECT_EQ(24, renderer.numeralFont(DeckLabStripRenderer::kReadout).pixelSize());
+    EXPECT_EQ(14, renderer.labelFont().pixelSize());
+    EXPECT_EQ(QFont::DemiBold, renderer.labelFont().weight());
+    EXPECT_EQ(14, renderer.uiFont(9, QFont::Medium).pixelSize());
+    EXPECT_EQ(QStringLiteral("Barlow Semi Condensed"), QFontInfo(renderer.numeralFont(DeckLabStripRenderer::kHero)).family());
+    // Buttons and tabs: 16 px SemiBold Barlow, 44 px targets.
+    for (const char* name : {"decklab-tab-0", "decklab-usb", "decklab-1-quantize", "decklab-1-more", "decklab-hotcue-1-1"}) {
+        auto* button = panel->findChild<QPushButton*>(QString::fromLatin1(name)); ASSERT_NE(nullptr, button) << name;
+        EXPECT_EQ(16, button->font().pixelSize()) << name;
+        EXPECT_EQ(QStringLiteral("Barlow"), QFontInfo(button->font()).family()) << name;
+        EXPECT_GE(button->height(), 44) << name;
+    }
+    // Four decks drop the artist and BPM decimals before anything shrinks.
+    QMetaObject::invokeMethod(panel->findChild<QComboBox*>("decklab-deck-layout"), "activated", Q_ARG(int, 2));
+    QTest::qWait(100);
+    ASSERT_EQ(DeckLabStripRenderer::Mode::Compact, strip(1)->mode());
+    EXPECT_EQ(36, strip(1)->renderer().numeralFont(DeckLabStripRenderer::kHero).pixelSize());
+    EXPECT_TRUE(strip(1)->renderer().overflowingParts().isEmpty());
+    EXPECT_EQ(QSize(800, 480), panel->size());
 }
 
 TEST_F(NativeDeckLabTest, ControllerLayerChangeRefreshesPlayState) {
@@ -593,12 +629,12 @@ TEST_F(NativeDeckLabTest, WaveformLayoutPreferenceRoundTripsBothDeckCountsWithou
                 // Stacked lanes span the full width beside an 18 px deck tag;
                 // side by side they halve it.
                 EXPECT_NEAR(layout ? 381 : 782, area.width(), 3) << "mode " << mode << " layout " << layout;
-                EXPECT_GE(area.height(), mode == 2 ? (layout ? 100 : 54) : (layout ? 200 : 100));
+                EXPECT_GE(area.height(), mode == 2 ? (layout ? 95 : 45) : (layout ? 180 : 90));
                 for (const auto& other : areas) EXPECT_FALSE(other.intersects(area));
                 areas << area;
                 auto* overview = panel->findChild<QWidget*>(QStringLiteral("decklab-overview-%1").arg(deck));
                 ASSERT_NE(nullptr, overview); EXPECT_TRUE(overview->isVisible());
-                EXPECT_NEAR(mode == 2 ? 200 : 400, overview->width(), 1); EXPECT_EQ(40, overview->height());
+                EXPECT_NEAR(mode == 2 ? 200 : 400, overview->width(), 1); EXPECT_EQ(44, overview->height());
             }
             EXPECT_EQ(0, writes);
             panel->selectPage(1); QCoreApplication::processEvents();
@@ -789,13 +825,13 @@ TEST_F(NativeDeckLabTest, DeckIdentityAndLabelledReadoutsFitWithoutStealingWavef
     // Full-width waveforms: no side columns take their space.
     for (int deck = 1; deck <= 2; ++deck) {
         auto* detail = panel->findChild<QWidget*>(QStringLiteral("decklab-detail-%1").arg(deck));
-        EXPECT_EQ(QSize(782, 106), detail->size());
-        EXPECT_EQ(QPoint(18, 44 + (deck - 1) * 108), detail->mapTo(panel.get(), QPoint()));
+        EXPECT_EQ(QSize(782, 95), detail->size());
+        EXPECT_EQ(QPoint(18, 44 + (deck - 1) * 97), detail->mapTo(panel.get(), QPoint()));
         auto* overview = panel->findChild<QWidget*>(QStringLiteral("decklab-overview-%1").arg(deck));
-        EXPECT_NEAR(400, overview->width(), 1); EXPECT_EQ(40, overview->height());
+        EXPECT_NEAR(400, overview->width(), 1); EXPECT_EQ(44, overview->height());
         EXPECT_NEAR((deck - 1) * 400, overview->mapTo(panel.get(), QPoint()).x(), 2);
-        EXPECT_EQ(344, overview->mapTo(panel.get(), QPoint()).y());
-        EXPECT_EQ(86, strip(deck)->height()); EXPECT_EQ(258, strip(deck)->mapTo(panel.get(), QPoint()).y());
+        EXPECT_EQ(340, overview->mapTo(panel.get(), QPoint()).y());
+        EXPECT_EQ(104, strip(deck)->height()); EXPECT_EQ(236, strip(deck)->mapTo(panel.get(), QPoint()).y());
     }
     auto* utilities = panel->findChild<QPushButton*>("decklab-1-more")->parentWidget();
     EXPECT_NEAR(400, utilities->width(), 1); EXPECT_EQ(48, utilities->height());
@@ -906,17 +942,17 @@ TEST_F(NativeDeckLabTest, AutoLayoutShowsFourRealDecksAndRetainsLoadedUpperDecks
         EXPECT_EQ(436, cue->mapTo(panel.get(),QPoint()).y());
         // Four full-width waveforms, stacked in deck order.
         auto* detail = panel->findChild<QWidget*>(QStringLiteral("decklab-detail-%1").arg(deck)); ASSERT_NE(nullptr,detail);
-        EXPECT_EQ(782, detail->width()); EXPECT_NEAR(56.5, detail->height(), 1);
+        EXPECT_EQ(782, detail->width()); EXPECT_NEAR(50, detail->height(), 1);
         const QPoint at = detail->mapTo(panel.get(),QPoint());
         EXPECT_EQ(18, at.x()); EXPECT_GT(at.y(), previousTop); previousTop = at.y();
         auto* overview = panel->findChild<QWidget*>(QStringLiteral("decklab-overview-%1").arg(deck));
-        ASSERT_NE(nullptr, overview); EXPECT_TRUE(overview->isVisible()); EXPECT_EQ(40, overview->height());
+        ASSERT_NE(nullptr, overview); EXPECT_TRUE(overview->isVisible()); EXPECT_EQ(44, overview->height());
         EXPECT_NEAR(200,overview->width(),1);
         EXPECT_NEAR((deck-1)*200,overview->mapTo(panel.get(),QPoint()).x(),2);
-        EXPECT_EQ(392,overview->mapTo(panel.get(),QPoint()).y());
+        EXPECT_EQ(388,overview->mapTo(panel.get(),QPoint()).y());
         EXPECT_FALSE(overview->acceptDrops());
         EXPECT_EQ(DeckLabStripRenderer::Mode::Compact, strip(deck)->mode());
-        EXPECT_EQ(116, strip(deck)->height());
+        EXPECT_EQ(138, strip(deck)->height());
         EXPECT_TRUE(strip(deck)->renderer().overflowingParts().isEmpty());
     }
     EXPECT_EQ(QSize(800,480), panel->size());
@@ -1337,7 +1373,7 @@ TEST_F(NativeDeckLabTest, ControllerFxDetailsReadAllRealUnitsWithoutControlWrite
         EXPECT_TRUE(detail.contains(QStringLiteral("Slot %1: %2 [%3]").arg(slot+1).arg(manifests[slot]->name(),slot%2 ? "OFF" : "ON")));
     auto* ownership=dialog->findChild<QLabel*>("decklab-controller-fx-ownership"); ASSERT_NE(nullptr,ownership);
     EXPECT_TRUE(ownership->text().contains("Read only"));
-    EXPECT_TRUE(ownership->text().contains("RMX controls are separate, on the FX screen."));
+    EXPECT_TRUE(ownership->text().contains("Lab FX controls are separate, on the Lab FX screen."));
     auto* refresh=dialog->findChild<QPushButton*>("decklab-controller-fx-refresh"); ASSERT_NE(nullptr,refresh);
     auto* close=dialog->findChild<QPushButton*>("decklab-controller-fx-close"); ASSERT_NE(nullptr,close);
     for(auto* action:{refresh,close}) { action->style()->unpolish(action); action->style()->polish(action); }
