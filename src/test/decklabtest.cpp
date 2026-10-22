@@ -45,7 +45,6 @@
 #include "widget/woverview.h"
 #include "widget/controlwidgetconnection.h"
 #include "skin/legacy/skincontext.h"
-#include "util/cmdlineargs.h"
 #include "util/valuetransformer.h"
 #ifdef __LILV__
 #include "effects/backends/lv2/lv2effectprocessor.h"
@@ -155,8 +154,9 @@ class NativeDeckLabTest : public BaseSignalPathTest {
 };
 
 TEST_F(NativeDeckLabTest, WholeTrackOverviewFollowsPositionAcrossDecksLayoutsAndResize) {
-    QFile file(QDir(CmdlineArgs::Instance().getResourcePath()).filePath("skins/DeckLab/skin.xml"));
-    ASSERT_TRUE(file.open(QIODevice::ReadOnly)); QDomDocument skin; ASSERT_TRUE(skin.setContent(&file));
+    QFile file(QDir(config()->getResourcePath()).filePath("skins/DeckLab/skin.xml"));
+    ASSERT_TRUE(file.open(QIODevice::ReadOnly)) << file.fileName().toStdString();
+    QDomDocument skin; ASSERT_TRUE(skin.setContent(&file));
     const auto nodes=skin.elementsByTagName("Overviews").at(0).childNodes();
     std::array<WOverview*,4> overviews{};
     SkinContext context(config(),QString());
