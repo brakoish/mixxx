@@ -38,37 +38,41 @@ Layout at 800x480 (two decks, stacked):
 
 ```
 rail 44   [mark] Decks | Browse | Sampler | Lab FX | Settings | USB | FX 1 2 3 4 | status | L/R meter
-waves 214 [1] full-width waveform 782x106   (18 px deck tag: deck-color bar + number)
+waves 192 [1] full-width waveform 782x95    (18 px deck tag: deck-color bar + number)
           [2] full-width waveform
-deck 222  readout 86  title row / BPM tempo key clock / lamps + beat meter       x2 columns of 400
-          overview 40 (needle search)
+deck 244  readout 104 title row / BPM tempo key clock / lamps + beat meter       x2 columns of 400
+          overview 44 (needle search)
           hot cues A-H (44 px, 4 px gaps)
           ½ | LOOP n | ×2 | QNT | KEY LOCK | BEAT SYNC | MORE  (44 px, 4 px gaps)
 ```
 
-Side by side gives two 381x214 lanes. Four decks give four 782x56 lanes stacked (2x2 side by side), with four compact
-200x116 readouts, overviews and Cue/Play/Sync/More.
+Side by side gives two 381x192 lanes. Four decks give four 782x50 lanes stacked (2x2 side by side), with four compact
+200x138 readouts, overviews and Cue/Play/Sync/More.
 
 Design decisions:
-- **Full-width waveforms.** The 224 px of side columns are gone. The waveforms are GL window containers, so overlays
+- **Full-width waveforms.** The 224 px of side columns are gone. The binding text sizes below cost the waveforms
+  22 px of height against the first redesign (106 to 95 px each with two decks). The waveforms are GL window containers, so overlays
   are impossible. Deck identity is an 18 px tag beside each lane: a deck-color bar with the deck number. Lanes and cards
   keep one parent for life: a layout change only moves them between grid cells, and never reparents a GL window.
 - **Painted readout (`DeckLabDeckStrip`).** One tap target per deck: it opens full track information, or Browse for an
   empty deck. The existing stale-gesture guards are unchanged.
   - Title row: deck badge, then the state lamp (green PLAY triangle, PAUSE bars, orange CUE when paused on the main
-    cue, dim stop square when empty), then title and muted artist on one elided line.
-  - Value row: BPM at 30 px with smaller decimals; tempo % with the `rateRange` (±8%) and a green tempo-center lamp;
-    key at 22 px in the configured library key colors (lightened for black) with a green check or grey cross against
-    the master deck; remaining time at 30 px. Remaining time is real time at the current tempo. It flashes live red
-    inside `[Waveform] EndOfTrackWarningTime` while playing and not looping, the same rule as Mixxx's `end_of_track`.
-    Digits use fixed-width cells, so a running clock never shifts sideways. Big numbers shrink to fit instead of
-    clipping.
-  - Lamp row: MASTER (filled in deck color), SYNC (outlined in deck color) and HP (white), plus SLIP when on. The beat
-    meter sits on the right.
+    cue, dim stop square when empty), then the title (18 px SemiBold) and muted artist (15 px Medium) on one elided
+    line.
+  - Value row: BPM at 36 px with 24 px decimals; tempo % at 24 px with a green tempo-center lamp; key at 24 px in the
+    configured library key colors (lightened for black) with a green check or grey cross against the master deck;
+    remaining time at 36 px. Remaining time is real time at the current tempo. It flashes live red inside
+    `[Waveform] EndOfTrackWarningTime` while playing and not looping, the same rule as Mixxx's `end_of_track`. Digits
+    use fixed-width cells, so a running clock never shifts sideways. Nothing shrinks: a clock over 100 minutes moves
+    the key and tempo left, and the tempo is dropped if there is no room.
+  - Lamp row: MASTER (filled in deck color), SYNC (outlined in deck color) and HP (white), plus SLIP when on, as 14 px
+    SemiBold labels; then the tempo range (±8%) as 15 px muted text and the green tempo-center lamp, directly under
+    the tempo value. The beat meter sits on the right.
   - A painted channel meter runs along the left edge.
-  - Compact four-deck readouts show the same data. Lit lamps appear as space allows, in this order: MASTER, SYNC, HP,
-    LOOP n, KEY, Q, SLIP.
-  - Browse/FX get a one-line `DeckLabMiniStrip` showing badge, state, title, key, BPM and time.
+  - Compact four-deck readouts keep the same sizes and drop lower-priority items instead: the artist, the BPM
+    decimals and the tempo range go first. Lit lamps appear as space allows, in this order: MASTER, SYNC, HP, LOOP n,
+    KEY, Q, SLIP.
+  - Browse/FX get a 30 px one-line `DeckLabMiniStrip` showing badge, state, title, key, BPM and time (18 px).
 - **Beat meter.** It shows `beat index mod 4`, where the index counts beats since the grid's first marker, plus the
   in-beat phase. Both come from the grid at the current position (the same quantity as `beat_distance`). Mixxx stores
   no downbeat, so this is a beat counter and never claims bars or phrases. The active segment uses the deck color,
@@ -85,7 +89,8 @@ Design decisions:
   stretch on wider screens. Each button carries its own style sheet with paired min/max heights, so polish cannot shrink
   the 44 px border box (including in popups). Linked zoom (Zoom out / Zoom in) moved into the More panels.
 - **Rail (44 px).**
-  - The brand mark is graphite and white bars split by the red playhead.
+  - The brand mark is the 24 px pixel-grid icon from the brand kit (`res/skins/DeckLab/decklab-icon-24.png`), with a
+    painted fallback.
   - Tabs show the active page in white with a 3 px white underline. The FX tab is now "Lab FX" and raises while Lab FX
     is wet or tailing.
   - USB and the controller FX unit lamps (`decklab-performance-board-fx`) follow. The lamps open the existing read-only
@@ -100,9 +105,16 @@ Design decisions:
   - Live red `#FF3D2E` is used only for the waveform and overview playheads, the end-of-track warning, clip, REC and
     audio alarms.
   - Play green (`#2FD27A`) and cue orange (`#FF7A1A`) are kept from the brief as transport-state colors.
-- **Type.** The bundled Open Sans is kept this round. Barlow / Barlow Semi Condensed would mean adding new font files to
-  `res/fonts`; left for integration (see open issues). Sizes: secondary text ≥ 12 px, mid-mix readouts ≥ 14 px, BPM and
-  time 30 px.
+- **Type (binding on-device sizes).** Barlow and Barlow Semi Condensed (Medium, SemiBold, Bold; SIL OFL 1.1) ship in
+  `res/skins/DeckLab/fonts/`, because Linux builds do not install `res/fonts` while `res/skins` is installed whole.
+  `deckLabLoadFonts()` registers them once from the WDeckLab constructor.
+  - Hero numerals (BPM, remaining time) 36 px Barlow Semi Condensed SemiBold, tabular.
+  - Readouts (key, tempo) 24 px. Titles 18 px SemiBold. Buttons and tabs 16 px SemiBold Barlow. Dialog body 16 px,
+    headings 18 px.
+  - Secondary (artist, tempo range) 15 px Medium muted `#9AA3AF`. Labels (MASTER, SYNC, HP, LOOP) 14 px SemiBold
+    uppercase with +6% letter spacing.
+  - Nothing is below 14 px. The renderer clamps every font to 14 px, and no 400 weight is used below 18 px (the
+    bundle has no Regular).
 - **Layer follow.** In two-deck view, a deliberate controller touch on a deck brings it to its side and keeps
   `[DeckLabLeft/Right],current` in step. Deliberate touches are:
   - `play` 0→1
@@ -118,7 +130,7 @@ Design decisions:
 - **Skin.**
   - Playheads are live red, `EndOfTrackColor` is live red, and the background is the ground color.
   - The simple-waveform `SignalColor` uses the deck color. The RGB band colors are unchanged.
-  - Overview label size rises from 11 to 12 px.
+  - Overview cue label size rises from 11 to 14 px.
   - The license is declared GPL-3.0-or-later, matching the bundled LICENSE text, with Pioneered credited in the
     manifest author.
 - **Distribution rules.** All user strings go through `tr()`, or `QCoreApplication::translate("DeckLabDeckStrip", …)`
@@ -139,15 +151,23 @@ Tests in `src/test/decklabtest.cpp` (all `NativeDeckLabTest`; every required nam
   flap, end-of-track stops and Sync-follower rate are ignored, jog switches, and four-deck view does not follow.
 - `DecksLayoutsScaleToLargerTouchscreens`: 1024x600, 1280x800 and 800x480 in two- and four-deck views. No clipped
   buttons, all targets ≥ 44 px, readouts fit.
+- `DeckTextFollowsTheOnDeviceScale`: the bundled typefaces load, readout fonts hold 36/24/14 px and never drop below
+  14 px, and buttons use 16 px Barlow at ≥ 44 px, in two- and four-deck views.
 - The existing geometry, gesture-guard, hot-cue, beatgrid, FX and transport tests were moved to the new surfaces.
 
-CI (`gh run view <id> --repo brakoish/mixxx`):
+CI runs of the `decklab-pi.yml` workflow on this branch:
 - 39797321948, Part A only: built. 258/260 tests passed; the two old-label assertions noted above failed.
 - 39802760470: failed the ancestry check before building, because the workflow fetched only 50 commits. Fixed by
   `fetch-depth: 0`.
 - 39803064323, Part B snapshot pushed as `decklab/decks-ui-ci1`: built. Two test fixes followed: the NaN check under
   fast-math, and a beat beyond the generated track.
-- See the final section for the last runs.
+- 39808771676 and 39810364101: Part B with brand tokens and naming. Both green; screenshots reviewed.
+- 39813772973, binding text sizes: failed to compile. The muted color constant had the same name as the renderer's
+  15 px size constant. Renamed to `kMuted`. A local syntax check (Qt 6.4 in WSL) and an offscreen render of the
+  readouts at 400/512/199/255 px were used before the next run.
+- 39816204525 (head `df1abc4a63`), binding text sizes plus the style-sheet guard: green. 267/267 native tests passed
+  (4 disabled upstream), DSP tests passed, and the application smoke check captured 21 screens with no failures.
+  Screenshots show Barlow in both the fixtures and the installed application.
 
 Screenshots (artifact `decklab-mixxx-aarch64-<sha>/`; generated tracks only):
 - Before (Part A artifact, old layout): `decks-fixture-playing.png`, `decks-fixture-four.png`, `screen-0.png`.
@@ -160,8 +180,9 @@ Screenshots (artifact `decklab-mixxx-aarch64-<sha>/`; generated tracks only):
   `app-screen-18.png` (auto), `app-screen-19.png` / `app-screen-20.png` (side by side), `app-decks-1024x600.png`.
 
 ## Open issues
-- Barlow / Barlow Semi Condensed are not bundled yet. Add the OFL TTFs under `res/fonts` and change the readout's font
-  family in `DeckLabStripRenderer::setFamily()`. Digits already use fixed cells.
+- The shared `kStyle` sheet at the top of `wdecklab.cpp` still sets Open Sans 13 px for every page, with 12 px muted
+  labels. The Decks surfaces override it, but other pages need the same 16/15/14 px floor. Changing it at merge time
+  is one line plus a check of each page.
 - Cover artwork is not shown. `CoverArtCache::requestUncachedCover(strip, track, 44)` per load would be cheap, but the
   400 px readout has no room without squeezing the title.
 - The RGB waveform band colors are unchanged. Only the simple/filtered renderers take the deck tint. A deck-tinted
@@ -177,7 +198,9 @@ Screenshots (artifact `decklab-mixxx-aarch64-<sha>/`; generated tracks only):
   functions. `m_status` is now a `DeckLabChipButton*`. `m_controls` changed type (two-level hash). It includes
   `widget/decklabdeckwidgets.h` and `track/track_decl.h`.
 - **New files.** `src/widget/decklabdeckwidgets.{h,cpp}`, added to `CMakeLists.txt` after `decklabsmoke.cpp`.
-- **Constructor.** The rail is a `QWidget` (`decklab-rail`) with its own style sheet. The USB button lines are unchanged
+  `res/skins/DeckLab/fonts/` (six TTFs and two OFL texts) and `res/skins/DeckLab/decklab-icon-24.png`.
+- **Constructor.** It calls `deckLabLoadFonts(m_config->getResourcePath())` right after `setObjectName`. The rail is a
+  `QWidget` (`decklab-rail`) with its own style sheet. The USB button lines are unchanged
   apart from height 44. The tools-online handshake lines (constructor `tools_ready` watcher and the first `tickEffects`
   lines) are byte-identical.
 - **`tickEffects`.** The deck line is now `tickDecks()`. At the coordinator's request, the Lab FX release threshold
@@ -188,5 +211,12 @@ Screenshots (artifact `decklab-mixxx-aarch64-<sha>/`; generated tracks only):
 - **`decklabsmoke.cpp`.** Adds one extra capture (`app-decks-1024x600.png`) inside step 18. The screen count stays 21.
 - **`.github/workflows/decklab-pi.yml`.** `fetch-depth: 0`, the same text as perf-engine's commit `375429e8b1`.
 - **`tools/decklab/pi-build-lock.json`.** Hashes are refreshed per commit. Expect conflicts; regenerate after merging.
+- **Style sheets and fixed heights.** A QPushButton `min-height`/`max-height` rule in any ancestor or skin sheet
+  overrides `setFixedHeight()` on polish. Every Deck Lab touch control in this branch carries its own sheet with
+  paired min/max heights: action buttons and pads (`kActionStyle`, `kPadStyle`), rail tabs, USB, FX lamps and status
+  (`kRailStyle` on the rail), dialog buttons (`kDialogStyle`), and the painted deck readouts (`deckStripSheet()`, 104 or
+  138 px). `DeckTextFollowsTheOnDeviceScale` adds a hostile `WDeckLab QPushButton {min-height:20px;max-height:30px}`
+  rule and checks that readouts and 44 px targets hold. No interactive control on Decks is under 44 px tall: overviews
+  (needle search) are 44 px; the 30 px one-line readouts, lane tags and meters ignore input.
 - **Deck state refresh is queued.** A test that sets a control and checks the UI after a single
   `QCoreApplication::processEvents()` needs a second pass (`settle()` in the test file).
