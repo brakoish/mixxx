@@ -710,7 +710,7 @@ void DeckLabSetupWizard::refreshControllers() {
         const auto& info = m_controllers.at(index);
         QString state;
         if (info.mixxxName.isEmpty()) {
-            state = tr("Connected · not detected yet");
+            state = tr("Not detected yet");
         } else if (info.open && !info.mapping.isEmpty()) {
             state = tr("Working · %1").arg(QFileInfo(info.mapping).completeBaseName().section(QLatin1Char('.'), 0, 0));
         } else {
@@ -916,7 +916,7 @@ void DeckLabSetupWizard::buildAudio(QWidget* page) {
         auto* label = new Row(name, QString(), panel);
         label->setRowIcon(icon);
         label->setStatic(true);
-        label->setFixedWidth(170);
+        label->setFixedWidth(214);
         row->addWidget(label);
         auto* combo = touchCombo(panel, objectName);
         row->addWidget(combo, 1);
@@ -1142,7 +1142,6 @@ void DeckLabSetupWizard::renderDone() {
     add(Icon::Decks, tr("Layout"), m_decks == 4 ? tr("Four decks") : tr("Two decks"), true);
     m_doneTitle->setText(m_firstRun ? tr("Deck Lab is ready") : tr("You're ready to play"));
     setMessage(info && m_mappingApplied
-                    ? tr("Saved. Deck Lab sets this up by itself whenever %1 is plugged in.").arg(info->name)
-                    : tr("Set up your controller any time: Settings → Setup → Deck Setup. A new "
-                         "controller is also offered automatically when you plug it in."));
+                    ? tr("Saved. %1 is set up automatically when you plug it in.").arg(info->name)
+                    : tr("Add a controller any time: Settings → Setup → Deck Setup."));
 }

@@ -776,8 +776,9 @@ class BluetoothPage : public SectionPage {
             m_listLayout->addWidget(line);
         }
         m_summary->setText(devices.isEmpty() ? tr("No devices yet. Put your speaker in pairing mode, then Find speakers.")
-                        : connected      ? tr("%n connected", nullptr, connected)
-                                         : tr("DEVICES"));
+                        : connected == 1 ? tr("1 connected")
+                        : connected > 1  ? tr("%1 connected").arg(connected)
+                                         : tr("Devices"));
     }
 
     void run(const QString& method, const QString& address) {
@@ -1627,7 +1628,7 @@ void DeckLabSystemPage::refreshTiles() {
     for (Section section : {Section::Wifi, Section::Bluetooth, Section::Screen, Section::Time, Section::Maintenance}) {
         tile(section)->setSubtitle(offline);
     }
-    tile(Section::Power)->setSubtitle(tr("Restart, reboot or shut down"));
+    tile(Section::Power)->setSubtitle(tr("Restart or shut down"));
     tile(Section::About)->setSubtitle(tr("Mixxx %1").arg(VersionStore::version()));
     if (!online) {
         tile(Section::Storage)->setSubtitle(offline);
@@ -1635,7 +1636,9 @@ void DeckLabSystemPage::refreshTiles() {
     }
     tile(Section::Maintenance)->setSubtitle(tr("Desktop for servicing"));
     const int drives = m_system->usbDrives().size();
-    tile(Section::Storage)->setSubtitle(drives == 0 ? tr("No USB drive") : tr("%n USB drive(s)", nullptr, drives));
+    tile(Section::Storage)->setSubtitle(drives == 0 ? tr("No USB drive")
+                    : drives == 1               ? tr("1 USB drive")
+                                                : tr("%1 USB drives").arg(drives));
     if (!isVisible()) {
         return;
     }
