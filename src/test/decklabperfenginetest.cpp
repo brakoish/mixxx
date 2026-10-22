@@ -300,6 +300,27 @@ TEST(DeckLabThreadPolicyTest, AudioCpuAcceptsLastOrAUsableIndexOnly) {
     EXPECT_FALSE(mixxx::decklab::usableCpus().empty());
 }
 
+TEST(DeckLabThreadPolicyTest, AudioPriorityAcceptsOnlyFifoPrioritiesOneToNinetyFive) {
+    using mixxx::decklab::parseAudioPriority;
+    EXPECT_EQ(70, parseAudioPriority("70"));
+    EXPECT_EQ(1, parseAudioPriority("1"));
+    EXPECT_EQ(95, parseAudioPriority(" 95\n"));
+    EXPECT_EQ(-1, parseAudioPriority("0"));
+    EXPECT_EQ(-1, parseAudioPriority("96"));
+    EXPECT_EQ(-1, parseAudioPriority("99"));
+    EXPECT_EQ(-1, parseAudioPriority("-5"));
+    EXPECT_EQ(-1, parseAudioPriority("+70"));
+    EXPECT_EQ(-1, parseAudioPriority("high"));
+    EXPECT_EQ(-1, parseAudioPriority("7O"));
+    EXPECT_EQ(-1, parseAudioPriority(""));
+    qputenv("DECKLAB_AUDIO_PRIO", "70");
+    EXPECT_EQ(70, mixxx::decklab::audioPriorityFromEnvironment());
+    qputenv("DECKLAB_AUDIO_PRIO", "200");
+    EXPECT_EQ(-1, mixxx::decklab::audioPriorityFromEnvironment());
+    qunsetenv("DECKLAB_AUDIO_PRIO");
+    EXPECT_EQ(-1, mixxx::decklab::audioPriorityFromEnvironment());
+}
+
 TEST(DeckLabThreadPolicyTest, EnvironmentSwitchesDefaultToUpstreamBehaviour) {
     qunsetenv("DECKLAB_AUDIO_CPU");
     qunsetenv("DECKLAB_ANALYZER_IDLE");
@@ -333,7 +354,7 @@ TEST(DeckLabThreadPolicyTest, EnvironmentSwitchesDefaultToUpstreamBehaviour) {
 }
 
 #ifdef __LINUX__
-TEST(DeckLabThreadPolicyTest, PinningAndIdlePolicyAffectOnlyTheCallingThread) {
+TEST(DeckLabThreadPolicyTest, PinningPriorityAndIdlePolicyAffectOnlyTheCallingThread) {
     cpu_set_t before;
     CPU_ZERO(&before);
     ASSERT_EQ(0, pthread_getaffinity_np(pthread_self(), sizeof(before), &before));
@@ -368,6 +389,33 @@ TEST(DeckLabThreadPolicyTest, PinningAndIdlePolicyAffectOnlyTheCallingThread) {
     EXPECT_EQ(1, cpusAfterPin.load());
     EXPECT_TRUE(policy.load() == SCHED_IDLE || niceness.load() == 19)
             << "policy" << policy.load() << "nice" << niceness.load();
+
+    // Raising to SCHED_FIFO either succeeds or (no rtprio limit in the CI
+    // sandbox) fails cleanly with an error and leaves the thread unchanged.
+    std::atomic<bool> raised{false};
+    std::atomic<int> fifoPriority{-1};
+    std::atomic<int> policyAfterRaise{-1};
+    std::atomic<bool> errorReported{false};
+    std::thread realtime([&] {
+        QString error;
+        int priority = -1;
+        raised = mixxx::decklab::raiseCurrentThreadToFifo(10, &error, &priority);
+        fifoPriority = priority;
+        policyAfterRaise = sched_getscheduler(0);
+        errorReported = !error.isEmpty();
+    });
+    realtime.join();
+    if (raised) {
+        EXPECT_EQ(SCHED_FIFO, policyAfterRaise.load());
+        EXPECT_GE(fifoPriority.load(), 10);
+    } else {
+        EXPECT_TRUE(errorReported);
+        EXPECT_NE(SCHED_FIFO, policyAfterRaise.load());
+    }
+    QString invalid;
+    int unchanged = -1;
+    EXPECT_FALSE(mixxx::decklab::raiseCurrentThreadToFifo(0, &invalid, &unchanged));
+    EXPECT_FALSE(invalid.isEmpty());
 
     // The calling (test) thread keeps its affinity and policy.
     cpu_set_t now;

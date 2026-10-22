@@ -95,6 +95,8 @@ SoundDevicePortAudio::SoundDevicePortAudio(UserSettingsPointer config,
           m_bSetThreadPriority(false),
           m_audioCpu(-1),
           m_audioCpuPinPending(false),
+          m_audioPriority(-1),
+          m_audioPriorityPending(false),
           m_audioLatencyUsage(kAppGroup, QStringLiteral("audio_latency_usage")),
           m_framesSinceAudioLatencyUsageUpdate(0),
           m_syncBuffers(2),
@@ -261,6 +263,8 @@ SoundDeviceStatus SoundDevicePortAudio::open(bool isClkRefDevice, int syncBuffer
     // clock-reference callback (the thread that runs the engine) pins itself.
     m_audioCpu = isClkRefDevice ? mixxx::decklab::audioCpuFromEnvironment() : -1;
     m_audioCpuPinPending.store(m_audioCpu >= 0, std::memory_order_release);
+    m_audioPriority = isClkRefDevice ? mixxx::decklab::audioPriorityFromEnvironment() : -1;
+    m_audioPriorityPending.store(m_audioPriority > 0, std::memory_order_release);
 
     // Create the callback function pointer.
     PaStreamCallback* pCallback = nullptr;
@@ -962,6 +966,21 @@ int SoundDevicePortAudio::callbackProcessClkRef(
             } else {
                 qWarning() << "DECKLAB_AUDIO_CPU: could not pin audio callback thread to CPU"
                            << m_audioCpu << ":" << error;
+            }
+        }
+        // DECKLAB_AUDIO_PRIO: PortAudio's ALSA host makes this thread
+        // SCHED_FIFO 1, below threaded IRQ handlers. Raise it once; without
+        // an rtprio limit (EPERM) log once and keep running as is.
+        if (m_audioPriorityPending.exchange(false, std::memory_order_acq_rel)) {
+            QString error;
+            int priority = 0;
+            if (mixxx::decklab::raiseCurrentThreadToFifo(m_audioPriority, &error, &priority)) {
+                qInfo() << "DECKLAB_AUDIO_PRIO: audio callback thread runs SCHED_FIFO"
+                        << priority;
+            } else {
+                qWarning() << "DECKLAB_AUDIO_PRIO: could not raise audio callback thread to"
+                           << "SCHED_FIFO" << m_audioPriority << ":" << error
+                           << "(current real-time priority" << priority << ")";
             }
         }
 #ifdef __LINUX__

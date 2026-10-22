@@ -44,7 +44,7 @@ enum {
 /* Audio-thread deadman. The native UI bumps the heartbeat every 100 ms; when
  * it stops changing for this long the effect returns to dry and stays dry
  * until the next activation. It was 0.65 s, which a GUI stall during a track
- * load could exceed, latching the RMX dry mid-set. 1.5 s still returns a frozen
+ * load could exceed, latching the effect dry mid-set. 1.5 s still returns a frozen
  * or lost owner to dry well inside two seconds. */
 #define HEARTBEAT_TIMEOUT_SECONDS 1.5
 /* A smoothed lever/isolator below this (-120 dB) whose target is zero snaps to

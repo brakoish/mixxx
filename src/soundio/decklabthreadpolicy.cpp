@@ -118,6 +118,80 @@ bool pinCurrentThreadToCpu(int cpu, QString* pError) {
 #endif
 }
 
+int parseAudioPriority(const QByteArray& value) {
+    const QByteArray trimmed = value.trimmed();
+    if (trimmed.isEmpty()) {
+        return -1;
+    }
+    for (const char c : trimmed) {
+        if (c < '0' || c > '9') {
+            return -1;
+        }
+    }
+    bool ok = false;
+    const int priority = trimmed.toInt(&ok, 10);
+    if (!ok || priority < 1 || priority > kMaxAudioPriority) {
+        return -1;
+    }
+    return priority;
+}
+
+int audioPriorityFromEnvironment() {
+    if (!qEnvironmentVariableIsSet("DECKLAB_AUDIO_PRIO")) {
+        return -1;
+    }
+    const QByteArray value = qgetenv("DECKLAB_AUDIO_PRIO");
+    const int priority = parseAudioPriority(value);
+    if (priority < 0) {
+        qWarning() << "DECKLAB_AUDIO_PRIO ignored:" << value
+                   << "is not a SCHED_FIFO priority from 1 to" << kMaxAudioPriority;
+    }
+    return priority;
+}
+
+bool raiseCurrentThreadToFifo(int priority, QString* pError, int* pPriority) {
+#ifdef __LINUX__
+    int policy = SCHED_OTHER;
+    sched_param current{};
+    const int readResult = pthread_getschedparam(pthread_self(), &policy, &current);
+    const bool realtime = readResult == 0 && (policy == SCHED_FIFO || policy == SCHED_RR);
+    if (pPriority) {
+        *pPriority = realtime ? current.sched_priority : 0;
+    }
+    if (priority < 1 || priority > kMaxAudioPriority) {
+        if (pError) {
+            *pError = QStringLiteral("invalid priority");
+        }
+        return false;
+    }
+    if (realtime && current.sched_priority >= priority) {
+        return true;
+    }
+    sched_param requested{};
+    requested.sched_priority = std::min(priority, sched_get_priority_max(SCHED_FIFO));
+    const int result = pthread_setschedparam(pthread_self(), SCHED_FIFO, &requested);
+    if (result != 0) {
+        if (pError) {
+            *pError = QString::fromLocal8Bit(strerror(result));
+        }
+        return false;
+    }
+    if (pPriority) {
+        *pPriority = requested.sched_priority;
+    }
+    return true;
+#else
+    Q_UNUSED(priority);
+    if (pPriority) {
+        *pPriority = 0;
+    }
+    if (pError) {
+        *pError = QStringLiteral("not supported on this platform");
+    }
+    return false;
+#endif
+}
+
 bool analyzerIdleRequested() {
     bool ok = false;
     const int value = qEnvironmentVariableIntValue("DECKLAB_ANALYZER_IDLE", &ok);
