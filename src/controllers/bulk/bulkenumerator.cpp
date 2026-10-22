@@ -28,6 +28,13 @@ static bool is_interesting(const libusb_device_descriptor& desc) {
             });
 }
 
+void BulkEnumerator::refreshDevices() {
+    // queryDevices() appends; drop the stale devices before scanning again.
+    while (!m_devices.isEmpty()) {
+        delete m_devices.takeLast();
+    }
+}
+
 QList<Controller*> BulkEnumerator::queryDevices() {
     qDebug() << "Scanning USB Bulk devices:";
     libusb_device **list;

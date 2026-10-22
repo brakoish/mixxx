@@ -65,6 +65,8 @@ MappingInfo::MappingInfo(const QString& mapping_path)
         m_wikilink = dom_wiki.text();
     }
 
+    m_controllerId = root.firstChildElement("controller").attribute("id");
+
     QDomElement devices = info.firstChildElement("devices");
     if (!devices.isNull()) {
         QDomElement product = devices.firstChildElement("product");
@@ -75,8 +77,9 @@ MappingInfo::MappingInfo(const QString& mapping_path)
             } else if (protocol == "bulk") {
                 m_products.append(parseBulkProduct(product));
             } else if (protocol == "midi") {
-                qDebug("MIDI product info parsing not yet implemented");
-                //m_products.append(parseMIDIProduct(product);
+                // USB ids of class-compliant MIDI devices; matched against
+                // host-reported ids by the Deck Lab setup.
+                m_products.append(parseMidiProduct(product));
             } else if (protocol == "osc") {
                 qDebug("OSC product info parsing not yet implemented");
                 //m_products.append(parseOSCProduct(product);
@@ -116,5 +119,14 @@ ProductInfo MappingInfo::parseHIDProduct(const QDomElement& element) const {
     product.usage_page = element.attribute("usage_page");
     product.usage = element.attribute("usage");
     product.interface_number = element.attribute("interface_number");
+    return product;
+}
+
+ProductInfo MappingInfo::parseMidiProduct(const QDomElement& element) const {
+    // <product protocol="midi" vendor_id="0x1c75" product_id="0x02cd" />
+    ProductInfo product;
+    product.protocol = element.attribute("protocol");
+    product.vendor_id = element.attribute("vendor_id");
+    product.product_id = element.attribute("product_id");
     return product;
 }

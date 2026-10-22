@@ -90,6 +90,13 @@ HidEnumerator::~HidEnumerator() {
     hid_exit();
 }
 
+void HidEnumerator::refreshDevices() {
+    // queryDevices() appends; drop the stale devices before scanning again.
+    while (!m_devices.isEmpty()) {
+        delete m_devices.takeLast();
+    }
+}
+
 QList<Controller*> HidEnumerator::queryDevices() {
     qInfo() << "Scanning USB HID devices";
 

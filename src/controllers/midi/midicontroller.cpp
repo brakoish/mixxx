@@ -5,6 +5,7 @@
 
 #include "control/controlobject.h"
 #include "control/controlpotmeter.h"
+#include "controllers/controllermappingmatcher.h"
 #include "controllers/defs_controllers.h"
 #include "controllers/midi/midioutputhandler.h"
 #include "controllers/midi/midiutils.h"
@@ -97,9 +98,15 @@ int MidiController::close() {
 }
 
 bool MidiController::matchMapping(const MappingInfo& mapping) {
-    // Product info mapping not implemented for MIDI devices yet
-    Q_UNUSED(mapping);
-    return false;
+    // PortMidi exposes only port names, so match by the mapping's name, file
+    // name and <controller id> (plus a small override table). Only confident
+    // matches count; the preferences pick the last matching mapping.
+    ControllerMappingMatcher::Device device;
+    device.name = getName();
+    device.vendorId = getVendorId();
+    device.productId = getProductId();
+    return ControllerMappingMatcher::score(device, mapping) >=
+            ControllerMappingMatcher::kExactScore;
 }
 
 bool MidiController::applyMapping(const QString& resourcePath) {

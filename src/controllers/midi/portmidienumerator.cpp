@@ -121,6 +121,21 @@ PortMidiEnumerator::~PortMidiEnumerator() {
     }
 }
 
+void PortMidiEnumerator::refreshDevices() {
+    // PortMidi lists devices only once per Pm_Initialize(). Every stream is
+    // closed (the controllers are deleted) before re-initializing.
+    qDeleteAll(m_devices);
+    m_devices.clear();
+    PmError err = Pm_Terminate();
+    if (err != pmNoError) {
+        qWarning() << "PortMidi error:" << Pm_GetErrorText(err);
+    }
+    err = Pm_Initialize();
+    if (err != pmNoError) {
+        qWarning() << "PortMidi error:" << Pm_GetErrorText(err);
+    }
+}
+
 bool shouldLinkInputToOutput(const QString& input_name,
         const QString& output_name) {
     // Early exit.

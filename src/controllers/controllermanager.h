@@ -41,6 +41,12 @@ class ControllerManager : public QObject {
 
     /// Prevent other parts of Mixxx from having to manually connect to our slots
     void setUpDevices() { emit requestSetUpDevices(); };
+    /// Deck Lab hotplug: re-enumerate MIDI/HID devices in-process and reopen
+    /// the enabled ones. Every open controller is closed briefly. Emits
+    /// rescanFinished() when done. Do not hold Controller pointers across it.
+    void rescanDevices() {
+        emit requestRescan();
+    }
 
     static QList<QString> getMappingPaths(UserSettingsPointer pConfig);
 
@@ -50,6 +56,8 @@ class ControllerManager : public QObject {
     void requestShutdown();
     void requestInitialize();
     void mappingApplied(bool applied);
+    void requestRescan();
+    void rescanFinished();
 
   public slots:
     void slotApplyMapping(Controller* pController,
@@ -65,6 +73,7 @@ class ControllerManager : public QObject {
     /// preferences dialog on apply, and only open/close changed devices
     void slotSetUpDevices();
     void slotShutdown();
+    void slotRescan();
     /// Calls poll() on all devices that have isPolling() true.
     void slotPollDevices();
 

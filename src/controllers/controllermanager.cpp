@@ -125,6 +125,7 @@ ControllerManager::ControllerManager(UserSettingsPointer pConfig)
             this,
             &ControllerManager::slotSetUpDevices);
     connect(this, &ControllerManager::requestShutdown, this, &ControllerManager::slotShutdown);
+    connect(this, &ControllerManager::requestRescan, this, &ControllerManager::slotRescan);
 
     // Signal that we should run slotInitialize once our event loop has started
     // up.
@@ -185,6 +186,28 @@ void ControllerManager::slotShutdown() {
 
     // Stop the processor after the enumerators since the engines live in it
     m_pThread->quit();
+}
+
+void ControllerManager::slotRescan() {
+    DEBUG_ASSERT_QOBJECT_THREAD_AFFINITY(this);
+    stopPolling();
+    auto locker = lockMutex(&m_mutex);
+    const QList<Controller*> controllers = m_controllers;
+    const QList<ControllerEnumerator*> enumerators = m_enumerators;
+    // Nobody may fetch the old pointers while the enumerators delete them.
+    m_controllers.clear();
+    locker.unlock();
+    for (Controller* pController : controllers) {
+        if (pController->isOpen()) {
+            pController->close();
+        }
+    }
+    for (ControllerEnumerator* pEnumerator : enumerators) {
+        pEnumerator->refreshDevices();
+    }
+    // Re-query and reopen every enabled controller with its saved mapping.
+    slotSetUpDevices();
+    emit rescanFinished();
 }
 
 void ControllerManager::updateControllerList() {
