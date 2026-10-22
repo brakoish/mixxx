@@ -793,65 +793,64 @@ TEST_F(DeckLabStemsTest, StemDecodeAndMixCostProbe) {
 
     // Engine: one deck playing the file at +4 % tempo, stems or stereo mix,
     // keylock off (linear) and on (Rubber Band, Mixxx's default engine).
-    const auto engineMicros = [this](bool keylock) {
-        ControlObject::set(ConfigKey("[Channel1]", "keylock"), keylock ? 1 : 0);
-        ControlObject::set(ConfigKey("[Channel1]", "rate"), 0.5); // +4 % at Â±8 %
-        m_pChannel1->getEngineBuffer()->queueNewPlaypos(
-                mixxx::audio::FramePos{0}, EngineBuffer::SEEK_STANDARD);
-        ControlObject::set(ConfigKey("[Channel1]", "play"), 1);
-        for (int n = 0; n < 20; ++n) {
-            ProcessBuffer();
-            QTest::qWait(2); // let the reader fill its cache
-        }
-        constexpr int kBuffers = 150;
-        QElapsedTimer timer;
-        timer.start();
+    // Only the engine call is timed. Buffers are paced so the reader thread
+    // keeps up, and the count of audible buffers shows that audio flowed.
+    constexpr int kBuffers = 150;
+    struct Timing {
+        double micros = 0;
+        int audible = 0;
+    };
+    const auto timeBuffers = [this](bool playing) {
+        Timing timing;
+        qint64 nanos = 0;
         for (int n = 0; n < kBuffers; ++n) {
+            QElapsedTimer timer;
+            timer.start();
             ProcessBuffer();
+            nanos += timer.nsecsElapsed();
+            timing.audible += playing && mainRms() > 1e-3 ? 1 : 0;
+            QTest::qWait(1);
         }
-        const double micros = timer.nsecsElapsed() / 1e3 / kBuffers;
+        timing.micros = nanos / 1e3 / kBuffers;
+        return timing;
+    };
+    const auto engineTiming = [this, &timeBuffers](bool keylock) {
+        ControlObject::set(ConfigKey("[Channel1]", "keylock"), keylock ? 1 : 0);
+        ControlObject::set(ConfigKey("[Channel1]", "rate"), 0.5); // +4 % at ±8 %
+        ControlObject::set(ConfigKey("[Channel1]", "play"), 1);
+        EXPECT_GT(rmsWhenFlowing(), 1e-3);
+        const Timing timing = timeBuffers(true);
         ControlObject::set(ConfigKey("[Channel1]", "play"), 0);
         ProcessBuffer();
-        return micros;
+        return timing;
     };
-    QElapsedTimer idleTimer;
-    idleTimer.start();
-    for (int n = 0; n < 150; ++n) {
-        ProcessBuffer();
-    }
-    const double idle = idleTimer.nsecsElapsed() / 1e3 / 150;
+    const double idle = timeBuffers(false).micros;
     loadStemFile(1);
     ASSERT_EQ(mixxx::audio::ChannelCount::stem(), m_pChannel1->getEngineBuffer()->getChannelCount());
-    const double stemsLinear = engineMicros(false);
-    const double stemsKeylock = engineMicros(true);
+    const Timing stemsLinear = engineTiming(false);
+    const Timing stemsKeylock = engineTiming(true);
     config()->setValue(decklab::stemPlaybackConfigKey(), 1);
     loadStemFile(1);
     ASSERT_EQ(mixxx::audio::ChannelCount::stereo(), m_pChannel1->getEngineBuffer()->getChannelCount());
-    const double stereoLinear = engineMicros(false);
-    const double stereoKeylock = engineMicros(true);
+    const Timing stereoLinear = engineTiming(false);
+    const Timing stereoKeylock = engineTiming(true);
     const double bufferMicros = 1e6 * (kProcessBufferSize / 2) / 44100.0;
+    const auto micros = [](double value) { return QString::number(value, 'f', 1).toStdString(); };
+    const auto audible = [](const Timing& timing) {
+        return QStringLiteral("%1/%2").arg(timing.audible).arg(kBuffers).toStdString();
+    };
     RecordProperty("engine_buffer_us", QString::number(bufferMicros, 'f', 0).toStdString());
-    RecordProperty("engine_idle_us", QString::number(idle, 'f', 1).toStdString());
-    RecordProperty("engine_stems_linear_us", QString::number(stemsLinear, 'f', 1).toStdString());
-    RecordProperty("engine_stems_keylock_us", QString::number(stemsKeylock, 'f', 1).toStdString());
-    RecordProperty("engine_stereo_linear_us", QString::number(stereoLinear, 'f', 1).toStdString());
-    RecordProperty("engine_stereo_keylock_us", QString::number(stereoKeylock, 'f', 1).toStdString());
-    qInfo().noquote() << QStringLiteral(
-            "Deck Lab stems cost probe: %1 s audio; decode x realtime: mixdown %2, four stems %3, "
-            "stereo sum %4; engine us per %5 us buffer: idle %6, stems %7 (keylock %8), stereo %9 "
-            "(keylock %10)")
-                                 .arg(seconds, 0, 'f', 2)
-                                 .arg(seconds / mixdownDecode, 0, 'f', 1)
-                                 .arg(seconds / stemDecode, 0, 'f', 1)
-                                 .arg(seconds / sumDecode, 0, 'f', 1)
-                                 .arg(bufferMicros, 0, 'f', 0)
-                                 .arg(idle, 0, 'f', 1)
-                                 .arg(stemsLinear, 0, 'f', 1)
-                                 .arg(stemsKeylock, 0, 'f', 1)
-                                 .arg(stereoLinear, 0, 'f', 1)
-                                 .arg(stereoKeylock, 0, 'f', 1);
-    EXPECT_GT(stemsLinear, 0);
-    EXPECT_GT(stereoKeylock, 0);
+    RecordProperty("engine_idle_us", micros(idle));
+    RecordProperty("engine_stems_linear_us", micros(stemsLinear.micros));
+    RecordProperty("engine_stems_linear_audible", audible(stemsLinear));
+    RecordProperty("engine_stems_keylock_us", micros(stemsKeylock.micros));
+    RecordProperty("engine_stems_keylock_audible", audible(stemsKeylock));
+    RecordProperty("engine_stereo_linear_us", micros(stereoLinear.micros));
+    RecordProperty("engine_stereo_linear_audible", audible(stereoLinear));
+    RecordProperty("engine_stereo_keylock_us", micros(stereoKeylock.micros));
+    RecordProperty("engine_stereo_keylock_audible", audible(stereoKeylock));
+    EXPECT_GT(stemsLinear.micros, 0);
+    EXPECT_GT(stereoKeylock.micros, 0);
     config()->setValue(decklab::stemPlaybackConfigKey(), 0);
 }
 
