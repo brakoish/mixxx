@@ -6,8 +6,6 @@
 
 namespace {
 
-constexpr int kNumStableDeltasRequired = 20;
-
 VSyncThread::VSyncMode defaultVSyncMode() {
 #ifdef __APPLE__
     return VSyncThread::ST_PLL;
@@ -29,17 +27,19 @@ VSyncThread::VSyncThread(QObject* pParent, VSyncThread::VSyncMode vSyncMode)
           m_swapWait(0),
           m_displayFrameRate(60.0),
           m_vSyncPerRendering(1),
-          m_pllInitCnt(0),
-          m_pllInitSum(0.0),
-          m_pllPhaseOut(0.0),
-          m_pllDeltaOut(16666.6),
+          m_pllInitializing(true),
+          m_pllPendingUpdate(false),
+          m_pllFallBackRequested(false),
+          m_pllFellBack(false),
+          m_lastSlotStartMicros(-1),
+          m_skippedSlots(0),
           m_pllLogging(0.0) {
     m_pllTimer.start();
 }
 
 VSyncThread::~VSyncThread() {
     m_bDoRendering = false;
-    m_semaVsyncSlot.release(m_vSyncMode == ST_PLL ? 1 : 2); // Two slots, one for PLL
+    m_semaVsyncSlot.release(m_vSyncMode.load() == ST_PLL ? 1 : 2); // Two slots, one for PLL
     wait();
     //delete m_glw;
 }
@@ -51,7 +51,7 @@ void VSyncThread::run() {
     m_timer.start();
 
     //qDebug() << "VSyncThread::run()";
-    switch (m_vSyncMode) {
+    switch (m_vSyncMode.load()) {
     case ST_FREE:
         m_syncIntervalTimeMicros = 1000;
         m_waitToSwapMicros = m_syncIntervalTimeMicros;
@@ -90,23 +90,36 @@ void VSyncThread::runPLL() {
     DEBUG_ASSERT(m_vSyncMode == ST_PLL);
     qint64 offsetAdjustedAt = 0;
     qint64 offset = 0;
-    qint64 nextSwapMicros = 0;
-    qint64 multiplierAdjustedPllPhaseOut = 0;
+    double multiplierAdjustedPllPhaseOut = 0.0;
+    bool anchorValid = false;
     while (m_bDoRendering) {
+        if (m_pllFallBackRequested.load()) {
+            // Startup safety (Deck Lab): the loop never locked. The factory
+            // already logged why and stopped the keepalive paints.
+            m_vSyncMode = ST_TIMER;
+            m_pllFellBack = true;
+            m_waitToSwapMicros = m_syncIntervalTimeMicros;
+            m_timer.start();
+            runTimer();
+            return;
+        }
+
         // Use a phase-locked-loop on the QOpenGLWindow::frameSwapped signal
         // to determine when the vsync occurs
-
-        qint64 pllPhaseOut;
-        qint64 pllDeltaOut;
-        qint64 multiplierAdjustedPllDeltaOut;
+        double pllPhaseOut;
+        double pllDeltaOut;
+        double multiplierAdjustedPllDeltaOut;
+        double vblankAnchor;
         qint64 now;
 
         {
             std::scoped_lock lock(m_pllMutex);
             // last estimated vsync
-            pllPhaseOut = std::llround(m_pllPhaseOut);
+            pllPhaseOut = m_pll.phaseOut();
             // estimated frame interval
-            pllDeltaOut = std::llround(m_pllDeltaOut);
+            pllDeltaOut = m_pll.deltaOut();
+            // where the vblank really was at the last sample (Deck Lab)
+            vblankAnchor = m_pll.vblankEstimate();
             now = m_pllTimer.elapsed().toIntegerMicros();
 
             // Calculate the nearest integer number of PLL intervals that
@@ -117,39 +130,49 @@ void VSyncThread::runPLL() {
             //
             // Note this also is applied when running at 120 fps (ProMotion)
             const auto multiplier = std::max<qint64>(1,
-                    (m_syncIntervalTimeMicros + pllDeltaOut / 2) / pllDeltaOut);
+                    std::llround(static_cast<double>(m_syncIntervalTimeMicros) /
+                            pllDeltaOut));
 
-            // Update the multiplierAdjustedPllPhaseOut to pllPhaseOut, if pllPhaseOut has increased
-            // multiplier * pllDeltaOut intervals.
-            if (multiplierAdjustedPllPhaseOut == 0 ||
-                    ((pllPhaseOut - multiplierAdjustedPllPhaseOut +
-                             pllDeltaOut / 2) /
-                            pllDeltaOut) %
-                                    multiplier ==
-                            0) {
+            // Update the multiplierAdjustedPllPhaseOut to pllPhaseOut, if
+            // pllPhaseOut has moved by a multiple of multiplier intervals.
+            const qint64 framesSinceAnchor = std::llround(
+                    (pllPhaseOut - multiplierAdjustedPllPhaseOut) / pllDeltaOut);
+            if (!anchorValid ||
+                    ((framesSinceAnchor % multiplier) + multiplier) % multiplier == 0) {
                 multiplierAdjustedPllPhaseOut = pllPhaseOut;
+                anchorValid = true;
             }
 
-            multiplierAdjustedPllDeltaOut = pllDeltaOut * multiplier;
+            multiplierAdjustedPllDeltaOut = pllDeltaOut * static_cast<double>(multiplier);
+            vblankAnchor += std::round((multiplierAdjustedPllPhaseOut - vblankAnchor) /
+                                    pllDeltaOut) *
+                    pllDeltaOut;
         }
 
-        if (multiplierAdjustedPllPhaseOut > nextSwapMicros) {
-            // We received a new pll phase
-            nextSwapMicros = multiplierAdjustedPllPhaseOut;
-        } else {
-            // We didn't receive a new pll phase out, so freewheel to estimated
-            // next with the current delta.
-            nextSwapMicros += multiplierAdjustedPllDeltaOut;
+        // Deck Lab: wake on the grid of the current estimate (upstream only
+        // followed corrections to a later phase), a little after the vblank,
+        // and never twice in the vblank interval of a slot the GUI thread
+        // started late.
+        const qint64 lastSlotStart = m_lastSlotStartMicros.load();
+        int skipped = 0;
+        const double wake = mixxx::decklab::VSyncPll::nextSlotMicros(
+                static_cast<double>(now),
+                multiplierAdjustedPllPhaseOut,
+                multiplierAdjustedPllDeltaOut,
+                static_cast<double>(offset) + mixxx::decklab::VSyncPll::kSlotLeadMicros,
+                vblankAnchor,
+                !pllInitializing() && lastSlotStart >= 0,
+                static_cast<double>(lastSlotStart),
+                &skipped);
+        if (skipped > 0) {
+            m_skippedSlots += static_cast<quint64>(skipped);
         }
+        const qint64 sleepUntilSwap = std::max<qint64>(0, std::llround(wake) - now);
+        usleep(static_cast<unsigned long>(sleepUntilSwap));
 
-        qint64 sleepUntilSwap = (nextSwapMicros + offset - now) % multiplierAdjustedPllDeltaOut;
-        if (sleepUntilSwap < 0) {
-            sleepUntilSwap += multiplierAdjustedPllDeltaOut;
-        }
-        usleep(sleepUntilSwap);
-
+        const qint64 periodMicros = std::llround(multiplierAdjustedPllDeltaOut);
         m_sinceLastSwap = m_timer.restart();
-        m_waitToSwapMicros = multiplierAdjustedPllDeltaOut;
+        m_waitToSwapMicros = static_cast<int>(periodMicros);
 
         // Signal to swap the gl widgets (waveforms, spinnies, vumeters)
         // and render them for the next swap
@@ -159,7 +182,7 @@ void VSyncThread::runPLL() {
             m_pllPendingUpdate = false;
         }
 
-        if (m_sinceLastSwap.toIntegerMicros() > multiplierAdjustedPllDeltaOut * 3 / 2) {
+        if (m_sinceLastSwap.toIntegerMicros() > periodMicros * 3 / 2) {
             // Too much time passed since last swap: consider frame dropped.
             // Automatically adjust the time offset between the PLL and our signal,
             // ideally settling on an offset with no or little frame drops.
@@ -169,7 +192,7 @@ void VSyncThread::runPLL() {
                 // And don't adjust (immediately) if we have been running
                 // without drops for over 1 second
                 if (sinceLastOffsetAdjust < 1000000) {
-                    offset = (offset + pllDeltaOut / 8) % multiplierAdjustedPllDeltaOut;
+                    offset = (offset + std::llround(pllDeltaOut) / 8) % periodMicros;
                 }
                 offsetAdjustedAt = now;
             }
@@ -290,65 +313,52 @@ mixxx::Duration VSyncThread::sinceLastSwap() const {
 }
 
 bool VSyncThread::pllInitializing() const {
-    return m_pllInitCnt < kNumStableDeltasRequired;
+    return m_pllInitializing.load();
 }
 
-void VSyncThread::updatePLL() {
+void VSyncThread::markSlotStart() {
+    m_lastSlotStartMicros = m_pllTimer.elapsed().toIntegerMicros();
+}
+
+void VSyncThread::fallBackToTimer() {
+    m_pllFallBackRequested = true;
+}
+
+VSyncThread::PllSnapshot VSyncThread::pllSnapshot() {
+    PllSnapshot snapshot;
+    {
+        std::scoped_lock lock(m_pllMutex);
+        snapshot.initializing = m_pll.initializing();
+        snapshot.periodMicros = m_pll.deltaOut();
+        snapshot.lastPhaseErrorMicros = m_pll.lastPhaseError();
+        snapshot.stats = m_pll.stats();
+    }
+    snapshot.fellBack = m_pllFellBack.load();
+    snapshot.skippedSlots = m_skippedSlots.load();
+    return snapshot;
+}
+
+void VSyncThread::updatePLL(bool vblankReferenced) {
     std::scoped_lock lock(m_pllMutex);
 
-    m_pllPendingUpdate = false;
-
     // Phase-lock-looped to estimate the vsync based on the
-    // QOpenGLWindow::frameSwapped signal
-
+    // QOpenGLWindow::frameSwapped signal. The math is in
+    // mixxx::decklab::VSyncPll: the upstream loop filter plus the Deck Lab
+    // idle handling.
     const double pllPhaseIn = m_pllTimer.elapsed().toDoubleMicros();
-
-    if (m_pllInitCnt < kNumStableDeltasRequired) {
-        // Before activating the phase-lock-looped, we need an initial
-        // delta and phase, which we calculate by taking the average
-        // delta over a number of stable deltas.
-        const double delta = pllPhaseIn - m_pllPhaseOut;
-        m_pllPhaseOut = pllPhaseIn;
-        m_pllInitSum += delta;
-        m_pllInitCnt++;
-        m_pllInitAvg = m_pllInitSum / static_cast<double>(m_pllInitCnt);
-        if (std::abs(delta - m_pllInitAvg) > 2000.0) {
-            // The current delta is too different from the current
-            // average so we reset the init process.
-            m_pllInitSum = 0.0;
-            m_pllInitCnt = 0;
-        }
-        if (m_pllInitCnt == kNumStableDeltasRequired) {
-            m_pllDeltaOut = m_pllInitAvg;
-        }
+    const auto result = m_pll.addSample(pllPhaseIn, vblankReferenced);
+    m_pllInitializing = m_pll.initializing();
+    if (result != mixxx::decklab::VSyncPll::Result::Tracked &&
+            result != mixxx::decklab::VSyncPll::Result::Relocked) {
         return;
     }
-
-    // inspired by https://liquidsdr.org/blog/pll-simple-howto/
-    const double alpha = 0.01;               // the page above uses 0.05, but a more narrow
-                                             // filter seems to work better here
-    const double beta = 0.5 * alpha * alpha; // increment adjustment factor
-
-    m_pllPhaseOut += m_pllDeltaOut;
-
-    double pllPhaseError = pllPhaseIn - m_pllPhaseOut;
-
-    if (pllPhaseError > 0) {
-        // when advanced more than a frame, jump to the nearest frame
-        m_pllPhaseOut += std::round(pllPhaseError / m_pllDeltaOut) * m_pllDeltaOut;
-        pllPhaseError = pllPhaseIn - m_pllPhaseOut;
-    }
-
-    // apply loop filter and correct output phase and delta
-    m_pllPhaseOut += alpha * pllPhaseError; // adjust phase
-    m_pllDeltaOut += beta * pllPhaseError;  // adjust delta
 
     if (pllPhaseIn > m_pllLogging) {
         if (m_pllLogging == 0) {
             m_pllLogging = pllPhaseIn;
         } else {
-            qDebug() << "phase-locked-loop:" << std::llround(m_pllPhaseOut)
-                     << m_pllDeltaOut << pllPhaseError;
+            qDebug() << "phase-locked-loop:" << std::llround(m_pll.phaseOut())
+                     << m_pll.deltaOut() << m_pll.lastPhaseError();
         }
         // log every 10 seconds
         m_pllLogging += 10000000.0;
