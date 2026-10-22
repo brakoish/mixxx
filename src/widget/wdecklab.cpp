@@ -13,6 +13,7 @@
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QLabel>
+#include <QListWidget>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPainter>
@@ -42,13 +43,16 @@
 #include "library/basetracktablemodel.h"
 #include "library/library.h"
 #include "library/sidebarmodel.h"
+#include "library/trackmodel.h"
 #include "mixer/basetrackplayer.h"
 #include "mixer/playermanager.h"
+#include "mixer/previewdeck.h"
 #include "track/keyutils.h"
 #include "track/cueinfo.h"
 #include "track/track.h"
 #include "track/beats.h"
 #include "waveform/waveformwidgetfactory.h"
+#include "widget/decklabbrowse.h"
 #include "widget/wlibrary.h"
 #include "widget/wlibrarysidebar.h"
 #include "widget/wsearchlineedit.h"
@@ -383,6 +387,8 @@ WDeckLab::~WDeckLab() {
     // emits on focus-out, so detach its callback and hide while our controls
     // and page state are still alive (including during a skin replacement).
     if (m_search) disconnect(m_search, nullptr, this, nullptr);
+    if (m_sidebar && m_sidebar->selectionModel()) disconnect(m_sidebar->selectionModel(), nullptr, this, nullptr);
+    if (m_browseState && m_browseState->items) disconnect(m_browseState->items, nullptr, this, nullptr);
     hide();
     releaseTouchCue();
     releaseEffects();
@@ -773,25 +779,159 @@ QWidget* WDeckLab::buildDecks() {
     page->hide(); return page;
 }
 
+// Browse page state (browse-ui). Lives here so other pages never see it.
+struct DeckLabBrowseState {
+    enum class List {
+        Sources,
+        Categories,
+        Values,
+    };
+    List list = List::Sources;
+    QPersistentModelIndex source; // Collection root or Rekordbox USB device
+    bool rekordbox = false;
+    int trackCount = -1;
+    decklab::Category category = decklab::Category::AllTracks;
+    QString valueLabel;
+    QString filter; // Category query currently applied to the track view
+    bool fromCategories = false;
+    QPersistentModelIndex returnRoot; // Sidebar folder opened from a category
+    int categoryRow = 0;
+    TrackPointer selectedTrack;
+    bool matchEnabled = true;
+    QTimer matchTimer;
+    QTimer loadingTimer;
+    QStackedWidget* listStack = nullptr;
+    QListWidget* items = nullptr;
+    DeckLabBreadcrumb* breadcrumb = nullptr;
+    DeckLabTrackCard* card = nullptr;
+    DeckLabActionButton* preview = nullptr;
+    DeckLabActionButton* match = nullptr;
+    DeckLabToast* toast = nullptr;
+};
+
+namespace {
+using DeckLabList = DeckLabBrowseState::List;
+
+// Generic QObject event hook; keeps key and press handling out of eventFilter().
+class DeckLabEventHook final : public QObject {
+  public:
+    DeckLabEventHook(QObject* watched, std::function<bool(QObject*, QEvent*)> handler)
+            : QObject(watched), m_handler(std::move(handler)) {
+        watched->installEventFilter(this);
+    }
+  protected:
+    bool eventFilter(QObject* watched, QEvent* event) override { return m_handler(watched, event); }
+  private:
+    std::function<bool(QObject*, QEvent*)> m_handler;
+};
+
+QString rootIconName(QModelIndex index) {
+    while (index.parent().isValid()) index = index.parent();
+    return index.data(SidebarModel::IconNameRole).toString();
+}
+bool isCollectionSource(const QModelIndex& index) {
+    return index.isValid() && !index.parent().isValid() && rootIconName(index) == QStringLiteral("tracks");
+}
+bool isRekordboxDevice(const QModelIndex& index) {
+    return index.isValid() && index.parent().isValid() && !index.parent().parent().isValid() &&
+            rootIconName(index) == QStringLiteral("rekordbox");
+}
+bool rekordboxImported(const QModelIndex& device) {
+    const QStringList data = device.data(SidebarModel::DataRole).toStringList();
+    return data.size() < 2 || data.at(1) != QStringLiteral("::isRecordboxDevice::");
+}
+QModelIndex sidebarRoot(const QAbstractItemModel* model, const QString& icon) {
+    if (!model) return {};
+    for (int row = 0; row < model->rowCount(); ++row) {
+        const QModelIndex index = model->index(row, 0);
+        if (index.data(SidebarModel::IconNameRole).toString() == icon) return index;
+    }
+    return {};
+}
+decklab::Glyph sourceGlyph(const QModelIndex& index) {
+    const QString icon = rootIconName(index);
+    if (icon == QStringLiteral("tracks")) return decklab::Glyph::Collection;
+    if (icon == QStringLiteral("crates")) return decklab::Glyph::Crate;
+    if (icon == QStringLiteral("history")) return decklab::Glyph::History;
+    if (icon == QStringLiteral("recordings")) return decklab::Glyph::Album;
+    if (icon == QStringLiteral("computer")) return decklab::Glyph::Folder;
+    if (icon == QStringLiteral("rekordbox") && !index.parent().isValid()) return decklab::Glyph::Usb;
+    if (isRekordboxDevice(index)) return decklab::Glyph::Usb;
+    if (index.model() && index.model()->hasChildren(index)) return decklab::Glyph::Folder;
+    return decklab::Glyph::Playlist;
+}
+decklab::Glyph categoryGlyph(decklab::Category category) {
+    switch (category) {
+    case decklab::Category::AllTracks: return decklab::Glyph::Tracks;
+    case decklab::Category::Playlists: return decklab::Glyph::Playlist;
+    case decklab::Category::Crates: return decklab::Glyph::Crate;
+    case decklab::Category::History: return decklab::Glyph::History;
+    case decklab::Category::Artist: return decklab::Glyph::Artist;
+    case decklab::Category::Album: return decklab::Glyph::Album;
+    case decklab::Category::Bpm: return decklab::Glyph::Bpm;
+    case decklab::Category::Key: return decklab::Glyph::Key;
+    }
+    return decklab::Glyph::None;
+}
+DeckLabActionButton* browseButton(QWidget* parent, const QString& text, const QString& name,
+        const QString& accessible, decklab::Glyph glyph, int width) {
+    auto* b = new DeckLabActionButton(text, parent);
+    b->setObjectName(name);
+    b->setAccessibleName(accessible);
+    b->setGlyph(glyph);
+    b->setFixedHeight(44);
+    if (width > 0) b->setFixedWidth(width);
+    return b;
+}
+} // namespace
+
 QWidget* WDeckLab::buildBrowse() {
+    m_browseState = std::make_unique<DeckLabBrowseState>();
+    auto& b = *m_browseState;
+    b.matchEnabled = m_config->getValue(ConfigKey("[DeckLab]", "BrowseMatch"), 1) != 0;
+    for (const auto& name : {"browse_move", "browse_select", "browse_enter", "load_refused"}) {
+        createControl(kNative, QString::fromLatin1(name));
+    }
+    m_breadcrumb = nullptr; // Replaced by the painted, middle-eliding breadcrumb.
     m_browser = new QWidget(this);
-    auto* layout = column(m_browser);
+    m_browser->setObjectName(QStringLiteral("decklab-browse"));
+    auto* outer = row(m_browser);
+    auto* main = new QWidget(m_browser);
+    auto* layout = column(main);
+    outer->addWidget(main, 1);
+
+    // Header: back, where you are, and view tools. LOAD lives in the pane.
     auto* heading = row();
-    auto* back = button(tr("Back"), [this] { browseBack(); }, m_browser, "decklab-browse-back");
-    back->setIcon(style()->standardIcon(QStyle::SP_ArrowBack));
+    auto* back = browseButton(m_browser, QString(), QStringLiteral("decklab-browse-back"), tr("Back"),
+            decklab::Glyph::Back, 52);
+    connect(back, &QPushButton::clicked, this, [this] { browseBack(); });
     heading->addWidget(back);
-    m_breadcrumb = new QLabel(tr("Sources"), m_browser);
-    m_breadcrumb->setTextFormat(Qt::PlainText);
-    m_breadcrumb->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    m_breadcrumb->setContentsMargins(9, 0, 4, 0);
-    heading->addWidget(m_breadcrumb, 1);
-    heading->addWidget(button(tr("Search"), [this] { setSearchOpen(!m_keyboard || m_keyboard->isHidden()); }, m_browser, "decklab-search"));
-    auto* more = button(tr("Tools"), [this] {
+    b.breadcrumb = new DeckLabBreadcrumb(m_browser);
+    b.breadcrumb->setObjectName(QStringLiteral("decklab-breadcrumb"));
+    b.breadcrumb->setSegments({tr("Sources")});
+    heading->addWidget(b.breadcrumb, 1);
+    b.match = browseButton(m_browser, tr("Match"), QStringLiteral("decklab-browse-match"),
+            tr("Highlight tracks that mix with the playing deck"), decklab::Glyph::None, 116);
+    b.match->setCheckable(true);
+    b.match->setChecked(b.matchEnabled);
+    connect(b.match, &QPushButton::clicked, this, [this](bool checked) {
+        m_browseState->matchEnabled = checked;
+        m_config->setValue(ConfigKey("[DeckLab]", "BrowseMatch"), checked ? 1 : 0);
+        refreshMatchReference();
+    });
+    heading->addWidget(b.match);
+    auto* search = browseButton(m_browser, QString(), QStringLiteral("decklab-search"), tr("Search"),
+            decklab::Glyph::Search, 52);
+    connect(search, &QPushButton::clicked, this, [this] { setSearchOpen(!m_keyboard || m_keyboard->isHidden()); });
+    heading->addWidget(search);
+    auto* tools = browseButton(m_browser, QString(), QStringLiteral("decklab-browse-tools"), tr("Tools"),
+            decklab::Glyph::More, 52);
+    connect(tools, &QPushButton::clicked, this, [this, tools] {
         auto* menu = new QMenu(this);
         menu->setAttribute(Qt::WA_DeleteOnClose);
         menu->addAction(tr("All tracks"), this, &WDeckLab::openCollection);
-        menu->addAction(tr("Preview selected track"), this, [this] { pulse("[PreviewDeck1]", "LoadSelectedTrackAndPlay"); });
-        menu->addAction(tr("Stop preview"), this, [this] { pulse("[PreviewDeck1]", "stop"); });
+        menu->addAction(tr("Preview selected track"), this, [this] { togglePreview(); });
+        menu->addAction(tr("Stop preview"), this, [this] { stopPreview(); });
         int matchDeck = displayedDeck(0);
         bool foundPlaying = false;
         for (int deck = 1; deck <= 4; ++deck) {
@@ -806,14 +946,28 @@ QWidget* WDeckLab::buildBrowse() {
                 const QString key = KeyUtils::keyToString(KeyUtils::keyFromNumericValue(value(channel(deck), "visual_key")), KeyUtils::KeyNotation::Lancelot);
                 QString query = QStringLiteral("~bpm:%1").arg(bpm, 0, 'f', 2);
                 if (!key.isEmpty()) query += QStringLiteral(" ~key:%1").arg(key);
+                resetBrowseLevels();
                 if (m_library) m_library->searchTracksInCollection(query);
                 m_search->slotRestoreSearch(query);
                 showTracks();
             }
         });
         match->setEnabled(value(channel(matchDeck), "track_loaded") && value(channel(matchDeck), "bpm") > 0);
-        menu->addAction(tr("Clear filter"), this, [this] { if (m_search) m_search->slotClearSearch(); });
+        menu->addAction(tr("Clear filter"), this, [this] {
+            clearBrowseFilter(); m_browseState->fromCategories = false;
+            if (m_search) m_search->slotClearSearch();
+        });
         menu->addAction(tr("Track details"), this, [this] { set("[Library]", "show_track_menu", 1); });
+        // Deck Lab's Key/BPM/Title/Artist order is a default; Mixxx's column
+        // chooser changes it per view (touch screens have no right click).
+        auto* table = m_libraryWidget && m_browseStack->currentWidget() == m_libraryWidget
+                ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+        auto* columns = menu->addAction(tr("Choose columns…"), this, [table, tools] {
+            if (table) table->showDeckLabColumnMenu(tools->mapToGlobal(QPoint(tools->width() - 260, tools->height())));
+        });
+        columns->setEnabled(table != nullptr);
+        auto* resetColumns = menu->addAction(tr("Default columns"), this, [table] { if (table) table->resetDeckLabColumns(); });
+        resetColumns->setEnabled(table != nullptr);
         auto* unload = menu->addMenu(tr("Unload stopped deck"));
         for (int deck = 1; deck <= 4; ++deck) {
             auto* action = unload->addAction(tr("Deck %1").arg(deck), this, [this, deck] {
@@ -840,34 +994,140 @@ QWidget* WDeckLab::buildBrowse() {
             });
             action->setEnabled(!value(QStringLiteral("[Sampler%1]").arg(slot), "play"));
         }
-        menu->popup(mapToGlobal(QPoint(width() - 240, 80)));
-    }, m_browser, "decklab-browse-tools");
-    heading->addWidget(more);
+        menu->popup(tools->mapToGlobal(QPoint(tools->width() - 260, tools->height())));
+    });
+    heading->addWidget(tools);
     layout->addLayout(heading);
-    m_searchPanel = new QWidget(m_browser); m_searchRow = row(m_searchPanel);
+    m_searchPanel = new QWidget(main); m_searchRow = row(m_searchPanel);
     layout->addWidget(m_searchPanel); m_searchPanel->hide();
-    m_browseStack = new QStackedWidget(m_browser);
+    m_browseStack = new QStackedWidget(main);
     layout->addWidget(m_browseStack, 1);
+
+    // List level: the native sidebar (added by bindBrowser) or the category/
+    // value list. Index 0 of the Browse stack in both cases.
+    b.listStack = new QStackedWidget(m_browseStack);
+    b.listStack->setObjectName(QStringLiteral("decklab-browse-lists"));
+    m_browseStack->addWidget(b.listStack);
+    b.items = new QListWidget(b.listStack);
+    b.items->setObjectName(QStringLiteral("decklab-browse-categories"));
+    b.items->setItemDelegate(new DeckLabListDelegate(b.items));
+    b.items->setUniformItemSizes(true);
+    b.items->setFrameShape(QFrame::NoFrame);
+    b.items->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    b.items->setSelectionMode(QAbstractItemView::SingleSelection);
+    b.items->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    b.items->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    b.items->setMouseTracking(false);
+    b.items->viewport()->setAttribute(Qt::WA_Hover, false);
+    b.listStack->addWidget(b.items);
+    new DeckLabTouchScrollGuard(b.items->viewport(), b.items->viewport());
+    connect(b.items, &QListWidget::clicked, this, [this](const QModelIndex& index) {
+        if (!index.isValid()) return;
+        m_browseState->items->setCurrentRow(index.row());
+        browseEnter();
+    });
+    connect(b.items, &QListWidget::currentRowChanged, this, [this](int) { refreshBrowseCard(); });
+    new DeckLabEventHook(b.items, [this](QObject*, QEvent* event) {
+        if (event->type() != QEvent::KeyPress) return false;
+        auto* key = static_cast<QKeyEvent*>(event);
+        switch (key->key()) {
+        case Qt::Key_Up: browseMove(-std::max(1, key->count()), true); return true;
+        case Qt::Key_Down: browseMove(std::max(1, key->count()), true); return true;
+        case Qt::Key_Return: case Qt::Key_Enter: case Qt::Key_Right: browseEnter(); return true;
+        case Qt::Key_Left: case Qt::Key_Escape: case Qt::Key_Backspace: browseBack(); return true;
+        default: return false;
+        }
+    });
+
+    // Details pane: the highlighted item, one-tap Preview, and the protected
+    // LOAD targets showing each deck's state.
+    auto* pane = new QWidget(m_browser);
+    pane->setObjectName(QStringLiteral("decklab-browse-pane"));
+    pane->setAttribute(Qt::WA_StyledBackground);
+    pane->setStyleSheet(QStringLiteral("QWidget#decklab-browse-pane{background:#0c0c0c;border-left:1px solid #262626;}"));
+    pane->setFixedWidth(236);
+    auto* paneLayout = column(pane);
+    paneLayout->setContentsMargins(6, 6, 6, 6);
+    paneLayout->setSpacing(6);
+    paneLayout->addStretch(0);
+    b.card = new DeckLabTrackCard(pane);
+    b.card->setObjectName(QStringLiteral("decklab-track-card"));
+    paneLayout->addWidget(b.card, 1);
+    b.preview = browseButton(pane, tr("Preview"), QStringLiteral("decklab-preview"),
+            tr("Preview the highlighted track in headphones"), decklab::Glyph::Play, 0);
+    connect(b.preview, &QPushButton::clicked, this, [this] { togglePreview(); });
+    paneLayout->addWidget(b.preview);
+    auto* loads = new QGridLayout;
+    loads->setContentsMargins(0, 0, 0, 0);
+    loads->setSpacing(6);
     for (int deck = 1; deck <= 4; ++deck) {
         auto pressed = std::make_shared<std::tuple<int, quint64, int>>(0, 0, 0);
         auto selection = std::make_shared<QPersistentModelIndex>();
-        m_loadButtons[deck - 1] = button(tr("Load %1").arg(deck), [this, deck, pressed, selection] {
+        auto* load = new DeckLabActionButton(tr("Load %1").arg(deck), pane);
+        load->setObjectName(QStringLiteral("decklab-load-%1").arg(deck));
+        load->setAccessibleName(tr("Load deck %1").arg(deck));
+        load->setFixedHeight(52);
+        m_loadButtons[deck - 1] = load;
+        connect(load, &QPushButton::clicked, this, [this, deck, pressed, selection] {
             auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
             const QPersistentModelIndex current = table ? table->currentIndex().siblingAtColumn(0) : QModelIndex();
             const int target = m_fourDeckLayout ? deck : (deck <= 2 ? displayedDeck(deck - 1) : deck);
             if (std::get<0>(*pressed) != target || std::get<1>(*pressed) != m_interactionEpoch ||
                     std::get<2>(*pressed) != m_sampleTarget || *selection != current) return;
             loadDeck(deck);
-        }, m_browser,
-                QStringLiteral("decklab-load-%1").arg(deck));
-        connect(m_loadButtons[deck - 1], &QPushButton::pressed, this, [this, deck, pressed, selection] {
+        });
+        connect(load, &QPushButton::pressed, this, [this, deck, pressed, selection] {
             *pressed = {m_fourDeckLayout ? deck : (deck <= 2 ? displayedDeck(deck - 1) : deck), m_interactionEpoch, m_sampleTarget};
             auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
             *selection = table ? table->currentIndex().siblingAtColumn(0) : QModelIndex();
         });
-        m_loadButtons[deck - 1]->setFixedHeight(44);
-        heading->addWidget(m_loadButtons[deck - 1]);
+        // A disabled target still answers a tap: say why it cannot load.
+        new DeckLabEventHook(load, [this, deck](QObject* watched, QEvent* event) {
+            if (event->type() == QEvent::MouseButtonPress && !static_cast<QWidget*>(watched)->isEnabled()) {
+                showLoadUnavailable(deck);
+            }
+            return false;
+        });
+        loads->addWidget(load, (deck - 1) / 2, (deck - 1) % 2);
     }
+    paneLayout->addLayout(loads);
+    outer->addWidget(pane);
+    // 800 px is the design target; wider screens give the pane a little more.
+    new DeckLabEventHook(m_browser, [pane](QObject* watched, QEvent* event) {
+        if (event->type() == QEvent::Resize) {
+            const int width = std::clamp(static_cast<QWidget*>(watched)->width() * 3 / 10, 236, 340);
+            if (pane->minimumWidth() != width) pane->setFixedWidth(width);
+        }
+        return false;
+    });
+
+    b.toast = new DeckLabToast(this);
+    b.matchTimer.setSingleShot(true);
+    b.matchTimer.setInterval(150);
+    connect(&b.matchTimer, &QTimer::timeout, this, [this] { refreshMatchReference(); });
+    b.loadingTimer.setInterval(300);
+    connect(&b.loadingTimer, &QTimer::timeout, this, [this] { checkRekordboxImport(); });
+
+    // Generic controller navigation, routed by LibraryControl.
+    watch(kNative, "browse_move", [this](double v) {
+        if (v != 0 && std::isfinite(v)) browseMove(int(std::clamp(v, -10000.0, 10000.0)), false);
+    });
+    watch(kNative, "browse_select", [this](double v) {
+        if (v != 0 && std::isfinite(v)) browseMove(int(std::clamp(v, -10000.0, 10000.0)), true);
+    });
+    watch(kNative, "browse_enter", [this](double v) { if (v > 0) browseEnter(); });
+    watch(kNative, "load_refused", [this](double v) { if (v > 0) showLoadRefused(int(v)); });
+    // Registered before the constructor's own browse_sources handler, which
+    // then resets the sidebar root.
+    watch(kNative, "browse_sources", [this](double v) { if (v > 0) resetBrowseLevels(); });
+    watch(QStringLiteral("[PreviewDeck1]"), QStringLiteral("play"), [this](double) { refreshPreviewButton(); });
+    watch(kTab, QStringLiteral("current"), [this](double v) { if (int(v) != 1) stopPreview(); });
+    for (int deck = 1; deck <= 4; ++deck) {
+        for (const auto& key : {"bpm", "visual_key", "sync_leader"}) {
+            watch(channel(deck), QString::fromLatin1(key), [this](double) { scheduleMatchRefresh(); });
+        }
+    }
+    refreshMatchReference();
     return m_browser;
 }
 
@@ -1583,7 +1843,9 @@ void WDeckLab::bindBrowser(WSearchLineEdit* search, WLibrarySidebar* sidebar, WL
     backspace->setAutoRepeat(true); backspace->setAutoRepeatDelay(400); backspace->setAutoRepeatInterval(100); actions->addWidget(backspace);
     actions->addWidget(button(tr("Done"), [this] { setSearchOpen(false); }, m_keyboard, "decklab-search-done"));
     keys->addLayout(actions); m_root->addWidget(m_keyboard); m_keyboard->hide();
-    m_browseStack->addWidget(sidebar); m_browseStack->addWidget(library);
+    auto& b = *m_browseState;
+    b.listStack->insertWidget(0, sidebar); b.listStack->setCurrentWidget(sidebar);
+    m_browseStack->addWidget(library);
     sidebar->setIndentation(0);
     sidebar->setRootIsDecorated(false);
     sidebar->setItemsExpandable(false);
@@ -1597,9 +1859,20 @@ void WDeckLab::bindBrowser(WSearchLineEdit* search, WLibrarySidebar* sidebar, WL
         if (index.isValid()) openSource();
     });
     connect(sidebar->selectionModel(), &QItemSelectionModel::currentChanged, this,
-            [this](const QModelIndex&, const QModelIndex&) { updateBreadcrumb(); });
-    connect(search, &WSearchLineEdit::search, this, [this](const QString&) { showTracks(); });
-    if (m_library) connect(m_library, &Library::trackSelected, this, [this](TrackPointer) { refreshLoadButtons(); });
+            [this](const QModelIndex&, const QModelIndex&) { updateBreadcrumb(); refreshBrowseCard(); });
+    connect(search, &WSearchLineEdit::search, this, [this](const QString&) {
+        // Typing replaces a category filter; the breadcrumb must not claim it.
+        m_browseState->filter.clear(); m_browseState->fromCategories = false;
+        showTracks();
+    });
+    if (m_library) {
+        connect(m_library, &Library::trackSelected, this, [this](TrackPointer track) {
+            m_browseState->selectedTrack = track;
+            if (m_browseStack->currentIndex() != 0) refreshBrowseCard();
+            refreshLoadButtons();
+        });
+        b.card->enableCovers();
+    }
     if (m_library) m_library->setRowHeight(44);
     showSources();
 }
@@ -1649,27 +1922,78 @@ void WDeckLab::selectPage(int page) {
 }
 
 void WDeckLab::showSources() {
-    if (!m_sidebar) return;
-    m_browseStack->setCurrentWidget(m_sidebar);
+    if (!m_sidebar || !m_browseState) return;
+    auto& b = *m_browseState;
+    m_browseStack->setCurrentWidget(b.listStack);
     if (value("[Sidebar]", "sidebar_visible") != 1) set("[Sidebar]", "sidebar_visible", 1);
-    set("[Library]", "focused_widget", 2);
-    m_sidebar->setFocus(Qt::OtherFocusReason);
-    if (!m_sidebar->currentIndex().isValid() && m_sidebar->model()->rowCount(m_sidebar->rootIndex())) {
-        m_sidebar->setCurrentIndex(m_sidebar->model()->index(0, 0, m_sidebar->rootIndex()));
+    if (b.list == DeckLabList::Sources) {
+        m_sidebar->setFocusProxy(nullptr);
+        b.listStack->setCurrentWidget(m_sidebar);
+        set("[Library]", "focused_widget", 2);
+        if (m_page == 1) m_sidebar->setFocus(Qt::OtherFocusReason);
+        if (!m_sidebar->currentIndex().isValid() && m_sidebar->model()->rowCount(m_sidebar->rootIndex())) {
+            m_sidebar->setCurrentIndex(m_sidebar->model()->index(0, 0, m_sidebar->rootIndex()));
+        }
+    } else {
+        b.listStack->setCurrentWidget(b.items);
+        // Focus requests for the sidebar (focused_widget 2) reach this list.
+        m_sidebar->setFocusProxy(b.items);
+        set("[Library]", "focused_widget", 2);
+        if (m_page == 1) b.items->setFocus(Qt::OtherFocusReason);
+        if (b.items->currentRow() < 0 && b.items->count()) b.items->setCurrentRow(0);
     }
-    updateBreadcrumb(); refreshLoadButtons();
+    updateBreadcrumb(); refreshLoadButtons(); refreshBrowseCard();
 }
 void WDeckLab::showTracks() {
     if (!m_libraryWidget) return;
     m_browseStack->setCurrentWidget(m_libraryWidget);
     if (value("[Sidebar]", "sidebar_visible")) set("[Sidebar]", "sidebar_visible", 0);
     set("[Library]", "focused_widget", 3);
-    updateBreadcrumb(); refreshLoadButtons();
+    syncSelectedTrack();
+    updateBreadcrumb(); refreshLoadButtons(); refreshBrowseCard();
 }
 void WDeckLab::browsePress() {
     if (m_page != 1) { selectPage(1); return; }
-    if (m_browseStack->currentIndex() != 0) { showSources(); return; }
-    openSource();
+    // In a track list the press previews the highlighted track.
+    if (m_browseStack->currentIndex() != 0) { togglePreview(); return; }
+    browseEnter();
+}
+void WDeckLab::browseEnter() {
+    if (m_page != 1) { selectPage(1); return; }
+    if (!m_sidebar || m_browseStack->currentIndex() != 0) return;
+    auto& b = *m_browseState;
+    if (b.list == DeckLabList::Categories) openCategory(b.items->currentRow());
+    else if (b.list == DeckLabList::Values) openCategoryValue(b.items->currentRow());
+    else openSource();
+}
+void WDeckLab::browseMove(int delta, bool listLevel) {
+    if (delta == 0 || !m_sidebar) return;
+    auto& b = *m_browseState;
+    // A turn on any other page opens Browse where it was left. It never
+    // becomes a key press on a deck, tempo or settings control.
+    if (m_page != 1) selectPage(1);
+    if (listLevel && m_browseStack->currentIndex() != 0) showSources();
+    if (m_browseStack->currentIndex() != 0) {
+        if (auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr) table->moveSelection(delta);
+        return;
+    }
+    if (b.list == DeckLabList::Sources) {
+        // Selection never activates or imports the items a fast knob passes.
+        const QModelIndex root = m_sidebar->rootIndex();
+        const int count = m_sidebar->model()->rowCount(root);
+        if (!count) return;
+        const QModelIndex current = m_sidebar->currentIndex();
+        const int from = current.isValid() && current.parent() == root ? current.row() : -1;
+        const QModelIndex index = m_sidebar->model()->index(std::clamp(from + delta, 0, count - 1), 0, root);
+        m_sidebar->setCurrentIndex(index);
+        m_sidebar->scrollTo(index);
+        return;
+    }
+    const int count = b.items->count();
+    if (!count) return;
+    const int rowIndex = std::clamp(b.items->currentRow() + delta, 0, count - 1);
+    b.items->setCurrentRow(rowIndex);
+    b.items->scrollToItem(b.items->item(rowIndex));
 }
 void WDeckLab::openSource() {
     if (!m_sidebar) return;
@@ -1682,6 +2006,8 @@ void WDeckLab::openSource() {
     if (!index.isValid()) return;
     model->clicked(index);
     if (!index.isValid()) return;
+    // The collection and rekordbox USB exports open on categories first.
+    if (isCollectionSource(index) || isRekordboxDevice(index)) { enterCategories(index); return; }
     if ((!model->hasTrackTable(index) && model->hasChildren(index)) || (!index.parent().isValid() && !model->hasTrackTable(index))) {
         m_sidebar->setRootIndex(index);
         const QModelIndex child = model->index(0, 0, index);
@@ -1693,7 +2019,31 @@ void WDeckLab::browseBack() {
     if (m_keyboard && m_keyboard->isVisible()) { setSearchOpen(false); return; }
     if (m_page != 1) { selectPage(1); return; }
     if (!m_sidebar) return;
-    if (m_browseStack->currentIndex() != 0) { showSources(); return; }
+    auto& b = *m_browseState;
+    if (m_browseStack->currentIndex() != 0) {
+        // Leaving a category's tracks restores the whole source.
+        clearBrowseFilter();
+        b.fromCategories = false;
+        showSources();
+        return;
+    }
+    if (b.list == DeckLabList::Values) { showCategories(); return; }
+    if (b.list == DeckLabList::Categories) {
+        const QPersistentModelIndex source = b.source;
+        resetBrowseLevels();
+        if (source.isValid()) {
+            m_sidebar->setRootIndex(source.parent());
+            m_sidebar->setCurrentIndex(source);
+        }
+        showSources();
+        return;
+    }
+    if (b.returnRoot.isValid() && m_sidebar->rootIndex() == b.returnRoot && b.source.isValid()) {
+        b.returnRoot = QPersistentModelIndex();
+        activateBrowseSource();
+        showCategories();
+        return;
+    }
     const QPersistentModelIndex previous(m_sidebar->rootIndex());
     if (previous.isValid()) {
         m_sidebar->setRootIndex(previous.parent());
@@ -1701,15 +2051,31 @@ void WDeckLab::browseBack() {
         showSources();
     } else selectPage(0);
 }
-void WDeckLab::updateBreadcrumb() {
-    if (!m_sidebar) return;
-    QStringList path;
-    QModelIndex at = m_browseStack->currentWidget() == m_libraryWidget ? m_sidebar->currentIndex() : m_sidebar->rootIndex();
-    while (at.isValid()) { path.prepend(at.data().toString()); at = at.parent(); }
+QStringList WDeckLab::browseSegments() const {
+    const auto& b = *m_browseState;
+    const auto pathTo = [](QModelIndex at) {
+        QStringList path;
+        while (at.isValid()) { path.prepend(at.data().toString()); at = at.parent(); }
+        return path;
+    };
+    const bool tracks = m_browseStack->currentIndex() != 0;
+    if (b.source.isValid() && ((!tracks && b.list != DeckLabList::Sources) || (tracks && b.fromCategories))) {
+        QStringList path = pathTo(b.source);
+        const bool filtered = tracks && !b.filter.isEmpty();
+        if ((!tracks && b.list == DeckLabList::Values) || filtered) path << decklab::categoryName(b.category);
+        if (tracks) path << (filtered ? b.valueLabel : decklab::categoryName(decklab::Category::AllTracks));
+        return path;
+    }
+    QStringList path = pathTo(tracks ? m_sidebar->currentIndex() : m_sidebar->rootIndex());
+    if (b.rekordbox && !tracks && b.returnRoot.isValid() && m_sidebar->rootIndex() == b.returnRoot) {
+        path << decklab::categoryName(decklab::Category::Playlists);
+    }
     if (path.isEmpty()) path.append(tr("Sources"));
-    const QString full = path.join(QStringLiteral("  /  "));
-    m_breadcrumb->setText(m_breadcrumb->fontMetrics().elidedText(full, Qt::ElideRight, std::max(0, m_breadcrumb->width() - 14)));
-    m_breadcrumb->setToolTip(full);
+    return path;
+}
+void WDeckLab::updateBreadcrumb() {
+    if (!m_sidebar || !m_browseState || !m_browseState->breadcrumb) return;
+    m_browseState->breadcrumb->setSegments(browseSegments());
 }
 void WDeckLab::loadDeck(int deck) {
     if (m_sampleTarget) {
@@ -1725,30 +2091,354 @@ void WDeckLab::loadDeck(int deck) {
     }
     if (!m_fourDeckLayout && deck > 2) return;
     deck = m_fourDeckLayout ? deck : displayedDeck(deck - 1);
-    if (m_page != 1 || !m_libraryWidget || m_browseStack->currentWidget() != m_libraryWidget ||
-            value(channel(deck), "play")) return;
+    // ON AIR is never replaced from the touch screen; say so instead of ignoring the tap.
+    if (value(channel(deck), "play")) { showLoadRefused(deck); return; }
+    if (m_page != 1 || !m_libraryWidget || m_browseStack->currentWidget() != m_libraryWidget) return;
     set("[Library]", "focused_widget", 3);
     pulse(channel(deck), "LoadSelectedTrack");
     // Return happens on newTrackLoaded, never merely on a button press.
 }
 void WDeckLab::refreshLoadButtons() {
     if (!m_loadButtons[0]) return;
+    using Tone = DeckLabActionButton::Tone;
     auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+    const bool tracks = m_libraryWidget && m_browseStack->currentWidget() == m_libraryWidget;
     const bool selected = table && table->selectionModel() && !table->selectionModel()->selectedRows().isEmpty();
     for (int deck = 1; deck <= 4; ++deck) {
-        auto* load = m_loadButtons[deck - 1];
+        auto* load = static_cast<DeckLabActionButton*>(m_loadButtons[deck - 1]);
         load->setVisible(deck <= 2 || (m_fourDeckLayout && !m_sampleTarget));
         if (m_sampleTarget) {
+            const bool ready = tracks && selected && !value(QStringLiteral("[Sampler%1]").arg(m_sampleTarget), "play");
             load->setText(deck == 1 ? tr("Load pad %1").arg(m_sampleTarget) : tr("Cancel"));
-            load->setEnabled(deck == 2 || (m_libraryWidget && m_browseStack->currentWidget() == m_libraryWidget &&
-                    selected && !value(QStringLiteral("[Sampler%1]").arg(m_sampleTarget), "play")));
+            load->setDetail(deck == 1 ? tr("Sampler") : tr("Back to pads"));
+            load->setTone(deck == 1 && ready ? Tone::Ready : Tone::Neutral);
+            load->setEnabled(deck == 2 || ready);
+            load->setAccessibleName(load->text());
             continue;
         }
         const int target = m_fourDeckLayout ? deck : (deck <= 2 ? displayedDeck(deck - 1) : deck);
-        const bool playing = value(channel(target), "play");
-        load->setText(playing ? tr("Deck %1 · Playing").arg(target) : tr("Load %1").arg(target));
-        load->setEnabled(!playing && m_libraryWidget && m_browseStack->currentWidget() == m_libraryWidget && selected);
+        const bool playing = value(channel(target), "play") > 0;
+        const bool loaded = value(channel(target), "track_loaded") > 0;
+        load->setText(tr("Load %1").arg(target));
+        load->setDetail(playing ? tr("On air") : loaded ? tr("Paused · replaces") : tr("Empty deck"));
+        load->setTone(playing ? Tone::OnAir : tracks && selected ? Tone::Ready : Tone::Neutral);
+        load->setEnabled(!playing && tracks && selected);
+        load->setAccessibleName(playing ? tr("Deck %1 is on air and cannot be loaded").arg(target)
+                                        : tr("Load deck %1").arg(target));
     }
+    refreshPreviewButton();
+    scheduleMatchRefresh();
+}
+void WDeckLab::resetBrowseLevels() {
+    auto& b = *m_browseState;
+    clearBrowseFilter();
+    b.list = DeckLabList::Sources;
+    b.source = QPersistentModelIndex();
+    b.returnRoot = QPersistentModelIndex();
+    b.fromCategories = false;
+    b.rekordbox = false;
+    b.loadingTimer.stop();
+}
+void WDeckLab::clearBrowseFilter() {
+    auto& b = *m_browseState;
+    if (b.filter.isEmpty()) return;
+    b.filter.clear();
+    if (m_libraryWidget) m_libraryWidget->search(QString());
+}
+void WDeckLab::activateBrowseSource() {
+    auto& b = *m_browseState;
+    auto* model = m_sidebar ? qobject_cast<SidebarModel*>(m_sidebar->model()) : nullptr;
+    if (model && b.source.isValid()) model->clicked(b.source);
+}
+void WDeckLab::enterCategories(const QModelIndex& source) {
+    auto& b = *m_browseState;
+    b.source = source;
+    b.rekordbox = isRekordboxDevice(source);
+    b.filter.clear();
+    b.fromCategories = false;
+    b.returnRoot = QPersistentModelIndex();
+    b.categoryRow = 0;
+    b.trackCount = -1;
+    // A source opens unfiltered: drop typed or earlier category searches.
+    if (m_search) m_search->slotRestoreSearch(QString());
+    auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+    auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
+    const bool ready = !b.rekordbox || rekordboxImported(source);
+    if (ready && tracks && !tracks->currentSearch().isEmpty()) m_libraryWidget->search(QString());
+    if (ready && table && table->model()) b.trackCount = table->model()->rowCount();
+    showCategories();
+}
+void WDeckLab::showCategories() {
+    auto& b = *m_browseState;
+    using decklab::Category;
+    const bool ready = !b.rekordbox || rekordboxImported(b.source);
+    const QAbstractItemModel* sources = m_sidebar ? m_sidebar->model() : nullptr;
+    const QString loading = tr("Loading…");
+    QList<std::tuple<Category, bool, QString>> entries;
+    entries.append(std::make_tuple(Category::AllTracks, ready, !ready ? loading : b.trackCount >= 0 ? QString::number(b.trackCount) : QString()));
+    if (b.rekordbox) {
+        const int playlists = ready && sources && b.source.isValid() ? sources->rowCount(b.source) : 0;
+        if (!ready || playlists) entries.append(std::make_tuple(Category::Playlists, playlists > 0, ready ? QString::number(playlists) : loading));
+    } else {
+        if (sidebarRoot(sources, QStringLiteral("playlist")).isValid()) entries.append(std::make_tuple(Category::Playlists, true, QString()));
+        if (sidebarRoot(sources, QStringLiteral("crates")).isValid()) entries.append(std::make_tuple(Category::Crates, true, QString()));
+    }
+    for (Category category : {Category::Artist, Category::Album, Category::Bpm, Category::Key}) {
+        entries.append(std::make_tuple(category, ready, ready ? QString() : loading));
+    }
+    if (!b.rekordbox && sidebarRoot(sources, QStringLiteral("history")).isValid()) {
+        entries.append(std::make_tuple(Category::History, true, QString()));
+    }
+    {
+        const QSignalBlocker blocker(b.items);
+        b.items->clear();
+        for (const auto& [category, enabled, detail] : entries) {
+            auto* item = new QListWidgetItem(decklab::categoryName(category), b.items);
+            item->setData(DeckLabListDelegate::CategoryRole, static_cast<int>(category));
+            item->setData(DeckLabListDelegate::GlyphRole, static_cast<int>(categoryGlyph(category)));
+            item->setData(DeckLabListDelegate::ChevronRole, true);
+            item->setData(DeckLabListDelegate::CountRole, detail);
+            if (!enabled) item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
+        }
+        b.items->setCurrentRow(std::clamp(b.categoryRow, 0, std::max(0, b.items->count() - 1)));
+    }
+    b.list = DeckLabList::Categories;
+    if (ready) b.loadingTimer.stop(); else b.loadingTimer.start();
+    showSources();
+}
+void WDeckLab::openCategory(int rowIndex) {
+    auto& b = *m_browseState;
+    auto* item = b.items->item(rowIndex);
+    if (!item || !(item->flags() & Qt::ItemIsEnabled) || !m_sidebar) return;
+    using decklab::Category;
+    const auto category = static_cast<Category>(item->data(DeckLabListDelegate::CategoryRole).toInt());
+    b.categoryRow = rowIndex;
+    b.category = category;
+    if (category == Category::AllTracks) {
+        activateBrowseSource();
+        clearBrowseFilter();
+        b.fromCategories = true;
+        showTracks();
+        return;
+    }
+    if (category == Category::Playlists || category == Category::Crates || category == Category::History) {
+        if (b.rekordbox) {
+            if (!b.source.isValid() || !m_sidebar->model()->rowCount(b.source)) return;
+            b.list = DeckLabList::Sources;
+            b.returnRoot = b.source;
+            m_sidebar->setRootIndex(b.source);
+            m_sidebar->setCurrentIndex(m_sidebar->model()->index(0, 0, b.source));
+            showSources();
+            return;
+        }
+        const QModelIndex root = sidebarRoot(m_sidebar->model(),
+                category == Category::Playlists ? QStringLiteral("playlist")
+                        : category == Category::Crates ? QStringLiteral("crates") : QStringLiteral("history"));
+        if (!root.isValid()) return;
+        b.list = DeckLabList::Sources;
+        m_sidebar->setRootIndex(QModelIndex());
+        m_sidebar->setCurrentIndex(root);
+        openSource();
+        b.returnRoot = m_sidebar->rootIndex().isValid() ? QPersistentModelIndex(m_sidebar->rootIndex()) : QPersistentModelIndex(root);
+        updateBreadcrumb();
+        return;
+    }
+    // Artist, Album, BPM and Key: distinct values from the source's own model.
+    activateBrowseSource();
+    auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+    auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
+    if (!tracks) return;
+    if (!tracks->currentSearch().isEmpty()) m_libraryWidget->search(QString());
+    const TrackModel::SortColumnId field = category == Category::Artist ? TrackModel::SortColumnId::Artist
+            : category == Category::Album ? TrackModel::SortColumnId::Album
+            : category == Category::Bpm ? TrackModel::SortColumnId::Bpm : TrackModel::SortColumnId::Key;
+    const auto values = decklab::collectCategoryValues(*table->model(), tracks->columnIndexFromSortColumnId(field), category);
+    {
+        const QSignalBlocker blocker(b.items);
+        b.items->clear();
+        for (const auto& entry : values) {
+            auto* item = new QListWidgetItem(entry.label, b.items);
+            item->setData(DeckLabListDelegate::CountRole, QString::number(entry.count));
+            item->setData(DeckLabListDelegate::QueryRole, entry.query);
+            item->setData(DeckLabListDelegate::ChevronRole, true);
+            if (entry.accent.isValid()) item->setData(DeckLabListDelegate::AccentRole, entry.accent);
+        }
+        if (values.isEmpty()) {
+            auto* item = new QListWidgetItem(tr("No tracks"), b.items);
+            item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
+        }
+        b.items->setCurrentRow(0);
+    }
+    b.list = DeckLabList::Values;
+    showSources();
+}
+void WDeckLab::openCategoryValue(int rowIndex) {
+    auto& b = *m_browseState;
+    auto* item = b.items->item(rowIndex);
+    if (!item || !(item->flags() & Qt::ItemIsEnabled) || !m_libraryWidget) return;
+    const QString query = item->data(DeckLabListDelegate::QueryRole).toString();
+    if (query.isEmpty()) return;
+    b.valueLabel = item->text();
+    activateBrowseSource();
+    // The breadcrumb names the filter; keep the search box free for typing.
+    if (m_search) m_search->slotRestoreSearch(QString());
+    m_libraryWidget->search(query);
+    b.filter = query;
+    b.fromCategories = true;
+    showTracks();
+}
+void WDeckLab::checkRekordboxImport() {
+    auto& b = *m_browseState;
+    if (!b.rekordbox || !b.source.isValid()) { b.loadingTimer.stop(); return; }
+    if (!rekordboxImported(b.source)) return;
+    b.loadingTimer.stop();
+    auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+    if (table && table->model()) b.trackCount = table->model()->rowCount();
+    if (b.list == DeckLabList::Categories && m_browseStack->currentIndex() == 0) showCategories();
+}
+void WDeckLab::syncSelectedTrack() {
+    auto& b = *m_browseState;
+    auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+    auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
+    const QModelIndexList rows = table && table->selectionModel() ? table->selectionModel()->selectedRows() : QModelIndexList();
+    if (!tracks || rows.size() != 1) { b.selectedTrack.reset(); return; }
+    if (b.selectedTrack && tracks->getTrackLocation(rows.first()) == b.selectedTrack->getLocation()) return;
+    b.selectedTrack = tracks->getTrack(rows.first());
+}
+void WDeckLab::refreshBrowseCard() {
+    if (!m_browseState) return;
+    auto& b = *m_browseState;
+    if (!b.card || !m_browseStack) return;
+    if (m_browseStack->currentIndex() != 0) { b.card->showTrack(b.selectedTrack); return; }
+    const QString openHint = tr("Turn or swipe to choose · press or tap to open");
+    if (b.list != DeckLabList::Sources) {
+        const QListWidgetItem* item = b.items->currentItem();
+        if (!item) return;
+        const QString source = b.source.isValid() ? b.source.data().toString() : QString();
+        if (b.list == DeckLabList::Categories) {
+            const auto category = static_cast<decklab::Category>(item->data(DeckLabListDelegate::CategoryRole).toInt());
+            const QString count = item->data(DeckLabListDelegate::CountRole).toString();
+            b.card->showItem(categoryGlyph(category), item->text(),
+                    count.isEmpty() || category != decklab::Category::AllTracks ? source : tr("%1 · %2 tracks").arg(source, count),
+                    (item->flags() & Qt::ItemIsEnabled) ? openHint : tr("Reading the USB export…"));
+        } else {
+            b.card->showItem(categoryGlyph(b.category), item->text(),
+                    tr("%1 · %2 tracks").arg(decklab::categoryName(b.category), item->data(DeckLabListDelegate::CountRole).toString()),
+                    tr("Press or tap to show these tracks"),
+                    item->data(DeckLabListDelegate::AccentRole).value<QColor>());
+        }
+        return;
+    }
+    const QModelIndex index = m_sidebar ? m_sidebar->currentIndex() : QModelIndex();
+    if (!index.isValid()) {
+        b.card->showItem(decklab::Glyph::Folder, tr("Sources"), tr("Library, playlists and USB drives"), openHint);
+        return;
+    }
+    QString subtitle;
+    const QString icon = rootIconName(index);
+    const int children = index.model()->rowCount(index);
+    if (isCollectionSource(index)) subtitle = tr("All music on this unit · by artist, album, BPM or key");
+    else if (isRekordboxDevice(index)) subtitle = rekordboxImported(index) ? tr("USB drive · rekordbox export") : tr("USB drive · reads its rekordbox export when opened");
+    else if (!index.parent().isValid() && icon == QStringLiteral("rekordbox")) subtitle = tr("USB drives with a rekordbox export");
+    else if (children > 0) subtitle = tr("%1 items").arg(children);
+    else if (icon == QStringLiteral("history")) subtitle = tr("Played in an earlier session");
+    else if (icon == QStringLiteral("crates")) subtitle = tr("Crate");
+    else subtitle = tr("Track list");
+    b.card->showItem(sourceGlyph(index), index.data().toString(), subtitle, openHint);
+}
+void WDeckLab::refreshPreviewButton() {
+    if (!m_browseState) return;
+    auto& b = *m_browseState;
+    if (!b.preview) return;
+    using Tone = DeckLabActionButton::Tone;
+    const bool available = ControlObject::exists(ConfigKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("LoadSelectedTrackAndPlay")));
+    const bool playing = available && value(QStringLiteral("[PreviewDeck1]"), QStringLiteral("play")) > 0;
+    auto* previewDeck = m_players && m_players->numberOfPreviewDecks() > 0 ? m_players->getPreviewDeck(0) : nullptr;
+    const TrackPointer previewing = previewDeck ? previewDeck->getLoadedTrack() : TrackPointer();
+    const bool tracks = m_browseStack && m_browseStack->currentIndex() != 0;
+    const bool same = playing && previewing && previewing == b.selectedTrack;
+    b.preview->setText(same ? tr("Stop") : tr("Preview"));
+    b.preview->setGlyph(same ? decklab::Glyph::Stop : decklab::Glyph::Play);
+    b.preview->setTone(same ? Tone::Active : Tone::Neutral);
+    b.preview->setDetail(playing ? (same ? tr("Playing in headphones") : tr("Another track playing")) : tr("Headphones"));
+    b.preview->setEnabled(available && ((tracks && b.selectedTrack) || playing));
+}
+void WDeckLab::togglePreview() {
+    const ConfigKey load(QStringLiteral("[PreviewDeck1]"), QStringLiteral("LoadSelectedTrackAndPlay"));
+    if (!ControlObject::exists(load)) return;
+    const bool tracks = m_browseStack->currentIndex() != 0;
+    auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+    const bool selected = table && table->selectionModel() && !table->selectionModel()->selectedRows().isEmpty();
+    // Same track: Mixxx toggles play/pause; another track: load and play it.
+    if (tracks && selected) pulse(load.group, load.item);
+    else stopPreview();
+}
+void WDeckLab::stopPreview() {
+    const ConfigKey play(QStringLiteral("[PreviewDeck1]"), QStringLiteral("play"));
+    if (ControlObject::exists(play) && value(play.group, play.item) > 0) set(play.group, play.item, 0);
+}
+void WDeckLab::scheduleMatchRefresh() {
+    if (m_browseState && !m_browseState->matchTimer.isActive()) m_browseState->matchTimer.start();
+}
+int WDeckLab::matchReferenceDeck() {
+    // Same rule as Tools > Match Deck: the playing (sync leader) deck, else a loaded displayed deck.
+    int matchDeck = displayedDeck(0);
+    bool foundPlaying = false;
+    for (int deck = 1; deck <= 4; ++deck) {
+        if (!value(channel(deck), "track_loaded")) continue;
+        if (value(channel(deck), "play") && (!foundPlaying || value(channel(deck), "sync_leader") > 0)) {
+            matchDeck = deck; foundPlaying = true;
+        } else if (!foundPlaying && !value(channel(matchDeck), "track_loaded")) matchDeck = deck;
+    }
+    return value(channel(matchDeck), "track_loaded") > 0 ? matchDeck : 0;
+}
+void WDeckLab::refreshMatchReference() {
+    if (!m_browseState) return;
+    auto& b = *m_browseState;
+    decklab::MatchReference reference;
+    reference.enabled = b.matchEnabled;
+    reference.deck = matchReferenceDeck();
+    if (reference.deck) {
+        reference.key = KeyUtils::keyFromNumericValue(value(channel(reference.deck), "visual_key"));
+        reference.bpm = value(channel(reference.deck), "bpm");
+    }
+    if (b.match) {
+        if (b.match->isChecked() != b.matchEnabled) b.match->setChecked(b.matchEnabled);
+        QString detail = tr("Off");
+        if (b.matchEnabled) {
+            detail = tr("No deck");
+            if (reference.deck) {
+                QStringList parts{tr("Deck %1").arg(reference.deck)};
+                const QString key = KeyUtils::keyToString(reference.key);
+                if (reference.key != mixxx::track::io::key::INVALID && !key.isEmpty()) parts << key;
+                if (reference.bpm > 0) parts << QString::number(reference.bpm, 'f', 0);
+                detail = parts.join(QStringLiteral(" · "));
+            }
+        }
+        b.match->setDetail(detail);
+        b.match->setTone(b.matchEnabled && reference.deck ? DeckLabActionButton::Tone::Active : DeckLabActionButton::Tone::Neutral);
+    }
+    if (reference.sameAs(decklab::matchReference())) return;
+    decklab::setMatchReference(reference);
+    // Repaint only: rows evaluate the new reference while painting.
+    if (auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr) {
+        if (table->isVisible()) table->viewport()->update();
+    }
+    if (b.card) b.card->refreshMatch();
+}
+void WDeckLab::showLoadRefused(int deck) {
+    if (m_browseState && m_browseState->toast) {
+        m_browseState->toast->showMessage(tr("Deck %1 is playing – pause it to load").arg(deck));
+    }
+}
+void WDeckLab::showLoadUnavailable(int slot) {
+    if (m_sampleTarget || !m_browseState->toast) return;
+    if (!m_fourDeckLayout && slot > 2) return;
+    const int target = m_fourDeckLayout ? slot : displayedDeck(slot - 1);
+    if (value(channel(target), "play") > 0) { showLoadRefused(target); return; }
+    m_browseState->toast->showMessage(m_browseStack->currentIndex() == 0
+            ? tr("Open a playlist or category, then choose a track")
+            : tr("Choose a track first"), 2000);
 }
 void WDeckLab::refreshDeck(int deck) {
     auto* player = m_players ? m_players->getPlayer(channel(deck)) : nullptr;
@@ -2210,17 +2900,22 @@ void WDeckLab::releaseTouchCue() {
 
 void WDeckLab::setSearchOpen(bool open) {
     if (!m_keyboard || !m_searchPanel) return;
-    if (open && m_library && m_browseStack->currentWidget() == m_sidebar) {
+    if (open && m_library && m_browseStack->currentIndex() == 0) {
+        // Searching from a list searches the whole collection.
+        resetBrowseLevels();
         m_library->searchTracksInCollection(QString()); showTracks();
     }
     m_keyboard->setVisible(open);
     m_searchPanel->setVisible(open || (m_search && !m_search->currentText().isEmpty()));
+    // The keyboard leaves little height: keep Preview and LOAD, drop the card.
+    if (m_browseState && m_browseState->card) m_browseState->card->setVisible(!open);
     if (m_page == 1) m_waveforms->setVisible(!open);
     if (open && m_search && m_search->lineEdit()) m_search->lineEdit()->setFocus(Qt::OtherFocusReason);
 }
 
 void WDeckLab::openCollection() {
     selectPage(1); setSearchOpen(false);
+    resetBrowseLevels();
     if (m_library) m_library->searchTracksInCollection(QString());
     showTracks();
 }
