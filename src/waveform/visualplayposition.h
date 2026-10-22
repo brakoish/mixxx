@@ -69,9 +69,12 @@ class VisualPlayPosition : public QObject {
             double audioBufferMicroS);
 
     double getAtNextVSync(VSyncTimeProvider* pSyncTimeProvider);
+    /// pMotionRate (optional) receives |play rate| + |slip rate| of the
+    /// same snapshot, 0 when paused, invalid or not moving.
     void getPlaySlipAtNextVSync(VSyncTimeProvider* pSyncTimeProvider,
             double* playPosition,
-            double* slipPosition);
+            double* slipPosition,
+            double* pMotionRate = nullptr);
     double determinePlayPosInLoopBoundries(
             const VisualPlayPositionData& data, const double& offset);
     double getEnginePlayPos();

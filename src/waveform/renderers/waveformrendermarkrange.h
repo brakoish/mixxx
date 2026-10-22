@@ -18,6 +18,12 @@ class WaveformRenderMarkRange : public WaveformRendererAbstract {
     void setup(const QDomNode& node, const SkinContext& context) override;
     void draw(QPainter* painter, QPaintEvent* event) override;
 
+    void appendRenderState(RenderStateHasher* pHasher) const override {
+        for (const auto& markRange : m_markRanges) {
+            markRange.appendRenderState(pHasher);
+        }
+    }
+
   private:
     void generateImages();
 

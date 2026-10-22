@@ -7,6 +7,8 @@
 #include "util/defs.h"
 #include "util/sample.h"
 
+std::atomic<int> SoundDevice::s_openDeviceCount{0};
+
 SoundDevice::SoundDevice(UserSettingsPointer config, SoundManager* sm)
         : m_pConfig(config),
           m_pSoundManager(sm),

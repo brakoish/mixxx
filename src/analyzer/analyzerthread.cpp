@@ -11,6 +11,7 @@
 #include "analyzer/constants.h"
 #include "library/dao/analysisdao.h"
 #include "moc_analyzerthread.cpp"
+#include "soundio/decklabthreadpolicy.h"
 #include "sources/audiosourcestereoproxy.h"
 #include "sources/soundsourceproxy.h"
 #include "track/track.h"
@@ -88,6 +89,10 @@ AnalyzerThread::AnalyzerThread(
 }
 
 void AnalyzerThread::doRun() {
+    // Deck Lab: DECKLAB_ANALYZER_IDLE=1 lowers this worker to SCHED_IDLE
+    // (nice 19 fallback). Runs after WorkerThread applied its Qt priority.
+    mixxx::decklab::applyAnalyzerThreadPolicy();
+
     std::unique_ptr<AnalysisDao> pAnalysisDao;
     // The thread-local database connection  must not be closed
     // before returning from this function.

@@ -36,6 +36,9 @@ class allshader::WaveformRendererEndOfTrack final
     // Virtual for rendergraph::Node
     void preprocess() override;
 
+    // Blinks while the end-of-track warning is active.
+    bool isAnimating() const override;
+
   public slots:
     void setColor(const QColor& color) {
         m_color = color;

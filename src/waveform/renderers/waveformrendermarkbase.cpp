@@ -2,6 +2,7 @@
 
 #include "moc_waveformrendermarkbase.cpp"
 #include "track/track.h"
+#include "waveform/rendergate.h"
 #include "waveform/renderers/waveformwidgetrenderer.h"
 
 WaveformRenderMarkBase::WaveformRenderMarkBase(
@@ -78,7 +79,22 @@ void WaveformRenderMarkBase::updateMarksFromCues() {
     updateMarks();
 }
 
+void WaveformRenderMarkBase::appendRenderState(RenderStateHasher* pHasher) const {
+    pHasher->addInt(static_cast<qint64>(m_markRevision));
+    // Mark positions are ControlObjects (hotcue_N_position, cue_point,
+    // loop_start_position, ...) that may change while the deck is paused.
+    for (const auto& pMark : m_marks) {
+        pHasher->addPointer(pMark.get());
+        if (pMark->isValid()) {
+            pHasher->addDouble(pMark->getSamplePosition());
+            pHasher->addDouble(pMark->getSampleEndPosition());
+        }
+        pHasher->addBool(pMark->isVisible());
+    }
+}
+
 void WaveformRenderMarkBase::updateMarks() {
+    ++m_markRevision;
     m_marks.update();
     if (m_updateImagesImmediately) {
         updateMarkImages();

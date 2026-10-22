@@ -24,6 +24,9 @@ class WaveformRendererSignalBase : public QObject, public WaveformRendererAbstra
     }
     virtual void onSetup(const QDomNode& node) = 0;
 
+    /// EQ knobs/kills and visual gains scale the drawn signal.
+    void appendRenderState(RenderStateHasher* pHasher) const override;
+
   public slots:
     void setAllChannelVisualGain(double gain) {
         m_allChannelVisualGain = static_cast<CSAMPLE_GAIN>(gain);

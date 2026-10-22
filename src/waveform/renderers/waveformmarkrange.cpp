@@ -4,6 +4,7 @@
 #include <QtDebug>
 
 #include "skin/legacy/skincontext.h"
+#include "waveform/rendergate.h"
 #include "waveformsignalcolors.h"
 #include "widget/wskincolor.h"
 
@@ -170,6 +171,13 @@ double WaveformMarkRange::end() const {
         end = m_markEndPointControl->get();
     }
     return end;
+}
+
+void WaveformMarkRange::appendRenderState(RenderStateHasher* pHasher) const {
+    pHasher->addDouble(start());
+    pHasher->addDouble(end());
+    pHasher->addBool(enabled());
+    pHasher->addBool(visible());
 }
 
 bool WaveformMarkRange::showDuration() const {

@@ -469,13 +469,28 @@ endif()
 project(mixxx VERSION 2.6.0 LANGUAGES C CXX)
 
 # Owned Deck Lab DSP, packaged with the native appliance candidate.
+# Defined before the global add_compile_options(-ffast-math ...) below on
+# purpose: the processor relies on isfinite() NaN guards.
 if(UNIX AND NOT APPLE)
   add_library(decklab-performance MODULE src/effects/decklab/performance.c)
   set_target_properties(decklab-performance PROPERTIES PREFIX "" OUTPUT_NAME "performance")
   target_link_libraries(decklab-performance PRIVATE m)
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+    # Performance effect hot loop. Baseline ARMv8-A code tuned for the Pi 4 (Cortex-A72), so
+    # the single aarch64 Flatpak also runs on the Pi 5 and other ARMv8 boards.
+    # Never -ffast-math: it would remove the isfinite() guards.
+    # -fno-math-errno only lets libm calls inline.
+    target_compile_options(decklab-performance PRIVATE
+      -O3 -march=armv8-a -mtune=cortex-a72 -fno-math-errno)
+  endif()
   install(TARGETS decklab-performance LIBRARY DESTINATION lib/lv2/performance.lv2)
   install(FILES res/decklab/performance.lv2/manifest.ttl res/decklab/performance.lv2/performance.ttl
     DESTINATION lib/lv2/performance.lv2)
+  # Test-only: the unoptimised processor, built with the default flags and
+  # never installed. tools/decklab/test_dsp.py compares against it.
+  add_library(decklab-performance-reference MODULE tools/decklab/performance_reference.c)
+  set_target_properties(decklab-performance-reference PROPERTIES PREFIX "" OUTPUT_NAME "performance_reference")
+  target_link_libraries(decklab-performance-reference PRIVATE m)
 endif()
 # Work around missing version suffixes support https://gitlab.kitware.com/cmake/cmake/-/issues/16716
 set(MIXXX_VERSION_PRERELEASE "beta") # set to "alpha" "beta" or ""
@@ -1538,6 +1553,7 @@ add_library(
   src/skin/legacy/tooltips.cpp
   src/skin/skincontrols.cpp
   src/skin/skinloader.cpp
+  src/soundio/decklabthreadpolicy.cpp
   src/soundio/sounddevice.cpp
   src/soundio/sounddevicenetwork.cpp
   src/soundio/sounddeviceportaudio.cpp
@@ -1655,6 +1671,7 @@ add_library(
   src/util/xml.cpp
   src/waveform/guitick.cpp
   src/waveform/overviewtype.cpp
+  src/waveform/rendergate.cpp
   src/waveform/renderers/glwaveformrenderbackground.cpp
   src/waveform/renderers/glvsynctestrenderer.cpp
   src/waveform/renderers/waveformmark.cpp
@@ -2754,6 +2771,7 @@ if(BUILD_TESTING)
     src/test/enginebufferscalelineartest.cpp
     src/test/enginebuffertest.cpp
     src/test/decklabtest.cpp
+    src/test/decklabperfenginetest.cpp
     src/test/waveformmarklabeltest.cpp
     src/test/enginefilterbiquadtest.cpp
     src/test/enginemixertest.cpp

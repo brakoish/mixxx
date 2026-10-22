@@ -164,7 +164,11 @@ double VisualPlayPosition::getAtNextVSync(VSyncTimeProvider* pSyncTimeProvider) 
 void VisualPlayPosition::getPlaySlipAtNextVSync(
         VSyncTimeProvider* pSyncTimeProvider,
         double* pPlayPosition,
-        double* pSlipPosition) {
+        double* pSlipPosition,
+        double* pMotionRate) {
+    if (pMotionRate) {
+        *pMotionRate = 0.0;
+    }
     if (m_valid.load()) {
         const VisualPlayPositionData data = m_data.getValue();
         const double offset = calcOffsetAtNextVSync(pSyncTimeProvider, data);
@@ -172,10 +176,15 @@ void VisualPlayPosition::getPlaySlipAtNextVSync(
         double interpolatedPlayPos = determinePlayPosInLoopBoundries(data, offset);
         *pPlayPosition = interpolatedPlayPos;
 
-        if (data.m_slipModeState == SlipModeState::Running) {
+        const bool slipRunning = data.m_slipModeState == SlipModeState::Running;
+        if (slipRunning) {
             *pSlipPosition = data.m_slipPos + offset * data.m_slipRate;
         } else {
             *pSlipPosition = interpolatedPlayPos;
+        }
+        if (pMotionRate) {
+            *pMotionRate = std::abs(data.m_playRate) +
+                    (slipRunning ? std::abs(data.m_slipRate) : 0.0);
         }
     }
 }

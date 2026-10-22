@@ -2,6 +2,7 @@
 
 #include <QList>
 #include <QString>
+#include <atomic>
 
 #include "audio/types.h"
 #include "preferences/usersettings.h"
@@ -19,6 +20,18 @@ class SoundDevice {
   public:
     SoundDevice(UserSettingsPointer config, SoundManager* sm);
     virtual ~SoundDevice() = default;
+
+    /// Number of devices SoundManager currently has open, i.e. whose
+    /// real-time callbacks may run. Main-thread preparation that replaces
+    /// state used by the audio thread (LV2 re-instantiation) requires 0.
+    /// Thread safe.
+    static int openDeviceCount() {
+        return s_openDeviceCount.load(std::memory_order_acquire);
+    }
+    /// Called by SoundManager (main thread) after opening or closing devices.
+    static void publishOpenDeviceCount(int count) {
+        s_openDeviceCount.store(count, std::memory_order_release);
+    }
 
     inline const SoundDeviceId& getDeviceId() const {
         return m_deviceId;
@@ -90,6 +103,9 @@ class SoundDevice {
     SINT m_configFramesPerBuffer;
     QList<AudioOutputBuffer> m_audioOutputs;
     QList<AudioInputBuffer> m_audioInputs;
+
+  private:
+    static std::atomic<int> s_openDeviceCount;
 };
 
 typedef QSharedPointer<SoundDevice> SoundDevicePointer;

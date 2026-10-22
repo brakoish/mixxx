@@ -29,6 +29,18 @@ class WGLWidget : public QWidget {
 
     void swapBuffers();
 
+    /// Deck Lab render gate: show, resize and expose of the native window
+    /// request a full render and swap of the next frame, so skipped frames
+    /// can never leave stale or black content behind.
+    void requestGLRender() {
+        m_glRenderRequested = true;
+    }
+    bool takeGLRenderRequest() {
+        const bool requested = m_glRenderRequested;
+        m_glRenderRequested = false;
+        return requested;
+    }
+
     // called (indirectly) by WaveformWidgetFactory
     virtual void paintGL();
     // called by OpenGLWindow
@@ -43,6 +55,7 @@ class WGLWidget : public QWidget {
   protected:
     void showEvent(QShowEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
+    bool eventFilter(QObject* pWatched, QEvent* pEvent) override;
 
     QPaintDevice* paintDevice();
 
@@ -50,4 +63,5 @@ class WGLWidget : public QWidget {
     OpenGLWindow* m_pOpenGLWindow;
     QWidget* m_pContainerWidget;
     TrackDropTarget* m_pTrackDropTarget;
+    bool m_glRenderRequested;
 };

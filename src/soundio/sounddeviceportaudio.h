@@ -83,6 +83,15 @@ class SoundDevicePortAudio : public SoundDevice {
     QString m_lastError;
     // Whether we have set the thread priority to realtime or not.
     bool m_bSetThreadPriority;
+    // DECKLAB_AUDIO_CPU, parsed on the main thread in open(); -1 = unset.
+    int m_audioCpu;
+    // Set by open() when a pin is configured; the first clock-reference
+    // callback consumes it, so pthread_setaffinity_np runs once per stream.
+    std::atomic<bool> m_audioCpuPinPending;
+    // DECKLAB_AUDIO_PRIO, parsed on the main thread in open(); -1 = unset.
+    int m_audioPriority;
+    // Same once-per-stream guard for pthread_setschedparam.
+    std::atomic<bool> m_audioPriorityPending;
     PollingControlProxy m_audioLatencyUsage;
     mixxx::Duration m_timeInAudioCallback;
     int m_framesSinceAudioLatencyUsageUpdate;

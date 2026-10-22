@@ -1,5 +1,6 @@
 #include "waveform/renderers/waveformwidgetrenderer.h"
 
+#include <QObject>
 #include <QPainter>
 #include <QPainterPath>
 
@@ -8,6 +9,7 @@
 #include "util/assert.h"
 #include "util/math.h"
 #include "waveform/isynctimeprovider.h"
+#include "waveform/rendergate.h"
 #include "waveform/renderers/waveformrendererabstract.h"
 #include "waveform/visualplayposition.h"
 #include "waveform/vsyncthread.h"
@@ -47,7 +49,9 @@ WaveformWidgetRenderer::WaveformWidgetRenderer(const QString& group)
           m_scaleFactor(1.0),
           m_playMarkerPosition(s_defaultPlayMarkerPosition),
           m_pContext(nullptr),
-          m_passthroughEnabled(false) {
+          m_passthroughEnabled(false),
+          m_visualMotionRate(0.0),
+          m_renderRequested(true) {
     //qDebug() << "WaveformWidgetRenderer";
     for (int type = ::WaveformRendererAbstract::Play;
             type <= ::WaveformRendererAbstract::Slip;
@@ -125,6 +129,7 @@ bool WaveformWidgetRenderer::init() {
 }
 
 void WaveformWidgetRenderer::onPreRender(VSyncTimeProvider* vsyncThread) {
+    m_visualMotionRate = 0.0;
     if (m_passthroughEnabled) {
         // disables renderers in draw()
         for (int type = ::WaveformRendererAbstract::Play;
@@ -165,7 +170,8 @@ void WaveformWidgetRenderer::onPreRender(VSyncTimeProvider* vsyncThread) {
     double truePos[2]{0};
     m_visualPlayPosition->getPlaySlipAtNextVSync(vsyncThread,
             truePos + ::WaveformRendererAbstract::Play,
-            truePos + ::WaveformRendererAbstract::Slip);
+            truePos + ::WaveformRendererAbstract::Slip,
+            &m_visualMotionRate);
     // truePlayPos = -1 happens, when a new track is in buffer but m_visualPlayPosition was not updated
 
     if (m_audioSamplePerPixel > 0) {
@@ -379,6 +385,7 @@ void WaveformWidgetRenderer::drawPassthroughLabel(QPainter* painter) {
 
 void WaveformWidgetRenderer::setPassThroughEnabled(bool enabled) {
     m_passthroughEnabled = enabled;
+    m_renderRequested = true;
     // Nothing to do if passthrough is disabled
     if (!enabled) {
         return;
@@ -396,6 +403,7 @@ void WaveformWidgetRenderer::resizeRenderer(int width, int height, float deviceP
     m_width = width;
     m_height = height;
     m_devicePixelRatio = devicePixelRatio;
+    m_renderRequested = true;
     for (int i = 0; i < m_rendererStack.size(); ++i) {
         m_rendererStack[i]->setDirty(true);
         m_rendererStack[i]->onResize();
@@ -424,6 +432,8 @@ void WaveformWidgetRenderer::setup(
         m_rendererStack[i]->setup(node, context);
     }
     m_passthroughLabelColor = m_colors.getPassthroughLabelColor();
+    // Skin/theme colours changed.
+    m_renderRequested = true;
 }
 
 void WaveformWidgetRenderer::setZoom(double zoom) {
@@ -449,6 +459,83 @@ void WaveformWidgetRenderer::setTrack(TrackPointer track) {
     for (int i = 0; i < m_rendererStack.size(); ++i) {
         m_rendererStack[i]->onSetTrack();
     }
+
+    // Render gate: anything the track owns that a paused waveform draws
+    // (cues, beat grid, waveform data, stems) forces the next frame. Replacing
+    // the context object drops the previous track's connections.
+    m_pTrackSignalContext = std::make_unique<QObject>();
+    m_renderRequested = true;
+    if (track) {
+        const auto request = [this] {
+            m_renderRequested = true;
+        };
+        QObject* pContext = m_pTrackSignalContext.get();
+        QObject::connect(track.get(), &Track::cuesUpdated, pContext, request);
+        QObject::connect(track.get(), &Track::beatsUpdated, pContext, request);
+        QObject::connect(track.get(), &Track::waveformUpdated, pContext, request);
+        QObject::connect(track.get(), &Track::analyzed, pContext, request);
+#ifdef __STEM__
+        QObject::connect(track.get(), &Track::stemsUpdated, pContext, request);
+#endif
+    }
+}
+
+quint64 WaveformWidgetRenderer::renderStateKey() const {
+    RenderStateHasher hasher;
+    hasher.addPointer(m_pTrack.get());
+    hasher.addDouble(m_trackSamples);
+    hasher.addBool(m_passthroughEnabled);
+    // m_pos is already rounded to whole track pixels, so sub-pixel jitter of
+    // a paused deck does not count as a change.
+    for (int type = ::WaveformRendererAbstract::Play;
+            type <= ::WaveformRendererAbstract::Slip;
+            type++) {
+        hasher.addDouble(m_pos[type]);
+        hasher.addDouble(m_firstDisplayedPosition[type]);
+        hasher.addDouble(m_lastDisplayedPosition[type]);
+    }
+    hasher.addDouble(m_zoomFactor);
+    hasher.addDouble(m_visualSamplePerPixel);
+    hasher.addDouble(m_audioSamplePerPixel);
+    hasher.addDouble(m_gain);
+    hasher.addInt(m_width);
+    hasher.addInt(m_height);
+    hasher.addDouble(m_devicePixelRatio);
+    hasher.addDouble(m_playMarkerPosition);
+    hasher.addInt(m_alphaBeatGrid);
+    hasher.addInt(static_cast<qint64>(m_orientation));
+    hasher.addDouble(m_scaleFactor);
+#ifdef __STEM__
+    hasher.addInt(static_cast<qint64>(m_selectedStems));
+#endif
+    if (m_pTrack) {
+        // Analysis fills the waveform progressively; completion advances.
+        const ConstWaveformPointer& pWaveform = m_pTrack->getWaveform();
+        hasher.addPointer(pWaveform.get());
+        if (pWaveform) {
+            hasher.addInt(pWaveform->getCompletion());
+            hasher.addInt(pWaveform->getDataSize());
+        }
+    }
+    for (const auto* pRenderer : std::as_const(m_rendererStack)) {
+        pRenderer->appendRenderState(&hasher);
+        // Catch the last frame of an animation (e.g. the end-of-track
+        // warning switching off) even though nothing else changed.
+        hasher.addBool(pRenderer->isAnimating());
+    }
+    return hasher.value();
+}
+
+bool WaveformWidgetRenderer::needsContinuousRender() const {
+    if (m_visualMotionRate != 0.0) {
+        return true;
+    }
+    for (const auto* pRenderer : std::as_const(m_rendererStack)) {
+        if (pRenderer->isAnimating()) {
+            return true;
+        }
+    }
+    return false;
 }
 
 ConstWaveformPointer WaveformWidgetRenderer::getWaveform() const {

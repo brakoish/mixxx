@@ -8,6 +8,7 @@
 
 #include "control/controlobject.h"
 #include "sounddevicenetwork.h"
+#include "soundio/decklabthreadpolicy.h"
 #include "soundio/sounddevice.h"
 #include "soundio/soundmanager.h"
 #include "soundio/soundmanagerutil.h"
@@ -92,6 +93,10 @@ SoundDevicePortAudio::SoundDevicePortAudio(UserSettingsPointer config,
           m_outputDrift(false),
           m_inputDrift(false),
           m_bSetThreadPriority(false),
+          m_audioCpu(-1),
+          m_audioCpuPinPending(false),
+          m_audioPriority(-1),
+          m_audioPriorityPending(false),
           m_audioLatencyUsage(kAppGroup, QStringLiteral("audio_latency_usage")),
           m_framesSinceAudioLatencyUsageUpdate(0),
           m_syncBuffers(2),
@@ -253,6 +258,13 @@ SoundDeviceStatus SoundDevicePortAudio::open(bool isClkRefDevice, int syncBuffer
     m_lastCallbackEntrytoDacSecs = bufferMSec / 1000.0;
 
     m_syncBuffers = syncBuffers;
+
+    // Deck Lab: the environment is read here, on the main thread. Only the
+    // clock-reference callback (the thread that runs the engine) pins itself.
+    m_audioCpu = isClkRefDevice ? mixxx::decklab::audioCpuFromEnvironment() : -1;
+    m_audioCpuPinPending.store(m_audioCpu >= 0, std::memory_order_release);
+    m_audioPriority = isClkRefDevice ? mixxx::decklab::audioPriorityFromEnvironment() : -1;
+    m_audioPriorityPending.store(m_audioPriority > 0, std::memory_order_release);
 
     // Create the callback function pointer.
     PaStreamCallback* pCallback = nullptr;
@@ -943,6 +955,34 @@ int SoundDevicePortAudio::callbackProcessClkRef(
     //qDebug() << "SoundDevicePortAudio::callbackProcess:" << m_deviceId;
 
     if (!m_bSetThreadPriority) {
+        // One-time setup of this callback thread; never repeated in the
+        // steady state. DECKLAB_AUDIO_CPU pins the engine thread away from
+        // the CPU that services hardware interrupts.
+        if (m_audioCpuPinPending.exchange(false, std::memory_order_acq_rel)) {
+            QString error;
+            if (mixxx::decklab::pinCurrentThreadToCpu(m_audioCpu, &error)) {
+                qInfo() << "DECKLAB_AUDIO_CPU: audio callback thread pinned to CPU"
+                        << m_audioCpu;
+            } else {
+                qWarning() << "DECKLAB_AUDIO_CPU: could not pin audio callback thread to CPU"
+                           << m_audioCpu << ":" << error;
+            }
+        }
+        // DECKLAB_AUDIO_PRIO: PortAudio's ALSA host makes this thread
+        // SCHED_FIFO 1, below threaded IRQ handlers. Raise it once; without
+        // an rtprio limit (EPERM) log once and keep running as is.
+        if (m_audioPriorityPending.exchange(false, std::memory_order_acq_rel)) {
+            QString error;
+            int priority = 0;
+            if (mixxx::decklab::raiseCurrentThreadToFifo(m_audioPriority, &error, &priority)) {
+                qInfo() << "DECKLAB_AUDIO_PRIO: audio callback thread runs SCHED_FIFO"
+                        << priority;
+            } else {
+                qWarning() << "DECKLAB_AUDIO_PRIO: could not raise audio callback thread to"
+                           << "SCHED_FIFO" << m_audioPriority << ":" << error
+                           << "(current real-time priority" << priority << ")";
+            }
+        }
 #ifdef __LINUX__
         // Verify if we are a thread with "real-time" policy.
         // The audio thread on Linux should be set to SCHED_FIFO with a priority

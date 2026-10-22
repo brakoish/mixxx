@@ -62,6 +62,10 @@ void WaveformRendererEndOfTrack::setup(const QDomNode& node, const SkinContext& 
     }
 }
 
+bool WaveformRendererEndOfTrack::isAnimating() const {
+    return m_pEndOfTrackControl && m_pEndOfTrackControl->toBool();
+}
+
 void WaveformRendererEndOfTrack::preprocess() {
     if (!preprocessInner()) {
         geometry().allocate(0);

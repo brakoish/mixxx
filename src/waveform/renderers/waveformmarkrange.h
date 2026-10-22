@@ -10,6 +10,7 @@
 
 QT_FORWARD_DECLARE_CLASS(QDomNode);
 
+class RenderStateHasher;
 class SkinContext;
 class WaveformSignalColors;
 
@@ -55,6 +56,9 @@ class WaveformMarkRange {
     double end() const;
 
     bool showDuration() const;
+
+    /// Deck Lab render gate: the ControlObject values this range draws.
+    void appendRenderState(RenderStateHasher* pHasher) const;
 
     enum class DurationTextLocation {
         Before = 0,

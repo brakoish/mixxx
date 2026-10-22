@@ -10,6 +10,7 @@
 #include "skin/legacy/skincontext.h"
 #include "util/performancetimer.h"
 #include "util/singleton.h"
+#include "waveform/rendergate.h"
 #include "waveform/renderers/allshader/waveformrenderersignalbase.h"
 #include "waveform/widgets/waveformwidgettype.h"
 #include "waveform/widgets/waveformwidgetvars.h"
@@ -101,6 +102,10 @@ class WaveformWidgetHolder {
     WWaveformViewer* m_waveformViewer;
     QDomNode m_skinNodeCache;
     SkinContext m_skinContextCache;
+    // Deck Lab render-on-demand state for this waveform.
+    RenderGate m_renderGate;
+    // Rendered in the last render pass and not yet swapped.
+    bool m_pendingSwap = false;
 
     friend class WaveformWidgetFactory;
 };
@@ -284,6 +289,10 @@ class WaveformWidgetFactory : public QObject,
     WaveformWidgetFactory();
     virtual ~WaveformWidgetFactory();
 
+    /// Input on a waveform viewer (touch scratch, hover over marks, wheel
+    /// zoom) forces that waveform's next frame.
+    bool eventFilter(QObject* pWatched, QEvent* pEvent) override;
+
     friend class Singleton<WaveformWidgetFactory>;
 
   private slots:
@@ -295,6 +304,9 @@ class WaveformWidgetFactory : public QObject,
   private:
     void renderSelf();
     void swapSelf();
+    /// Forces the next frame of every waveform (settings shared by all).
+    void requestRenderAll();
+    void finishPerfTick(qint64 swapNanos);
 
     void addHandle(
             QHash<WaveformWidgetType::Type, QList<WaveformWidgetBackend>>&
@@ -368,4 +380,16 @@ class WaveformWidgetFactory : public QObject,
     double m_actualFrameRate;
     int m_vSyncType;
     double m_playMarkerPosition;
+
+    // Deck Lab render gate and DECKLAB_PERF_LOG instrumentation
+    const bool m_renderGateEnabled;
+    const bool m_perfLogEnabled;
+    PerformanceTimer m_renderGateClock;
+    PerformanceTimer m_perfWindowTimer;
+    PerformanceTimer m_perfSlotTimer;
+    qint64 m_perfTickNanos;
+    quint64 m_perfTicks;
+    qint64 m_perfTickNanosSum;
+    qint64 m_perfTickNanosMax;
+    int m_perfDroppedFramesBaseline;
 };

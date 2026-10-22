@@ -12,6 +12,7 @@
 #include "track/track.h"
 #include "util/assert.h"
 #include "util/math.h"
+#include "waveform/rendergate.h"
 #include "waveform/renderers/waveformwidgetrenderer.h"
 #include "waveform/waveform.h"
 #include "waveform/waveformwidgetfactory.h"
@@ -93,6 +94,22 @@ bool WaveformRendererStem::init() {
             &WaveformRendererStem::setOpacity);
 #endif
     return true;
+}
+
+void WaveformRendererStem::appendRenderState(RenderStateHasher* pHasher) const {
+    allshader::WaveformRendererSignalBase::appendRenderState(pHasher);
+    pHasher->addBool(m_splitStemTracks);
+    pHasher->addDouble(m_outlineOpacity);
+    pHasher->addDouble(m_opacity);
+    for (const auto& pGain : m_pStemGain) {
+        pHasher->addDouble(pGain->get());
+    }
+    for (const auto& pMute : m_pStemMute) {
+        pHasher->addDouble(pMute->get());
+    }
+    for (int stem : m_stackOrder) {
+        pHasher->addInt(stem);
+    }
 }
 
 void WaveformRendererStem::preprocess() {

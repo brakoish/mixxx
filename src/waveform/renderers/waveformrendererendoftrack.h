@@ -21,6 +21,7 @@ class WaveformRendererEndOfTrack : public WaveformRendererAbstract {
     virtual void setup(const QDomNode& node, const SkinContext& context);
     virtual void onResize();
     virtual void draw(QPainter* painter, QPaintEvent* event);
+    bool isAnimating() const override;
 
   private:
     void generateBackRects();

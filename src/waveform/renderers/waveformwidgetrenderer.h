@@ -1,5 +1,7 @@
 #pragma once
 
+#include <memory>
+
 #include "track/track_decl.h"
 #include "util/class.h"
 #include "waveform/renderers/waveformmark.h"
@@ -10,6 +12,8 @@
 //#define WAVEFORMWIDGETRENDERER_DEBUG
 
 class ControlProxy;
+class QObject;
+class RenderStateHasher;
 class VisualPlayPosition;
 class VSyncTimeProvider;
 class QPainter;
@@ -210,6 +214,23 @@ class WaveformWidgetRenderer {
         return m_pContext;
     }
 
+    // Deck Lab render gate (see waveform/rendergate.h).
+    /// Fingerprint of everything the renderer stack draws for the frame
+    /// prepared by the last onPreRender() call.
+    quint64 renderStateKey() const;
+    /// True while the deck moves (play/scratch/slip rate != 0) or a renderer
+    /// animates. Valid after onPreRender().
+    bool needsContinuousRender() const;
+    /// The next visible frame renders and swaps regardless of state.
+    void requestRender() {
+        m_renderRequested = true;
+    }
+    bool takeRenderRequest() {
+        const bool requested = m_renderRequested;
+        m_renderRequested = false;
+        return requested;
+    }
+
   protected:
     QString m_group;
     TrackPointer m_pTrack;
@@ -276,4 +297,10 @@ private:
     bool m_passthroughEnabled;
     double m_pos[2];
     double m_truePosSample[2];
+
+    // Render gate inputs
+    double m_visualMotionRate;
+    bool m_renderRequested;
+    // Owns the connections to the loaded track's change signals.
+    std::unique_ptr<QObject> m_pTrackSignalContext;
 };
