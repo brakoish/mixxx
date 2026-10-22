@@ -5,6 +5,7 @@
 
 #include <QSet>
 #include <QVector>
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <memory>
@@ -273,20 +274,30 @@ TEST_F(DeckLabRendererStateTest, KeyFollowsWholePixelsZoomSizeAndMarkerOnly) {
     EXPECT_TRUE(renderer.takeRenderRequest());
 }
 
-TEST(DeckLabThreadPolicyTest, AudioCpuParsingAcceptsOnlyPlainIndicesBelowTheCpuCount) {
-    using mixxx::decklab::parseCpuIndex;
-    EXPECT_EQ(3, parseCpuIndex("3", 4));
-    EXPECT_EQ(0, parseCpuIndex("0", 4));
-    EXPECT_EQ(2, parseCpuIndex(" 2\n", 4));
-    EXPECT_EQ(-1, parseCpuIndex("4", 4));
-    EXPECT_EQ(-1, parseCpuIndex("", 4));
-    EXPECT_EQ(-1, parseCpuIndex("-1", 4));
-    EXPECT_EQ(-1, parseCpuIndex("+1", 4));
-    EXPECT_EQ(-1, parseCpuIndex("1x", 4));
-    EXPECT_EQ(-1, parseCpuIndex("0x1", 4));
-    EXPECT_EQ(-1, parseCpuIndex("1,2", 4));
-    EXPECT_EQ(-1, parseCpuIndex("99999999999999999999", 4));
-    EXPECT_EQ(-1, parseCpuIndex("1", 0));
+TEST(DeckLabThreadPolicyTest, AudioCpuAcceptsLastOrAUsableIndexOnly) {
+    using mixxx::decklab::resolveAudioCpu;
+    const std::vector<int> pi{0, 1, 2, 3};
+    EXPECT_EQ(3, resolveAudioCpu("last", pi));
+    EXPECT_EQ(3, resolveAudioCpu(" last\n", pi));
+    EXPECT_EQ(3, resolveAudioCpu("3", pi));
+    EXPECT_EQ(0, resolveAudioCpu("0", pi));
+    EXPECT_EQ(2, resolveAudioCpu(" 2\n", pi));
+    // Out of range or not usable: ignored, never an error.
+    EXPECT_EQ(-1, resolveAudioCpu("4", pi));
+    EXPECT_EQ(-1, resolveAudioCpu("", pi));
+    EXPECT_EQ(-1, resolveAudioCpu("-1", pi));
+    EXPECT_EQ(-1, resolveAudioCpu("+1", pi));
+    EXPECT_EQ(-1, resolveAudioCpu("1x", pi));
+    EXPECT_EQ(-1, resolveAudioCpu("0x1", pi));
+    EXPECT_EQ(-1, resolveAudioCpu("1,2", pi));
+    EXPECT_EQ(-1, resolveAudioCpu("LAST", pi));
+    EXPECT_EQ(-1, resolveAudioCpu("99999999999999999999", pi));
+    // A cpuset that excludes some CPUs (container, isolcpus, offline CPU).
+    const std::vector<int> restricted{0, 2};
+    EXPECT_EQ(2, resolveAudioCpu("last", restricted));
+    EXPECT_EQ(-1, resolveAudioCpu("1", restricted));
+    EXPECT_EQ(-1, resolveAudioCpu("last", {}));
+    EXPECT_FALSE(mixxx::decklab::usableCpus().empty());
 }
 
 TEST(DeckLabThreadPolicyTest, EnvironmentSwitchesDefaultToUpstreamBehaviour) {
@@ -298,8 +309,13 @@ TEST(DeckLabThreadPolicyTest, EnvironmentSwitchesDefaultToUpstreamBehaviour) {
     EXPECT_FALSE(mixxx::decklab::analyzerIdleRequested());
     EXPECT_TRUE(mixxx::decklab::renderGateEnabledFromEnvironment());
     EXPECT_FALSE(mixxx::decklab::perfLogEnabledFromEnvironment());
-    qputenv("DECKLAB_AUDIO_CPU", "0");
-    EXPECT_EQ(0, mixxx::decklab::audioCpuFromEnvironment());
+    const std::vector<int> usable = mixxx::decklab::usableCpus();
+    ASSERT_FALSE(usable.empty());
+    qputenv("DECKLAB_AUDIO_CPU", QByteArray::number(usable.front()));
+    EXPECT_EQ(usable.front(), mixxx::decklab::audioCpuFromEnvironment());
+    qputenv("DECKLAB_AUDIO_CPU", "last");
+    EXPECT_EQ(*std::max_element(usable.begin(), usable.end()),
+            mixxx::decklab::audioCpuFromEnvironment());
     qputenv("DECKLAB_AUDIO_CPU", "4096");
     EXPECT_EQ(-1, mixxx::decklab::audioCpuFromEnvironment());
     qputenv("DECKLAB_ANALYZER_IDLE", "1");

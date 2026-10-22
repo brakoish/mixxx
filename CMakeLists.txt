@@ -476,9 +476,12 @@ if(UNIX AND NOT APPLE)
   set_target_properties(decklab-performance PROPERTIES PREFIX "" OUTPUT_NAME "performance")
   target_link_libraries(decklab-performance PRIVATE m)
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
-    # Raspberry Pi 4 (Cortex-A72) RMX hot loop. Never -ffast-math: it would
-    # remove the isfinite() guards. -fno-math-errno only lets libm calls inline.
-    target_compile_options(decklab-performance PRIVATE -O3 -mcpu=cortex-a72 -fno-math-errno)
+    # RMX hot loop. Baseline ARMv8-A code tuned for the Pi 4 (Cortex-A72), so
+    # the single aarch64 Flatpak also runs on the Pi 5 and other ARMv8 boards.
+    # Never -ffast-math: it would remove the isfinite() guards.
+    # -fno-math-errno only lets libm calls inline.
+    target_compile_options(decklab-performance PRIVATE
+      -O3 -march=armv8-a -mtune=cortex-a72 -fno-math-errno)
   endif()
   install(TARGETS decklab-performance LIBRARY DESTINATION lib/lv2/performance.lv2)
   install(FILES res/decklab/performance.lv2/manifest.ttl res/decklab/performance.lv2/performance.ttl

@@ -1,7 +1,9 @@
 #include "soundio/decklabthreadpolicy.h"
 
+#include <QStringList>
 #include <QThread>
 #include <QtDebug>
+#include <algorithm>
 
 #ifdef __LINUX__
 #include <errno.h>
@@ -16,10 +18,17 @@
 namespace mixxx {
 namespace decklab {
 
-int parseCpuIndex(const QByteArray& value, int cpuCount) {
+int resolveAudioCpu(const QByteArray& value, const std::vector<int>& cpus) {
     const QByteArray trimmed = value.trimmed();
-    if (trimmed.isEmpty() || cpuCount <= 0) {
+    if (trimmed.isEmpty() || cpus.empty()) {
         return -1;
+    }
+    if (trimmed == "last") {
+        int last = -1;
+        for (const int cpu : cpus) {
+            last = std::max(last, cpu);
+        }
+        return last;
     }
     for (const char c : trimmed) {
         if (c < '0' || c > '9') {
@@ -28,10 +37,38 @@ int parseCpuIndex(const QByteArray& value, int cpuCount) {
     }
     bool ok = false;
     const int cpu = trimmed.toInt(&ok, 10);
-    if (!ok || cpu < 0 || cpu >= cpuCount) {
+    if (!ok) {
         return -1;
     }
-    return cpu;
+    for (const int usable : cpus) {
+        if (usable == cpu) {
+            return cpu;
+        }
+    }
+    return -1;
+}
+
+std::vector<int> usableCpus() {
+    std::vector<int> cpus;
+#ifdef __LINUX__
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (pthread_getaffinity_np(pthread_self(), sizeof(set), &set) == 0) {
+        for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+            if (CPU_ISSET(cpu, &set)) {
+                cpus.push_back(cpu);
+            }
+        }
+    }
+    if (!cpus.empty()) {
+        return cpus;
+    }
+#endif
+    const int count = std::max(1, QThread::idealThreadCount());
+    for (int cpu = 0; cpu < count; ++cpu) {
+        cpus.push_back(cpu);
+    }
+    return cpus;
 }
 
 int audioCpuFromEnvironment() {
@@ -39,16 +76,16 @@ int audioCpuFromEnvironment() {
         return -1;
     }
     const QByteArray value = qgetenv("DECKLAB_AUDIO_CPU");
-#ifdef __LINUX__
-    const long configured = sysconf(_SC_NPROCESSORS_CONF);
-    const int cpuCount = configured > 0 ? static_cast<int>(configured) : QThread::idealThreadCount();
-#else
-    const int cpuCount = QThread::idealThreadCount();
-#endif
-    const int cpu = parseCpuIndex(value, cpuCount);
+    const std::vector<int> cpus = usableCpus();
+    const int cpu = resolveAudioCpu(value, cpus);
     if (cpu < 0) {
-        qWarning() << "DECKLAB_AUDIO_CPU ignored: expected a CPU index below"
-                   << cpuCount << "but got" << value;
+        QStringList usable;
+        for (const int each : cpus) {
+            usable << QString::number(each);
+        }
+        qWarning() << "DECKLAB_AUDIO_CPU ignored:" << value
+                   << "is not \"last\" or one of the usable CPUs"
+                   << usable.join(QLatin1Char(','));
     }
     return cpu;
 }
