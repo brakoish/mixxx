@@ -20,11 +20,15 @@
     "SeratoBeatGridTest.*",
     "NativeDeckLabTest.*",
     "DeckLabTempoTest.*",
-    "WaveformMarkLabelTest.*"
+    "WaveformMarkLabelTest.*",
+    "DeckLabRenderGateTest.*",
+    "DeckLabRendererStateTest.*",
+    "DeckLabThreadPolicyTest.*",
+    "DeckLabLv2SafetyTest.*"
   ],
   "input_sha256": {
     ".github/workflows/decklab-pi.yml": "2b1e5494635b467ae697bc5b86cbffed23d9c9d5994512ff6226d4e3908dc047",
-    "CMakeLists.txt": "9a01d6ab07189284b443917182ca4f5864a440592922d9d180ac59623bde0cb8",
+    "CMakeLists.txt": "b53f1d189c66514b3c5cc4281cd2b41cf3d590c5c3834cced4a05dea96796937",
     "packaging/flatpak/modules/benchmark.yaml": "a85079134b2e8e9a2f837d400030039293e41870d4bf79d761cb4126309591f1",
     "packaging/flatpak/modules/chromaprint.yaml": "b0507a6d98aa75d7d37b7fc33f7fc2f03291ebd59a40711897dfbb0e398b30f2",
     "packaging/flatpak/modules/fdk-aac-free.yaml": "b136e1164587f580267e46cd98afe5fe021ee0e0aa450bffe720ea298b81c6db",
@@ -58,9 +62,9 @@
     "src/coreservices.cpp": "597671d7f56fdb45a968ec18eb802e06acc2f5713ce6bfe6e4b634448f41d1b3",
     "src/effects/backends/effectprocessor.h": "941a3caf9bbee5651f5285ad9afb38c8735ca51c3be1b719cf8582f0be22dc1f",
     "src/effects/backends/lv2/lv2backend.cpp": "458f972ebb7cb22ae65bc756374c4d840de958a6cb156db753e559ed7e3bda4b",
-    "src/effects/backends/lv2/lv2effectprocessor.cpp": "58e4a17ff470c2ff0c3d4ed2d990705e3cf3ddcad50c2998d75014ba5d71d06b",
-    "src/effects/backends/lv2/lv2effectprocessor.h": "b6f7b7e302ce08267a0ee62416a47110abc8531c77e1907978a8f46f1c62eb85",
-    "src/effects/decklab/performance.c": "e2de8a224c6a78ca8b6b999aa4c6a3348be9b8ad1741d0cff748896315459597",
+    "src/effects/backends/lv2/lv2effectprocessor.cpp": "2141c52c7718e19137bc47221fc12c44e9ad228d9915716420cc856ee243b5a4",
+    "src/effects/backends/lv2/lv2effectprocessor.h": "44306bda6726e1bcb39f09be8b64673fab205cd473261bb5bcd52dbec594c871",
+    "src/effects/decklab/performance.c": "79988844033ad63f4ddb53403f7087ced563a5f129050d56ff5a61f63163ad01",
     "src/effects/effectslot.cpp": "c33ebd8d70170e0e8d60e3828ddc9cc5f53bc72869e82b7f3956f3c2baf84908",
     "src/effects/effectslot.h": "5ca27ca42846e44c51aec9c5db9aa789fd793cd3a0d6a53744db014f13966693",
     "src/effects/effectsmanager.cpp": "7faf537e56799109c3b73aaa84fc983f37a468629555d2469daa9c901ff8c78a",
@@ -77,7 +81,7 @@
     "src/mixxxmainwindow.cpp": "7767977c8a76ca973c14604fb98a8bb133a617a09a05da89a9b482d09e487140",
     "src/skin/legacy/legacyskinparser.cpp": "254c50570df8b039f87bd16c2d178a20f31858df960f15a2c6c267a9d9041f7f",
     "src/skin/legacy/legacyskinparser.h": "1e8e11e088f90d8002364f9aaf9319fd7efcb1f89a78cb5db404bd055bf4b98d",
-    "src/soundio/soundmanager.cpp": "1958fb8e472e772ab631aa38abe999e854fa258324d49190286896120adbf9f1",
+    "src/soundio/soundmanager.cpp": "f3afbedb6bc64a7845e610bec621ae4aa68a13a7ba72f0dec12c1e3b089d8b34",
     "src/test/decklabtest.cpp": "28dcc66f8065f6c1ae0f1e39b5a91ba451c198a90d3fc1cc155af6af604ea3c9",
     "src/test/enginebuffertest.cpp": "660b2189396c9fd611d350350fa9745c3cea11701291d63ef3fef5b4b3dc05f4",
     "src/test/waveformmarklabeltest.cpp": "f4c2d07d5f191ca9b99a3e8dc903c9ea5d84b9bf866995ba569153a3f872a6b5",
@@ -95,14 +99,14 @@
     "src/widget/wdecklab.cpp": "7e01acc42770a11097b4ea36dd33d069751554eebd703e0aa6355ad0a1f82096",
     "src/widget/wdecklab.h": "f4cf807120cf0891b7e3df9e357d5ce3d0295d38dcac581cf56553859ca6189c",
     "src/widget/wlibrary.cpp": "baa2d68e96a74312b4137ca04e7338b551df0aa7649601825503aa6d4bca5435",
-    "src/widget/woverview.cpp": "7a0065a5149116c2f10ef5a73000d93e80d069f273cea8f68dd8ed13ac757909",
+    "src/widget/woverview.cpp": "163000801257c9760bf45f09191fda7f87501007a0793994663a81484ebb819c",
     "src/widget/woverview.h": "d70cd480ecc86fd08b200cf0260936ed0e99d7da809fe0caaa73daf58614f9eb",
     "src/widget/wtracktableview.cpp": "ef3dd56a8e69d7f13322b153b7869b419ea6b81f54261a3cd89561d7756a4c27",
     "src/widget/wtracktableview.h": "7beedabaf6c3591bdc0395a5fbec5ceafbe0373b6bdfb5f01a298c455795e196",
     "src/widget/wtracktableviewheader.cpp": "f3df34a95f92674a17d51c18de32e354b9174e1e717a1f51339237fd883398b5",
     "tools/decklab/build_pi.py": "9587435c9e20153e68b80f9034e501b64cdd17614b42a196d33c27df4396778e",
     "tools/decklab/test_build_pi.py": "f65f07cb5157f54c5455ea884395c4d825d3504d3c1a66880223875a54e2778d",
-    "tools/decklab/test_dsp.py": "a3984f1da819c3820d4b1c4a9d79c90c4b2e5d4c07583427f22c0059acb05367"
+    "tools/decklab/test_dsp.py": "b496a2f0310cf8c3d1350cb651830a9d11c1978e66c98b74b4308f17744bb1e4"
   },
   "input_hash_format": "sha256 of UTF-8 source bytes with CRLF normalized to LF"
 }
