@@ -32,6 +32,8 @@ BaseTrackCache::BaseTrackCache(TrackCollection* pTrackCollection,
           m_bIndexBuilt(false),
           m_bIsCaching(isCaching),
           m_database(pTrackCollection->database()) {
+    // Filters must only reference columns this table actually has.
+    m_pQueryParser->setAvailableColumns(m_columnsJoined.split(QLatin1Char(',')));
 }
 
 BaseTrackCache::~BaseTrackCache() {

@@ -153,6 +153,82 @@ SearchQueryParser::SearchQueryParser(TrackCollection* pTrackCollection, QStringL
             QString("^[~-]?(%1):(.*)$").arg(m_specialFilters.join("|")));
 }
 
+void SearchQueryParser::setAvailableColumns(const QStringList& columns) {
+    m_availableColumns.clear();
+    for (const QString& column : columns) {
+        m_availableColumns.insert(column.section(QLatin1Char('.'), -1));
+    }
+}
+
+QStringList SearchQueryParser::sqlColumns(const QString& field) const {
+    const QStringList mapped = m_fieldToSqlColumns.value(field);
+    if (m_availableColumns.isEmpty()) {
+        return mapped;
+    }
+    QStringList present;
+    for (const QString& column : mapped) {
+        if (m_availableColumns.contains(column)) {
+            present << column;
+        }
+    }
+    // Unknown fields keep the previous behaviour rather than silently
+    // dropping the user's filter.
+    return present.isEmpty() ? mapped : present;
+}
+
+std::unique_ptr<QueryNode> SearchQueryParser::keyTextNode(
+        mixxx::track::io::key::ChromaticKey key, bool fuzzy) const {
+    // Without key_id, match the text spellings exports use for each key.
+    static const QStringList sharpTonics{"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+    static const QStringList flatTonics{"C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"};
+    QList<mixxx::track::io::key::ChromaticKey> keys;
+    if (fuzzy) {
+        keys = KeyUtils::getCompatibleKeys(key);
+    } else {
+        keys.append(key);
+    }
+    auto pNode = std::make_unique<OrNode>();
+    for (const auto matchKey : keys) {
+        QStringList spellings;
+        spellings << KeyUtils::keyToString(matchKey, KeyUtils::KeyNotation::Lancelot)
+                  << KeyUtils::keyToString(matchKey, KeyUtils::KeyNotation::OpenKey)
+                  << KeyUtils::keyToString(matchKey, KeyUtils::KeyNotation::ID3v2);
+        const QString lancelot = spellings.first();
+        if (lancelot.size() == 2) {
+            spellings << QString(QStringLiteral("0") + lancelot);
+        }
+        const bool major = KeyUtils::keyIsMajor(matchKey);
+        const int tonic = KeyUtils::keyToTonic(matchKey);
+        if (tonic >= 0 && tonic < 12) {
+            for (const QString& name : {sharpTonics[tonic], flatTonics[tonic]}) {
+                QString unicode = name;
+                unicode.replace(QLatin1Char('#'), QChar(0x266F));
+                if (unicode.size() == 2 && unicode[1] == QLatin1Char('b')) {
+                    unicode[1] = QChar(0x266D);
+                }
+                for (const QString& tonicName : {name, unicode}) {
+                    if (major) {
+                        spellings << tonicName << tonicName + QStringLiteral("maj");
+                    } else {
+                        spellings << tonicName + QLatin1Char('m') << tonicName + QStringLiteral("min");
+                    }
+                }
+            }
+        }
+        spellings.removeDuplicates();
+        for (const QString& spelling : std::as_const(spellings)) {
+            if (!spelling.isEmpty()) {
+                pNode->addNode(std::make_unique<TextFilterNode>(
+                        m_pTrackCollection->database(),
+                        QStringList{QStringLiteral("key")},
+                        spelling,
+                        StringMatch::Equals));
+            }
+        }
+    }
+    return pNode;
+}
+
 void SearchQueryParser::setSearchColumns(QStringList searchColumns) {
     m_queryColumns = std::move(searchColumns);
 
@@ -229,7 +305,7 @@ void SearchQueryParser::parseTokens(QStringList tokens,
                     qDebug() << pNode->toSql();
                 } else {
                     pNode = std::make_unique<NullOrEmptyTextFilterNode>(
-                          m_pTrackCollection->database(), m_fieldToSqlColumns[field]);
+                          m_pTrackCollection->database(), sqlColumns(field));
                     qDebug() << pNode->toSql();
                 }
             } else if (!argument.isEmpty()) {
@@ -239,7 +315,7 @@ void SearchQueryParser::parseTokens(QStringList tokens,
                 } else {
                     pNode = std::make_unique<TextFilterNode>(
                             m_pTrackCollection->database(),
-                            m_fieldToSqlColumns[field],
+                            sqlColumns(field),
                             argument,
                             matchMode);
                 }
@@ -276,6 +352,9 @@ void SearchQueryParser::parseTokens(QStringList tokens,
                             pNode = std::make_unique<TextFilterNode>(
                                     m_pTrackCollection->database(), m_fieldToSqlColumns[field], argument);
                         }
+                    } else if (!m_availableColumns.isEmpty() &&
+                            !m_availableColumns.contains(QStringLiteral("key_id"))) {
+                        pNode = keyTextNode(key, fuzzy);
                     } else {
                         pNode = std::make_unique<KeyFilterNode>(key, fuzzy);
                     }
