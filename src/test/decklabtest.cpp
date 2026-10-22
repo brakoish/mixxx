@@ -5,6 +5,8 @@
 #include <QAbstractItemDelegate>
 #include <QAbstractItemView>
 #include <QDir>
+#include <QDomDocument>
+#include <QFile>
 #include <QDialog>
 #include <QComboBox>
 #include <QLabel>
@@ -40,6 +42,11 @@
 #include "widget/wlibrarysidebar.h"
 #include "widget/wsearchlineedit.h"
 #include "widget/wwaveformviewer.h"
+#include "widget/woverview.h"
+#include "widget/controlwidgetconnection.h"
+#include "skin/legacy/skincontext.h"
+#include "util/cmdlineargs.h"
+#include "util/valuetransformer.h"
 #ifdef __LILV__
 #include "effects/backends/lv2/lv2effectprocessor.h"
 #include "effects/backends/lv2/lv2manifest.h"
@@ -146,6 +153,55 @@ class NativeDeckLabTest : public BaseSignalPathTest {
     WLibrarySidebar* sidebar = nullptr;
     WLibrary* library = nullptr;
 };
+
+TEST_F(NativeDeckLabTest, WholeTrackOverviewFollowsPositionAcrossDecksLayoutsAndResize) {
+    QFile file(QDir(CmdlineArgs::Instance().getResourcePath()).filePath("skins/DeckLab/skin.xml"));
+    ASSERT_TRUE(file.open(QIODevice::ReadOnly)); QDomDocument skin; ASSERT_TRUE(skin.setContent(&file));
+    const auto nodes=skin.elementsByTagName("Overviews").at(0).childNodes();
+    std::array<WOverview*,4> overviews{};
+    SkinContext context(config(),QString());
+    for(int deck=1;deck<=4;++deck) {
+        const QString group=QStringLiteral("[Channel%1]").arg(deck);
+        const std::array<Deck*,4> decks{m_pMixerDeck1.get(),m_pMixerDeck2.get(),m_pMixerDeck3.get(),fourthDeck.get()};
+        const auto track=decks[deck-1]->loadFakeTrack(false,128+deck);
+        ProcessBuffer();
+        QDomElement node;
+        for(int n=0;n<nodes.size();++n) {
+            auto candidate=nodes.at(n).toElement();
+            if(candidate.firstChildElement("Channel").text()==QString::number(deck)) node=candidate;
+        }
+        ASSERT_FALSE(node.isNull());
+        const auto connection=node.firstChildElement("Connection");
+        EXPECT_EQ(group+",playposition",connection.firstChildElement("ConfigKey").text());
+        ASSERT_EQ(QStringLiteral("false"),connection.firstChildElement("ConnectValueFromWidget").text());
+        auto* overview=new WOverview(group,nullptr,config(),panel.get());
+        overview->addAndSetDisplayConnection(std::make_unique<ControlParameterWidgetConnection>(overview,
+                ConfigKey(group,"playposition"),nullptr,ControlParameterWidgetConnection::DIR_TO_WIDGET,
+                ControlParameterWidgetConnection::EMIT_NEVER),WBaseWidget::ConnectionSide::None);
+        overview->setup(node,context); overview->initWithTrack(track);
+        auto* old=panel->findChild<QWidget*>(QStringLiteral("decklab-overview-%1").arg(deck)); delete old;
+        panel->addOverview(overview,deck); overviews[deck-1]=overview;
+        ControlObject::set(ConfigKey(group,"quantize"),0);
+    }
+    auto* layout=panel->findChild<QComboBox*>("decklab-deck-layout");
+    auto* waves=panel->findChild<QComboBox*>("decklab-waveform-layout");
+    for(int waveLayout : {0,1}) for(int deckLayout : {2,1,2}) {
+        waves->setCurrentIndex(waveLayout); QMetaObject::invokeMethod(waves,"activated",Q_ARG(int,waveLayout));
+        QMetaObject::invokeMethod(layout,"activated",Q_ARG(int,deckLayout)); QTest::qWait(100);
+        for(int deck=1;deck<=4;++deck) for(double fraction : {.25,.75,.5}) {
+            const QString group=QStringLiteral("[Channel%1]").arg(deck);
+            ControlObject::set(ConfigKey(group,"playposition"),fraction); ProcessBuffer(); QTest::qWait(30);
+            auto* overview=overviews[deck-1];
+            EXPECT_NEAR(fraction,overview->getControlParameterDisplay(),.001);
+            if(overview->isVisible()) {
+                const QImage image=overview->grab().toImage(); const int x=int((overview->width()-1)*overview->getControlParameterDisplay());
+                EXPECT_EQ(QColor(Qt::white),image.pixelColor(x,22));
+                EXPECT_EQ(44,overview->height());
+            }
+            EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey(group,"play")));
+        }
+    }
+}
 
 TEST_F(NativeDeckLabTest, FirstBrowsePressDoesNotOpenSource) {
     ControlObject::set(ConfigKey("[DeckLabNative]", "browse_press"), 1);

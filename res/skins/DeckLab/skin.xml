@@ -479,8 +479,12 @@
           <Normalize>true</Normalize>
           <LabelFontSize>11</LabelFontSize>
           <Channel>1</Channel>
+          <Connection>
+            <ConfigKey>[Channel1],playposition</ConfigKey>
+            <ConnectValueFromWidget>false</ConnectValueFromWidget>
+          </Connection>
           <BgColor>#000</BgColor>
-          <PlayPosColor>#d74448</PlayPosColor>
+          <PlayPosColor>#ffffff</PlayPosColor>
           <SignalColor>#32323c</SignalColor>
           <SignalLowColor>#004ee4</SignalLowColor>
           <SignalMidColor>#c95a00</SignalMidColor>
@@ -577,15 +581,19 @@
             <DisabledColor>#acacac</DisabledColor>
             <DisabledOpacity>0.4</DisabledOpacity>
           </MarkRange>
-          <PlayedOverlayColor>#60303030</PlayedOverlayColor>
+          <PlayedOverlayColor>#99000000</PlayedOverlayColor>
         </Overview>
         <Overview>
           <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Normalize>true</Normalize>
           <LabelFontSize>11</LabelFontSize>
           <Channel>2</Channel>
+          <Connection>
+            <ConfigKey>[Channel2],playposition</ConfigKey>
+            <ConnectValueFromWidget>false</ConnectValueFromWidget>
+          </Connection>
           <BgColor>#000</BgColor>
-          <PlayPosColor>#d74448</PlayPosColor>
+          <PlayPosColor>#ffffff</PlayPosColor>
           <SignalColor>#32323c</SignalColor>
           <SignalLowColor>#004ee4</SignalLowColor>
           <SignalMidColor>#c95a00</SignalMidColor>
@@ -682,15 +690,19 @@
             <DisabledColor>#acacac</DisabledColor>
             <DisabledOpacity>0.4</DisabledOpacity>
           </MarkRange>
-          <PlayedOverlayColor>#60303030</PlayedOverlayColor>
+          <PlayedOverlayColor>#99000000</PlayedOverlayColor>
         </Overview>
         <Overview>
           <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Normalize>true</Normalize>
           <LabelFontSize>11</LabelFontSize>
           <Channel>3</Channel>
+          <Connection>
+            <ConfigKey>[Channel3],playposition</ConfigKey>
+            <ConnectValueFromWidget>false</ConnectValueFromWidget>
+          </Connection>
           <BgColor>#000</BgColor>
-          <PlayPosColor>#d74448</PlayPosColor>
+          <PlayPosColor>#ffffff</PlayPosColor>
           <SignalColor>#32323c</SignalColor>
           <SignalLowColor>#004ee4</SignalLowColor>
           <SignalMidColor>#c95a00</SignalMidColor>
@@ -787,15 +799,19 @@
             <DisabledColor>#acacac</DisabledColor>
             <DisabledOpacity>0.4</DisabledOpacity>
           </MarkRange>
-          <PlayedOverlayColor>#60303030</PlayedOverlayColor>
+          <PlayedOverlayColor>#99000000</PlayedOverlayColor>
         </Overview>
         <Overview>
           <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Normalize>true</Normalize>
           <LabelFontSize>11</LabelFontSize>
           <Channel>4</Channel>
+          <Connection>
+            <ConfigKey>[Channel4],playposition</ConfigKey>
+            <ConnectValueFromWidget>false</ConnectValueFromWidget>
+          </Connection>
           <BgColor>#000</BgColor>
-          <PlayPosColor>#d74448</PlayPosColor>
+          <PlayPosColor>#ffffff</PlayPosColor>
           <SignalColor>#32323c</SignalColor>
           <SignalLowColor>#004ee4</SignalLowColor>
           <SignalMidColor>#c95a00</SignalMidColor>
@@ -892,7 +908,7 @@
             <DisabledColor>#acacac</DisabledColor>
             <DisabledOpacity>0.4</DisabledOpacity>
           </MarkRange>
-          <PlayedOverlayColor>#60303030</PlayedOverlayColor>
+          <PlayedOverlayColor>#99000000</PlayedOverlayColor>
         </Overview>
       </Overviews>
     </DeckLab>

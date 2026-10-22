@@ -16,6 +16,8 @@
 #include "control/controlobject.h"
 #include "util/cmdlineargs.h"
 #include "widget/wdecklab.h"
+#include "widget/woverview.h"
+#include "widget/controlwidgetconnection.h"
 
 void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
     const QString output = qEnvironmentVariable("DECKLAB_SMOKE_DIR");
@@ -30,6 +32,16 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
     auto failures = std::make_shared<QJsonArray>();
     const auto check = [surface, failures] {
         if (surface->size() != QSize(800, 480)) failures->append("Surface is not 800x480");
+        for (int deck = 1; deck <= 4; ++deck) {
+            auto* overview = surface->findChild<WOverview*>(QStringLiteral("decklab-overview-%1").arg(deck));
+            bool positionBound = false;
+            if (overview) for (auto* connection : overview->findChildren<ControlParameterWidgetConnection*>()) {
+                if (connection->getKey() == ConfigKey(QStringLiteral("[Channel%1]").arg(deck), "playposition") &&
+                        connection->getDirectionOption() == ControlParameterWidgetConnection::DIR_TO_WIDGET)
+                    positionBound = true;
+            }
+            if (!positionBound) failures->append(QStringLiteral("Deck %1 overview missing read-only playposition binding").arg(deck));
+        }
         for (auto* b : surface->findChildren<QPushButton*>()) {
             if (!b->isVisible()) continue;
             QScrollArea* scroll = nullptr;
