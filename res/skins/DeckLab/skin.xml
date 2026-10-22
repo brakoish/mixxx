@@ -40,6 +40,7 @@
           <BeatColor>#707070</BeatColor>
           <PrerollColor>#1c1c22</PrerollColor>
           <PlayPosColor>#d74448</PlayPosColor>
+          <EndOfTrackColor>#d74448</EndOfTrackColor>
           <SignalColor>#32323c</SignalColor>
           <SignalLowColor>#004ee4</SignalLowColor>
           <SignalMidColor>#c95a00</SignalMidColor>
@@ -147,6 +148,7 @@
           <BeatColor>#707070</BeatColor>
           <PrerollColor>#1c1c22</PrerollColor>
           <PlayPosColor>#d74448</PlayPosColor>
+          <EndOfTrackColor>#d74448</EndOfTrackColor>
           <SignalColor>#32323c</SignalColor>
           <SignalLowColor>#004ee4</SignalLowColor>
           <SignalMidColor>#c95a00</SignalMidColor>
@@ -254,6 +256,7 @@
           <BeatColor>#707070</BeatColor>
           <PrerollColor>#1c1c22</PrerollColor>
           <PlayPosColor>#d74448</PlayPosColor>
+          <EndOfTrackColor>#d74448</EndOfTrackColor>
           <SignalColor>#32323c</SignalColor>
           <SignalLowColor>#004ee4</SignalLowColor>
           <SignalMidColor>#c95a00</SignalMidColor>
@@ -361,6 +364,7 @@
           <BeatColor>#707070</BeatColor>
           <PrerollColor>#1c1c22</PrerollColor>
           <PlayPosColor>#d74448</PlayPosColor>
+          <EndOfTrackColor>#d74448</EndOfTrackColor>
           <SignalColor>#32323c</SignalColor>
           <SignalLowColor>#004ee4</SignalLowColor>
           <SignalMidColor>#c95a00</SignalMidColor>
@@ -477,7 +481,7 @@
         <Overview>
           <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Normalize>true</Normalize>
-          <LabelFontSize>11</LabelFontSize>
+          <LabelFontSize>12</LabelFontSize>
           <Channel>1</Channel>
           <Connection>
             <ConfigKey>[Channel1],playposition</ConfigKey>
@@ -485,6 +489,7 @@
           </Connection>
           <BgColor>#000</BgColor>
           <PlayPosColor>#ffffff</PlayPosColor>
+          <EndOfTrackColor>#d74448</EndOfTrackColor>
           <SignalColor>#32323c</SignalColor>
           <SignalLowColor>#004ee4</SignalLowColor>
           <SignalMidColor>#c95a00</SignalMidColor>
@@ -586,7 +591,7 @@
         <Overview>
           <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Normalize>true</Normalize>
-          <LabelFontSize>11</LabelFontSize>
+          <LabelFontSize>12</LabelFontSize>
           <Channel>2</Channel>
           <Connection>
             <ConfigKey>[Channel2],playposition</ConfigKey>
@@ -594,6 +599,7 @@
           </Connection>
           <BgColor>#000</BgColor>
           <PlayPosColor>#ffffff</PlayPosColor>
+          <EndOfTrackColor>#d74448</EndOfTrackColor>
           <SignalColor>#32323c</SignalColor>
           <SignalLowColor>#004ee4</SignalLowColor>
           <SignalMidColor>#c95a00</SignalMidColor>
@@ -695,7 +701,7 @@
         <Overview>
           <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Normalize>true</Normalize>
-          <LabelFontSize>11</LabelFontSize>
+          <LabelFontSize>12</LabelFontSize>
           <Channel>3</Channel>
           <Connection>
             <ConfigKey>[Channel3],playposition</ConfigKey>
@@ -703,6 +709,7 @@
           </Connection>
           <BgColor>#000</BgColor>
           <PlayPosColor>#ffffff</PlayPosColor>
+          <EndOfTrackColor>#d74448</EndOfTrackColor>
           <SignalColor>#32323c</SignalColor>
           <SignalLowColor>#004ee4</SignalLowColor>
           <SignalMidColor>#c95a00</SignalMidColor>
@@ -804,7 +811,7 @@
         <Overview>
           <HotcueLabelFormat>letters</HotcueLabelFormat>
           <Normalize>true</Normalize>
-          <LabelFontSize>11</LabelFontSize>
+          <LabelFontSize>12</LabelFontSize>
           <Channel>4</Channel>
           <Connection>
             <ConfigKey>[Channel4],playposition</ConfigKey>
@@ -812,6 +819,7 @@
           </Connection>
           <BgColor>#000</BgColor>
           <PlayPosColor>#ffffff</PlayPosColor>
+          <EndOfTrackColor>#d74448</EndOfTrackColor>
           <SignalColor>#32323c</SignalColor>
           <SignalLowColor>#004ee4</SignalLowColor>
           <SignalMidColor>#c95a00</SignalMidColor>
