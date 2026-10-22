@@ -1323,9 +1323,13 @@ QWidget* WDeckLab::buildSettings() {
             // Setup: Deck Setup (controller, audio, layout) plus diagnostics.
             rows->addWidget(m_systemUi->createSetupPanel(content));
             m_performanceStatus = new QLabel(content); rows->addWidget(m_performanceStatus);
-            rows->addWidget(button(tr("Advanced settings"), [this] {
+            // Small-screen type scale: secondary 15 px Medium, buttons 16 px.
+            m_performanceStatus->setStyleSheet(QStringLiteral("font-size:15px;font-weight:500;color:#9aa3af;"));
+            auto* advanced = button(tr("Advanced settings"), [this] {
                 releaseEffects(); emit advancedPreferencesRequested();
-            }, content, QStringLiteral("decklab-advanced-settings")));
+            }, content, QStringLiteral("decklab-advanced-settings"));
+            advanced->setStyleSheet(QStringLiteral("font-size:16px;font-weight:500;min-height:34px;"));
+            rows->addWidget(advanced);
         }
         rows->addStretch(); scroll->setWidget(content);
         new DeckLabTouchScrollGuard(scroll->viewport(), content);

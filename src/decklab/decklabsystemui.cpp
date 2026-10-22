@@ -47,7 +47,7 @@ class Banner : public TouchButton {
         setText(text);
         setAccessibleName(text);
         QFont bold = font();
-        bold.setPixelSize(13);
+        bold.setPixelSize(16);
         bold.setWeight(QFont::DemiBold);
         const int textWidth = QFontMetrics(bold).horizontalAdvance(text);
         m_width = 16 + 22 + 10 + textWidth + (m_actionable ? 30 : 16);
@@ -79,7 +79,7 @@ class Banner : public TouchButton {
         painter.drawRoundedRect(QRectF(rect()).adjusted(0.6, 0.6, -0.6, -0.6), 4, 4);
         paintIcon(painter, QRectF(14, (height() - 20) / 2.0, 20, 20), m_icon, accent);
         QFont bold = font();
-        bold.setPixelSize(13);
+        bold.setPixelSize(16);
         bold.setWeight(QFont::DemiBold);
         painter.setFont(bold);
         painter.setPen(QColor("#f6f6f6"));

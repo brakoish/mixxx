@@ -12,6 +12,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
+#include <QPainter>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSet>
@@ -296,7 +297,7 @@ class WifiPage : public SectionPage {
         summaryLayout->addWidget(m_detail);
         m_layout->addWidget(summary);
         auto* listHeader = hbox(8);
-        listHeader->addWidget(muted(tr("NETWORKS"), m_content), 1);
+        listHeader->addWidget(sectionLabel(tr("NETWORKS"), m_content), 1);
         m_scan = button(tr("Scan"), m_content, QStringLiteral("decklab-wifi-scan"), 44);
         m_scan->setFixedWidth(110);
         connect(m_scan, &QPushButton::clicked, this, [this] { scan(); });
@@ -650,7 +651,7 @@ class BluetoothPage : public SectionPage {
         auto* warningLayout = vbox(warning, 12, 2);
         auto* warningTitle = new QLabel(tr("Bluetooth audio is high latency – for practice, not mixing."), warning);
         warningTitle->setWordWrap(true);
-        warningTitle->setStyleSheet(QStringLiteral("font-weight:600;font-size:14px;"));
+        warningTitle->setStyleSheet(QStringLiteral("font-weight:600;font-size:16px;"));
         warningLayout->addWidget(warningTitle);
         warningLayout->addWidget(new QLabel(tr("Speakers and headphones lag behind the waveforms, so beatmatching by ear "
                                                "won't line up. Use your controller's outputs for real mixing."),
@@ -888,7 +889,7 @@ class TimePage : public SectionPage {
         auto* clockLayout = vbox(clockCard, 16, 2);
         m_clock = new QLabel(clockCard);
         m_clock->setObjectName(QStringLiteral("decklab-time-clock"));
-        m_clock->setStyleSheet(QStringLiteral("font-size:40px;font-weight:300;color:#ffffff;"));
+        m_clock->setStyleSheet(QStringLiteral("font-size:40px;font-weight:500;color:#f2f4f7;"));
         clockLayout->addWidget(m_clock);
         m_date = muted(QString(), clockCard);
         clockLayout->addWidget(m_date);
@@ -1095,7 +1096,7 @@ class StoragePage : public SectionPage {
         recordingTop->addWidget(m_record);
         recordingLayout->addLayout(recordingTop);
         m_layout->addWidget(recording);
-        m_layout->addWidget(muted(tr("USB DRIVES"), m_content));
+        m_layout->addWidget(sectionLabel(tr("USB DRIVES"), m_content));
         m_drives = new QWidget(m_content);
         m_driveLayout = vbox(m_drives, 0, 8);
         m_layout->addWidget(m_drives);
@@ -1335,10 +1336,48 @@ class PowerPage : public SectionPage {
 };
 
 // ---------------------------------------------------------------- About --
+// Text rendering of the Deck Lab wordmark: DECK, the red playhead, LAB.
+class Wordmark : public QWidget {
+  public:
+    explicit Wordmark(QWidget* parent)
+            : QWidget(parent) {
+        setFixedHeight(56);
+        setAccessibleName(QStringLiteral("Deck Lab"));
+    }
+
+  protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        QFont mark = font();
+        mark.setPixelSize(36);
+        mark.setWeight(QFont::Black);
+        mark.setStretch(QFont::Condensed);
+        painter.setFont(mark);
+        const QFontMetrics metrics(mark);
+        const int cap = metrics.capHeight();
+        const int baseline = (height() + cap) / 2;
+        int x = 0;
+        painter.setPen(QColor("#f2f4f7"));
+        const QString deck = QStringLiteral("DECK");
+        const QString lab = QStringLiteral("LAB");
+        painter.drawText(x, baseline, deck);
+        x += metrics.horizontalAdvance(deck) + 7;
+        // The playhead is the only red in the mark.
+        painter.fillRect(QRect(x, baseline - cap - 5, 4, cap + 10), QColor("#ff3d2e"));
+        x += 4 + 7;
+        painter.drawText(x, baseline, lab);
+    }
+};
+
 class AboutPage : public SectionPage {
   public:
     explicit AboutPage(DeckLabSystemPage* owner)
             : SectionPage(owner, Section::About, tr("About")) {
+        m_layout->addWidget(new Wordmark(m_content));
+        m_layout->addWidget(body(tr("Built on Mixxx, the free and open-source DJ software. Deck Lab is an "
+                                    "independent project and isn't affiliated with or endorsed by the Mixxx team."),
+                m_content));
         auto* panel = card(m_content);
         m_grid = new QGridLayout(panel);
         m_grid->setContentsMargins(16, 12, 16, 12);
@@ -1346,6 +1385,9 @@ class AboutPage : public SectionPage {
         m_grid->setVerticalSpacing(9);
         m_grid->setColumnStretch(1, 1);
         m_layout->addWidget(panel);
+        m_layout->addWidget(muted(tr("The source code and licences are available at %1.")
+                                          .arg(QStringLiteral("[REPO URL]")),
+                m_content));
         m_layout->addStretch(1);
         m_refresh.setInterval(5000);
         connect(&m_refresh, &QTimer::timeout, this, [this] { refresh(); });

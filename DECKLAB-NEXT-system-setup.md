@@ -169,14 +169,25 @@ Fixtures are generated; nothing personal is used. The fake service uses document
 
 ## CI and screenshots
 
-See the run table at the end. The smoke check now produces 43 screens: 21 existing, plus these 22, against a
-canned decklabd on a private socket:
+| Run | Result |
+|---|---|
+| 39801535641 | Failed before the build. The 50-commit shallow clone no longer reached the pinned upstream revision. |
+| 39801940568 | Compile errors: a raw-string delimiter, and `QPointer` on an incomplete type. |
+| 39807286053 | Passed: 271 tests, 12 of them system-setup, and 43 smoke screens. Screenshots showed squashed rows and keys under the real surface style. |
+| 39810328603 | Passed: touch heights hold (56 px rows, 44 px keys), white selection, banners return after Deck Setup. |
+| (run 5) | Brand type scale (18/16/15/14 px, nothing smaller) and About wordmark, credit and source line. |
+
+After run 2, every changed source was compiled locally before pushing: zig clang with Qt 6.8 Linux headers, generated
+protobuf and uic headers, and the real third-party headers. This was a syntax check only; tests still run in CI.
+
+The smoke check now produces 43 screens: 21 existing, plus these 22, against a canned decklabd on a private socket. The
+fixtures use made-up SSIDs, locally administered MACs and documentation IPs.
 
 | Screen | Content |
 |---|---|
 | app-screen-21 | System home |
 | app-screen-22 | Wi-Fi |
-| app-screen-23 | Wi-Fi password with keyboard |
+| app-screen-23 | Wi-Fi password with the in-app keyboard |
 | app-screen-24 | Bluetooth |
 | app-screen-25 | Screen |
 | app-screen-26 | Date & time |
@@ -197,6 +208,9 @@ canned decklabd on a private socket:
 | app-screen-41 | System home at 1024x600 |
 | app-screen-42 | First run at 1024x600 |
 
+The smoke check fails if any visible control on the System pages or in Deck Setup is below 44 px in the real surface
+style.
+
 ## Merge notes
 
 - **`wdecklab.h`:** forward declarations, `attachSystem()` and `m_systemUi`.
@@ -207,11 +221,32 @@ canned decklabd on a private socket:
   - `tool()`: decklabd routing first.
   - `tickEffects()`: the handshake lapse check.
   - `setAudioOutputConfigured` and `attachSystem`.
+- **CI workflow:** `.github/workflows/decklab-pi.yml` uses `fetch-depth: 0`, the same as perf-engine (commit
+  375429e8b1).
 - **`decklabsmoke.cpp`:** 22 appended steps, a longer settle time for them, and an expected screen count of 43.
   `build_pi.py` checks the count and the `DeckLabSystemTest` names. The `pi-build-lock.json` test suite and hashes
   were updated.
 - **Main window:** `mixxxmainwindow.cpp` creates and attaches `DeckLabSystem` in `loadConfiguredSkin`, and
   `closeEvent` skips the confirmation after SIGTERM. `main.cpp` installs and arms the termination handler.
+
+## Style notes
+
+- **Type scale (brand README, binding).** Page titles are 18 px SemiBold. Body text, rows and buttons are 16 px.
+  Secondary text is 15 px Medium in `#9AA3AF`, and section labels are 14 px SemiBold. Nothing is under 14 px and no
+  Regular weight is used under 18 px. Text is elided, never shrunk.
+- **About** shows a text rendering of the wordmark (DECK, a red playhead, LAB), the exact Mixxx credit, and "The
+  source code and licences are available at [REPO URL]." The SVG wordmark is not embedded: the fork has no install
+  path for appliance brand assets yet.
+
+- **Touch heights.** The surface style sheet sets `min-height` on every `QPushButton` and `QComboBox`. That overrides
+  `setFixedHeight()` when the widget is polished. The new widgets use `decklab::ui::TouchButton` and `touchCombo`,
+  which restore their height after the Polish and StyleChange events. Other workstreams that rely on
+  `setFixedHeight()` for buttons hit the same problem.
+- **Selection and colour.** Selection, focus and primary actions are white or a raised fill, following the brand
+  direction in PLAN. Red stays for alerts (no audio, errors). Thermal and Bluetooth-latency warnings are amber.
+- **Wording and touch input.** Labels use "rekordbox export" only as compatibility wording, with no other vendor
+  branding. All text entry, including Wi-Fi password, hidden SSID and mapping search, uses the in-app keyboard. Every
+  control is a `QPushButton`, so it works with synthesized mouse events from XI2 touch, and nothing relies on hover.
 
 ## Gaps and follow-ups
 

@@ -28,22 +28,25 @@ const char* const kSelect = "#f2f4f7";
 
 namespace {
 const QString kExtraStyle = QStringLiteral(R"(
+ WDeckLab QPushButton[touch="true"] {font-size:16px;font-weight:500;}
+ WDeckLab QComboBox[touch="true"] {font-size:16px;font-weight:500;}
  WDeckLab QPushButton[primary="true"] {background:#f2f4f7;border:1px solid #f2f4f7;color:#0d0f12;font-weight:600;}
  WDeckLab QPushButton[primary="true"]:pressed {background:#c9ced6;}
  WDeckLab QPushButton[primary="true"]:disabled {background:#1c1f24;border-color:#2c313a;color:#6f6f6f;}
- WDeckLab QPushButton[quiet="true"] {background:transparent;border:0;color:#bbbbbb;font-weight:600;}
+ WDeckLab QPushButton[quiet="true"] {background:transparent;border:0;color:#c9ced6;font-weight:600;}
  WDeckLab QPushButton[quiet="true"]:pressed {color:#ffffff;}
- WDeckLab QPushButton[key="true"] {min-height:0;padding:0;border-radius:0;font-size:15px;}
+ WDeckLab QPushButton[key="true"] {min-height:0;padding:0;border-radius:0;font-size:18px;font-weight:500;}
  WDeckLab QPushButton[key="true"]:checked {background:#20242b;border-color:#f2f4f7;}
- WDeckLab QLabel[role="title"] {font-size:17px;font-weight:600;color:#f4f4f4;}
- WDeckLab QLabel[role="muted"] {font-size:12px;color:#9c9c9c;}
- WDeckLab QLabel[role="body"] {font-size:13px;color:#dddddd;}
- WDeckLab QLabel[role="error"] {font-size:13px;color:#ff9a9c;}
- WDeckLab QLabel[role="value"] {font-size:13px;color:#ffffff;font-weight:600;}
+ WDeckLab QLabel[role="title"] {font-size:18px;font-weight:600;color:#f2f4f7;}
+ WDeckLab QLabel[role="muted"] {font-size:15px;font-weight:500;color:#9aa3af;}
+ WDeckLab QLabel[role="label"] {font-size:14px;font-weight:600;color:#f2f4f7;}
+ WDeckLab QLabel[role="body"] {font-size:16px;font-weight:500;color:#e6e9ee;}
+ WDeckLab QLabel[role="error"] {font-size:15px;font-weight:600;color:#ffb4ae;}
+ WDeckLab QLabel[role="value"] {font-size:16px;font-weight:600;color:#f2f4f7;}
  WDeckLab QFrame[card="true"] {background:#171717;border:1px solid #2c2c2c;border-radius:3px;}
  WDeckLab QFrame[card="true"] QLabel {background:transparent;border:0;}
  WDeckLab QFrame[warning="true"] {background:#2a2312;border:1px solid #a07a22;border-radius:3px;}
- WDeckLab QFrame[warning="true"] QLabel {background:transparent;border:0;color:#ffe2a8;}
+ WDeckLab QFrame[warning="true"] QLabel {background:transparent;border:0;color:#ffe2a8;font-size:15px;font-weight:500;}
  WDeckLab QScrollBar::add-line:vertical, WDeckLab QScrollBar::sub-line:vertical {height:0px;border:0;}
  WDeckLab QScrollBar::add-line:horizontal, WDeckLab QScrollBar::sub-line:horizontal {width:0px;border:0;}
  WDeckLab QLineEdit {background:#141414;border:1px solid #555555;border-radius:2px;min-height:42px;padding:0 10px;font-size:16px;color:#ffffff;selection-background-color:#4a5160;}
@@ -323,6 +326,7 @@ void paintSignalBars(QPainter& painter, const QRectF& rect, int percent, const Q
 TouchButton::TouchButton(const QString& text, QWidget* parent, int height)
         : QPushButton(text, parent),
           m_touchHeight(height) {
+    setProperty("touch", true);
     setFocusPolicy(Qt::NoFocus);
     setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     setFixedHeight(height);
@@ -370,6 +374,7 @@ class TouchComboBox : public QComboBox {
 QComboBox* touchCombo(QWidget* parent, const QString& objectName, int height) {
     auto* combo = new TouchComboBox(parent, height);
     combo->setObjectName(objectName);
+    combo->setProperty("touch", true);
     combo->setFocusPolicy(Qt::NoFocus);
     combo->setItemDelegate(new DeckLabComboDelegate(combo));
     combo->setMaxVisibleItems(6);
@@ -406,6 +411,11 @@ QLabel* title(const QString& text, QWidget* parent) {
 }
 QLabel* muted(const QString& text, QWidget* parent) {
     return labelWithRole(text, parent, "muted");
+}
+QLabel* sectionLabel(const QString& text, QWidget* parent) {
+    auto* label = labelWithRole(text, parent, "label");
+    label->setWordWrap(false);
+    return label;
 }
 QLabel* body(const QString& text, QWidget* parent) {
     return labelWithRole(text, parent, "body");
@@ -488,18 +498,20 @@ void Tile::paintEvent(QPaintEvent*) {
     const QRectF iconBox(16, (height() - 30) / 2.0, 30, 30);
     paintIcon(painter, iconBox, m_icon, isEnabled() ? QColor("#f0f0f0") : QColor("#666666"));
     QFont titleFont = font();
-    titleFont.setPixelSize(15);
+    titleFont.setPixelSize(16);
     titleFont.setWeight(QFont::DemiBold);
     painter.setFont(titleFont);
-    painter.setPen(isEnabled() ? QColor("#f4f4f4") : QColor("#777777"));
+    painter.setPen(isEnabled() ? QColor("#f2f4f7") : QColor("#777777"));
     const int textLeft = 62;
     const int textWidth = std::max(0, width() - textLeft - 30);
-    painter.drawText(QRect(textLeft, 15, textWidth, 22), Qt::AlignLeft | Qt::AlignVCenter, m_title);
+    painter.drawText(QRect(textLeft, 12, textWidth, 26), Qt::AlignLeft | Qt::AlignVCenter,
+            QFontMetrics(titleFont).elidedText(m_title, Qt::ElideRight, textWidth));
     QFont subtitleFont = font();
-    subtitleFont.setPixelSize(12);
+    subtitleFont.setPixelSize(15);
+    subtitleFont.setWeight(QFont::Medium);
     painter.setFont(subtitleFont);
-    painter.setPen(m_alert ? QColor("#ff9a9c") : QColor("#9c9c9c"));
-    painter.drawText(QRect(textLeft, 39, textWidth, 20),
+    painter.setPen(m_alert ? QColor("#ffb4ae") : QColor("#9aa3af"));
+    painter.drawText(QRect(textLeft, 40, textWidth, 22),
             Qt::AlignLeft | Qt::AlignVCenter,
             QFontMetrics(subtitleFont).elidedText(m_subtitle, Qt::ElideRight, textWidth));
     painter.setPen(QColor("#6a6a6a"));
@@ -588,17 +600,17 @@ void Row::paintEvent(QPaintEvent*) {
         right -= 26;
     }
     QFont tagFont = font();
-    tagFont.setPixelSize(11);
+    tagFont.setPixelSize(14);
     tagFont.setWeight(QFont::DemiBold);
     const QFontMetrics tagMetrics(tagFont);
     painter.setFont(tagFont);
     for (int index = m_tags.size() - 1; index >= 0; --index) {
         const QString tag = m_tags.at(index);
-        const int tagWidth = tagMetrics.horizontalAdvance(tag) + 14;
+        const int tagWidth = tagMetrics.horizontalAdvance(tag) + 16;
         if (right - tagWidth < left + 80) {
             break;
         }
-        const QRectF pill(right - tagWidth, (height() - 20) / 2.0, tagWidth, 20);
+        const QRectF pill(right - tagWidth, (height() - 24) / 2.0, tagWidth, 24);
         const bool strong = index == 0;
         painter.setPen(QColor(strong ? kSelect : "#3f3f3f"));
         painter.setBrush(QColor(strong ? "#20242b" : "#222222"));
@@ -609,23 +621,24 @@ void Row::paintEvent(QPaintEvent*) {
     }
     const int textWidth = std::max(0, right - left - 6);
     QFont titleFont = font();
-    titleFont.setPixelSize(14);
+    titleFont.setPixelSize(16);
     titleFont.setWeight(QFont::DemiBold);
     painter.setFont(titleFont);
-    painter.setPen(isEnabled() ? QColor("#f2f2f2") : QColor("#777777"));
+    painter.setPen(isEnabled() ? QColor("#f2f4f7") : QColor("#777777"));
     const QFontMetrics titleMetrics(titleFont);
     if (m_subtitle.isEmpty()) {
         painter.drawText(QRect(left, 0, textWidth, height()), Qt::AlignLeft | Qt::AlignVCenter,
                 titleMetrics.elidedText(m_title, Qt::ElideRight, textWidth));
         return;
     }
-    painter.drawText(QRect(left, 8, textWidth, 22), Qt::AlignLeft | Qt::AlignVCenter,
+    painter.drawText(QRect(left, 6, textWidth, 24), Qt::AlignLeft | Qt::AlignVCenter,
             titleMetrics.elidedText(m_title, Qt::ElideRight, textWidth));
     QFont subtitleFont = font();
-    subtitleFont.setPixelSize(12);
+    subtitleFont.setPixelSize(15);
+    subtitleFont.setWeight(QFont::Medium);
     painter.setFont(subtitleFont);
-    painter.setPen(QColor("#9c9c9c"));
-    painter.drawText(QRect(left, 30, textWidth, 18), Qt::AlignLeft | Qt::AlignVCenter,
+    painter.setPen(QColor("#9aa3af"));
+    painter.drawText(QRect(left, 30, textWidth, 22), Qt::AlignLeft | Qt::AlignVCenter,
             QFontMetrics(subtitleFont).elidedText(m_subtitle, Qt::ElideRight, textWidth));
 }
 

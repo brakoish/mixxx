@@ -105,30 +105,34 @@ class LayoutChoice : public QPushButton {
             painter.drawRoundedRect(outline, 3, 3);
             const double radius = std::min(deckWidth, deckHeight) * 0.28;
             painter.drawEllipse(QPointF(outline.center().x(), outline.top() + deckHeight * 0.45), radius, radius);
-            painter.setFont(font());
+            QFont number = font();
+            number.setPixelSize(14);
+            number.setWeight(QFont::DemiBold);
+            painter.setFont(number);
             painter.drawText(QRectF(outline.left(), outline.bottom() - 22, outline.width(), 18), Qt::AlignCenter,
                     QString::number(deck + 1));
         }
         QFont headingFont = font();
-        headingFont.setPixelSize(17);
+        headingFont.setPixelSize(18);
         headingFont.setWeight(QFont::DemiBold);
         painter.setFont(headingFont);
         painter.setPen(QColor("#f4f4f4"));
         const double textTop = top + deckHeight + 18;
         painter.drawText(QRectF(10, textTop, width() - 20, 24), Qt::AlignCenter, m_heading);
         QFont detailFont = font();
-        detailFont.setPixelSize(12);
+        detailFont.setPixelSize(15);
+        detailFont.setWeight(QFont::Medium);
         painter.setFont(detailFont);
-        painter.setPen(QColor("#9c9c9c"));
-        painter.drawText(QRectF(10, textTop + 26, width() - 20, 20), Qt::AlignCenter, m_detail);
+        painter.setPen(QColor("#9aa3af"));
+        painter.drawText(QRectF(10, textTop + 28, width() - 20, 22), Qt::AlignCenter, m_detail);
         if (m_suggested) {
             QFont tagFont = font();
-            tagFont.setPixelSize(11);
+            tagFont.setPixelSize(14);
             tagFont.setWeight(QFont::DemiBold);
             painter.setFont(tagFont);
             const QString tag = DeckLabSetupWizard::tr("Suggested");
             const double tagWidth = QFontMetrics(tagFont).horizontalAdvance(tag) + 16;
-            const QRectF pill(width() - tagWidth - 10, 8, tagWidth, 20);
+            const QRectF pill(width() - tagWidth - 10, 8, tagWidth, 24);
             painter.setPen(QColor(kSelect));
             painter.setBrush(QColor("#20242b"));
             painter.drawRoundedRect(pill, 3, 3);
@@ -363,12 +367,12 @@ void DeckLabSetupWizard::goTo(Step step) {
     for (int index = 0; index < m_stepLabels.size(); ++index) {
         QString style;
         if (index == current) {
-            style = QStringLiteral("color:#ffffff;font-weight:600;border-bottom:2px solid %1;")
+            style = QStringLiteral("color:#ffffff;font-size:15px;font-weight:600;border-bottom:2px solid %1;")
                             .arg(QLatin1String(kSelect));
         } else if (index < current) {
-            style = QStringLiteral("color:#bdbdbd;");
+            style = QStringLiteral("color:#c9ced6;font-size:15px;font-weight:500;");
         } else {
-            style = QStringLiteral("color:#6c6c6c;");
+            style = QStringLiteral("color:#7d8590;font-size:15px;font-weight:500;");
         }
         m_stepLabels[index]->setStyleSheet(style);
         const QString name = stepName(m_sequence.at(index));
@@ -586,7 +590,7 @@ void DeckLabSetupWizard::buildController(QWidget* page) {
     auto* left = new QWidget(m_controllerMain);
     left->setFixedWidth(340);
     auto* leftLayout = vbox(left, 0, 8);
-    leftLayout->addWidget(muted(tr("CONNECTED CONTROLLERS"), left));
+    leftLayout->addWidget(sectionLabel(tr("CONNECTED CONTROLLERS"), left));
     m_controllerList = new QWidget(left);
     m_controllerLayout = vbox(m_controllerList, 0, 0);
     leftLayout->addWidget(scrollArea(m_controllerList, left, QStringLiteral("decklab-setup-controllers")), 1);
@@ -620,7 +624,7 @@ void DeckLabSetupWizard::buildController(QWidget* page) {
 
     auto* mapping = card(m_controllerMain);
     auto* mappingLayout = vbox(mapping, 18, 8);
-    mappingLayout->addWidget(muted(tr("MAPPING"), mapping));
+    mappingLayout->addWidget(sectionLabel(tr("MAPPING"), mapping));
     m_mappingTitle = title(QString(), mapping);
     m_mappingTitle->setObjectName(QStringLiteral("decklab-setup-mapping"));
     m_mappingTitle->setWordWrap(true);

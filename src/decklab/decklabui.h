@@ -52,6 +52,8 @@ QPushButton* button(const QString& text, QWidget* parent, const QString& objectN
 QPushButton* primaryButton(const QString& text, QWidget* parent, const QString& objectName = QString(), int height = 52);
 QLabel* title(const QString& text, QWidget* parent);
 QLabel* muted(const QString& text, QWidget* parent);
+/// 14 px SemiBold section label, e.g. "NETWORKS".
+QLabel* sectionLabel(const QString& text, QWidget* parent);
 QLabel* body(const QString& text, QWidget* parent);
 QVBoxLayout* vbox(QWidget* widget, int margin = 0, int spacing = 8);
 QHBoxLayout* hbox(int spacing = 8);
