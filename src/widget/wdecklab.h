@@ -91,6 +91,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void releaseTouchCue();
     void setSearchOpen(bool open);
     int displayedDeck(int side) const;
+    void setDisplayedDeck(int side, int deck);
     QString fxGroup() const;
     QString fxSlot() const;
     QString channel(int deck) const;
@@ -121,6 +122,12 @@ class WDeckLab : public QWidget, public WBaseWidget {
     std::array<QLabel*, 4> m_waveNumbers{};
     std::array<QProgressBar*, 4> m_meters{};
     std::array<QLabel*, 4> m_numbers{};
+    std::array<QLabel*, 4> m_keys{};
+    std::array<QLabel*, 4> m_remaining{};
+    std::array<QLabel*, 4> m_pitch{};
+    std::array<QLabel*, 4> m_playStates{};
+    std::array<QWidget*, 4> m_waveHeaders{};
+    std::array<QWidget*, 4> m_deckMetrics{};
     std::array<QLabel*, 2> m_deckIdentifiers{};
     std::array<qint64, 2> m_syncFeedbackUntil{};
     std::array<QPushButton*, 4> m_loadButtons{};

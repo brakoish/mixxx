@@ -6,6 +6,7 @@
 #include <QPushButton>
 #include <QStackedWidget>
 #include <QTest>
+#include <QTextDocument>
 
 #include "control/controlobject.h"
 #include "effects/effectchain.h"
@@ -31,14 +32,14 @@
 namespace {
 class TestPlayers final : public PlayerManagerInterface {
   public:
-    std::array<BaseTrackPlayer*,3> decks{};
+    std::array<BaseTrackPlayer*,4> decks{};
     BaseTrackPlayer* getPlayer(const QString& group) const override {
-        for(int n=0;n<3;++n)if(group==QStringLiteral("[Channel%1]").arg(n+1))return decks[n];
+        for(int n=0;n<4;++n)if(group==QStringLiteral("[Channel%1]").arg(n+1))return decks[n];
         return nullptr;
     }
     BaseTrackPlayer* getPlayer(const ChannelHandle&) const override {return nullptr;}
-    BaseTrackPlayer* getDeckBase(int n) const override {return n>=0&&n<3?decks[n]:nullptr;}
-    int numberOfDecks() const override {return 3;}
+    BaseTrackPlayer* getDeckBase(int n) const override {return n>=0&&n<4?decks[n]:nullptr;}
+    int numberOfDecks() const override {return 4;}
     PreviewDeck* getPreviewDeck(int) const override {return nullptr;}
     int numberOfPreviewDecks() const override {return 0;}
     Sampler* getSampler(int) const override {return nullptr;}
@@ -65,12 +66,15 @@ class NativeDeckLabTest : public BaseSignalPathTest {
   protected:
     void SetUp() override {
         BaseSignalPathTest::SetUp();
+        fourthDeck = std::make_unique<Deck>(nullptr, config(), m_pEngineMixer.get(), m_pEffectsManager.get(),
+                EngineChannel::CENTER, m_pEngineMixer->registerChannelGroup(QStringLiteral("[Channel4]")));
+        addDeck(fourthDeck->getEngineDeck());
         WaveformWidgetFactory::createInstance()->setConfig(config());
         source = std::make_unique<TestSource>(config());
         model = std::make_unique<SidebarModel>(); model->addLibraryFeature(source.get());
         navigation = std::make_unique<LibraryControl>(nullptr);
         soundStatus = std::make_unique<ControlObject>(ConfigKey("[SoundManager]", "status"));
-        players = std::make_unique<TestPlayers>(); players->decks={m_pMixerDeck1.get(),m_pMixerDeck2.get(),m_pMixerDeck3.get()};
+        players = std::make_unique<TestPlayers>(); players->decks={m_pMixerDeck1.get(),m_pMixerDeck2.get(),m_pMixerDeck3.get(),fourthDeck.get()};
         panel = std::make_unique<WDeckLab>(config(), nullptr, players.get(), m_pEffectsManager.get());
         sidebar = new WLibrarySidebar(panel.get()); sidebar->setModel(model.get());
         library = new WLibrary(panel.get());
@@ -80,7 +84,7 @@ class NativeDeckLabTest : public BaseSignalPathTest {
         // Geometry slots only. A bare WWaveformViewer is opaque but cannot
         // paint until the skin parser creates its renderer. The separate full
         // application smoke check captures the actual configured viewers.
-        for (int deck = 1; deck <= 3; ++deck) {
+        for (int deck = 1; deck <= 4; ++deck) {
             auto* slot = new QWidget(panel.get()); slot->setStyleSheet("background:#000");
             panel->addWaveform(slot, deck);
         }
@@ -88,7 +92,7 @@ class NativeDeckLabTest : public BaseSignalPathTest {
     }
     void TearDown() override {
         panel.reset(); soundStatus.reset(); players.reset(); navigation.reset(); model.reset(); source.reset();
-        WaveformWidgetFactory::destroy(); BaseSignalPathTest::TearDown();
+        fourthDeck.reset(); WaveformWidgetFactory::destroy(); BaseSignalPathTest::TearDown();
     }
     std::unique_ptr<TestSource> source;
     std::unique_ptr<SidebarModel> model;
@@ -96,6 +100,7 @@ class NativeDeckLabTest : public BaseSignalPathTest {
     std::unique_ptr<TestPlayers> players;
     std::unique_ptr<LibraryControl> navigation;
     std::unique_ptr<ControlObject> soundStatus;
+    std::unique_ptr<Deck> fourthDeck;
     WLibrarySidebar* sidebar = nullptr;
     WLibrary* library = nullptr;
 };
@@ -323,7 +328,8 @@ TEST_F(NativeDeckLabTest, DecksTransportHasTruthfulStatesAndLargerTargets) {
     auto* numbers = panel->findChild<QLabel*>("decklab-numbers-1");
     ASSERT_NE(nullptr, play); ASSERT_NE(nullptr, sync); ASSERT_NE(nullptr, numbers);
     EXPECT_EQ(QStringLiteral("Play"), play->text()); EXPECT_TRUE(play->isEnabled());
-    EXPECT_TRUE(numbers->text().contains("PAUSED")); EXPECT_TRUE(numbers->text().contains("%"));
+    EXPECT_EQ(QStringLiteral("PAUSED"), panel->findChild<QLabel*>("decklab-state-1")->text());
+    EXPECT_TRUE(panel->findChild<QLabel*>("decklab-pitch-1")->text().contains("%"));
     EXPECT_EQ(48, play->height()); EXPECT_EQ(48, sync->height());
     EXPECT_EQ(44, panel->findChild<QPushButton*>("decklab-tab-0")->height());
     EXPECT_EQ(QStringLiteral("Beat Sync"), sync->text()); EXPECT_FALSE(sync->isCheckable());
@@ -334,6 +340,149 @@ TEST_F(NativeDeckLabTest, DecksTransportHasTruthfulStatesAndLargerTargets) {
     EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "play")));
     panel->selectPage(1); QCoreApplication::processEvents();
     EXPECT_EQ(40, panel->findChild<QPushButton*>("decklab-tab-0")->height());
+}
+
+TEST_F(NativeDeckLabTest, LayerChangeReleasesOnlyTheReplacedTouchCue) {
+    m_pMixerDeck1->loadFakeTrack(false, 128);
+    m_pMixerDeck2->loadFakeTrack(false, 130);
+    m_pMixerDeck3->loadFakeTrack(false, 132); fourthDeck->loadFakeTrack(false, 134); ProcessBuffer(); QCoreApplication::processEvents();
+    auto* left = panel->findChild<QPushButton*>("decklab-1-cue_default");
+    auto* right = panel->findChild<QPushButton*>("decklab-2-cue_default");
+    ASSERT_NE(nullptr, left); ASSERT_NE(nullptr, right);
+    QTest::mousePress(left, Qt::LeftButton);
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel1]", "cue_default")));
+    ControlObject::set(ConfigKey("[DeckLabRight]", "current"), 1); QCoreApplication::processEvents();
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel1]", "cue_default")));
+    ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 1); QCoreApplication::processEvents();
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "cue_default")));
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel3]", "cue_default")));
+    QTest::mouseRelease(left, Qt::LeftButton);
+    ControlObject::set(ConfigKey("[DeckLabRight]", "current"), 0); QCoreApplication::processEvents();
+    QTest::mousePress(right, Qt::LeftButton);
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel2]", "cue_default")));
+    ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 0); QCoreApplication::processEvents();
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel2]", "cue_default")));
+    ControlObject::set(ConfigKey("[DeckLabRight]", "current"), 1); QCoreApplication::processEvents();
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel2]", "cue_default")));
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel4]", "cue_default")));
+    QTest::mouseRelease(right, Qt::LeftButton);
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel3]", "play")));
+}
+
+TEST_F(NativeDeckLabTest, SyncAcknowledgmentCannotTransferToAnotherLayer) {
+    m_pMixerDeck1->loadFakeTrack(false, 128);
+    m_pMixerDeck2->loadFakeTrack(false, 130);
+    m_pMixerDeck3->loadFakeTrack(false, 132); fourthDeck->loadFakeTrack(false, 134); ProcessBuffer(); QCoreApplication::processEvents();
+    auto* left = panel->findChild<QPushButton*>("decklab-1-beatsync");
+    auto* right = panel->findChild<QPushButton*>("decklab-2-beatsync");
+    ASSERT_NE(nullptr, left); ASSERT_NE(nullptr, right);
+    left->click(); QCoreApplication::processEvents(); ASSERT_TRUE(left->property("actionFeedback").toBool());
+    ControlObject::set(ConfigKey("[DeckLabRight]", "current"), 1); QCoreApplication::processEvents();
+    EXPECT_TRUE(left->property("actionFeedback").toBool());
+    ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 1); QCoreApplication::processEvents();
+    EXPECT_FALSE(left->property("actionFeedback").toBool());
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel3]", "sync_enabled")));
+    ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 0); QCoreApplication::processEvents();
+    EXPECT_FALSE(left->property("actionFeedback").toBool());
+    ControlObject::set(ConfigKey("[DeckLabRight]", "current"), 0); QCoreApplication::processEvents();
+    right->click(); QCoreApplication::processEvents(); ASSERT_TRUE(right->property("actionFeedback").toBool());
+    ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 1); QCoreApplication::processEvents();
+    EXPECT_TRUE(right->property("actionFeedback").toBool());
+    ControlObject::set(ConfigKey("[DeckLabRight]", "current"), 1); QCoreApplication::processEvents();
+    EXPECT_FALSE(right->property("actionFeedback").toBool());
+}
+
+TEST_F(NativeDeckLabTest, DeckIdentityAndLabelledReadoutsFitWithoutStealingWaveformSpace) {
+    m_pMixerDeck1->loadFakeTrack(false, 300); ProcessBuffer();
+    ControlObject::set(ConfigKey("[Channel1]", "duration"), 7200);
+    QTest::qWait(150);
+    auto* numbers = panel->findChild<QLabel*>("decklab-numbers-1"); ASSERT_NE(nullptr, numbers);
+    ControlObject::set(ConfigKey("[Channel1]", "visual_key"), 2);
+    QComboBox* format = nullptr;
+    for (auto* combo : panel->findChildren<QComboBox*>())
+        if (combo->itemText(0).startsWith("Camelot")) format = combo;
+    ASSERT_NE(nullptr, format);
+    for (int notation = 0; notation < 3; ++notation) {
+        QMetaObject::invokeMethod(format, "activated", Q_ARG(int, notation));
+        for (const auto& name : {"numbers", "key", "remaining", "pitch"}) {
+            auto* label = panel->findChild<QLabel*>(QStringLiteral("decklab-%1-1").arg(name)); ASSERT_NE(nullptr, label);
+            QTextDocument document; document.setDocumentMargin(0); document.setDefaultFont(label->font());
+            document.setHtml(label->text()); document.setTextWidth(label->width());
+            EXPECT_LE(document.idealWidth(), label->width());
+            EXPECT_LE(document.size().height(), label->height());
+        }
+    }
+    QMetaObject::invokeMethod(format, "activated", Q_ARG(int, 0));
+    EXPECT_TRUE(panel->findChild<QLabel*>("decklab-key-1")->text().contains("12B"));
+    for (int deck = 1; deck <= 4; ++deck) {
+        auto* identity = panel->findChild<QLabel*>(QStringLiteral("decklab-wave-identity-%1").arg(deck));
+        ASSERT_NE(nullptr, identity); EXPECT_EQ(QString::number(deck), identity->text()); EXPECT_EQ(32, identity->width());
+        EXPECT_LE(identity->fontMetrics().tightBoundingRect(identity->text()).height(), 24);
+    }
+    EXPECT_EQ(32, panel->findChild<QLabel*>("decklab-identity-1")->width());
+    EXPECT_EQ(QSize(800, 480), panel->size());
+    EXPECT_EQ(384, panel->waveformContainer()->height());
+}
+
+TEST_F(NativeDeckLabTest, TransportStateAndTargetRemainTruthfulInPlayingFixture) {
+    m_pMixerDeck1->loadFakeTrack(false, 128);
+    m_pMixerDeck2->loadFakeTrack(false, 130); ProcessBuffer(); QTest::qWait(150);
+    auto* play = panel->findChild<QPushButton*>("decklab-1-play"); ASSERT_NE(nullptr, play);
+    play->click(); QTest::qWait(150);
+    EXPECT_EQ(QStringLiteral("Pause"), play->text()); EXPECT_TRUE(play->isChecked());
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel1]", "play")));
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel2]", "play")));
+    EXPECT_EQ(QStringLiteral("PLAYING"), panel->findChild<QLabel*>("decklab-state-1")->text());
+    EXPECT_EQ(QStringLiteral("PAUSED"), panel->findChild<QLabel*>("decklab-state-2")->text());
+    const QString output = qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
+    if (!output.isEmpty()) EXPECT_TRUE(panel->grab().save(QDir(output).filePath("decks-fixture-playing.png")));
+    play->click(); QTest::qWait(150);
+    EXPECT_EQ(QStringLiteral("Play"), play->text()); EXPECT_FALSE(play->isChecked());
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "play")));
+}
+
+TEST_F(NativeDeckLabTest, UpperLayerTransportTargetsLoadedDecksThreeAndFour) {
+    m_pMixerDeck1->loadFakeTrack(false, 128); m_pMixerDeck2->loadFakeTrack(false, 130);
+    m_pMixerDeck3->loadFakeTrack(false, 132); fourthDeck->loadFakeTrack(false, 134);
+    ProcessBuffer(); QCoreApplication::processEvents();
+    ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 1);
+    ControlObject::set(ConfigKey("[DeckLabRight]", "current"), 1); QCoreApplication::processEvents();
+    panel->findChild<QPushButton*>("decklab-1-play")->click();
+    panel->findChild<QPushButton*>("decklab-2-play")->click(); QTest::qWait(150);
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "play")));
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel2]", "play")));
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel3]", "play")));
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel4]", "play")));
+    EXPECT_EQ(QStringLiteral("3"), panel->findChild<QLabel*>("decklab-identity-1")->text());
+    EXPECT_EQ(QStringLiteral("4"), panel->findChild<QLabel*>("decklab-identity-2")->text());
+    EXPECT_TRUE(panel->findChild<QLabel*>("decklab-wave-identity-3")->isVisible());
+    EXPECT_TRUE(panel->findChild<QLabel*>("decklab-wave-identity-4")->isVisible());
+    EXPECT_FALSE(panel->findChild<QLabel*>("decklab-wave-identity-1")->isVisible());
+    EXPECT_FALSE(panel->findChild<QLabel*>("decklab-wave-identity-2")->isVisible());
+}
+
+TEST_F(NativeDeckLabTest, TouchBeatSyncMatchesTempoAndPhaseOnceWithoutStopping) {
+    m_pMixerDeck1->loadFakeTrack(false, 128); m_pMixerDeck2->loadFakeTrack(false, 130); ProcessBuffer();
+    ControlObject::set(ConfigKey("[Channel1]", "quantize"), 0);
+    ControlObject::set(ConfigKey("[Channel2]", "quantize"), 0);
+    ControlObject::set(ConfigKey("[Channel1]", "playposition"), .11);
+    ControlObject::set(ConfigKey("[Channel2]", "playposition"), .21); ProcessBuffer();
+    ControlObject::set(ConfigKey("[Channel1]", "play"), 1);
+    ControlObject::set(ConfigKey("[Channel2]", "play"), 1); ProcessBuffer();
+    ASSERT_GT(std::abs(ControlObject::get(ConfigKey("[Channel1]", "beat_distance")) -
+            ControlObject::get(ConfigKey("[Channel2]", "beat_distance"))), .01);
+    QCoreApplication::processEvents(); panel->findChild<QPushButton*>("decklab-1-beatsync")->click();
+    for (int n = 0; n < 8; ++n) ProcessBuffer();
+    EXPECT_NEAR(130, ControlObject::get(ConfigKey("[Channel1]", "bpm")), 1e-6);
+    EXPECT_NEAR(ControlObject::get(ConfigKey("[Channel1]", "beat_distance")),
+            ControlObject::get(ConfigKey("[Channel2]", "beat_distance")), .001);
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "sync_enabled")));
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel1]", "play")));
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel2]", "play")));
+    ControlObject::set(ConfigKey("[Channel2]", "rate_ratio"), 1.02);
+    for (int n = 0; n < 8; ++n) ProcessBuffer();
+    EXPECT_NEAR(132.6, ControlObject::get(ConfigKey("[Channel2]", "bpm")), 1e-6);
+    EXPECT_NEAR(130, ControlObject::get(ConfigKey("[Channel1]", "bpm")), 1e-6);
 }
 
 TEST_F(NativeDeckLabTest, LatchedRmxFollowsTempoChangesWithoutAnotherTouch) {

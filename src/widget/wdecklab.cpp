@@ -60,12 +60,12 @@ const QString kStyle = QStringLiteral(R"(
  WDeckLab QPushButton[transport="true"][first="true"] {border-left-width:1px;}
  WDeckLab QPushButton[actionFeedback="true"] {border-color:#d74448;background:#303030;}
  WDeckLab QPushButton:disabled {color:#777;border-color:#303030;}
- WDeckLab QPushButton[rail="true"] {border-width:0px 1px 1px 0px;border-radius:0px;font-weight:600;}
- WDeckLab QPushButton[rail="true"]:checked {background:#111;border-bottom:2px solid #d74448;}
+ WDeckLab QPushButton[rail="true"] {color:#aaa;border-width:0px 1px 1px 0px;border-radius:0px;font-weight:600;}
+ WDeckLab QPushButton[rail="true"]:checked {color:#eee;background:#111;border-bottom:2px solid #d74448;}
  WDeckLab QLabel[muted="true"] {color:#aaa;font-size:12px;}
  WDeckLab QLabel[deck="true"] {font-size:15px;font-weight:600;}
  WDeckLab QLabel[numbers="true"] {font-size:20px;font-weight:600;}
- WDeckLab QLabel[deckIdentity="true"] {font-size:21px;font-weight:600;}
+ WDeckLab QLabel[deckIdentity="true"] {font-size:22px;font-weight:600;border-right:1px solid #555;}
  WDeckLab QComboBox {background:#222;border:1px solid #484848;border-radius:2px;min-height:38px;padding-left:10px;}
  WDeckLab QComboBox QAbstractItemView {background:#181818;selection-background-color:#333;min-height:40px;}
  WDeckLab QComboBox QAbstractItemView::item {min-height:40px;}
@@ -187,9 +187,9 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
         watch(kTab, triggers[page], [this, page](double v) { if (v > 0) selectPage(page); });
     }
     auto* usb = button(tr("USB"), [this] { tool(1); }, this, QStringLiteral("decklab-usb"));
+    usb->setProperty("rail", true);
     usb->setFixedHeight(40);
     m_toolButtons.append(usb); usb->setEnabled(false);
-    usb->setIcon(style()->standardIcon(QStyle::SP_ArrowDown));
     rail->addWidget(usb);
     m_root->addLayout(rail);
     m_waveforms = new QWidget(this);
@@ -244,7 +244,7 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
                     m_tempos[deck - 1].at = -1;
                     refreshDeck(deck);
                     if (m_page == 1) {
-                        m_layers[(deck - 1) % 2] = deck;
+                        setDisplayedDeck((deck - 1) % 2, deck);
                         set(deck % 2 ? "[DeckLabLeft]" : "[DeckLabRight]", "current", deck > 2 ? 1 : 0);
                         updateLayers(); selectPage(0);
                     }
@@ -255,7 +255,7 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     }
     for (int side = 0; side < 2; ++side) {
         watch(side == 0 ? "[DeckLabLeft]" : "[DeckLabRight]", "current", [this, side](double v) {
-            m_layers[side] = side + 1 + (v > 0 ? 2 : 0); updateLayers();
+            setDisplayedDeck(side, side + 1 + (v > 0 ? 2 : 0)); updateLayers();
         });
     }
     connect(WaveformWidgetFactory::instance(), &WaveformWidgetFactory::waveformMeasured,
@@ -327,21 +327,14 @@ QWidget* WDeckLab::buildDecks() {
         const int side = deck - 1;
         auto* strip = new QWidget(page);
         strip->setMinimumWidth(0);
-        auto* contents = column(strip, 4);
-        auto* metrics = row(nullptr, 6);
+        auto* contents = row(strip);
+        contents->setContentsMargins(2, 2, 2, 2);
         m_deckIdentifiers[side] = new QLabel(QString::number(deck), strip);
         m_deckIdentifiers[side]->setObjectName(QStringLiteral("decklab-identity-%1").arg(deck));
         m_deckIdentifiers[side]->setProperty("deckIdentity", true);
-        m_deckIdentifiers[side]->setFixedWidth(24);
+        m_deckIdentifiers[side]->setFixedWidth(32);
         m_deckIdentifiers[side]->setAlignment(Qt::AlignCenter);
-        metrics->addWidget(m_deckIdentifiers[side]);
-        m_numbers[deck - 1] = new QLabel(strip);
-        m_numbers[deck - 1]->setObjectName(QStringLiteral("decklab-numbers-%1").arg(deck));
-        m_numbers[deck - 1]->setProperty("numbers", true);
-        m_numbers[deck - 1]->setFixedHeight(44);
-        m_numbers[deck - 1]->setTextFormat(Qt::RichText);
-        metrics->addWidget(m_numbers[deck - 1], 1);
-        contents->addLayout(metrics);
+        contents->addWidget(m_deckIdentifiers[side]);
         auto* actions = row(nullptr, 0);
         for (const auto& pair : {qMakePair(tr("Cue"), QStringLiteral("cue_default")),
                      qMakePair(tr("Play"), QStringLiteral("play")),
@@ -372,10 +365,10 @@ QWidget* WDeckLab::buildDecks() {
             }
             actions->addWidget(b);
         }
-        contents->addLayout(actions);
+        contents->addLayout(actions, 1);
         layout->addWidget(strip, 1);
     }
-    page->setFixedHeight(100);
+    page->setFixedHeight(52);
     return page;
 }
 
@@ -856,24 +849,59 @@ void WDeckLab::addWaveform(QWidget* widget, int deck) {
     if (!widget || deck < 1 || deck > 4) return;
     auto* frame = new QWidget(m_waveforms);
     auto* layout = column(frame);
-    auto* header = new QWidget(frame); header->setFixedHeight(24);
+    auto* header = new QWidget(frame); header->setFixedHeight(m_page == 0 ? 48 : 24);
+    m_waveHeaders[deck - 1] = header;
     auto* labels = row(header);
-    m_titles[deck - 1] = new QLabel(header);
+    auto* identity = new QLabel(QString::number(deck), header);
+    identity->setObjectName(QStringLiteral("decklab-wave-identity-%1").arg(deck));
+    identity->setProperty("deckIdentity", true);
+    identity->setFixedWidth(32);
+    identity->setAlignment(Qt::AlignCenter);
+    identity->setAccessibleName(tr("Deck %1").arg(deck));
+    labels->addWidget(identity);
+    auto* content = new QWidget(header);
+    auto* lines = column(content);
+    auto* titleRow = new QWidget(content);
+    auto* titleLayout = row(titleRow);
+    labels->addWidget(content, 1);
+    lines->addWidget(titleRow);
+    m_titles[deck - 1] = new QLabel(titleRow);
     m_titles[deck - 1]->setObjectName(QStringLiteral("decklab-wave-title-%1").arg(deck));
     m_titles[deck - 1]->setTextFormat(Qt::PlainText);
     m_titles[deck - 1]->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_titles[deck - 1]->setProperty("deck", true);
     m_titles[deck - 1]->setContentsMargins(8, 0, 8, 0);
-    m_titles[deck - 1]->setFixedHeight(24);
-    labels->addWidget(m_titles[deck - 1], 1);
+    m_titles[deck - 1]->setFixedHeight(m_page == 0 ? 20 : 24);
+    titleLayout->addWidget(m_titles[deck - 1], 1);
+    auto* state = new QLabel(titleRow);
+    state->setObjectName(QStringLiteral("decklab-state-%1").arg(deck));
+    state->setProperty("muted", true); state->setFixedWidth(70); state->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    state->setContentsMargins(0, 0, 8, 0);
+    m_playStates[deck - 1] = state; titleLayout->addWidget(state);
     auto* meter = new QProgressBar(header); meter->setRange(0,100); meter->setValue(0); meter->setTextVisible(false); meter->setFixedSize(60,6);
-    meter->setAccessibleName(tr("Deck %1 level").arg(deck)); labels->addWidget(meter,0,Qt::AlignVCenter); m_meters[deck-1]=meter;
+    meter->setAccessibleName(tr("Deck %1 level").arg(deck)); titleLayout->addWidget(meter,0,Qt::AlignVCenter); m_meters[deck-1]=meter;
     watch(channel(deck),"vu_meter",[meter](double v){meter->setValue(std::isfinite(v)?int(std::clamp(v,0.0,1.0)*100):0);});
     watch(channel(deck),"peak_indicator",[meter](double v){if(meter->property("clipping").toBool()!=(v>0)){meter->setProperty("clipping",v>0);meter->style()->unpolish(meter);meter->style()->polish(meter);}});
     m_waveNumbers[deck - 1] = new QLabel(header); m_waveNumbers[deck - 1]->setFixedWidth(176);
     m_waveNumbers[deck - 1]->setObjectName(QStringLiteral("decklab-wave-metrics-%1").arg(deck));
     m_waveNumbers[deck - 1]->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    m_waveNumbers[deck - 1]->setContentsMargins(0, 0, 8, 0); labels->addWidget(m_waveNumbers[deck - 1]);
+    m_waveNumbers[deck - 1]->setContentsMargins(0, 0, 8, 0); titleLayout->addWidget(m_waveNumbers[deck - 1]);
+    auto* metrics = new QWidget(content); metrics->setFixedHeight(28);
+    m_deckMetrics[deck - 1] = metrics;
+    auto* values = row(metrics); values->setContentsMargins(8, 0, 8, 0);
+    auto metric = [metrics, values, deck](const QString& name, int width, bool primary) {
+        auto* label = new QLabel(metrics); label->setObjectName(QStringLiteral("decklab-%1-%2").arg(name).arg(deck));
+        label->setTextFormat(Qt::RichText); label->setFixedWidth(width);
+        label->setProperty(primary ? "numbers" : "muted", true);
+        values->addWidget(label); return label;
+    };
+    m_numbers[deck - 1] = metric("numbers", 170, true);
+    m_keys[deck - 1] = metric("key", 130, true);
+    m_remaining[deck - 1] = metric("remaining", 195, true);
+    values->addStretch(1);
+    m_pitch[deck - 1] = metric("pitch", 150, false);
+    m_pitch[deck - 1]->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    lines->addWidget(metrics);
     layout->addWidget(header);
     widget->setMinimumHeight(16);
     widget->setMaximumHeight(QWIDGETSIZE_MAX);
@@ -968,6 +996,7 @@ void WDeckLab::selectPage(int page) {
         if (!m_hasBrowsed) { m_hasBrowsed = true; showSources(); }
         else if (m_browseStack->currentIndex() == 0) showSources(); else showTracks();
     }
+    for (int deck = 1; deck <= 4; ++deck) refreshDeck(deck);
     refreshLoadButtons(); refreshFx(); updateStatus();
 }
 
@@ -1082,8 +1111,7 @@ void WDeckLab::refreshDeck(int deck) {
     QString key = KeyUtils::keyToString(static_cast<mixxx::track::io::key::ChromaticKey>(int(value(channel(deck), "visual_key"))));
     if (key.isEmpty()) key = QStringLiteral("—");
     if (m_titles[deck - 1]) {
-        QString line = tr("%1   %2").arg(deck).arg(title);
-        m_titles[deck - 1]->setText(m_titles[deck - 1]->fontMetrics().elidedText(line, Qt::ElideRight,
+        m_titles[deck - 1]->setText(m_titles[deck - 1]->fontMetrics().elidedText(title, Qt::ElideRight,
                 std::max(0, m_titles[deck - 1]->width() - 18)));
         m_titles[deck - 1]->setToolTip(QStringLiteral("<span>%1</span>").arg(title.toHtmlEscaped()));
         if (m_waveNumbers[deck - 1]) {
@@ -1092,17 +1120,26 @@ void WDeckLab::refreshDeck(int deck) {
         }
     }
     const int side = deck % 2 ? 0 : 1;
-    if (displayedDeck(side) == deck && m_numbers[side]) {
+    if (m_numbers[deck - 1]) {
         double remaining = duration * (1 - value(channel(deck), "playposition"));
         const bool loaded = value(channel(deck), "track_loaded") > 0;
         const bool playing = value(channel(deck), "play") > 0;
         double pitch = (value(channel(deck), "rate_ratio") - 1) * 100;
         if (!std::isfinite(pitch) || std::abs(pitch) < .005) pitch = 0;
         const QString pitchText = (pitch >= 0 ? QStringLiteral("+") : QString()) + QString::number(pitch, 'f', 2) + QLatin1Char('%');
-        m_numbers[side]->setText(track ? QStringLiteral("%1 <span style='font-size:11px;font-weight:400'>BPM</span>   %2   −%3<br><span style='font-size:11px;color:#aaa;font-weight:400'>%4 · %5</span>")
-                    .arg(bpm, 0, 'f', 2).arg(key.toHtmlEscaped(), timeText(remaining),
-                            playing ? tr("PLAYING") : tr("PAUSED"), pitchText)
-                : tr("Ready to load"));
+        m_waveHeaders[deck - 1]->setFixedHeight(m_page == 0 ? 48 : 24);
+        m_titles[deck - 1]->setFixedHeight(m_page == 0 ? 20 : 24);
+        m_deckMetrics[deck - 1]->setVisible(m_page == 0);
+        m_playStates[deck - 1]->setVisible(m_page == 0);
+        m_playStates[deck - 1]->setText(loaded ? (playing ? tr("PLAYING") : tr("PAUSED")) : tr("EMPTY"));
+        m_numbers[deck - 1]->setText(track ? QStringLiteral("%1 <span style='font-size:11px;font-weight:400;color:#aaa'>BPM</span>").arg(bpm, 0, 'f', 2) : QStringLiteral("— <span style='font-size:11px;font-weight:400;color:#aaa'>BPM</span>"));
+        m_keys[deck - 1]->setText(QStringLiteral("<span style='font-size:11px;font-weight:400;color:#aaa'>KEY</span> %1").arg(track ? key.toHtmlEscaped() : QStringLiteral("—")));
+        m_remaining[deck - 1]->setText(QStringLiteral("<span style='font-size:11px;font-weight:400;color:#aaa'>REM</span> %1").arg(track ? QStringLiteral("−") + timeText(remaining) : QStringLiteral("—")));
+        m_pitch[deck - 1]->setText(loaded ? tr("PITCH %1").arg(pitchText) : QString());
+    }
+    if (displayedDeck(side) == deck) {
+        const bool loaded = value(channel(deck), "track_loaded") > 0;
+        const bool playing = value(channel(deck), "play") > 0;
         m_deckIdentifiers[side]->setText(QString::number(deck));
         m_deckIdentifiers[side]->setAccessibleName(tr("Deck %1").arg(deck));
         for (const auto& action : {"play", "cue_default", "beatsync"}) {
@@ -1323,6 +1360,13 @@ void WDeckLab::openCollection() {
 }
 
 int WDeckLab::displayedDeck(int side) const { return m_layers[side]; }
+void WDeckLab::setDisplayedDeck(int side, int deck) {
+    if (m_layers[side] == deck) return;
+    // A held touch or acknowledgment belongs to its actual deck, not the side.
+    if (m_touchCue == channel(m_layers[side])) releaseTouchCue();
+    m_syncFeedbackUntil[side] = 0;
+    m_layers[side] = deck;
+}
 void WDeckLab::updateLayers() {
     for (auto* frame : m_deckWaveforms) if (frame) m_waveLayout->removeWidget(frame);
     for (int deck = 1; deck <= 4; ++deck) {

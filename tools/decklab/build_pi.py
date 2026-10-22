@@ -77,6 +77,10 @@ def test_summary(path):
             or not {"FirstBrowsePressDoesNotOpenSource", "SingleTapOpensFolderAndBackRestoresSelection",
                     "IndependentRmxDoesNotBorrowControllerChains", "PagesFit800By480",
                     "DecksTransportHasTruthfulStatesAndLargerTargets",
+                    "LayerChangeReleasesOnlyTheReplacedTouchCue", "SyncAcknowledgmentCannotTransferToAnotherLayer",
+                    "DeckIdentityAndLabelledReadoutsFitWithoutStealingWaveformSpace",
+                    "TransportStateAndTargetRemainTruthfulInPlayingFixture",
+                    "UpperLayerTransportTargetsLoadedDecksThreeAndFour", "TouchBeatSyncMatchesTempoAndPhaseOnceWithoutStopping",
                     "Lv2PreparationUsesSelectedRateWithoutAudio", "TouchSearchUsesNativeKeyboardAndReturnsWaveforms"}.issubset(native_ui)
             or any(case.find("skipped") is not None for case in enabled)):
         raise ValueError("Native regression suite incomplete or failed")
