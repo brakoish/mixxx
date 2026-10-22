@@ -1381,3 +1381,30 @@ TEST_F(SearchQueryParserTest, QuotedOrOperator) {
     pTrackI->setComment("house");
     EXPECT_TRUE(pQuery->match(pTrackI));
 }
+
+TEST_F(SearchQueryParserTest, ExternalTablesFilterOnlyTheirOwnColumns) {
+    // A rekordbox USB table has artist and key text, but no album_artist or key_id.
+    m_parser.setAvailableColumns({"id", "artist", "title", "album", "key", "bpm", "location"});
+    auto pArtist = m_parser.parseQuery(QStringLiteral("artist:=\"Demo Artist\""), QString());
+    const QString artistSql = pArtist->toSql();
+    EXPECT_TRUE(artistSql.contains(QStringLiteral("artist"))) << artistSql.toStdString();
+    EXPECT_FALSE(artistSql.contains(QStringLiteral("album_artist"))) << artistSql.toStdString();
+
+    auto pKey = m_parser.parseQuery(QStringLiteral("key:8A"), QString());
+    const QString keySql = pKey->toSql();
+    EXPECT_FALSE(keySql.contains(QStringLiteral("key_id"))) << keySql.toStdString();
+    EXPECT_TRUE(keySql.contains(QStringLiteral("'8a'"))) << keySql.toStdString();
+    EXPECT_TRUE(keySql.contains(QStringLiteral("'am'"))) << keySql.toStdString();
+    TrackPointer pTrack = newTestTrack();
+    pTrack->setKeyText(QStringLiteral("Am"));
+    EXPECT_TRUE(pKey->match(pTrack));
+    pTrack->setKeyText(QStringLiteral("Bm"));
+    EXPECT_FALSE(pKey->match(pTrack));
+
+    // The Mixxx library keeps its key_id and album_artist filters.
+    SearchQueryParser library(internalCollection(), QStringList());
+    EXPECT_TRUE(library.parseQuery(QStringLiteral("key:8A"), QString())->toSql().contains(QStringLiteral("key_id")));
+    EXPECT_TRUE(library.parseQuery(QStringLiteral("artist:=\"Demo Artist\""), QString())
+                        ->toSql()
+                        .contains(QStringLiteral("album_artist")));
+}

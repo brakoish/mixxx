@@ -11,12 +11,14 @@
 #include <QComboBox>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMenu>
 #include <QPushButton>
 #include <QProgressBar>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QScroller>
+#include <QStandardItemModel>
 #include <QStackedWidget>
 #include <QStyle>
 #include <QStyleOptionViewItem>
@@ -35,7 +37,9 @@
 #include "test/signalpathtest.h"
 #include "mixer/playermanager.h"
 #include "track/beats.h"
+#include "track/keyutils.h"
 #include "waveform/waveformwidgetfactory.h"
+#include "widget/decklabbrowse.h"
 #include "widget/decklabtempopresenter.h"
 #include "widget/wdecklab.h"
 #include "widget/wlibrary.h"
@@ -91,16 +95,19 @@ class TestPlayers final : public PlayerManagerInterface {
 };
 class TestSource final : public LibraryFeature {
   public:
-    explicit TestSource(UserSettingsPointer config) : LibraryFeature(nullptr, config, QString()) {
+    explicit TestSource(UserSettingsPointer config, const QString& icon = QString(),
+            const QString& name = QStringLiteral("USB library"))
+            : LibraryFeature(nullptr, config, icon), name(name) {
         auto* root = model.setRootItem(TreeItem::newRoot(this));
         auto* genres = root->appendChild("Genres"); genres->appendChild("House"); genres->appendChild("Techno");
     }
-    QVariant title() override { return QStringLiteral("USB library"); }
+    QVariant title() override { return name; }
     TreeItemModel* sidebarModel() const override { return const_cast<TreeItemModel*>(&model); }
     void activate() override { ++activations; }
     void activateChild(const QModelIndex&) override { ++activations; }
     int activations = 0;
     TreeItemModel model;
+    QString name;
 };
 }
 
@@ -117,7 +124,10 @@ class NativeDeckLabTest : public BaseSignalPathTest {
         addDeck(fourthDeck->getEngineDeck());
         WaveformWidgetFactory::createInstance()->setConfig(config());
         source = std::make_unique<TestSource>(config());
+        // A generated stand-in for Mixxx's collection root ("tracks" feature).
+        collection = std::make_unique<TestSource>(config(), QStringLiteral("tracks"), QStringLiteral("Collection"));
         model = std::make_unique<SidebarModel>(); model->addLibraryFeature(source.get());
+        model->addLibraryFeature(collection.get());
         navigation = std::make_unique<LibraryControl>(nullptr);
         soundStatus = std::make_unique<ControlObject>(ConfigKey("[SoundManager]", "status"));
         players = std::make_unique<TestPlayers>(); players->decks={m_pMixerDeck1.get(),m_pMixerDeck2.get(),m_pMixerDeck3.get(),fourthDeck.get()};
@@ -140,9 +150,11 @@ class NativeDeckLabTest : public BaseSignalPathTest {
     }
     void TearDown() override {
         panel.reset(); soundStatus.reset(); players.reset(); navigation.reset(); model.reset(); source.reset();
+        collection.reset();
         fourthDeck.reset(); WaveformWidgetFactory::destroy(); BaseSignalPathTest::TearDown();
     }
     std::unique_ptr<TestSource> source;
+    std::unique_ptr<TestSource> collection;
     std::unique_ptr<SidebarModel> model;
     std::unique_ptr<WDeckLab> panel;
     std::unique_ptr<TestPlayers> players;
@@ -1817,6 +1829,317 @@ TEST_F(NativeDeckLabTest, Lv2PreparationUsesSelectedRateWithoutAudio) {
     }
 }
 #endif
+
+namespace {
+void pulseControl(const char* group, const char* item, double value = 1) {
+    ControlObject::set(ConfigKey(group, item), value);
+    if (value > 0) ControlObject::set(ConfigKey(group, item), 0);
+    QCoreApplication::processEvents();
+}
+std::vector<double> deckSnapshot() {
+    std::vector<double> values;
+    for (int deck = 1; deck <= 4; ++deck) {
+        for (const char* item : {"play", "rate", "quantize", "keylock", "pregain", "beatloop_size", "track_loaded"}) {
+            values.push_back(ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), item)));
+        }
+    }
+    return values;
+}
+} // namespace
+
+// Generic mappings (FLX4, Inpulse and others) send MoveVertical, MoveFocus*,
+// GoToItem, MoveLeft/Right and SelectTrackKnob. All must browse natively and
+// none may become a key press on a deck, tempo or settings control.
+TEST_F(NativeDeckLabTest, GenericControllerBrowseOpensBrowseWithoutTouchingDecks) {
+    auto root = TreeItem::newRoot(source.get());
+    auto* genres = root->appendChild("Genres"); genres->appendChild("House"); genres->appendChild("Techno");
+    root->appendChild("Moods");
+    source->model.setRootItem(std::move(root));
+    m_pMixerDeck1->loadFakeTrack(false, 128); ProcessBuffer(); QCoreApplication::processEvents();
+    const auto before = deckSnapshot();
+    ASSERT_EQ(0, panel->currentPage());
+    // An encoder turn on the Decks page opens Browse where it was left.
+    pulseControl("[Library]", "MoveVertical", -1);
+    EXPECT_EQ(1, panel->currentPage());
+    EXPECT_TRUE(sidebar->isVisible());
+    EXPECT_EQ(0, sidebar->currentIndex().row());
+    EXPECT_EQ(0, source->activations);
+    pulseControl("[Library]", "MoveVertical", 1);
+    EXPECT_EQ(1, sidebar->currentIndex().row());
+    pulseControl("[Library]", "MoveVertical", -1);
+    EXPECT_EQ(0, sidebar->currentIndex().row());
+    // The browse-knob press of those mappings (MoveFocusForward) enters.
+    pulseControl("[Library]", "MoveFocusForward");
+    EXPECT_EQ(1, source->activations);
+    ASSERT_TRUE(sidebar->rootIndex().isValid());
+    EXPECT_EQ(QStringLiteral("Genres"), sidebar->currentIndex().data().toString());
+    // Turning highlights without opening anything.
+    pulseControl("[Playlist]", "SelectTrackKnob", 1);
+    EXPECT_EQ(QStringLiteral("Moods"), sidebar->currentIndex().data().toString());
+    pulseControl("[Library]", "MoveUp");
+    EXPECT_EQ(QStringLiteral("Genres"), sidebar->currentIndex().data().toString());
+    EXPECT_EQ(1, source->activations);
+    pulseControl("[Library]", "GoToItem");
+    EXPECT_EQ(2, source->activations);
+    EXPECT_EQ(QStringLiteral("Genres"), sidebar->rootIndex().data().toString());
+    // MoveRight on a leaf playlist shows its tracks.
+    pulseControl("[Library]", "MoveRight");
+    EXPECT_EQ(3, source->activations);
+    EXPECT_TRUE(library->isVisible());
+    // In a track list the press previews and Right does nothing: the list stays.
+    pulseControl("[Library]", "MoveFocusForward");
+    pulseControl("[Library]", "MoveRight");
+    EXPECT_TRUE(library->isVisible());
+    EXPECT_EQ(3, source->activations);
+    // MoveFocusBackward and MoveLeft go back one level each.
+    pulseControl("[Library]", "MoveFocusBackward");
+    EXPECT_TRUE(sidebar->isVisible());
+    EXPECT_EQ(QStringLiteral("Genres"), sidebar->rootIndex().data().toString());
+    pulseControl("[Library]", "MoveLeft");
+    EXPECT_EQ(QStringLiteral("Genres"), sidebar->currentIndex().data().toString());
+    EXPECT_EQ(QStringLiteral("USB library"), sidebar->rootIndex().data().toString());
+    // A focused settings combo box never receives the turn.
+    panel->selectPage(4);
+    auto* range = panel->findChild<QComboBox*>("decklab-tempo-range-1"); ASSERT_NE(nullptr, range);
+    const int rangeIndex = range->currentIndex();
+    range->setFocus(); QCoreApplication::processEvents();
+    pulseControl("[Playlist]", "SelectTrackKnob", 1);
+    EXPECT_EQ(1, panel->currentPage());
+    EXPECT_EQ(rangeIndex, range->currentIndex());
+    EXPECT_EQ(QStringLiteral("Moods"), sidebar->currentIndex().data().toString());
+    panel->selectPage(0);
+    pulseControl("[Library]", "ScrollVertical", 1);
+    EXPECT_EQ(1, panel->currentPage());
+    QTest::qWait(50);
+    EXPECT_EQ(before, deckSnapshot());
+}
+
+TEST_F(NativeDeckLabTest, PlayingDeckLoadShowsWhyAndKeepsTheDeck) {
+    m_pMixerDeck2->loadFakeTrack(false, 128); ProcessBuffer();
+    ControlObject::set(ConfigKey("[Channel2]", "play"), 1); ProcessBuffer(); QCoreApplication::processEvents();
+    panel->openCollection(); QCoreApplication::processEvents();
+    auto* load = panel->findChild<QPushButton*>("decklab-load-2"); ASSERT_NE(nullptr, load);
+    auto* target = static_cast<DeckLabActionButton*>(load);
+    EXPECT_FALSE(load->isEnabled());
+    EXPECT_EQ(DeckLabActionButton::Tone::OnAir, target->tone());
+    EXPECT_TRUE(target->detail().contains(QStringLiteral("air"), Qt::CaseInsensitive));
+    auto* toast = panel->findChild<QLabel*>("decklab-toast"); ASSERT_NE(nullptr, toast);
+    EXPECT_FALSE(toast->isVisible());
+    // Tapping the ON AIR target explains instead of silently refusing.
+    QTest::mouseClick(load, Qt::LeftButton);
+    EXPECT_TRUE(toast->isVisible());
+    EXPECT_EQ(QStringLiteral("Deck 2 is playing – pause it to load"), toast->text());
+    const QString output = qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
+    if (!output.isEmpty()) EXPECT_TRUE(panel->grab().save(QDir(output).filePath("browse-on-air-feedback.png")));
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel2]", "play")));
+    EXPECT_TRUE(m_pMixerDeck2->getEngineDeck()->getEngineBuffer()->isTrackLoaded());
+    // Controller LOAD: the track table reports Mixxx's own refusal, on any page.
+    panel->selectPage(0); toast->hide();
+    ControlObject::set(ConfigKey("[DeckLabNative]", "load_refused"), 2);
+    ControlObject::set(ConfigKey("[DeckLabNative]", "load_refused"), 0);
+    QCoreApplication::processEvents();
+    EXPECT_TRUE(toast->isVisible());
+    EXPECT_TRUE(toast->text().startsWith(QStringLiteral("Deck 2 is playing")));
+    EXPECT_TRUE(panel->rect().contains(QRect(toast->mapTo(panel.get(), QPoint()), toast->size())));
+    // A paused deck stays a normal (here: no selection yet) LOAD target.
+    ControlObject::set(ConfigKey("[Channel2]", "play"), 0); ProcessBuffer(); QCoreApplication::processEvents();
+    EXPECT_NE(DeckLabActionButton::Tone::OnAir, target->tone());
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel2]", "play")));
+}
+
+TEST_F(NativeDeckLabTest, CollectionOpensCategoriesAndBackReturnsToSources) {
+    panel->selectPage(1); QCoreApplication::processEvents();
+    const QPersistentModelIndex collectionRoot = model->index(1, 0);
+    ASSERT_EQ(QStringLiteral("tracks"), collectionRoot.data(SidebarModel::IconNameRole).toString());
+    sidebar->setCurrentIndex(collectionRoot); QCoreApplication::processEvents();
+    auto* card = static_cast<DeckLabTrackCard*>(panel->findChild<QWidget*>("decklab-track-card"));
+    ASSERT_NE(nullptr, card);
+    EXPECT_EQ(QStringLiteral("Collection"), card->title());
+    panel->browsePress(); QCoreApplication::processEvents();
+    auto* list = panel->findChild<QListWidget*>("decklab-browse-categories"); ASSERT_NE(nullptr, list);
+    ASSERT_TRUE(list->isVisible());
+    EXPECT_FALSE(sidebar->isVisible());
+    QStringList names;
+    for (int row = 0; row < list->count(); ++row) names << list->item(row)->text();
+    EXPECT_EQ((QStringList{"All Tracks", "Artist", "Album", "BPM", "Key"}), names);
+    EXPECT_EQ(1, collection->activations);
+    auto* crumb = static_cast<DeckLabBreadcrumb*>(panel->findChild<QWidget*>("decklab-breadcrumb"));
+    ASSERT_NE(nullptr, crumb);
+    EXPECT_EQ(QStringList{QStringLiteral("Collection")}, crumb->segments());
+    // A knob turn highlights a category without opening it.
+    ControlObject::set(ConfigKey("[Playlist]", "SelectPlaylist"), 2); QCoreApplication::processEvents();
+    EXPECT_EQ(2, list->currentRow());
+    EXPECT_TRUE(list->isVisible());
+    EXPECT_EQ(QStringLiteral("Album"), card->title());
+    EXPECT_EQ(1, collection->activations);
+    const QString output = qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
+    if (!output.isEmpty()) EXPECT_TRUE(panel->grab().save(QDir(output).filePath("browse-categories-fixture.png")));
+    panel->browseBack(); QCoreApplication::processEvents();
+    EXPECT_TRUE(sidebar->isVisible());
+    EXPECT_FALSE(list->isVisible());
+    EXPECT_EQ(collectionRoot, QPersistentModelIndex(sidebar->currentIndex()));
+    EXPECT_EQ(QStringList{QStringLiteral("Sources")}, crumb->segments());
+}
+
+// 800x480 is the design target; 1024x600 and 1280x800 touch screens must not break.
+TEST_F(NativeDeckLabTest, BrowseScalesCleanlyTo1024x600And1280x800) {
+    panel->openCollection(); QCoreApplication::processEvents();
+    const QString output = qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
+    for (const QSize& size : {QSize(1024, 600), QSize(1280, 800), QSize(800, 480)}) {
+        panel->resize(size); QTest::qWait(50);
+        ASSERT_EQ(size, panel->size());
+        auto* browse = panel->findChild<QWidget*>("decklab-browse"); ASSERT_NE(nullptr, browse);
+        auto* pane = panel->findChild<QWidget*>("decklab-browse-pane"); ASSERT_NE(nullptr, pane);
+        const QRect paneRect(pane->mapTo(panel.get(), QPoint()), pane->size());
+        EXPECT_TRUE(panel->rect().contains(paneRect)) << size.width();
+        EXPECT_GE(pane->width(), 236); EXPECT_LE(pane->width(), 340);
+        const QRect tracksRect(library->mapTo(panel.get(), QPoint()), library->size());
+        EXPECT_TRUE(library->isVisible());
+        EXPECT_LE(tracksRect.right(), paneRect.left()) << size.width();
+        EXPECT_GE(tracksRect.width(), 500) << size.width();
+        for (auto* button : browse->findChildren<QPushButton*>()) {
+            if (!button->isVisible()) continue;
+            const QRect bounds(button->mapTo(panel.get(), QPoint()), button->size());
+            EXPECT_TRUE(panel->rect().contains(bounds)) << button->objectName().toStdString() << " " << size.width();
+            EXPECT_GE(button->height(), 38) << button->objectName().toStdString();
+        }
+        auto* card = panel->findChild<QWidget*>("decklab-track-card");
+        EXPECT_TRUE(card->isVisible()); EXPECT_GE(card->height(), 96);
+        if (!output.isEmpty()) {
+            EXPECT_TRUE(panel->grab().save(QDir(output).filePath(
+                    QStringLiteral("browse-%1x%2.png").arg(size.width()).arg(size.height()))));
+        }
+    }
+}
+
+TEST(DeckLabBrowseMatchTest, CamelotWheelCompatibilityTable) {
+    using namespace mixxx::track::io::key;
+    const std::vector<std::pair<ChromaticKey, QString>> wheel{
+            {C_MAJOR, "8B"}, {D_FLAT_MAJOR, "3B"}, {D_MAJOR, "10B"}, {E_FLAT_MAJOR, "5B"},
+            {E_MAJOR, "12B"}, {F_MAJOR, "7B"}, {F_SHARP_MAJOR, "2B"}, {G_MAJOR, "9B"},
+            {A_FLAT_MAJOR, "4B"}, {A_MAJOR, "11B"}, {B_FLAT_MAJOR, "6B"}, {B_MAJOR, "1B"},
+            {C_MINOR, "5A"}, {C_SHARP_MINOR, "12A"}, {D_MINOR, "7A"}, {E_FLAT_MINOR, "2A"},
+            {E_MINOR, "9A"}, {F_MINOR, "4A"}, {F_SHARP_MINOR, "11A"}, {G_MINOR, "6A"},
+            {G_SHARP_MINOR, "1A"}, {A_MINOR, "8A"}, {B_FLAT_MINOR, "3A"}, {B_MINOR, "10A"}};
+    for (const auto& [key, text] : wheel) {
+        EXPECT_EQ(text, decklab::camelotText(key)) << KeyUtils::keyDebugName(key).toStdString();
+        // Mixxx's own Lancelot notation agrees with the wheel.
+        EXPECT_EQ(text, KeyUtils::keyToString(key, KeyUtils::KeyNotation::Lancelot));
+    }
+    using decklab::HarmonicMatch;
+    // 8A (A minor): same, relative 8B, neighbours 7A and 9A; nothing else.
+    EXPECT_EQ(HarmonicMatch::Same, decklab::harmonicMatch(A_MINOR, A_MINOR));
+    EXPECT_EQ(HarmonicMatch::Relative, decklab::harmonicMatch(C_MAJOR, A_MINOR));
+    EXPECT_EQ(HarmonicMatch::Adjacent, decklab::harmonicMatch(D_MINOR, A_MINOR));
+    EXPECT_EQ(HarmonicMatch::Adjacent, decklab::harmonicMatch(E_MINOR, A_MINOR));
+    EXPECT_EQ(HarmonicMatch::None, decklab::harmonicMatch(B_MINOR, A_MINOR));   // 10A
+    EXPECT_EQ(HarmonicMatch::None, decklab::harmonicMatch(F_MAJOR, A_MINOR));   // 7B diagonal
+    EXPECT_EQ(HarmonicMatch::None, decklab::harmonicMatch(G_MAJOR, A_MINOR));   // 9B diagonal
+    // The wheel wraps: 12A and 1A are neighbours.
+    EXPECT_EQ(HarmonicMatch::Adjacent, decklab::harmonicMatch(G_SHARP_MINOR, C_SHARP_MINOR));
+    EXPECT_EQ(HarmonicMatch::Adjacent, decklab::harmonicMatch(B_MAJOR, E_MAJOR));
+    EXPECT_EQ(HarmonicMatch::None, decklab::harmonicMatch(INVALID, A_MINOR));
+    EXPECT_EQ(HarmonicMatch::None, decklab::harmonicMatch(A_MINOR, INVALID));
+    // Every key has exactly four highlighted partners, all of which Mixxx's
+    // broader compatible-key search (~key:) also returns.
+    for (int reference = 1; reference <= 24; ++reference) {
+        const auto ref = static_cast<ChromaticKey>(reference);
+        const auto broader = KeyUtils::getCompatibleKeys(ref);
+        int matches = 0;
+        for (int candidate = 1; candidate <= 24; ++candidate) {
+            const auto key = static_cast<ChromaticKey>(candidate);
+            if (decklab::harmonicMatch(key, ref) == HarmonicMatch::None) continue;
+            ++matches;
+            EXPECT_TRUE(broader.contains(key)) << reference << " " << candidate;
+        }
+        EXPECT_EQ(4, matches) << reference;
+    }
+    // Key text from any notation resolves to the same key.
+    EXPECT_EQ(A_MINOR, decklab::keyFromText(QStringLiteral("8A")));
+    EXPECT_EQ(A_MINOR, decklab::keyFromText(QStringLiteral("Am")));
+    EXPECT_EQ(A_MINOR, decklab::keyFromText(QStringLiteral("1m")));
+}
+
+TEST(DeckLabBrowseMatchTest, TempoMatchesWithinSixPercentOnly) {
+    EXPECT_TRUE(decklab::tempoMatches(124, 124));
+    EXPECT_TRUE(decklab::tempoMatches(127.2, 120));
+    EXPECT_TRUE(decklab::tempoMatches(112.8, 120));
+    EXPECT_FALSE(decklab::tempoMatches(127.4, 120));
+    EXPECT_FALSE(decklab::tempoMatches(112.6, 120));
+    EXPECT_FALSE(decklab::tempoMatches(60, 120));   // half tempo is not highlighted
+    EXPECT_FALSE(decklab::tempoMatches(240, 120));
+    EXPECT_FALSE(decklab::tempoMatches(0, 120));
+    EXPECT_FALSE(decklab::tempoMatches(124, 0));
+    EXPECT_FALSE(decklab::tempoMatches(std::nan(""), 120));
+    EXPECT_NEAR(2.5, decklab::tempoDifferencePercent(123, 120), 1e-9);
+    // The reference only changes when it meaningfully differs (no repaint storms).
+    decklab::MatchReference a; a.deck = 1; a.key = mixxx::track::io::key::A_MINOR; a.bpm = 124.001;
+    decklab::MatchReference b = a; b.bpm = 124.003;
+    EXPECT_TRUE(a.sameAs(b));
+    b.bpm = 124.2;
+    EXPECT_FALSE(a.sameAs(b));
+}
+
+TEST(DeckLabBrowseTest, BreadcrumbDropsMiddleSegmentsBeforeTheDeepestLevel) {
+    const QStringList path{"Rekordbox", "USB DRIVE", "Genres", "House and Tech"};
+    const auto measure = [](const QString& text) { return static_cast<int>(text.size()); };
+    const QString separator = QStringLiteral(" / ");
+    // Fits: unchanged.
+    EXPECT_EQ(path, decklab::elideBreadcrumb(path, 100, measure, separator));
+    // Middle levels go first; the source and the deepest level stay.
+    EXPECT_EQ((QStringList{"Rekordbox", decklab::ellipsis(), "Genres", "House and Tech"}),
+            decklab::elideBreadcrumb(path, 40, measure, separator));
+    EXPECT_EQ((QStringList{"Rekordbox", decklab::ellipsis(), "House and Tech"}),
+            decklab::elideBreadcrumb(path, 30, measure, separator));
+    EXPECT_EQ((QStringList{decklab::ellipsis(), "House and Tech"}),
+            decklab::elideBreadcrumb(path, 20, measure, separator));
+    EXPECT_EQ(QStringList{"House and Tech"}, decklab::elideBreadcrumb(path, 5, measure, separator));
+    EXPECT_EQ(QStringList{"Sources"}, decklab::elideBreadcrumb({"Sources"}, 1, measure, separator));
+    // The painted breadcrumb applies the same rule to its real width.
+    DeckLabBreadcrumb crumb;
+    crumb.resize(300, 44);
+    crumb.setSegments({"Rekordbox", "USB DRIVE", "Playlists", "Warm-up", "Late Night Selection"});
+    const QStringList shown = crumb.displayedSegments();
+    ASSERT_GE(shown.size(), 2);
+    EXPECT_EQ(QStringLiteral("Late Night Selection"), shown.last());
+    EXPECT_TRUE(shown.contains(decklab::ellipsis()));
+    EXPECT_EQ(crumb.segments().join(QStringLiteral(" › ")), crumb.toolTip());
+}
+
+TEST(DeckLabBrowseTest, CategoryValuesComeFromTheTrackModelWithNativeQueries) {
+    QStandardItemModel model(4, 3);
+    const std::array<QString, 4> artists{"Demo Artist B", "demo artist b", "Demo Artist A", ""};
+    const std::array<double, 4> bpms{122.4, 121.6, 0, 128};
+    const std::array<QString, 4> keys{"8A", "Am", "9B", ""};
+    for (int row = 0; row < 4; ++row) {
+        model.setData(model.index(row, 0), artists[row]);
+        model.setData(model.index(row, 1), bpms[row], Qt::EditRole);
+        model.setData(model.index(row, 2), keys[row]);
+    }
+    const auto artistValues = decklab::collectCategoryValues(model, 0, decklab::Category::Artist);
+    ASSERT_EQ(3, artistValues.size());
+    EXPECT_EQ(QStringLiteral("Demo Artist A"), artistValues[0].label);
+    EXPECT_EQ(QStringLiteral("artist:=\"Demo Artist A\""), artistValues[0].query);
+    EXPECT_EQ(2, artistValues[1].count);
+    EXPECT_EQ(QStringLiteral("artist:\"\""), artistValues[2].query);
+    const auto bpmValues = decklab::collectCategoryValues(model, 1, decklab::Category::Bpm);
+    ASSERT_EQ(3, bpmValues.size());
+    EXPECT_EQ(QStringLiteral("122"), bpmValues[0].label);
+    EXPECT_EQ(2, bpmValues[0].count);
+    EXPECT_EQ(QStringLiteral("bpm:121.5-122.49"), bpmValues[0].query);
+    EXPECT_EQ(QStringLiteral("bpm:127.5-128.49"), bpmValues[1].query);
+    EXPECT_EQ(QStringLiteral("bpm:\"\""), bpmValues[2].query);
+    const auto keyValues = decklab::collectCategoryValues(model, 2, decklab::Category::Key);
+    ASSERT_EQ(3, keyValues.size());
+    EXPECT_EQ(QStringLiteral("key:8A"), keyValues[0].query);
+    EXPECT_EQ(2, keyValues[0].count); // "8A" and "Am" are the same key
+    EXPECT_TRUE(keyValues[0].accent.isValid());
+    EXPECT_EQ(QStringLiteral("key:9B"), keyValues[1].query);
+    EXPECT_EQ(QStringLiteral("key:\"\""), keyValues[2].query);
+    // Quotes cannot be escaped by the parser; the longest quote-free part is used.
+    EXPECT_EQ(QStringLiteral("album:\"Live at the Hall\""),
+            decklab::exactTextQuery(QStringLiteral("album"), QStringLiteral("\"Live at the Hall\"")));
+}
 
 TEST(DeckLabTempoTest, JitterIsSmoothedButPitchChangesImmediately) {
     DeckLabTempoPresenter display;
