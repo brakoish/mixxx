@@ -1727,6 +1727,7 @@ void WDeckLab::refreshDeck(int deck) {
     if (key.isEmpty()) key = QStringLiteral("—");
     if (m_titles[deck - 1]) {
         const bool compactTitle = m_page == 0 && m_fourDeckLayout;
+        if (!track && compactTitle) title = tr("Browse tracks");
         m_titles[deck - 1]->setWordWrap(compactTitle);
         m_titles[deck - 1]->setText(m_titles[deck - 1]->fontMetrics().elidedText(title, Qt::ElideRight,
                 std::max(0, (m_titles[deck - 1]->width() - 18) * (compactTitle ? 2 : 1))));

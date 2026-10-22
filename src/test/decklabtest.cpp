@@ -458,6 +458,14 @@ TEST_F(NativeDeckLabTest, ControllerLayerChangeRefreshesPlayState) {
 }
 
 TEST_F(NativeDeckLabTest, WaveformLayoutPreferenceRoundTripsBothDeckCountsWithoutEngineWrites) {
+    QMetaObject::invokeMethod(panel->findChild<QComboBox*>("decklab-deck-layout"), "activated", Q_ARG(int, 2));
+    QTest::qWait(30);
+    for (int deck = 1; deck <= 4; ++deck) {
+        auto* title = panel->findChild<QLabel*>(QStringLiteral("decklab-wave-title-%1").arg(deck)); ASSERT_NE(nullptr, title);
+        EXPECT_EQ(QStringLiteral("Browse tracks"), title->text());
+        EXPECT_LE(title->fontMetrics().boundingRect(QRect(0, 0, title->width(), 1000), Qt::TextWordWrap, title->text()).height(), title->height());
+    }
+    QMetaObject::invokeMethod(panel->findChild<QComboBox*>("decklab-deck-layout"), "activated", Q_ARG(int, 1));
     m_pMixerDeck1->loadFakeTrack(false, 128);
     m_pMixerDeck2->loadFakeTrack(false, 130);
     m_pMixerDeck3->loadFakeTrack(false, 132); fourthDeck->loadFakeTrack(false, 134);
@@ -466,6 +474,7 @@ TEST_F(NativeDeckLabTest, WaveformLayoutPreferenceRoundTripsBothDeckCountsWithou
     EXPECT_EQ(0, choice->currentData().toInt());
     EXPECT_EQ(QStringLiteral("Stacked"), choice->itemText(0));
     EXPECT_EQ(QStringLiteral("Side by side"), choice->itemText(1));
+    ControlObject::set(ConfigKey("[Channel1]", "play"), 1);
     std::vector<std::unique_ptr<ControlProxy>> observed; int writes = 0;
     for (int deck = 1; deck <= 4; ++deck)
         for (const auto& item : {"play", "rate", "sync_enabled", "waveform_zoom", "pfl"}) {
@@ -498,6 +507,9 @@ TEST_F(NativeDeckLabTest, WaveformLayoutPreferenceRoundTripsBothDeckCountsWithou
             panel->selectPage(0); QCoreApplication::processEvents();
         }
     }
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel1]", "play")));
+    // Stop the generated fixture explicitly before testing a canceled Play.
+    ControlObject::set(ConfigKey("[Channel1]", "play"), 0); writes = 0;
     // An in-flight transport gesture cannot survive a presentation change.
     auto* more = panel->findChild<QPushButton*>("decklab-1-more"); more->click(); QCoreApplication::processEvents();
     auto* play = panel->findChild<QPushButton*>("decklab-1-play"); ASSERT_TRUE(play->isVisible());
