@@ -1906,7 +1906,16 @@ void WDeckLab::updateLayers() {
     // Retain an existing four-deck session across disconnect while upper decks
     // are loaded, rather than concealing its working decks unexpectedly.
     const bool four = mode == 4 || (mode == 0 && (m_autoDeckLayout == 4 || (m_fourDeckLayout && upper)));
-    if (four != m_fourDeckLayout) { releaseTouchCue(); ++m_interactionEpoch; m_fourDeckLayout = four; }
+    if (four != m_fourDeckLayout) {
+        for (auto* menu : findChildren<QMenu*>()) {
+            if (menu->objectName().endsWith(QStringLiteral("more-menu"))) {
+                menu->close();
+            }
+        }
+        releaseTouchCue();
+        ++m_interactionEpoch;
+        m_fourDeckLayout = four;
+    }
     m_deckControls->hide();
     const bool paired = m_page == 0 && !four;
     auto move = [](QWidget* widget, QWidget* parent, QBoxLayout* layout, int index) {

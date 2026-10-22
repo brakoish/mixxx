@@ -746,7 +746,11 @@ TEST_F(NativeDeckLabTest, FourthDeckCuePopupTargetsActualDecksAndCancelsChangedC
 TEST_F(NativeDeckLabTest, BeatgridEditorUsesRealGridControlsAndRefusesUnsafeRelease) {
     auto track=m_pMixerDeck1->loadFakeTrack(false,128); track->setTitle("Grid target");
     m_pMixerDeck3->loadFakeTrack(false,132); ProcessBuffer();
-    ControlObject::set(ConfigKey("[Channel1]","bpmlock"),0); QTest::qWait(150);
+    // bpmlock requests toggle regardless of the requested value; establish
+    // fixture state through the track and verify the native control follows.
+    track->setBpmLocked(false); QTest::qWait(150);
+    ASSERT_FALSE(track->isBpmLocked());
+    ASSERT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel1]","bpmlock")));
     auto open=[this] {
         panel->findChild<QPushButton*>("decklab-1-more")->click(); QCoreApplication::processEvents();
         panel->findChild<QPushButton*>("decklab-1-grid")->click(); QCoreApplication::processEvents();
@@ -758,16 +762,18 @@ TEST_F(NativeDeckLabTest, BeatgridEditorUsesRealGridControlsAndRefusesUnsafeRele
     auto* later=button("beats_translate_later"); auto* align=button("beats_translate_curpos");
     auto* half=button("beats_set_halve"); auto* twice=button("beats_set_double"); auto* lock=button("bpmlock");
     ASSERT_NE(nullptr,later); ASSERT_NE(nullptr,align); ASSERT_NE(nullptr,half); ASSERT_NE(nullptr,twice); ASSERT_NE(nullptr,lock);
+    ASSERT_FALSE(lock->isChecked());
+    for(auto* action:{later,align,half,twice}) ASSERT_TRUE(action->isEnabled());
     const auto reference=mixxx::audio::FramePos(44100);
     const double oldBeat=track->getBeats()->findClosestBeat(reference).toEngineSamplePos();
     later->click(); QCoreApplication::processEvents(); ProcessBuffer();
     EXPECT_GT(track->getBeats()->findClosestBeat(reference).toEngineSamplePos(),oldBeat);
     ControlObject::set(ConfigKey("[Channel1]","playposition"),.317); ProcessBuffer();
     const auto position=m_pChannel1->getEngineBuffer()->getExactPlayPos();
-    align->click(); QCoreApplication::processEvents(); ProcessBuffer();
+    ASSERT_TRUE(align->isEnabled()); align->click(); QCoreApplication::processEvents(); ProcessBuffer();
     EXPECT_NEAR(position.toEngineSamplePos(),track->getBeats()->findClosestBeat(position).toEngineSamplePos(),2);
-    half->click(); QCoreApplication::processEvents(); ProcessBuffer(); EXPECT_NEAR(64,track->getBpm(),.001);
-    twice->click(); QCoreApplication::processEvents(); ProcessBuffer(); EXPECT_NEAR(128,track->getBpm(),.001);
+    ASSERT_TRUE(half->isEnabled()); half->click(); QCoreApplication::processEvents(); ProcessBuffer(); EXPECT_NEAR(64,track->getBpm(),.001);
+    ASSERT_TRUE(twice->isEnabled()); twice->click(); QCoreApplication::processEvents(); ProcessBuffer(); EXPECT_NEAR(128,track->getBpm(),.001);
     QTest::mousePress(twice,Qt::LeftButton); ControlObject::set(ConfigKey("[Channel1]","sync_enabled"),1); ProcessBuffer();
     ASSERT_GT(ControlObject::get(ConfigKey("[Channel1]","sync_enabled")),0);
     QTest::mouseRelease(twice,Qt::LeftButton); EXPECT_NEAR(128,track->getBpm(),.001);
@@ -781,7 +787,11 @@ TEST_F(NativeDeckLabTest, BeatgridEditorUsesRealGridControlsAndRefusesUnsafeRele
     ASSERT_TRUE(twice->isEnabled());
     QTest::mousePress(twice,Qt::LeftButton); ControlObject::set(ConfigKey("[Channel1]","bpmlock"),1);
     QTest::mouseRelease(twice,Qt::LeftButton); EXPECT_NEAR(128,track->getBpm(),.001); EXPECT_TRUE(lock->isChecked());
-    lock->click(); QCoreApplication::processEvents(); EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel1]","bpmlock")));
+    ASSERT_TRUE(lock->isEnabled()); ASSERT_TRUE(track->isBpmLocked());
+    lock->click(); QCoreApplication::processEvents();
+    ASSERT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel1]","bpmlock")));
+    ASSERT_FALSE(track->isBpmLocked()); ASSERT_FALSE(lock->isChecked());
+    ASSERT_TRUE(twice->isEnabled());
     QTest::mousePress(twice,Qt::LeftButton); ControlObject::set(ConfigKey("[Channel1]","play"),1);
     QTest::mouseRelease(twice,Qt::LeftButton); EXPECT_NEAR(128,track->getBpm(),.001);
     ControlObject::set(ConfigKey("[Channel1]","play"),0); ProcessBuffer(); QTest::qWait(150);
@@ -802,7 +812,10 @@ TEST_F(NativeDeckLabTest, SharedTrackGridEditingRequiresEveryAliasedDeckToBeQuie
     loadTrack(m_pMixerDeck1.get(),shared); loadTrack(m_pMixerDeck2.get(),shared);
     ASSERT_EQ(shared,m_pMixerDeck1->getLoadedTrack()); ASSERT_EQ(shared,m_pMixerDeck2->getLoadedTrack());
     ASSERT_TRUE(shared->trySetBpm(128)); ProcessBuffer();
-    ControlObject::set(ConfigKey("[Channel1]","bpmlock"),0); QTest::qWait(150);
+    shared->setBpmLocked(false); QTest::qWait(150);
+    ASSERT_FALSE(shared->isBpmLocked());
+    ASSERT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel1]","bpmlock")));
+    ASSERT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel2]","bpmlock")));
     panel->findChild<QPushButton*>("decklab-1-more")->click(); QCoreApplication::processEvents();
     panel->findChild<QPushButton*>("decklab-1-grid")->click(); QCoreApplication::processEvents();
     auto* dialog=panel->findChild<QDialog*>("decklab-beatgrid-editor"); ASSERT_NE(nullptr,dialog);
@@ -810,6 +823,8 @@ TEST_F(NativeDeckLabTest, SharedTrackGridEditingRequiresEveryAliasedDeckToBeQuie
     auto* later=dialog->findChild<QPushButton*>("decklab-grid-beats_translate_later");
     auto* lock=dialog->findChild<QPushButton*>("decklab-grid-bpmlock");
     ASSERT_NE(nullptr,half); ASSERT_NE(nullptr,later); ASSERT_NE(nullptr,lock);
+    ASSERT_TRUE(half->isEnabled()); ASSERT_TRUE(later->isEnabled()); ASSERT_TRUE(lock->isEnabled());
+    ASSERT_FALSE(lock->isChecked());
     for(int busy=0;busy<3;++busy) {
         const QString control=busy==0 ? QStringLiteral("play") : busy==1 ? QStringLiteral("sync_enabled") : QStringLiteral("sync_leader");
         ControlObject::set(ConfigKey("[Channel2]",control),1); ProcessBuffer(); QTest::qWait(150);
