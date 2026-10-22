@@ -196,7 +196,8 @@ cmd_run() {
     [ -n "${DECKLAB_RENDER_GATE:-}" ] && args+=("--env=DECKLAB_RENDER_GATE=$DECKLAB_RENDER_GATE")
     [ -n "${QSG_RENDER_LOOP:-}" ] && args+=("--env=QSG_RENDER_LOOP=$QSG_RENDER_LOOP")
     [ "${DECKLAB_KMS_ATOMIC:-}" = 1 ] && args+=(--env=QT_QPA_EGLFS_KMS_ATOMIC=1)
-    args+=("$ref" --qml "--settings-path=$work/profile" --resource-path=/app/share/mixxx)
+    # Mixxx prints only warnings to the console by default; the fps and GL lines are info.
+    args+=("$ref" --qml "--settings-path=$work/profile" --resource-path=/app/share/mixxx --log-level info)
 
     note "output $output ($qtname, ${mode:-current}) on $card; touch ${touch:-none}"
     note "logs in $logdir"
