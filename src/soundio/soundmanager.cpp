@@ -145,6 +145,16 @@ QList<QString> SoundManager::getHostAPIList() const {
     return apiList;
 }
 
+void SoundManager::updateOpenDeviceCount() const {
+    int open = 0;
+    for (const auto& pDevice : std::as_const(m_devices)) {
+        if (pDevice->isOpen()) {
+            ++open;
+        }
+    }
+    SoundDevice::publishOpenDeviceCount(open);
+}
+
 void SoundManager::closeDevices(bool sleepAfterClosing) {
     //qDebug() << "SoundManager::closeDevices()";
 
@@ -157,6 +167,7 @@ void SoundManager::closeDevices(bool sleepAfterClosing) {
             closed = true;
         }
     }
+    updateOpenDeviceCount();
 
     if (closed && sleepAfterClosing) {
 #ifdef __LINUX__
@@ -326,6 +337,16 @@ SoundDeviceStatus SoundManager::setupDevices() {
     // pushBuffer and onDeviceOutputCallback until closeDevices() below.
 
     qDebug() << "SoundManager::setupDevices()";
+    // Deck Lab: preparation below (Rubber Band scalers, LV2 instances) and the
+    // device reconfiguration must never race a running callback. setConfig()
+    // closes first, but a retry after a partially failed setup may still
+    // have devices open.
+    updateOpenDeviceCount();
+    if (SoundDevice::openDeviceCount() > 0) {
+        qWarning() << "SoundManager::setupDevices() closing" << SoundDevice::openDeviceCount()
+                   << "open device(s) before reconfiguring";
+        closeDevices(false);
+    }
     m_pControlObjectSoundStatusCO->set(SOUNDMANAGER_CONNECTING);
     SoundDeviceStatus status = SoundDeviceStatus::Ok;
     // NOTE(rryan): Do not clear m_pClkRefDevice here. If we didn't touch the
@@ -491,6 +512,8 @@ SoundDeviceStatus SoundManager::setupDevices() {
             ++inputDevicesOpened;
         }
     }
+
+    updateOpenDeviceCount();
 
     if (pNewMainClockRef) {
         qDebug() << "Using" << pNewMainClockRef->getDisplayName()

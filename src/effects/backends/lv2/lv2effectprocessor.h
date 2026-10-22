@@ -22,12 +22,20 @@ class LV2EffectGroupState final : public EffectState {
         }
     }
 
+    /// Main thread only: instantiates on first use. The audio thread must use
+    /// instance(), which never allocates.
     LilvInstance* lilvInstance(const LilvPlugin* pPlugin,
             const mixxx::EngineParameters& engineParameters) {
         if (!m_pInstance) {
             m_pInstance = lilv_plugin_instantiate(
                     pPlugin, engineParameters.sampleRate(), nullptr);
         }
+        return m_pInstance;
+    }
+
+    /// Audio-thread safe accessor; null if instantiation failed or the
+    /// prepared rate is still pending.
+    LilvInstance* instance() const {
         return m_pInstance;
     }
 

@@ -122,6 +122,8 @@ class SoundManager : public QObject {
     // (from PortAudio) and attempts to close them all. Closing a soundcard that
     // isn't open is safe.
     void closeDevices(bool sleepAfterClosing);
+    /// Publishes SoundDevice::openDeviceCount() for main-thread guards.
+    void updateOpenDeviceCount() const;
 
     void setJACKName() const;
     bool jackApiUsed() const {

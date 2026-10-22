@@ -1,6 +1,7 @@
 #include "effects/backends/lv2/lv2effectprocessor.h"
 
 #include "engine/effects/engineeffectparameter.h"
+#include "soundio/sounddevice.h"
 #include "util/defs.h"
 
 LV2EffectProcessor::LV2EffectProcessor(LV2EffectManifestPointer pManifest)
@@ -55,6 +56,17 @@ void LV2EffectProcessor::processChannel(
         return;
     }
 
+    // Never instantiate on the audio thread. A missing instance (failed
+    // instantiation on the main thread) passes audio through unchanged and
+    // lilv_instance_* is never called with null.
+    LilvInstance* instance = channelState->instance();
+    if (!instance) {
+        if (pOutput != pInput) {
+            SampleUtil::copy(pOutput, pInput, engineParameters.samplesPerBuffer());
+        }
+        return;
+    }
+
     for (int i = 0; i < m_engineEffectParameters.size(); i++) {
         m_LV2parameters[i] = static_cast<float>(m_engineEffectParameters[i]->value());
     }
@@ -65,8 +77,6 @@ void LV2EffectProcessor::processChannel(
         m_inputL[i] = pInput[i * 2];
         m_inputR[i] = pInput[i * 2 + 1];
     }
-
-    LilvInstance* instance = channelState->lilvInstance(m_pPlugin, engineParameters);
 
     if (enableState == EffectEnableState::Enabling) {
         lilv_instance_activate(instance);
@@ -89,7 +99,11 @@ LV2EffectGroupState* LV2EffectProcessor::createSpecificState(
         const mixxx::EngineParameters& engineParameters) {
     LV2EffectGroupState* pState = new LV2EffectGroupState(engineParameters);
     LilvInstance* pInstance = pState->lilvInstance(m_pPlugin, engineParameters);
-    VERIFY_OR_DEBUG_ASSERT(pInstance) {
+    if (!pInstance) {
+        // A plugin may refuse a rate or fail to load. The state then passes
+        // audio through; preparation retries on the main thread.
+        qWarning() << "LV2EffectProcessor: could not instantiate" << m_pManifest->id()
+                   << "at" << engineParameters.sampleRate();
         return pState;
     }
 
@@ -103,7 +117,23 @@ LV2EffectGroupState* LV2EffectProcessor::createSpecificState(
 
 void LV2EffectProcessor::prepareSpecificState(LV2EffectGroupState* state,
         const mixxx::EngineParameters& engineParameters) {
-    if (state->prepare(engineParameters.sampleRate())) {
+    // Main thread, devices closed: freeing and re-instantiating replaces the
+    // instance the audio thread runs. With a callback possibly running, keep
+    // the old instance; processChannel() passes audio through dry until the
+    // next preparation with devices closed.
+    if (SoundDevice::openDeviceCount() > 0) {
+        if (state->sampleRate() != engineParameters.sampleRate()) {
+            qWarning() << "LV2EffectProcessor: refusing to re-instantiate"
+                       << m_pManifest->id() << "while"
+                       << SoundDevice::openDeviceCount()
+                       << "audio device(s) are open";
+        }
+        return;
+    }
+    // Also retry an instantiation that failed earlier: this is the only
+    // place besides state creation where instantiating is allowed.
+    const bool rateChanged = state->prepare(engineParameters.sampleRate());
+    if (rateChanged || !state->instance()) {
         if (auto* instance = state->lilvInstance(m_pPlugin, engineParameters)) connectPorts(instance);
     }
 }
