@@ -21,6 +21,7 @@
 
 class ControlObject;
 class ControlProxy;
+class DeckLabStemPads;
 class DeckLabSystem;
 class DeckLabSystemUi;
 class Library;
@@ -245,6 +246,8 @@ class WDeckLab : public QWidget, public WBaseWidget {
     std::array<QWidget*, 4> m_cards{};
     std::array<DeckLabDeckStrip*, 4> m_strips{};
     std::array<DeckLabMiniStrip*, 4> m_minis{};
+    // Stem pads per deck card (stems workstream; decklabstempads.h).
+    std::array<DeckLabStemPads*, 4> m_stemPads{};
     std::array<DeckLabStripState, 4> m_stripStates{};
     std::array<TrackPointer, 4> m_tracks{};
     std::array<QList<QMetaObject::Connection>, 4> m_trackConnections{};

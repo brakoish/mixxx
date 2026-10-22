@@ -13,6 +13,7 @@
 #include "engine/enginebuffer.h"
 #include "engine/enginemixer.h"
 #include "engine/sync/enginesync.h"
+#include "mixer/decklabstemplayback.h"
 #include "mixer/playerinfo.h"
 #include "mixer/playermanager.h"
 #include "moc_basetrackplayer.cpp"
@@ -583,6 +584,14 @@ void BaseTrackPlayerImpl::slotLoadTrack(TrackPointer pNewTrack,
             return;
         }
     }
+
+#ifdef __STEM__
+    if (m_pChannel->isPrimaryDeck()) {
+        // Deck Lab: Settings > Deck > Stem tracks may play stem files on the
+        // main decks as one stereo mix of all stems.
+        stemMask = decklab::stemLoadSelection(m_pConfig, stemMask);
+    }
+#endif
 
     auto pOldTrack = unloadTrack();
 

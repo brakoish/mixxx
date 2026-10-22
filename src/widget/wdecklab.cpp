@@ -58,6 +58,7 @@
 #include "track/beats.h"
 #include "waveform/waveformwidgetfactory.h"
 #include "widget/decklabbrowse.h"
+#include "widget/decklabstempads.h"
 #include "widget/wlibrary.h"
 #include "widget/wlibrarysidebar.h"
 #include "widget/wsearchlineedit.h"
@@ -963,6 +964,9 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
         auto* content = new QWidget(menu); auto* rows = column(content);
         rows->setSpacing(4);
         rows->addWidget(buildHotcues(deck, false, content));
+        // Stem pads for a stem track (stems workstream); hidden otherwise.
+        rows->addWidget(new DeckLabStemPads(deck, DeckLabStemPads::Presentation::Menu, m_players,
+                [this] { return m_interactionEpoch; }, content));
         auto* grid = button(tr("Beatgrid"), [this, deck, menu] { menu->close(); showBeatgrid(deck, false); }, content);
         grid->setStyleSheet(kActionStyle);
         grid->setFixedHeight(44); rows->addWidget(grid);
@@ -1900,6 +1904,8 @@ QWidget* WDeckLab::buildSettings() {
                 m_config->setValue(ConfigKey("[DeckLab]", "DeckLayout"), layout->itemData(n).toInt()); updateLayers();
             });
             addRow(tr("Deck layout"), layout);
+            // Stems workstream: play stem files as stems or as a normal track.
+            if (auto* stems = DeckLabStemPads::createPlaybackSetting(m_config, content)) addRow(tr("Stem tracks"), stems);
             for (int deck = 1; deck <= 4; ++deck) {
                 auto* title = new QLabel(tr("DECK %1").arg(deck), content);
                 title->setProperty("muted", true); rows->addWidget(title);
@@ -2110,6 +2116,12 @@ void WDeckLab::ensureDeckSurfaces(int deck) {
     m_cardTransports[deck - 1] = buildTransport(deck, false, card);
     cardRows->addWidget(m_cardTransports[deck - 1]);
     m_cardTransports[deck - 1]->hide();
+    // Stem pads (stems workstream): a row under the overview in two-deck
+    // view while this deck plays a stem file; see updateLayers().
+    m_stemPads[deck - 1] = new DeckLabStemPads(deck, DeckLabStemPads::Presentation::Row, m_players,
+            [this] { return m_interactionEpoch; }, card);
+    cardRows->addWidget(m_stemPads[deck - 1]);
+    connect(m_stemPads[deck - 1], &DeckLabStemPads::presenceChanged, this, [this](bool) { updateLayers(); });
     card->hide();
     m_cards[deck - 1] = card;
 }
@@ -3435,6 +3447,11 @@ void WDeckLab::updateLayers() {
         if (m_deckWaveforms[index]) signature |= quint64(1) << (11 + index);
         if (m_overviews[index]) signature |= quint64(1) << (15 + index);
     }
+    // Stems workstream: two-deck view adds a 48 px stem row (taken from the
+    // waveforms) while a shown deck plays a stem file. Four-deck view keeps
+    // its layout and offers stems in each deck's More menu.
+    const bool stemRow = m_page == 0 && !four && DeckLabStemPads::rowWanted(m_stemPads, m_layers);
+    signature |= quint64(stemRow) << 19;
     if (signature == m_layoutSignature) {
         for (int deck = 1; deck <= 4; ++deck) markDeckDirty(deck);
         refreshLoadButtons();
@@ -3514,9 +3531,11 @@ void WDeckLab::updateLayers() {
         setVisibleIf(m_sideUtilities[side], shown);
     }
     // Readout + overview + transport (four decks) or + hotcues + utilities.
-    setFixedHeightIf(m_deckRow, four
+    for (auto* pads : m_stemPads) if (pads) pads->setRowShown(stemRow);
+    setFixedHeightIf(m_deckRow, (four
                     ? DeckLabStripRenderer::preferredHeight(DeckLabStripRenderer::Mode::Compact) + kOverviewHeight + 48
-                    : DeckLabStripRenderer::preferredHeight(DeckLabStripRenderer::Mode::Full) + kOverviewHeight + 48 + 48);
+                    : DeckLabStripRenderer::preferredHeight(DeckLabStripRenderer::Mode::Full) + kOverviewHeight + 48 + 48) +
+                    (stemRow ? DeckLabStemPads::kRowHeight : 0));
     setVisibleIf(m_deckRow, decks);
     for (int deck = 1; deck <= 4; ++deck) refreshDeck(deck);
     refreshLoadButtons();
