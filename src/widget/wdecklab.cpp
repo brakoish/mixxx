@@ -1169,20 +1169,24 @@ void WDeckLab::addWaveform(QWidget* widget, int deck) {
         for (int side = 0; side < 2; ++side) {
             auto* meter = new QProgressBar(mainLevels); meter->setRange(0, 100);
             meter->setTextVisible(false); meter->setFixedHeight(10);
+            const double initial = value("[Main]", side ? "vu_meter_right" : "vu_meter_left");
+            meter->setValue(std::isfinite(initial) ? int(std::clamp(initial, 0.0, 1.0) * 100) : 0);
             meter->setObjectName(QStringLiteral("decklab-master-meter-%1").arg(side));
             meter->setAccessibleName(side ? tr("Main output right level") : tr("Main output left level"));
             levels->addWidget(meter); m_masterMeters[side] = meter;
-            watch("[Master]", side ? "vu_meter_right" : "vu_meter_left", [meter](double v) {
+            watch("[Main]", side ? "vu_meter_right" : "vu_meter_left", [meter](double v) {
                 meter->setValue(std::isfinite(v) ? int(std::clamp(v, 0.0, 1.0) * 100) : 0);
             });
         }
-        watch("[Master]", "peak_indicator", [this](double v) {
+        const auto showMainClip = [this](double v) {
             const bool clipping = v > 0;
             if (m_masterLevelLabel->property("clipping").toBool() == clipping) return;
             m_masterLevelLabel->setProperty("clipping", clipping);
             m_masterLevelLabel->setText(clipping ? tr("MASTER CLIP") : tr("MASTER"));
             m_masterLevelLabel->style()->unpolish(m_masterLevelLabel); m_masterLevelLabel->style()->polish(m_masterLevelLabel);
-        });
+        };
+        watch("[Main]", "peak_indicator", showMainClip);
+        showMainClip(value("[Main]", "peak_indicator"));
         m_pairCue = new QLabel(feedback); m_pairCue->setProperty("muted", true);
         m_pairCue->setObjectName(QStringLiteral("decklab-headphone-context"));
         m_pairCue->setFixedHeight(20); m_pairCue->setAlignment(Qt::AlignCenter);
@@ -1227,7 +1231,10 @@ void WDeckLab::addWaveform(QWidget* widget, int deck) {
     auto* header = button(QString(), [this, deck, infoPress] {
         auto* player = m_players ? m_players->getPlayer(channel(deck)) : nullptr;
         if (m_page == 0 && infoPress->first == m_interactionEpoch && player &&
-                infoPress->second == player->getLoadedTrack()) showTrackInfo(deck);
+                infoPress->second == player->getLoadedTrack()) {
+            if (infoPress->second) showTrackInfo(deck);
+            else selectPage(1);
+        }
     }, frame, QStringLiteral("decklab-info-hit-%1").arg(deck));
     header->setStyleSheet(QStringLiteral("QPushButton{min-height:0;padding:0;border:0;background:transparent;} QPushButton:pressed{background:#181818;} QPushButton:focus{background:#181818;}"));
     header->setFixedHeight(m_page == 0 ? 44 : 24);
@@ -1620,6 +1627,10 @@ void WDeckLab::refreshDeck(int deck) {
                 m_deckSecondary[deck - 1]->isHidden() != (m_page != 0) ||
                 m_sources[deck - 1]->isHidden() == paired;
         m_waveHeaders[deck - 1]->setEnabled(m_page == 0);
+        m_waveHeaders[deck - 1]->setAccessibleName(track ? tr("Deck %1 full track information").arg(deck) : tr("Deck %1 empty; open Browse").arg(deck));
+        m_waveHeaders[deck - 1]->setAccessibleDescription(track ? tr("Read the full title, artist and source") : tr("Choose a track in Browse; preserves the current browser location"));
+        m_infoAffordances[deck - 1]->setText(track ? tr("INFO") : tr("BROWSE"));
+        m_infoAffordances[deck - 1]->setFixedWidth(track ? 30 : 46);
         m_infoAffordances[deck - 1]->setVisible(m_page == 0);
         m_waveHeaders[deck - 1]->setFocusPolicy(m_page == 0 ? Qt::StrongFocus : Qt::NoFocus);
         m_waveHeaders[deck - 1]->setFixedHeight(m_page == 0 ? (compact ? 128 : 88) : 24);
@@ -2085,7 +2096,7 @@ void WDeckLab::updateLayers() {
         // Engine feedback during a held Cue must not hide its open menu's
         // ancestor. Hide only controls actually leaving this presentation.
         for (auto* strip : {m_sideUtilities[side], m_sideHotcues[side]})
-            if (strip && (!paired || strip->parentWidget() != destination)) strip->hide();
+            if (strip && (!paired || four || strip->parentWidget() != destination)) strip->hide();
     }
     for (auto* frame : m_deckWaveforms) if (frame) m_waveLayout->removeWidget(frame);
     for (int deck = 1; deck <= 4; ++deck) {
