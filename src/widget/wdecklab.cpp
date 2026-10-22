@@ -2633,6 +2633,10 @@ void WDeckLab::updateLayers() {
         int slot = -1;
         for (int index = 0; index < count; ++index) if (order[index] == deck) slot = index;
         setVisibleIf(m_minis[deck - 1], !decks);
+        // Off Decks the one-line readout carries the number; the tag keeps
+        // only its color bar.
+        if (auto* tag = lane->findChild<QLabel*>(QStringLiteral("decklab-lane-edge-%1").arg(deck)))
+            setTextIf(tag, decks ? QString::number(deck) : QString());
         if (slot < 0) { setVisibleIf(lane, false); continue; }
         m_zoneGrid->addWidget(lane, slot / columns, slot % columns);
         m_zoneGrid->setRowStretch(slot / columns, 1);

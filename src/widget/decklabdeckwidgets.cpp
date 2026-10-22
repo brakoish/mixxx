@@ -29,7 +29,7 @@ const QColor kDecimals(0xc9, 0xce, 0xd6);
 const QColor kPlay(0x2f, 0xd2, 0x7a);
 const QColor kCue(0xff, 0x7a, 0x1a);
 const QColor kWarning(0xff, 0x3d, 0x2e);
-const QColor kWarningDim(0x5c, 0x1a, 0x15);
+const QColor kWarningDim(0x8c, 0x22, 0x19);
 
 int digitCell(const QFontMetrics& metrics) {
     int cell = 0;
@@ -108,11 +108,11 @@ QRect DeckLabStripRenderer::rect(Part part) const {
     // Full-mode columns scale with the card width so wider screens keep the
     // proportions of the 400 px design: badge, state and title; BPM, tempo,
     // key and clock; lamps with the beat meter on the right.
-    const int bpmWidth = width * 250 / 1000;
+    const int bpmWidth = width * 260 / 1000;
     const int tempoLeft = 12 + bpmWidth + 4;
-    const int tempoWidth = width * 240 / 1000;
+    const int tempoWidth = width * 250 / 1000;
     const int keyLeft = tempoLeft + tempoWidth + 4;
-    const int keyWidth = width * 150 / 1000;
+    const int keyWidth = width * 140 / 1000;
     const int timeLeft = keyLeft + keyWidth;
     const int phaseWidth = std::clamp(width * 31 / 100, 110, 200);
     switch (m_mode) {
@@ -153,7 +153,7 @@ QRect DeckLabStripRenderer::rect(Part part) const {
         case Part::Time:
             return QRect(12 + half, 37, width - 12 - half, 32);
         case Part::Tempo:
-            return QRect(10, 70, 96, 20);
+            return QRect(10, 70, std::max(0, width - 84), 20);
         case Part::Key:
             return QRect(width - 64, 70, 64, 20);
         case Part::Chips:
@@ -296,7 +296,7 @@ QStringList DeckLabStripRenderer::overflowingParts() const {
         overflowing << QStringLiteral("time");
     }
     const QFontMetrics key(font(mini ? 14 : 16, QFont::Bold));
-    if (key.horizontalAdvance(m_state.key) > rect(Part::Key).width() - (mini ? 2 : 14)) {
+    if (key.horizontalAdvance(m_state.key) > rect(Part::Key).width() - (mini ? 2 : 18)) {
         overflowing << QStringLiteral("key");
     }
     if (!mini) {
@@ -397,7 +397,7 @@ void DeckLabStripRenderer::paintTitle(QPainter& painter, const QRect& area, int 
 
 void DeckLabStripRenderer::paintPhase(QPainter& painter) const {
     const QRect area = rect(Part::Phase);
-    if (area.isEmpty()) {
+    if (area.isEmpty() || !m_state.loaded) {
         return;
     }
     const int gap = 4;
@@ -577,9 +577,11 @@ void DeckLabStripRenderer::paint(QPainter& painter, const QRect& dirty, bool pre
             }
         } else {
             // Tempo %, its range and the tempo-center lamp (lit at 0.00%).
+            // Leave room for the range and the center lamp before shrinking.
+            const int reserve = QFontMetrics(font(12, QFont::DemiBold)).horizontalAdvance(m_state.range) + 18;
             int pixels = 17;
             for (; pixels > 14; --pixels) {
-                if (tabularWidth(QFontMetrics(font(pixels, QFont::DemiBold)), m_state.tempo) <= area.width() - 40) {
+                if (tabularWidth(QFontMetrics(font(pixels, QFont::DemiBold)), m_state.tempo) <= area.width() - 4 - reserve) {
                     break;
                 }
             }
@@ -625,7 +627,7 @@ void DeckLabStripRenderer::paint(QPainter& painter, const QRect& dirty, bool pre
         } else {
             int pixels = 22;
             for (; pixels > 16; --pixels) {
-                if (QFontMetrics(font(pixels, QFont::Bold)).horizontalAdvance(m_state.key) <= area.width() - 4) {
+                if (QFontMetrics(font(pixels, QFont::Bold)).horizontalAdvance(m_state.key) <= area.width() - 18) {
                     break;
                 }
             }
