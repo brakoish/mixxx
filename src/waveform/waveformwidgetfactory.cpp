@@ -1044,8 +1044,10 @@ void WaveformWidgetFactory::requestRenderAll() {
 bool WaveformWidgetFactory::eventFilter(QObject* pWatched, QEvent* pEvent) {
     if (pWatched != nullptr && pWatched == m_pPllKeepaliveWindow) {
         // A paint of the shared GL window starts here and ends with its
-        // frameSwapped (Deck Lab idle-aware PLL).
-        if (pEvent->type() == QEvent::UpdateRequest || pEvent->type() == QEvent::Paint) {
+        // frameSwapped (Deck Lab idle-aware PLL). QPaintDeviceWindow paints on
+        // an update request, a paint event and an expose.
+        if (pEvent->type() == QEvent::UpdateRequest || pEvent->type() == QEvent::Paint ||
+                pEvent->type() == QEvent::Expose) {
             m_pllKeepalivePaintTimer.start();
             m_pllKeepalivePaintStarted = true;
         }
