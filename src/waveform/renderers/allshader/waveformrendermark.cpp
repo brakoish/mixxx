@@ -288,7 +288,8 @@ void allshader::WaveformRenderMark::update() {
     bool slipActive = m_waveformRenderer->isSlipActive();
 
     const float devicePixelRatio = m_waveformRenderer->getDevicePixelRatio();
-    QList<WaveformWidgetRenderer::WaveformMarkOnScreen> marksOnScreen;
+    QList<WaveformWidgetRenderer::WaveformMarkOnScreen>& marksOnScreen = m_marksOnScreen;
+    marksOnScreen.clear();
 
     auto roundToPixel = createFunctionRoundToPixel(devicePixelRatio);
 
@@ -399,7 +400,7 @@ void allshader::WaveformRenderMark::update() {
         pRangeChild = pNextChild;
     }
 
-    m_waveformRenderer->setMarkPositions(marksOnScreen);
+    m_waveformRenderer->swapMarkPositions(&marksOnScreen);
 
     const float playMarkerPos = static_cast<float>(m_waveformRenderer->getPlayMarkerPosition() *
             m_waveformRenderer->getLength());
