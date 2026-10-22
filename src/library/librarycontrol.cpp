@@ -35,6 +35,21 @@ bool nativeBrowseAction(const char* action) {
     ControlObject::set(ConfigKey("[DeckLabNative]", action), 0);
     return true;
 }
+// Generic mappings (FLX4, Inpulse, ...) navigate with MoveVertical,
+// MoveFocus* and GoToItem. Deck Lab owns these while no popup menu or dialog
+// is open: it opens Browse first and never forwards arrow, Tab or Return keys
+// to whatever deck, tempo or settings control happens to hold focus.
+bool nativeNavigation(FocusWidget focus) {
+    return nativeBrowseActive() && focus != FocusWidget::ContextMenu &&
+            focus != FocusWidget::Dialog && focus != FocusWidget::SearchRelatedMenu;
+}
+bool nativeBrowseMove(const char* action, double steps) {
+    if (!std::isfinite(steps) || steps == 0) return false;
+    ControlObject::set(ConfigKey("[DeckLabNative]", action), std::clamp(steps, -10000.0, 10000.0));
+    ControlObject::set(ConfigKey("[DeckLabNative]", action), 0);
+    return true;
+}
+constexpr double kNativeBrowsePageRows = 5;
 } // namespace
 
 LoadToGroupController::LoadToGroupController(LibraryControl* pParent, const QString& group)
@@ -757,6 +772,9 @@ void LibraryControl::slotSelectPrevTrack(double v) {
 }
 
 void LibraryControl::slotSelectTrack(double v) {
+    if (v != 0 && nativeNavigation(m_focusedWidget) && nativeBrowseMove("browse_move", v)) {
+        return;
+    }
     if (!m_pLibraryWidget || v == 0) {
         return;
     }
@@ -782,6 +800,9 @@ void LibraryControl::slotMoveDown(double v) {
 
 void LibraryControl::slotMoveVertical(double v) {
     if (v == 0) {
+        return;
+    }
+    if (nativeNavigation(m_focusedWidget) && nativeBrowseMove("browse_move", v)) {
         return;
     }
 
@@ -851,6 +872,10 @@ void LibraryControl::slotScrollDown(double v) {
 }
 
 void LibraryControl::slotScrollVertical(double v) {
+    if (nativeNavigation(m_focusedWidget) &&
+            nativeBrowseMove("browse_move", v * kNativeBrowsePageRows)) {
+        return;
+    }
     const auto key = (v < 0) ? Qt::Key_PageUp : Qt::Key_PageDown;
     const auto times = static_cast<unsigned short>(std::abs(v));
     emitKeyEvent(QKeyEvent{QEvent::KeyPress, key, Qt::NoModifier, QString(), false, times});
@@ -858,19 +883,24 @@ void LibraryControl::slotScrollVertical(double v) {
 
 void LibraryControl::slotMoveLeft(double v) {
     if (v > 0) {
-        if ((m_focusedWidget == FocusWidget::Sidebar || m_focusedWidget == FocusWidget::TracksTable) && nativeBrowseAction("browse_back")) return;
+        if (nativeNavigation(m_focusedWidget) && nativeBrowseAction("browse_back")) return;
         slotMoveHorizontal(-1);
     }
 }
 
 void LibraryControl::slotMoveRight(double v) {
     if (v > 0) {
-        if (m_focusedWidget == FocusWidget::Sidebar && nativeBrowseAction("browse_press")) return;
+        // Right enters folders and categories; in a track list it does nothing.
+        if (nativeNavigation(m_focusedWidget) && nativeBrowseAction("browse_enter")) return;
         slotMoveHorizontal(1);
     }
 }
 
 void LibraryControl::slotMoveHorizontal(double v) {
+    if (v != 0 && nativeNavigation(m_focusedWidget) &&
+            nativeBrowseAction(v < 0 ? "browse_back" : "browse_enter")) {
+        return;
+    }
     const auto key = (v < 0) ? Qt::Key_Left : Qt::Key_Right;
     const auto times = static_cast<unsigned short>(std::abs(v));
     emitKeyEvent(QKeyEvent{QEvent::KeyPress, key, Qt::NoModifier, QString(), false, times});
@@ -889,6 +919,13 @@ void LibraryControl::slotMoveFocusBackward(double v) {
 }
 
 void LibraryControl::slotMoveFocus(double v) {
+    // Deck Lab: the browse-knob press of generic mappings (MoveFocusForward)
+    // opens Browse, enters the highlighted folder or previews the track;
+    // MoveFocusBackward goes back.
+    if (v != 0 && nativeNavigation(m_focusedWidget) &&
+            nativeBrowseAction(v > 0 ? "browse_press" : "browse_back")) {
+        return;
+    }
     // Don't use Key_Tab + ShiftModifier for moving focus backwards!
     // This would indeed move the focus, though it has a significant side-effect
     // compared to pressing Shift + Tab on a real keyboard:
@@ -1089,16 +1126,8 @@ void LibraryControl::slotSelectSidebarItem(double v) {
     }
     if (nativeBrowseActive()) {
         // Selection must not activate/import each item passed by a fast knob.
-        // Stay inside the currently opened folder without replacing its model.
-        if (m_focusedWidget == FocusWidget::ContextMenu || m_focusedWidget == FocusWidget::Dialog || !std::isfinite(v)) return;
-        const auto root = m_pSidebarWidget->rootIndex();
-        const auto* model = m_pSidebarWidget->model();
-        const int count = model->rowCount(root);
-        if (!count) return;
-        const int row = std::clamp(m_pSidebarWidget->currentIndex().row() + int(std::clamp(v, -10000.0, 10000.0)), 0, count - 1);
-        const auto index = model->index(row, 0, root);
-        m_pSidebarWidget->setCurrentIndex(index);
-        m_pSidebarWidget->scrollTo(index);
+        // Deck Lab moves its source or category list without replacing models.
+        if (nativeNavigation(m_focusedWidget)) nativeBrowseMove("browse_select", v);
         return;
     }
 
@@ -1155,8 +1184,7 @@ void LibraryControl::slotGoToItem(double v) {
     if (v <= 0) {
         return;
     }
-    if ((m_focusedWidget == FocusWidget::Sidebar || m_focusedWidget == FocusWidget::TracksTable ||
-                m_focusedWidget == FocusWidget::None) && nativeBrowseAction("browse_press")) return;
+    if (nativeNavigation(m_focusedWidget) && nativeBrowseAction("browse_press")) return;
 
     switch (m_focusedWidget) {
     case FocusWidget::Sidebar:
