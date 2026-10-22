@@ -4,6 +4,7 @@
 #include <QComboBox>
 #include <QDir>
 #include <QFile>
+#include <QHelpEvent>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -12,12 +13,12 @@
 #include <QScrollBar>
 #include <QStackedWidget>
 #include <QTimer>
+#include <QToolTip>
 #include <memory>
 #include "control/controlobject.h"
 #include "util/cmdlineargs.h"
 #include "widget/wdecklab.h"
 #include "widget/woverview.h"
-#include "widget/controlwidgetconnection.h"
 
 void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
     const QString output = qEnvironmentVariable("DECKLAB_SMOKE_DIR");
@@ -35,10 +36,14 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
         for (int deck = 1; deck <= 4; ++deck) {
             auto* overview = surface->findChild<WOverview*>(QStringLiteral("decklab-overview-%1").arg(deck));
             bool positionBound = false;
-            if (overview) for (auto* connection : overview->findChildren<ControlParameterWidgetConnection*>()) {
-                if (connection->getKey() == ConfigKey(QStringLiteral("[Channel%1]").arg(deck), "playposition") &&
-                        connection->getDirectionOption() == ControlParameterWidgetConnection::DIR_TO_WIDGET)
-                    positionBound = true;
+            // WBaseWidget owns these via unique_ptr, not the QObject child tree.
+            // Its developer tooltip reports the actual display connection.
+            if (overview) {
+                QHelpEvent help(QEvent::ToolTip, QPoint(), overview->mapToGlobal(QPoint()));
+                QCoreApplication::sendEvent(overview, &help); QToolTip::hideText();
+                const QString prefix = QStringLiteral("DisplayConnection: [Channel%1],playposition ").arg(deck);
+                for (const QString& line : overview->toolTip().split(QChar('\n')))
+                    if (line.startsWith(prefix) && line.contains("Direction: TO_WIDGET")) positionBound = true;
             }
             if (!positionBound) failures->append(QStringLiteral("Deck %1 overview missing read-only playposition binding").arg(deck));
         }
