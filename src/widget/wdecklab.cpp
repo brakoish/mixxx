@@ -669,7 +669,7 @@ void WDeckLab::refreshHotcues(int deck, const QString& prefix) {
         if (pad->property("cueSet").toBool() != set || pad->property("cueColor").toString() != ink) {
             pad->setProperty("cueSet", set); pad->setProperty("cueColor", ink); pad->update();
         }
-        const QString style = QStringLiteral("min-height:38px;max-height:38px;padding:1px 2px;font-size:15px;font-weight:600;border-radius:0;border:1px solid #3c3c3c;");
+        const QString style = QStringLiteral("min-height:40px;max-height:40px;padding:1px 2px;font-size:15px;font-weight:600;border-radius:0;border:1px solid #3c3c3c;");
         if (pad->styleSheet() != style) pad->setStyleSheet(style);
         const QString name = tr("Deck %1 cue %2, %3").arg(deck).arg(letter, loop ? tr("saved loop") : set ? tr("set") : tr("empty"));
         if (pad->accessibleName() != name) pad->setAccessibleName(name);
