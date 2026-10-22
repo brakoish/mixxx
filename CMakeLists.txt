@@ -1679,6 +1679,7 @@ add_library(
   src/waveform/rendergate.cpp
   src/waveform/renderers/glwaveformrenderbackground.cpp
   src/waveform/renderers/glvsynctestrenderer.cpp
+  src/waveform/renderers/waveformcolumncache.cpp
   src/waveform/renderers/waveformmark.cpp
   src/waveform/renderers/waveformmarkrange.cpp
   src/waveform/renderers/waveformmarkset.cpp
@@ -2016,6 +2017,7 @@ if(QOPENGL)
       src/waveform/renderers/allshader/waveformrendererhsv.cpp
       src/waveform/renderers/allshader/waveformrendererpreroll.cpp
       src/waveform/renderers/allshader/waveformrendererrgb.cpp
+      src/waveform/renderers/allshader/waveformrenderercached.cpp
       src/waveform/renderers/allshader/waveformrenderertextured.cpp
       src/waveform/renderers/allshader/waveformrenderersignalbase.cpp
       src/waveform/renderers/allshader/waveformrenderersimple.cpp
@@ -2789,6 +2791,7 @@ if(BUILD_TESTING)
     src/test/enginebuffertest.cpp
     src/test/decklabtest.cpp
     src/test/decklabperfenginetest.cpp
+    src/test/decklabwaveformcachetest.cpp
     src/test/decklabsystemtest.cpp
     src/test/decklabusbfirsttest.cpp
     src/test/waveformmarklabeltest.cpp

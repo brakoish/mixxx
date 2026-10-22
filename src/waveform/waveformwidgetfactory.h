@@ -392,4 +392,9 @@ class WaveformWidgetFactory : public QObject,
     qint64 m_perfTickNanosSum;
     qint64 m_perfTickNanosMax;
     int m_perfDroppedFramesBaseline;
+    // Frame pacing: intervals between the starts of consecutive swap slots.
+    PerformanceTimer m_perfSwapTimer;
+    bool m_perfSwapTimerStarted;
+    std::vector<qint64> m_perfSwapIntervals;
+    std::vector<qint64> m_perfScratch;
 };

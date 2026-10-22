@@ -1,7 +1,11 @@
 #pragma once
 
+#include <QVarLengthArray>
+#include <memory>
+
 #include "rendergraph/engine.h"
 #include "rendergraph/opacitynode.h"
+#include "waveform/rendergate.h"
 #include "waveform/renderers/allshader/waveformrenderersignalbase.h"
 #include "waveform/widgets/waveformwidgetabstract.h"
 #include "waveform/widgets/waveformwidgetvars.h"
@@ -43,7 +47,26 @@ class allshader::WaveformWidget final : public ::WGLWidget,
     static WaveformRendererSignalBase::Options supportedOptions(
             WaveformWidgetType::Type type, bool useGles);
 
+    QString takePerfReport() override;
+
   private:
+    class NodeProbe : public rendergraph::Engine::Probe {
+      public:
+        explicit NodeProbe(WaveformWidget* pOwner)
+                : m_pOwner(pOwner) {
+        }
+        void record(rendergraph::BaseNode* pNode, qint64 nanos) override;
+
+      private:
+        WaveformWidget* m_pOwner;
+    };
+    struct NodeCategory {
+        const rendergraph::BaseNode* pNode;
+        int category;
+    };
+
+    void paintGLTimed();
+
     void castToQWidget() override;
     void paintEvent(QPaintEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
@@ -73,6 +96,16 @@ class allshader::WaveformWidget final : public ::WGLWidget,
     WaveformRenderMark* m_pWaveformRenderMarkSlip;
 
     WaveformRendererSignalBase* m_pWaveformRendererSignal;
+    WaveformRendererSignalBase* m_pWaveformRendererSlipSignal{};
+
+    // Deck Lab perf log (DECKLAB_PERF_LOG=1 only).
+    std::unique_ptr<RendererTimings> m_pTimings;
+    std::unique_ptr<NodeProbe> m_pProbe;
+    QVarLengthArray<NodeCategory, 16> m_nodeCategories;
+    int m_markCategory{-1};
+    int m_markRangeCategory{-1};
+    int m_slipCategory{-1};
+    int m_otherCategory{-1};
 
     DISALLOW_COPY_AND_ASSIGN(WaveformWidget);
 };

@@ -188,6 +188,11 @@ class WaveformWidgetRenderer {
     void setMarkPositions(const QList<WaveformMarkOnScreen>& markPositions) {
         m_markPositions = markPositions;
     }
+    /// Deck Lab: hands over this frame's list and returns the previous one,
+    /// so a renderer can refill it without allocating every frame.
+    void swapMarkPositions(QList<WaveformMarkOnScreen>* pMarkPositions) {
+        m_markPositions.swap(*pMarkPositions);
+    }
 
     double getPlayMarkerPosition() const {
         return m_playMarkerPosition;

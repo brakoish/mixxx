@@ -5,6 +5,7 @@
 #include "rendergraph/geometrynode.h"
 #include "rendergraph/node.h"
 #include "waveform/renderers/waveformrendermarkbase.h"
+#include "waveform/renderers/waveformwidgetrenderer.h"
 
 class QDomNode;
 
@@ -94,6 +95,10 @@ class allshader::WaveformRenderMark : public ::WaveformRenderMarkBase,
     float m_playPosDevicePixelRatio;
 
     DigitsRenderNode* m_pDigitsRenderNode{};
+
+    // Reused every frame (swapped with the renderer's list), so the marks on
+    // screen are collected without a heap allocation per frame.
+    QList<WaveformWidgetRenderer::WaveformMarkOnScreen> m_marksOnScreen;
 
     QColor m_playMarkerForegroundColor;
     QColor m_playMarkerBackgroundColor;

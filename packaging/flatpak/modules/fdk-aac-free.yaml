@@ -2,7 +2,11 @@ name: fdk-aac-free
 buildsystem: autotools
 sources:
   - type: archive
-    url: https://wtaymans.fedorapeople.org/fdk-aac-free-2.0.3.tar.gz
+    # Fedora's lookaside cache serves the identical tarball (same sha256) and
+    # keeps CI building when the upstream host is unreachable.
+    url: https://src.fedoraproject.org/repo/pkgs/fdk-aac-free/fdk-aac-free-2.0.3.tar.gz/sha512/d5dcb11d95acd3671fe0d92f5a4954b3f25faf0937d7f94a02bec9d7e556b321f4e3205b91fe40b3475f04ee9f879609c6419a6c699f5d854658c9a6f8b524f1/fdk-aac-free-2.0.3.tar.gz
+    mirror-urls:
+      - https://wtaymans.fedorapeople.org/fdk-aac-free-2.0.3.tar.gz
     sha256: 2dc6952b70283888994ae6e551a79039781f0a64c67fb637bffd5a8f483c34c5
     x-checker-data:
       type: anitya

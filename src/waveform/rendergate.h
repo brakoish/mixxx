@@ -1,7 +1,9 @@
 #pragma once
 
+#include <QString>
 #include <QtGlobal>
 #include <cstring>
+#include <vector>
 
 /// Deck Lab render-on-demand support for scrolling waveforms.
 ///
@@ -127,6 +129,59 @@ class RenderGate {
     Stats m_stats;
 };
 
+/// Deck Lab perf log (DECKLAB_PERF_LOG=1): CPU time that each renderer of a
+/// waveform takes per rendered frame (preprocess plus GL command submission),
+/// reported as mean and 95th percentile over the log window. Not thread safe;
+/// owned by the GUI thread. Allocation free once the sample vectors reached
+/// their working size.
+class RendererTimings {
+  public:
+    static constexpr int kMaxCategories = 16;
+
+    /// Registers a category and returns its index, or the index of an
+    /// existing category with the same name, or -1 if the table is full.
+    int addCategory(const char* name);
+    int categoryCount() const {
+        return static_cast<int>(m_categories.size());
+    }
+
+    void beginFrame();
+    void add(int category, qint64 nanos) {
+        if (category >= 0 && category < static_cast<int>(m_categories.size())) {
+            m_categories[static_cast<std::size_t>(category)].frameNanos += nanos;
+        }
+    }
+    void endFrame();
+
+    int frames() const {
+        return static_cast<int>(m_total.size());
+    }
+    /// Mean and 95th percentile of the per-frame total of one category, in
+    /// nanoseconds, over the frames since the last reset(). -1 for none.
+    qint64 meanNanos(int category) const;
+    qint64 p95Nanos(int category) const;
+    qint64 totalMeanNanos() const;
+    qint64 totalP95Nanos() const;
+
+    /// "signal=0.210/0.330 beat=0.021/0.040 ... total=0.400/0.520" in
+    /// milliseconds (mean/p95). Categories that never took time are omitted.
+    QString report() const;
+    void reset();
+
+    /// The 95th percentile (nearest rank) of a sample set, -1 if empty.
+    static qint64 percentile95(const std::vector<qint64>& samples, std::vector<qint64>* pScratch);
+
+  private:
+    struct Category {
+        const char* name;
+        qint64 frameNanos;
+        std::vector<qint64> samples;
+    };
+    std::vector<Category> m_categories;
+    std::vector<qint64> m_total;
+    mutable std::vector<qint64> m_scratch;
+};
+
 namespace mixxx {
 namespace decklab {
 
@@ -134,6 +189,9 @@ namespace decklab {
 bool renderGateEnabledFromEnvironment();
 /// DECKLAB_PERF_LOG=1 logs render/skip counters every 10 s.
 bool perfLogEnabledFromEnvironment();
+/// DECKLAB_WAVEFORM_CACHE=0 restores the upstream RGB waveform renderer that
+/// rebuilds its geometry every frame (field kill switch, pi4-perf).
+bool waveformCacheEnabledFromEnvironment();
 
 } // namespace decklab
 } // namespace mixxx

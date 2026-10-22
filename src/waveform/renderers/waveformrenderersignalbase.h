@@ -27,6 +27,10 @@ class WaveformRendererSignalBase : public QObject, public WaveformRendererAbstra
     /// EQ knobs/kills and visual gains scale the drawn signal.
     void appendRenderState(RenderStateHasher* pHasher) const override;
 
+    /// Takes the signal, band, RGB and axis colours (what setup() reads from
+    /// the skin through the widget renderer).
+    void setSignalColors(const WaveformSignalColors& colors);
+
   public slots:
     void setAllChannelVisualGain(double gain) {
         m_allChannelVisualGain = static_cast<CSAMPLE_GAIN>(gain);

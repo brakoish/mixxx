@@ -1,6 +1,7 @@
 #include "rendergraph/engine.h"
 
 #include <QDebug>
+#include <QElapsedTimer>
 #include <cassert>
 
 #include "rendergraph/node.h"
@@ -58,7 +59,14 @@ void Engine::render() {
 }
 
 void Engine::render(BaseNode* pNode) {
-    pNode->render();
+    if (m_pProbe) {
+        QElapsedTimer timer;
+        timer.start();
+        pNode->render();
+        m_pProbe->record(pNode, timer.nsecsElapsed());
+    } else {
+        pNode->render();
+    }
     pNode = pNode->firstChild();
     while (pNode) {
         if (!pNode->isSubtreeBlocked()) {
@@ -71,7 +79,14 @@ void Engine::render(BaseNode* pNode) {
 void Engine::preprocess() {
     for (auto* pNode : m_pPreprocessNodes) {
         if (!pNode->isSubtreeBlocked()) {
-            pNode->preprocess();
+            if (m_pProbe) {
+                QElapsedTimer timer;
+                timer.start();
+                pNode->preprocess();
+                m_pProbe->record(pNode, timer.nsecsElapsed());
+            } else {
+                pNode->preprocess();
+            }
         }
     }
 }

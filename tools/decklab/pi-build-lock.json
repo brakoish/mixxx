@@ -31,14 +31,16 @@
     "DeckLabPhraseTest.*",
     "DeckLabUsbRelinkTest.*",
     "DeckLabUsbRelinkDbTest.*",
-    "DeckLabPhraseScreenTest.*"
+    "DeckLabPhraseScreenTest.*",
+    "DeckLabWaveformCacheTest.*",
+    "DeckLabMidiBridgeGateTest.*"
   ],
   "input_sha256": {
     ".github/workflows/decklab-pi.yml": "47687c75d8245ecd0be521275cc6871e241d94de9c06ecae8f17c4e2429b124e",
-    "CMakeLists.txt": "b456ee8c16251f6ecc4e80f357aae5afddb8713c742912109614d7c3f5e6d29a",
+    "CMakeLists.txt": "6764e886c281bcdae6864c93e72889e7379d04ae2ccbb3d0fda0db4c486a78ad",
     "packaging/flatpak/modules/benchmark.yaml": "a85079134b2e8e9a2f837d400030039293e41870d4bf79d761cb4126309591f1",
     "packaging/flatpak/modules/chromaprint.yaml": "b0507a6d98aa75d7d37b7fc33f7fc2f03291ebd59a40711897dfbb0e398b30f2",
-    "packaging/flatpak/modules/fdk-aac-free.yaml": "b136e1164587f580267e46cd98afe5fe021ee0e0aa450bffe720ea298b81c6db",
+    "packaging/flatpak/modules/fdk-aac-free.yaml": "93a456c322c3ca25f1433773f5dda74ee3ea241a92a96d9afe333cc8eedab980",
     "packaging/flatpak/modules/googletest.yaml": "bab4e403ed275b86a8b9ef01059dcb9c83241c9d367c195cccff2db7e6c38648",
     "packaging/flatpak/modules/gsl.yaml": "5ea6330e010807e05909da3e1560d39049af69f75bf4bf476612b91b2c2cefd3",
     "packaging/flatpak/modules/hidapi.yaml": "204b753b10bd6a9a4dd9f0167ab8c699b1df3eed1b9a822fac21a9588acce488",

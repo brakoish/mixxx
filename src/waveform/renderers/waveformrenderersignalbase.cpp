@@ -7,6 +7,7 @@
 #include "waveform/waveform.h"
 #include "waveform/waveformwidgetfactory.h"
 #include "waveformwidgetrenderer.h"
+#include "waveform/renderers/waveformsignalcolors.h"
 
 namespace {
 const QString kEffectGroupFormat = QStringLiteral("[EqualizerRack1_%1_Effect1]");
@@ -108,8 +109,31 @@ void WaveformRendererSignalBase::setup(const QDomNode& node,
         }
     }
 
-    const auto* pColors = m_waveformRenderer->getWaveformSignalColors();
+    setSignalColors(*m_waveformRenderer->getWaveformSignalColors());
+    onSetup(node);
 
+    auto* pWaveformFactory = WaveformWidgetFactory::instance();
+    connect(pWaveformFactory,
+            &WaveformWidgetFactory::visualGainChanged,
+            this,
+            [this](CSAMPLE_GAIN allChannelGain,
+                    CSAMPLE_GAIN lowGain,
+                    CSAMPLE_GAIN midGain,
+                    CSAMPLE_GAIN highGain) {
+                setAllChannelVisualGain(allChannelGain);
+                setLowVisualGain(lowGain);
+                setMidVisualGain(midGain);
+                setHighVisualGain(highGain);
+            });
+
+    setAllChannelVisualGain(pWaveformFactory->getVisualGain(BandIndex::AllBand));
+    setLowVisualGain(pWaveformFactory->getVisualGain(BandIndex::Low));
+    setMidVisualGain(pWaveformFactory->getVisualGain(BandIndex::Mid));
+    setHighVisualGain(pWaveformFactory->getVisualGain(BandIndex::High));
+}
+
+void WaveformRendererSignalBase::setSignalColors(const WaveformSignalColors& colors) {
+    const auto* pColors = &colors;
     getRgbF(pColors->getLowColor(), &m_lowColor_r, &m_lowColor_g, &m_lowColor_b);
     getRgbF(pColors->getMidColor(), &m_midColor_r, &m_midColor_g, &m_midColor_b);
     getRgbF(pColors->getHighColor(), &m_highColor_r, &m_highColor_g, &m_highColor_b);
@@ -137,26 +161,6 @@ void WaveformRendererSignalBase::setup(const QDomNode& node,
             &m_axesColor_b,
             &m_axesColor_a);
     getRgbF(pColors->getSignalColor(), &m_signalColor_r, &m_signalColor_g, &m_signalColor_b);
-    onSetup(node);
-
-    auto* pWaveformFactory = WaveformWidgetFactory::instance();
-    connect(pWaveformFactory,
-            &WaveformWidgetFactory::visualGainChanged,
-            this,
-            [this](CSAMPLE_GAIN allChannelGain,
-                    CSAMPLE_GAIN lowGain,
-                    CSAMPLE_GAIN midGain,
-                    CSAMPLE_GAIN highGain) {
-                setAllChannelVisualGain(allChannelGain);
-                setLowVisualGain(lowGain);
-                setMidVisualGain(midGain);
-                setHighVisualGain(highGain);
-            });
-
-    setAllChannelVisualGain(pWaveformFactory->getVisualGain(BandIndex::AllBand));
-    setLowVisualGain(pWaveformFactory->getVisualGain(BandIndex::Low));
-    setMidVisualGain(pWaveformFactory->getVisualGain(BandIndex::Mid));
-    setHighVisualGain(pWaveformFactory->getVisualGain(BandIndex::High));
 }
 
 void WaveformRendererSignalBase::appendRenderState(RenderStateHasher* pHasher) const {
