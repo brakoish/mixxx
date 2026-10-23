@@ -43,6 +43,8 @@ class QGridLayout;
 struct DeckLabBrowseState;
 namespace decklab {
 struct UsbStick;
+struct MatchReference; // r4-browse
+enum class SourceState; // r4-browse
 } // namespace decklab
 
 // A native appliance surface. All audio remains in Mixxx's existing engine.
@@ -172,6 +174,26 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void refreshMatchCount();
     void scheduleFocusReclaim();
     void reclaimFocus();
+    // r4-browse: source home tiles, deck dock, knob legend, Mixes with deck N
+    // (decklabbrowsehome/dock/legend/mix.h).
+    bool browseTrackLevel() const;
+    void applyBrowsePresentation();
+    void refreshDock();
+    void refreshDockFor(int deck);
+    void scheduleKnobLegend();
+    void updateKnobLegend();
+    void flashKnobLegend();
+    decklab::SourceState stickState(const decklab::UsbStick& stick);
+    QString stickDetail(const decklab::UsbStick& stick);
+    QString homeStateSignature(const QList<decklab::UsbStick>& sticks);
+    void retryStickFromHome(const QString& path);
+    decklab::MatchReference mixReference();
+    void refreshMixCandidates();
+    int mixSkipRow();
+    void updateMixesRow();
+    void showMixes();
+    void fillMixes(bool keepCurrent);
+    void syncMixSelection();
     int displayedDeck(int side) const;
     void setDisplayedDeck(int side, int deck);
     QString fxGroup() const;

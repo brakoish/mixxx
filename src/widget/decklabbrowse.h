@@ -188,6 +188,8 @@ enum class Glyph {
     Close,
     Warning,
     Retry,
+    // r4-browse: "Mixes with deck N" (two overlapping key circles).
+    Mixes,
 };
 void paintGlyph(QPainter& painter, const QRectF& box, Glyph glyph, const QColor& color);
 
@@ -388,7 +390,12 @@ class DeckLabToast : public QLabel {
   public:
     explicit DeckLabToast(QWidget* parent);
     // live: the message concerns something on air (red edge, brand "live").
-    void showMessage(const QString& text, int milliseconds = 2600, bool live = false);
+    // anchor (surface coordinates, r4-browse): sit just above it, for
+    // example over the LOAD target that refused, instead of over the list.
+    void showMessage(const QString& text,
+            int milliseconds = 2600,
+            bool live = false,
+            const QRect& anchor = QRect());
 
   private:
     QTimer m_timer;
@@ -407,6 +414,21 @@ class DeckLabListDelegate : public QStyledItemDelegate {
         // qw-library: two-line source rows (what is inside) and row actions.
         SubtitleRole,
         KeyRole,
+        // r4-browse: source home tiles and chips (decklabbrowsehome.h).
+        TileRole,     // int: 1 = tile, 2 = chip on the "Also" row
+        StateRole,    // int: decklab::SourceState
+        DetailRole,   // QString: a tile's second content line
+        ReadOnlyRole, // bool: the stick is mounted read-only
+        AlsoLeadRole, // bool: the first chip, painted after the "Also" label
+        // r4-browse: rows of "Mixes with deck N" (decklabbrowsemix.h).
+        MixRole,         // bool
+        MixKeyRole,      // QString: Lancelot key
+        MixBpmRole,      // double
+        MixDeltaRole,    // QString: "▼1.0"
+        MixRelationRole, // QString: "same key, ▼1 BPM"
+        MixMatchRole,    // int: decklab::HarmonicMatch
+        MixIndexRole,    // QPersistentModelIndex of the row in the source's model
+        MixArtistRole,   // QString
     };
     explicit DeckLabListDelegate(QObject* parent = nullptr);
     // Source lists (the native sidebar) supply a glyph per row; every row

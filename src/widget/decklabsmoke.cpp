@@ -41,6 +41,7 @@
 #include "track/trackref.h"
 #include "util/cmdlineargs.h"
 #include "widget/decklabbrowse.h"
+#include "widget/decklabbrowsemix.h"
 #include "widget/wdecklab.h"
 #include "widget/wlibrary.h"
 #include "widget/wlibrarysidebar.h"
@@ -480,14 +481,20 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
             auto captures = std::make_shared<QList<BrowseCapture>>(QList<BrowseCapture>{
                     {"sources", 500, [surface] {
                          QMetaObject::invokeMethod(surface->findChild<QComboBox*>("decklab-deck-layout"), "activated", Q_ARG(int, 1));
-                         surface->selectPage(1);
-                         ControlObject::set(ConfigKey("[DeckLabNative]", "browse_sources"), 1);
-                         ControlObject::set(ConfigKey("[DeckLabNative]", "browse_sources"), 0);
+                         // r4-browse (move 1): the rail's USB lands on the source
+                         // home, a 2x2 grid of tiles, with the demo stick first and
+                         // highlighted; the deck dock and the knob legend below.
+                         clickVisible(surface, QStringLiteral("decklab-usb"));
                          QCoreApplication::processEvents();
-                         // The source list: the stick first, then "Library".
-                         return selectListItem(surface, QStringLiteral("Library"));
+                         auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
+                         return list && list->currentItem() &&
+                                 list->currentItem()->text() == QStringLiteral("USB stick (3A1F)") &&
+                                 list->currentItem()->data(DeckLabListDelegate::TileRole).toInt() == 1 &&
+                                 surface->findChild<QWidget*>(QStringLiteral("decklab-deck-dock"))->isVisible();
                      }},
-                    {"categories", 400, press},
+                    {"categories", 400, [surface, press] {
+                         return selectListItem(surface, QStringLiteral("Library")) && press();
+                     }},
                     {"artists", 400, [surface] {
                          if (!selectListItem(surface, decklab::categoryName(decklab::Category::Artist))) return false;
                          surface->browsePress();
@@ -535,6 +542,23 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                          QMetaObject::invokeMethod(surface->findChild<QComboBox*>("decklab-deck-layout"), "activated", Q_ARG(int, 2));
                          surface->selectPage(1);
                          return selectTrack(surface, "Signal Fire");
+                     }},
+                    {"mixes-row", 600, [surface] {
+                         // r4-browse (move 5): back on the Library's categories,
+                         // "Mixes with deck 1" leads them in the deck colour.
+                         surface->browseBack();
+                         QCoreApplication::processEvents();
+                         return selectListItem(surface, decklab::mixesTitle(1));
+                     }},
+                    {"mixes", 900, [surface] {
+                         // Its list, closest first, the relation in words; the
+                         // four-deck dock offers LOAD on every paused deck.
+                         surface->browsePress();
+                         QCoreApplication::processEvents();
+                         auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
+                         if (!list || !list->count() || !list->item(0)->data(DeckLabListDelegate::MixRole).toBool()) return false;
+                         list->setCurrentRow(std::min(1, list->count() - 1));
+                         return true;
                      }},
             });
             auto index = std::make_shared<int>(0);

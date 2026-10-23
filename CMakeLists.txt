@@ -1760,6 +1760,10 @@ add_library(
   src/widget/wlibrary.cpp
   src/widget/wdecklab.cpp
   src/widget/decklabbrowse.cpp
+  src/widget/decklabbrowsedock.cpp
+  src/widget/decklabbrowsehome.cpp
+  src/widget/decklabbrowselegend.cpp
+  src/widget/decklabbrowsemix.cpp
   src/widget/decklabsmoke.cpp
   src/decklab/decklabdclient.cpp
   src/decklab/decklabfakeservice.cpp
