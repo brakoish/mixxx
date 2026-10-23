@@ -65,6 +65,9 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void openSource();
     void openCollection();
     void releaseEffects(bool musical = false, bool mute = false);
+    // Ends touch holds (hold effects, rolls, the XY pad) whose release went
+    // astray; latched effects keep playing.
+    void endHolds();
     void setAudioOutputConfigured(bool configured);
     /// Deck Lab system integration (decklabd, Deck Setup, System pages).
     void attachSystem(DeckLabSystem* system);
@@ -212,6 +215,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
         bool looping = false;
         bool quantize = false;
         bool keylock = false;
+        bool synced = false; // sync lock: the SYNC button is lit
         bool feedback = false;
         double size = -1;
         bool operator==(const TransportState&) const = default;
@@ -340,6 +344,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     QComboBox* m_fxTime;
     QSlider* m_depth;
     QLabel* m_fxStatus;
+    QLabel* m_fxMessage = nullptr;
     QWidget* m_fxBody;
     int m_page = -1;
     bool m_hasBrowsed = false;
@@ -357,6 +362,10 @@ class WDeckLab : public QWidget, public WBaseWidget {
     bool m_fxReturning = false;
     qint64 m_releaseAt = 0;
     qint64 m_holdStarted = 0;
+    // The control whose touch keeps the current hold alive (hold effect,
+    // roll or XY pad), and its backstop in ms (0: none, the XY pad).
+    QPointer<QWidget> m_holdSource;
+    qint64 m_holdLimit = 0;
     QString m_heldRoll;
     QString m_touchCue;
     QElapsedTimer m_clock;

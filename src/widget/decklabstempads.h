@@ -31,7 +31,7 @@ struct DeckLabStemPadState {
     QColor color;
     bool muted = false;
     bool solo = false;    // held solo source
-    bool pressed = false; // pointer down, tap pending
+    bool pressed = false; // pointer down; becomes a solo if held
     bool operator==(const DeckLabStemPadState&) const = default;
 };
 
@@ -126,7 +126,7 @@ class DeckLabStemPads final : public QWidget {
   private:
     friend class DeckLabStemPad;
     void padPressed(int stem);
-    void padReleased(int stem, bool inside);
+    void padReleased(int stem);
     void padHidden(int stem);
     void holdElapsed();
     void cancelGesture(bool trackReplaced);

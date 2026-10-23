@@ -83,6 +83,11 @@ QString fractionPart(const QString& number) {
     return dot < 0 ? QString() : number.mid(dot);
 }
 
+// Phrase countdowns are bars.beats; the unit is spelled out beside them.
+QString barsCaption() {
+    return QCoreApplication::translate("DeckLabDeckStrip", "BARS");
+}
+
 // Dark ink on light lamps, light ink on dark ones.
 QColor inkOn(const QColor& color) {
     return color.lightnessF() > 0.55 ? QColor(0x0d, 0x0f, 0x12) : kText;
@@ -261,7 +266,8 @@ QRegion DeckLabStripRenderer::setState(const DeckLabStripState& next) {
     if (previous.title != next.title || previous.artist != next.artist) {
         add(Part::Title);
     }
-    if (previous.master != next.master || previous.sync != next.sync || previous.range != next.range ||
+    if (previous.master != next.master || previous.sync != next.sync ||
+            previous.matched != next.matched || previous.range != next.range ||
             previous.pfl != next.pfl || previous.slip != next.slip || previous.keylock != next.keylock ||
             previous.quantize != next.quantize || previous.looping != next.looping ||
             previous.loopSize != next.loopSize) {
@@ -330,6 +336,12 @@ QString DeckLabStripRenderer::modesText() const {
     return modes.join(QLatin1Char(' '));
 }
 
+QString DeckLabStripRenderer::roundedBpm(const QString& bpm) {
+    bool ok = false;
+    const double value = bpm.toDouble(&ok);
+    return ok && util_isfinite(value) ? QString::number(qRound64(value)) : wholePart(bpm);
+}
+
 QStringList DeckLabStripRenderer::overflowingParts() const {
     QStringList overflowing;
     if (!m_state.loaded || m_size.isEmpty()) {
@@ -339,9 +351,12 @@ QStringList DeckLabStripRenderer::overflowingParts() const {
     const bool compact = m_mode == Mode::Compact;
     const QFontMetrics hero(numeralFont(mini ? kTitle : kHero));
     const QFontMetrics readout(numeralFont(mini ? kTitle : kReadout));
-    // BPM: the whole part always; decimals may be dropped in compact cards.
+    // BPM: the whole part always; compact cards may drop the decimals and
+    // then show the rounded value, which can be one digit longer (99.7: 100).
+    const int compactWhole = std::max(tabularWidth(hero, wholePart(m_state.bpm)),
+            tabularWidth(hero, roundedBpm(m_state.bpm)));
     const int bpm = mini ? tabularWidth(hero, m_state.bpm)
-            : compact    ? tabularWidth(hero, wholePart(m_state.bpm))
+            : compact    ? compactWhole
                          : tabularWidth(hero, wholePart(m_state.bpm)) +
                     tabularWidth(readout, fractionPart(m_state.bpm));
     if (bpm > rect(Part::Bpm).width()) {
@@ -355,7 +370,7 @@ QStringList DeckLabStripRenderer::overflowingParts() const {
         overflowing << QStringLiteral("key");
     }
     if (compact &&
-            rect(Part::Bpm).left() + 2 + tabularWidth(hero, wholePart(m_state.bpm)) + 8 >
+            rect(Part::Bpm).left() + 2 + compactWhole + 8 >
                     rect(Part::Time).right() - 8 - clock) {
         // Compact cards: the BPM and the clock share one row.
         overflowing << QStringLiteral("row");
@@ -452,7 +467,7 @@ void DeckLabStripRenderer::paintTitle(QPainter& painter, const QRect& area) cons
         painter.setFont(artistFont);
         painter.setPen(kMuted);
         painter.drawText(QPoint(area.left(), baseline),
-                artistMetrics.elidedText(m_mode == Mode::Compact ? tr("Tap to browse") : tr("No track loaded"),
+                artistMetrics.elidedText(m_mode == Mode::Compact ? tr("Tap to load") : tr("Empty"),
                         Qt::ElideRight, area.width()));
         return;
     }
@@ -498,10 +513,12 @@ void DeckLabStripRenderer::paintPhase(QPainter& painter) const {
 }
 
 int DeckLabStripRenderer::phraseWidth() const {
-    // Room for the longest common name ("CHORUS 2") and a two-digit count.
-    const int name = QFontMetrics(labelFont()).horizontalAdvance(QStringLiteral("CHORUS 2")) + 14;
+    // Room for the longest common name ("CHORUS 2"), a two-digit count and
+    // the BARS unit after it.
+    const QFontMetrics label(labelFont());
+    const int name = label.horizontalAdvance(QStringLiteral("CHORUS 2")) + 14;
     const int count = tabularWidth(QFontMetrics(numeralFont(kTitle)), QStringLiteral("00.0"));
-    return name + 6 + count + 2;
+    return name + 6 + count + 4 + label.horizontalAdvance(barsCaption()) + 2;
 }
 
 void DeckLabStripRenderer::paintPhrase(QPainter& painter, int left) const {
@@ -510,24 +527,34 @@ void DeckLabStripRenderer::paintPhrase(QPainter& painter, int left) const {
         return;
     }
     // The countdown sits right-aligned in a fixed cell of tabular figures,
-    // so neither it nor the chip shifts as it runs; the phrase name is a
-    // chip in the phrase's color just before it.
+    // so neither it nor the chip shifts as it runs; a 14 px BARS caption
+    // follows it when there is room (bars.beats would otherwise read as a
+    // decimal), and the phrase name is a chip in the phrase's color before.
     const QFont count = numeralFont(kTitle);
     const QFontMetrics countMetrics(count);
+    const QFont label = labelFont();
+    const QFontMetrics labelMetrics(label);
     const QString& countdown = m_state.phrase.countdown;
     const int cell = std::max(tabularWidth(countMetrics, QStringLiteral("00.0")),
             tabularWidth(countMetrics, countdown));
     if (cell > area.width()) {
         return;
     }
+    const int baseline = baselineFor(area, countMetrics);
+    const QString caption = barsCaption();
+    const int captionWidth = labelMetrics.horizontalAdvance(caption);
+    int right = area.left() + area.width();
+    if (area.width() >= cell + 4 + captionWidth + 6 + 40) {
+        painter.setFont(label);
+        painter.setPen(kMuted);
+        painter.drawText(QPoint(right - captionWidth, baseline), caption);
+        right -= captionWidth + 4;
+    }
     painter.setFont(count);
     painter.setPen(kText);
-    drawTabular(painter, area.left() + area.width() - tabularWidth(countMetrics, countdown),
-            baselineFor(area, countMetrics), countdown);
-    const int room = area.width() - cell - 6;
+    drawTabular(painter, right - tabularWidth(countMetrics, countdown), baseline, countdown);
+    const int room = right - area.left() - cell - 6;
     const QColor color = m_state.phrase.color.isValid() ? m_state.phrase.color : kDim;
-    const QFont label = labelFont();
-    const QFontMetrics labelMetrics(label);
     const QString text = labelMetrics.elidedText(
             m_state.phrase.name.toUpper(), Qt::ElideRight, std::max(0, room - 14));
     const int top = area.top() + (area.height() - 20) / 2;
@@ -558,9 +585,12 @@ int DeckLabStripRenderer::paintLamps(QPainter& painter) const {
     int x = area.left() + 2;
     if (m_mode == Mode::Full) {
         // MASTER fills and SYNC outlines in the deck's color; HP and SLIP
-        // light white; the tempo range follows as secondary text.
+        // light white; the tempo range follows as secondary text. A one-shot
+        // match briefly turns the SYNC lamp into MATCHED.
         x += paintChip(painter, x, top, tr("MASTER"), m_state.master, deckColor) + 4;
-        x += paintChip(painter, x, top, tr("SYNC"), m_state.sync, deckColor, true) + 4;
+        x += paintChip(painter, x, top, m_state.matched ? tr("MATCHED") : tr("SYNC"),
+                     m_state.sync || m_state.matched, deckColor, true) +
+                4;
         x += paintChip(painter, x, top, tr("HP"), m_state.pfl, kLampLit) + 4;
         if (m_state.slip && x + chipWidth(tr("SLIP")) <= area.right()) {
             x += paintChip(painter, x, top, tr("SLIP"), true, kLampLit) + 4;
@@ -594,7 +624,7 @@ int DeckLabStripRenderer::paintLamps(QPainter& painter) const {
     };
     const std::array<Lamp, 7> lamps{{
             {tr("MASTER"), m_state.master, deckColor, false},
-            {tr("SYNC"), m_state.sync, deckColor, true},
+            {m_state.matched ? tr("MATCHED") : tr("SYNC"), m_state.sync || m_state.matched, deckColor, true},
             {tr("HP"), m_state.pfl, kLampLit, false},
             {tr("LOOP %1").arg(m_state.loopSize), m_state.looping, kLampLit, false},
             {tr("KEY"), m_state.keylock, kLampLit, false},
@@ -624,32 +654,46 @@ void DeckLabStripRenderer::paintValues(QPainter& painter, const QRect& dirty) co
     const int heroBaseline = baselineFor(bpmArea, heroMetrics);
     // Only full readouts move the key and tempo aside for a long clock.
     const int excess = m_mode == Mode::Full ? clockExcess() : 0;
-    // Clock: fixed size, right-aligned; flashes live red near the end.
+    // Clock: fixed size, right-aligned. Near the end it alternates between
+    // live-red figures and a live-red box behind dark figures, so it never
+    // dims: both phases keep at least 4.5:1 contrast.
     const int clockWidth = tabularWidth(heroMetrics, m_state.remaining);
     const int clockRight = timeArea.right() - (mini ? 0 : 8);
     if (timeArea.intersects(dirty) || excess > 0) {
         painter.setFont(hero);
-        painter.setPen(m_state.endWarning ? (m_flash ? kWarning : kWarningDim) : kText);
+        QColor ink = kText;
+        if (m_state.endWarning && m_flash) {
+            ink = kWarning;
+        } else if (m_state.endWarning) {
+            const QRect bounds = timeArea.adjusted(-excess, 0, 0, 0);
+            const QRect box = QRect(clockRight - clockWidth - 4, timeArea.top() + 2, clockWidth + 8, timeArea.height() - 4)
+                                      .intersected(bounds);
+            QPainterPath path;
+            path.addRoundedRect(QRectF(box), 3, 3);
+            painter.fillPath(path, kWarning);
+            ink = kPanel;
+        }
+        painter.setPen(ink);
         drawTabular(painter, clockRight - clockWidth, heroBaseline, m_state.remaining);
     }
     // BPM: big whole part, decimals at readout size; compact cards drop the
-    // decimals rather than shrink when the clock needs the room.
+    // decimals rather than shrink when the clock needs the room, and then
+    // round to the nearest whole BPM (127.96 reads 128, not 127).
     if (bpmArea.intersects(dirty)) {
-        const QString whole = mini ? m_state.bpm : wholePart(m_state.bpm);
+        const QString truncated = mini ? m_state.bpm : wholePart(m_state.bpm);
+        const QString fraction = mini ? QString() : fractionPart(m_state.bpm);
+        const int fractionWidth = tabularWidth(readoutMetrics, fraction);
+        const bool room = mini || !compact ||
+                bpmArea.left() + 2 + tabularWidth(heroMetrics, truncated) + fractionWidth + 10 <
+                        clockRight - clockWidth;
+        const QString whole = room ? truncated : roundedBpm(m_state.bpm);
         painter.setFont(hero);
         painter.setPen(kText);
         drawTabular(painter, bpmArea.left() + 2, heroBaseline, whole);
-        if (!mini) {
-            const int wholeWidth = tabularWidth(heroMetrics, whole);
-            const QString fraction = fractionPart(m_state.bpm);
-            const int fractionWidth = tabularWidth(readoutMetrics, fraction);
-            const bool room = !compact ||
-                    bpmArea.left() + 2 + wholeWidth + fractionWidth + 10 < clockRight - clockWidth;
-            if (room) {
-                painter.setFont(readout);
-                painter.setPen(kDecimals);
-                drawTabular(painter, bpmArea.left() + 2 + wholeWidth, heroBaseline, fraction);
-            }
+        if (!mini && room) {
+            painter.setFont(readout);
+            painter.setPen(kDecimals);
+            drawTabular(painter, bpmArea.left() + 2 + tabularWidth(heroMetrics, whole), heroBaseline, fraction);
         }
     }
     // Key: readout size in the key-wheel color, with a harmonic hint.
@@ -664,20 +708,16 @@ void DeckLabStripRenderer::paintValues(QPainter& painter, const QRect& dirty) co
                 : compact        ? keyArea.right() - 6 - keyWidth
                                  : keyArea.left() + 2;
         painter.drawText(QPoint(keyLeft, baseline), m_state.key);
-        if (!mini && m_state.keyMatch != 0) {
+        // A compatible key gets a green check. An incompatible one shows
+        // nothing: a grey cross read like a close button on every deck.
+        if (!mini && m_state.keyMatch > 0) {
             const int kx = compact ? keyLeft - 16 : keyLeft + keyWidth + 6;
-            if (m_state.keyMatch > 0) {
-                QPainterPath check;
-                check.moveTo(kx, baseline - 6);
-                check.lineTo(kx + 4, baseline - 2);
-                check.lineTo(kx + 11, baseline - 11);
-                painter.setPen(QPen(kPlay, 2.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-                painter.drawPath(check);
-            } else {
-                painter.setPen(QPen(kMuted, 2));
-                painter.drawLine(QPointF(kx, baseline - 11), QPointF(kx + 9, baseline - 2));
-                painter.drawLine(QPointF(kx + 9, baseline - 11), QPointF(kx, baseline - 2));
-            }
+            QPainterPath check;
+            check.moveTo(kx, baseline - 6);
+            check.lineTo(kx + 4, baseline - 2);
+            check.lineTo(kx + 11, baseline - 11);
+            painter.setPen(QPen(kPlay, 2.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter.drawPath(check);
         }
     }
     if (mini) {
@@ -734,8 +774,9 @@ void DeckLabStripRenderer::paint(QPainter& painter, const QRect& dirty, bool pre
         if (m_mode == Mode::Full) {
             painter.setFont(uiFont(kBody, QFont::Medium));
             painter.setPen(kMuted);
+            // Most DJs load from the controller; say so beside the touch way.
             painter.drawText(QRect(14, 36, m_size.width() - 24, m_size.height() - 40),
-                    Qt::AlignCenter, tr("Tap to browse and load a track"));
+                    Qt::AlignCenter | Qt::TextWordWrap, tr("Tap to browse · or press LOAD on the controller"));
         }
     } else {
         if (needs(Part::Phase)) {
