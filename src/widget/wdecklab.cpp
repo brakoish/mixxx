@@ -4138,6 +4138,11 @@ void WDeckLab::setSearchOpen(bool open) {
             b.pageLayout->addWidget(b.dock);
             b.dock->setArrangement(DeckLabDeckDock::Arrangement::Bar);
         }
+        // round4: the LOAD targets never vanish. Re-parenting hides the dock
+        // until the next event-loop pass, and the pane it moves into is
+        // hidden on the source home, so show both now.
+        setVisibleIf(b.pane, open || !(m_browseStack->currentIndex() == 0 && b.list == DeckLabList::Home));
+        b.dock->show();
         setVisibleIf(b.legend, !open);
     }
     if (open && m_search && m_search->lineEdit()) m_search->lineEdit()->setFocus(Qt::OtherFocusReason);
@@ -4867,7 +4872,8 @@ void WDeckLab::applyBrowsePresentation() {
     const bool home = m_browseStack->currentIndex() == 0 && b.list == DeckLabList::Home;
     // The home's tiles take the whole width: they say what is inside, so the
     // info pane, Back (nowhere to go) and MATCH (nothing to match) step aside.
-    setVisibleIf(b.pane, !home);
+    // round4: ... except the pane while the keyboard is up: it holds the dock.
+    setVisibleIf(b.pane, !home || (m_keyboard && !m_keyboard->isHidden()));
     setVisibleIf(b.back, !home);
     setVisibleIf(b.match, !home);
     // Tiles flow left to right in reading order; every other level is a list.
