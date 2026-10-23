@@ -5015,7 +5015,7 @@ void WDeckLab::fillMixes(bool keepCurrent) {
             item->setData(DeckLabListDelegate::MixMatchRole, static_cast<int>(decklab::harmonicMatch(mix.key, reference.key)));
             item->setData(DeckLabListDelegate::MixIndexRole, QVariant::fromValue(QPersistentModelIndex(index)));
             if (artistColumn >= 0) item->setData(DeckLabListDelegate::MixArtistRole, model->index(mix.row, artistColumn).data().toString().trimmed());
-            item->setData(Qt::AccessibleTextRole, title + QStringLiteral(", ") + relation);
+            item->setData(Qt::AccessibleTextRole, QString(title + QStringLiteral(", ") + relation));
             if (keep.isValid() && QPersistentModelIndex(index) == keep) current = b.items->count() - 1;
         }
     }
