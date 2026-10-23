@@ -3222,9 +3222,12 @@ TEST_F(NativeDeckLabTest, SamplerLoadReturnsToThePadsAndFxFollowsLabFx) {
 // r4-sampler: more samplers than one bank (a controller mapping can ask for
 // more) become banks of sixteen, numbered on from 17.
 TEST_F(NativeDeckLabTest, SamplerBanksFollowTheConfiguredSamplerCount) {
+    // The signal-path fixture owns [App],num_samplers, as PlayerManager does
+    // in the app; a mapping asking for 32 samplers sets it. (Skipping when it
+    // exists meant this never ran.)
     const ConfigKey count("[App]", "num_samplers");
-    if (ControlObject::exists(count)) GTEST_SKIP() << "a player manager owns the sampler count here";
-    auto counter = std::make_unique<ControlObject>(count);
+    std::unique_ptr<ControlObject> counter;
+    if (!ControlObject::exists(count)) counter = std::make_unique<ControlObject>(count);
     ControlObject::set(count, 32);
     auto controls = makeSamplerControls(1, 32);
     WDeckLab surface(config(), nullptr, players.get(), m_pEffectsManager.get());
