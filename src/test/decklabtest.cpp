@@ -2952,7 +2952,10 @@ TEST_F(NativeDeckLabTest, XyPadAndHoldEffectsOutliveFourSecondsAndLostTouchesEnd
     QTest::mouseRelease(xy, Qt::LeftButton, Qt::NoModifier, point);
     EXPECT_DOUBLE_EQ(0, mix()) << "lift = dry";
     // Lost touch: the release never arrives, but the next touch lands
-    // elsewhere. That ends the hold; no wall clock is involved.
+    // elsewhere. That ends the hold; no wall clock is involved. (Wait out
+    // the double-tap window first: a second touch on the same spot within
+    // it latches, by design.)
+    QTest::qWait(DeckLabLabFx::kDoubleTapMs + 50);
     QTest::mousePress(xy, Qt::LeftButton, Qt::NoModifier, point);
     EXPECT_DOUBLE_EQ(1, mix());
     auto* elsewhere = panel->findChild<QWidget*>("decklab-fx-readout"); ASSERT_NE(nullptr, elsewhere);
