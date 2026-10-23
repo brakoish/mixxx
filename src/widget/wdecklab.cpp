@@ -68,6 +68,8 @@
 #include "track/beats.h"
 #include "waveform/waveformwidgetfactory.h"
 #include "widget/decklabbrowse.h"
+#include "widget/decklabsampler.h"         // r4-sampler
+#include "widget/decklabsamplercontrols.h" // r4-sampler
 #include "widget/decklabstempads.h"
 #include "widget/wlibrary.h"
 #include "widget/wlibrarysidebar.h"
@@ -2067,77 +2069,66 @@ QWidget* WDeckLab::buildMatchBar(QWidget* parent) {
 }
 
 QWidget* WDeckLab::buildSampler() {
-    auto* page = new QWidget(this);
-    page->setObjectName(QStringLiteral("decklab-sampler"));
-    page->setStyleSheet(kPerformStyle);
-    auto* layout = column(page, 4);
-    auto* grid = new QGridLayout;
-    grid->setSpacing(3);
-    for (int slot = 1; slot <= 16; ++slot) {
-        QString group = QStringLiteral("[Sampler%1]").arg(slot);
-        // A loaded pad plays on touch-down, so the sample lands where the
-        // finger does. An empty pad opens Browse to load it, on release: the
-        // page must not change under a finger that is still down.
-        auto press = std::make_shared<std::pair<bool, quint64>>(false, 0);
-        auto* pad = button(QStringLiteral("%1\n").arg(slot), [this, group, slot, press] {
-            if (press->first || press->second != m_interactionEpoch || value(group, "track_loaded")) return;
-            m_sampleTarget = slot; m_sampleReturnPage = 2; selectPage(1); refreshLoadButtons();
-        }, page, QStringLiteral("decklab-sample-%1").arg(slot));
-        connect(pad, &QPushButton::pressed, this, [this, group, press] {
-            press->first = value(group, "track_loaded") > 0;
-            press->second = m_interactionEpoch;
-            if (press->first) pulse(group, "play_stutter");
-        });
-        pad->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
-        pad->setCheckable(true);
-        connect(pad, &QPushButton::clicked, this, [this, group, pad] { pad->setChecked(value(group, "play") > 0); });
-        pad->setContextMenuPolicy(Qt::CustomContextMenu);
-        connect(pad, &QWidget::customContextMenuRequested, this, [this, group, pad](const QPoint& point) {
-            auto* menu = new QMenu(this); menu->setAttribute(Qt::WA_DeleteOnClose);
-            menu->setStyleSheet(kMenuStyle);
-            menu->addAction(tr("STOP"), this, [this, group] { pulse(group, "stop"); });
-            // Clearing a pad is destructive: a menu action, chosen on release.
-            auto* clear = menu->addAction(tr("CLEAR"), this, [this, group] { if (!value(group, "play")) pulse(group, "eject"); });
-            clear->setEnabled(!value(group, "play"));
-            auto* level = new QSlider(Qt::Horizontal, menu); level->setMinimumSize(240,44); level->setRange(0,100);
-            level->setAccessibleName(tr("Sample level")); level->setValue(int(control(group,"pregain")->getParameter()*100));
-            connect(level, &QSlider::valueChanged, this, [this,group](int v) { control(group,"pregain")->setParameter(v/100.0); });
-            auto* action = new QWidgetAction(menu); action->setDefaultWidget(level); menu->addSeparator(); menu->addAction(tr("LEVEL"))->setEnabled(false); menu->addAction(action);
-            menu->popup(pad->mapToGlobal(point));
-        });
-        m_samples[slot - 1] = pad;
-        grid->addWidget(pad, (slot - 1) / 6, (slot - 1) % 6);
-        watch(group, "play", [pad](double v) { pad->setChecked(v > 0); });
-        auto refresh = [this, group, slot, pad](double loaded) {
-            auto* player = m_players ? m_players->getPlayer(group) : nullptr;
-            auto track = player ? player->getLoadedTrack() : TrackPointer();
-            QString title = track ? track->getTitle() : QString();
-            if (track && title.isEmpty()) title = QFileInfo(track->getLocation()).completeBaseName();
-            // An empty pad shows its number and a "+".
-            pad->setText(QStringLiteral("%1\n%2").arg(slot).arg(title));
-            pad->setAccessibleName(track ? tr("Pad %1, %2").arg(slot).arg(title) : tr("Pad %1, empty: tap to load").arg(slot));
-            pad->setToolTip(track ? title : tr("Tap to load from Browse"));
-            if (loaded && m_sampleTarget == slot) { m_sampleTarget = 0; selectPage(m_sampleReturnPage); }
-        };
-        watch(group, "track_loaded", refresh);
-        if (m_players) if (auto* player = m_players->getPlayer(group))
-            connect(player, &BaseTrackPlayer::newTrackLoaded, this, [refresh](TrackPointer) { refresh(1); });
-        refresh(0);
-    }
-    auto* tools = new QWidget(page); auto* toolsLayout = column(tools, 5);
-    auto* stop = button(tr("STOP ALL"), [this] {
-        for (int slot = 1; slot <= 16; ++slot) pulse(QStringLiteral("[Sampler%1]").arg(slot), "stop");
-    }, tools, "decklab-samples-stop");
-    stop->setAccessibleName(tr("Stop all samples"));
-    stop->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    toolsLayout->addWidget(stop, 1);
-    auto* hint = new QLabel(tr("Hold a pad to edit"), tools);
-    hint->setProperty("muted", true); hint->setAlignment(Qt::AlignCenter); toolsLayout->addWidget(hint);
-    grid->addWidget(tools, 2, 4, 1, 2);
-    for (int col = 0; col < 6; ++col) grid->setColumnStretch(col, 1);
-    for (int row = 0; row < 3; ++row) grid->setRowStretch(row, 1);
-    layout->addLayout(grid, 1);
+    // r4-sampler: Move 4, the Sampler as a 4x4 instrument with the decks in
+    // view (widget/decklabsampler.{h,cpp}; the [SamplerN] binding is
+    // widget/decklabsamplercontrols.{h,cpp}). Wired here: loading an empty
+    // pad from Browse and the return after the load, the DECKS strip, and
+    // the FX lamp, which is the same Lab FX sampler send as SAMPLER FX.
+    auto* samplers = new DeckLabSamplerControls(m_config, m_players);
+    auto* page = new DeckLabSampler(samplers, this);
+    samplers->setParent(page);
+    m_sampler = page;
+    page->setInteractionEpoch([this] { return m_interactionEpoch; });
+    connect(page, &DeckLabSampler::loadRequested, this, [this](int sampler) {
+        m_sampleTarget = sampler; m_sampleReturnPage = 2; selectPage(1); refreshLoadButtons();
+    });
+    // Any page that sent Browse to load a pad gets it back once it loads.
+    connect(samplers, &DeckLabSamplerControls::sampleLoaded, this, [this](int sampler) {
+        if (m_sampleTarget == sampler) { m_sampleTarget = 0; selectPage(m_sampleReturnPage); }
+    });
+    connect(page, &DeckLabSampler::decksRequested, this, [this] { selectPage(0); });
+    connect(page, &DeckLabSampler::fxRoutingRequested, this, [this](bool on) {
+        m_sampleRouting = on;
+        if (auto* labFx = findChild<QPushButton*>(QStringLiteral("decklab-fx-samples"))) setCheckedIf(labFx, on);
+        refreshFx(); if (m_fxActive) applyEffects();
+    });
+    page->setFxRouting(m_sampleRouting);
     return page;
+}
+
+// r4-sampler: the Sampler page's share of the display tick, only while it
+// is shown. The waveforms are hidden there, so Decks' tick skips the deck
+// clocks; they advance here instead, and the page repaints only the DECKS
+// strip cells and pads that changed (playing pads drain).
+void WDeckLab::tickSampler() {
+    std::array<DeckLabSamplerDeck, 4> decks{};
+    for (int deck = 1; deck <= 4; ++deck) {
+        const auto& d = m_deck[deck - 1];
+        if (d.loaded->get() <= 0) continue;
+        const double rawPosition = d.position->get();
+        const double position = util_isfinite(rawPosition) ? rawPosition : 0;
+        if (d.play->get() > 0 || position != m_shownPosition[deck - 1]) refreshDeckClock(deck);
+        const auto& state = m_stripStates[deck - 1];
+        auto& shown = decks[deck - 1];
+        shown.loaded = state.loaded;
+        shown.playing = state.playing;
+        shown.master = state.master;
+        shown.endWarning = state.endWarning;
+        shown.phase = state.phase;
+        shown.bpm = state.bpm.toDouble();
+        shown.position = std::clamp(position, 0.0, 1.0);
+        const double duration = d.duration->get();
+        const double ratio = d.rateRatio->get();
+        const double speed = util_isfinite(ratio) && ratio > 0 ? ratio : 1;
+        shown.remaining = state.loaded && duration > 0 ? duration * (1 - shown.position) / speed : -1;
+    }
+    m_sampler->setFxRouting(m_sampleRouting);
+    m_sampler->tick(decks);
+}
+
+void WDeckLab::showSampler(int sampler) {
+    selectPage(2);
+    if (m_sampler && sampler > 0) m_sampler->showPad(sampler);
 }
 
 QWidget* WDeckLab::buildEffects() {
@@ -2980,6 +2971,7 @@ void WDeckLab::showTracks() {
     updateBreadcrumb(); refreshLoadButtons(); refreshBrowseCard(); updateMatchBar(); scheduleMatchCount();
 }
 void WDeckLab::browsePress() {
+    if (m_page == 2 && m_sampler && m_sampler->knob(decklab::KnobAction::Press, 1)) return; // r4-sampler: pad sheet
     if (m_page != 1) { selectPage(1); return; }
     // In a track list the press previews the highlighted track.
     if (m_browseStack->currentIndex() != 0) { togglePreview(); return; }
@@ -2998,6 +2990,7 @@ void WDeckLab::browseEnter() {
     }
 }
 void WDeckLab::browseMove(int delta, bool listLevel) {
+    if (m_page == 2 && m_sampler && m_sampler->knob(decklab::KnobAction::Move, delta)) return; // r4-sampler: pad sheet
     if (delta == 0 || !m_sidebar) return;
     auto& b = *m_browseState;
     // A turn on any other page opens Browse where it was left. It never
@@ -3047,6 +3040,7 @@ void WDeckLab::openSource() {
     } else showTracks();
 }
 void WDeckLab::browseBack() {
+    if (m_page == 2 && m_sampler && m_sampler->knob(decklab::KnobAction::Back, -1)) return; // r4-sampler: pad sheet
     if (m_keyboard && m_keyboard->isVisible()) { setSearchOpen(false); return; }
     if (m_page != 1) { selectPage(1); return; }
     if (!m_sidebar) return;
@@ -3933,6 +3927,7 @@ void WDeckLab::tickDecks() {
         m_overloadUntil = 0;
         updateStatus();
     }
+    if (m_sampler && m_page == 2 && isVisible()) tickSampler(); // r4-sampler
     if (!isVisible() || !m_waveforms->isVisible()) return;
     // Only clocks advance on the tick: playing decks, or a paused deck whose
     // position was moved (cue, needle search or scratch).

@@ -41,6 +41,7 @@
 #include "track/trackref.h"
 #include "util/cmdlineargs.h"
 #include "widget/decklabbrowse.h"
+#include "widget/decklabsampler.h"
 #include "widget/wdecklab.h"
 #include "widget/wlibrary.h"
 #include "widget/wlibrarysidebar.h"
@@ -386,6 +387,58 @@ struct BrowseCapture {
     int waitMs;
     std::function<bool()> action;
 };
+
+// r4-sampler: the Sampler page with generated demo samples loaded (never
+// played) and its edit sheet open. Like the Browse captures they reuse the
+// surface checks and do not change the reported screen count.
+void captureSampler(WDeckLab* surface, const QString& output, const std::function<void()>& check,
+        const std::shared_ptr<QJsonArray>& failures, const std::function<void()>& done) {
+    auto captures = std::make_shared<QList<BrowseCapture>>(QList<BrowseCapture>{
+            {QString(), 900, [surface] {
+                 // Browse shows the demo collection: load three pads from it.
+                 surface->selectPage(1);
+                 bool loaded = true;
+                 for (const auto& [sampler, title] : {std::pair{1, "Signal Fire"}, std::pair{2, "Glass Garden"},
+                              std::pair{5, "Spiral Steps"}}) {
+                     loaded = selectTrack(surface, QString::fromUtf8(title)) && loaded;
+                     const ConfigKey load(QStringLiteral("[Sampler%1]").arg(sampler), QStringLiteral("LoadSelectedTrack"));
+                     ControlObject::set(load, 1);
+                     ControlObject::set(load, 0);
+                 }
+                 return loaded;
+             }},
+            {QStringLiteral("app-sampler-01-pads.png"), 500, [surface] {
+                 surface->selectPage(2);
+                 return surface->currentPage() == 2;
+             }},
+            {QStringLiteral("app-sampler-02-edit.png"), 400, [surface] {
+                 auto* page = surface->findChild<DeckLabSampler*>(QStringLiteral("decklab-sampler"));
+                 if (!page) return false;
+                 page->editPad(2);
+                 return page->sheetOpen();
+             }},
+    });
+    auto index = std::make_shared<int>(0);
+    auto next = std::make_shared<std::function<void()>>();
+    *next = [=] {
+        if (*index >= captures->size()) {
+            if (auto* page = surface->findChild<DeckLabSampler*>(QStringLiteral("decklab-sampler"))) page->closeSheet();
+            done();
+            return;
+        }
+        const BrowseCapture capture = captures->at(*index);
+        if (!capture.action()) failures->append(QString(QStringLiteral("Sampler capture could not reach: ") +
+                (capture.name.isEmpty() ? QStringLiteral("loading") : capture.name)));
+        QTimer::singleShot(capture.waitMs, surface, [=] {
+            check();
+            if (!capture.name.isEmpty() && !surface->grab().save(QDir(output).filePath(capture.name)))
+                failures->append("Screenshot failed");
+            ++*index;
+            (*next)();
+        });
+    };
+    (*next)();
+}
 } // namespace
 
 void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
@@ -400,6 +453,7 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
     auto step = std::make_shared<int>(0);
     auto failures = std::make_shared<QJsonArray>();
     auto browseDone = std::make_shared<bool>(false);
+    auto samplerDone = std::make_shared<bool>(false); // r4-sampler
     const auto check = [surface, failures] {
         if (surface->size() != QSize(800, 480)) failures->append("Surface is not 800x480");
         for (int deck = 1; deck <= 4; ++deck) {
@@ -566,6 +620,12 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                 });
             };
             (*next)();
+            return;
+        }
+        else if (!*samplerDone) {
+            // r4-sampler: Sampler captures after Browse (uncounted).
+            timer->stop();
+            captureSampler(surface, output, check, failures, [=] { *samplerDone = true; timer->start(350); });
             return;
         }
         else {
