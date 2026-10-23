@@ -58,6 +58,7 @@
 #include "widget/decklabdeckwidgets.h"
 #include "widget/decklablabfx.h"
 #include "widget/decklabtempopresenter.h"
+#include "widget/decklabsampler.h"
 #include "widget/wdecklab.h"
 #include "widget/wlibrary.h"
 #include "widget/wlibrarysidebar.h"
@@ -585,15 +586,45 @@ TEST_F(NativeDeckLabTest, PagesFit800By480) {
     }
 }
 
-TEST_F(NativeDeckLabTest, SixteenSamplerPadsRemainNearSquareAndFullyVisible) {
+// r4-sampler (move 4): sixteen pads in a 4x4 grid, four wide like the EP-133
+// and the DJS-1000, under a DECKS strip; the side column keeps 44 px keys.
+TEST_F(NativeDeckLabTest, SamplerIsAFourByFourInstrumentWithTheDecksInView) {
+    loadGenerated(1, 128); ProcessBuffer();
     panel->selectPage(2); QCoreApplication::processEvents();
+    QSet<int> columns, rows;
+    std::array<QRect, 16> bounds{};
     for (int slot = 1; slot <= 16; ++slot) {
         auto* pad = panel->findChild<QPushButton*>(QStringLiteral("decklab-sample-%1").arg(slot));
         ASSERT_NE(nullptr, pad); EXPECT_TRUE(pad->isVisible());
-        EXPECT_GE(pad->width(), 110); EXPECT_GE(pad->height(), 110);
-        EXPECT_NEAR(1.0, pad->width() / double(pad->height()), .2);
-        EXPECT_TRUE(panel->rect().contains(QRect(pad->mapTo(panel.get(), QPoint()), pad->size())));
+        EXPECT_GE(pad->width(), 160); EXPECT_GE(pad->height(), 88);
+        bounds[slot - 1] = QRect(pad->mapTo(panel.get(), QPoint()), pad->size());
+        EXPECT_TRUE(panel->rect().contains(bounds[slot - 1]));
+        columns.insert(bounds[slot - 1].x()); rows.insert(bounds[slot - 1].y());
     }
+    EXPECT_EQ(4, columns.size()); EXPECT_EQ(4, rows.size());
+    // Row-major: pads 1-4 are the top row, left to right.
+    for (int slot = 1; slot <= 16; ++slot) {
+        EXPECT_EQ(bounds[(slot - 1) % 4].x(), bounds[slot - 1].x()) << slot;
+        EXPECT_EQ(bounds[4 * ((slot - 1) / 4)].y(), bounds[slot - 1].y()) << slot;
+    }
+    EXPECT_LT(bounds[0].x(), bounds[1].x()); EXPECT_LT(bounds[0].y(), bounds[4].y());
+    auto* strip = panel->findChild<DeckLabSamplerDecks*>(QStringLiteral("decklab-sampler-decks"));
+    ASSERT_NE(nullptr, strip); EXPECT_TRUE(strip->isVisible());
+    EXPECT_EQ(44, strip->height()); EXPECT_EQ(44, strip->mapTo(panel.get(), QPoint()).y()) << "right under the rail";
+    QTest::qWait(250); // the display tick
+    EXPECT_TRUE(strip->decks()[0].loaded) << "the DECKS strip follows the decks on the display tick";
+    EXPECT_NEAR(128, strip->decks()[0].bpm, .01);
+    for (const char* name : {"decklab-sampler-qnt", "decklab-sampler-sync", "decklab-sampler-edit", "decklab-sampler-fx",
+                 "decklab-samples-stop"}) {
+        auto* key = panel->findChild<QPushButton*>(QString::fromLatin1(name)); ASSERT_NE(nullptr, key) << name;
+        EXPECT_TRUE(key->isVisible()) << name; EXPECT_GE(key->height(), 44) << name; EXPECT_GE(key->width(), 44) << name;
+    }
+    EXPECT_FALSE(panel->findChild<QPushButton*>("decklab-sampler-bank")->isVisible()) << "16 samplers: one bank";
+    EXPECT_FALSE(panel->findChild<QPushButton*>("decklab-samples-stop")->isEnabled()) << "nothing plays";
+    capture(QStringLiteral("sampler-grid.png"));
+    strip->click(); EXPECT_EQ(0, panel->currentPage()) << "the strip goes back to Decks";
+    // Lab FX's SMP destination (and anyone else) opens the page this way.
+    panel->showSampler(); EXPECT_EQ(2, panel->currentPage());
 }
 
 TEST_F(NativeDeckLabTest, IndependentRmxDoesNotBorrowControllerChains) {
@@ -2640,6 +2671,176 @@ TEST_F(NativeDeckLabTest, SamplerPadsFireOnTouchDownAndEmptyPadsOpenBrowseOnRele
     QTest::mouseRelease(loaded, Qt::LeftButton);
     EXPECT_EQ(1, triggers) << "the release does not trigger again";
     EXPECT_EQ(2, surface.currentPage());
+    surface.hide();
+}
+
+namespace {
+// Generated sampler controls: bare ControlObjects, no engine, no audio, no
+// files. They exist before the surface, as Mixxx's samplers do.
+std::vector<std::unique_ptr<ControlObject>> makeSamplerControls(int first, int last) {
+    std::vector<std::unique_ptr<ControlObject>> controls;
+    for (int sampler = first; sampler <= last; ++sampler) {
+        const QString group = QStringLiteral("[Sampler%1]").arg(sampler);
+        for (const char* item : {"track_loaded", "play", "playposition", "duration", "rate_ratio", "bpm", "pregain",
+                     "volume", "repeat", "quantize", "sync_enabled", "cue_point", "play_stutter", "cue_gotoandstop",
+                     "start_play", "start_stop", "eject", "stop"}) {
+            const ConfigKey key(group, QString::fromLatin1(item));
+            if (!ControlObject::exists(key)) controls.push_back(std::make_unique<ControlObject>(key));
+        }
+        for (const char* item : {"rate_ratio", "pregain", "volume"}) ControlObject::set(ConfigKey(group, QString::fromLatin1(item)), 1);
+    }
+    return controls;
+}
+// Counts presses of a push control (its 1 of a 1-then-0 pulse).
+struct PulseCounter {
+    PulseCounter(const QString& group, const QString& item, QObject* context) : proxy(group, item) {
+        proxy.connectValueChanged(context, [this](double v) { if (v > 0) ++count; }, Qt::DirectConnection);
+    }
+    ControlProxy proxy;
+    int count = 0;
+};
+} // namespace
+
+// r4-sampler: a playing pad is a lit lamp that drains on the existing
+// display tick; nothing plays audio here.
+TEST_F(NativeDeckLabTest, SamplerPadsLightAndDrainOnTheDisplayTick) {
+    auto controls = makeSamplerControls(1, 2);
+    ControlObject::set(ConfigKey("[Sampler1]", "track_loaded"), 1);
+    ControlObject::set(ConfigKey("[Sampler1]", "duration"), 8);
+    ControlObject::set(ConfigKey("[Sampler1]", "bpm"), 128);
+    WDeckLab surface(config(), nullptr, players.get(), m_pEffectsManager.get());
+    surface.resize(800, 480); surface.show(); surface.selectPage(2); QCoreApplication::processEvents();
+    auto* pad = surface.findChild<DeckLabSamplerPad*>("decklab-sample-1"); ASSERT_NE(nullptr, pad);
+    EXPECT_FALSE(pad->isChecked()); EXPECT_EQ(8, pad->seconds()) << "idle: the sample's length";
+    ControlObject::set(ConfigKey("[Sampler1]", "playposition"), .25);
+    ControlObject::set(ConfigKey("[Sampler1]", "play"), 1);
+    QTest::qWait(250);
+    EXPECT_TRUE(pad->isChecked()) << "playing is the filled lamp";
+    EXPECT_NEAR(.75 * pad->width(), pad->litWidth(), 1.0) << "the lit part is the length still to play";
+    EXPECT_EQ(6, pad->seconds());
+    EXPECT_TRUE(pad->accessibleName().endsWith(QStringLiteral(", playing")));
+    const QImage image = pad->grab().toImage();
+    EXPECT_EQ(QColor(0xf2, 0xf4, 0xf7), image.pixelColor(pad->width() / 2, pad->height() - 3));
+    EXPECT_EQ(QColor(0x16, 0x19, 0x1e), image.pixelColor(pad->width() - 8, pad->height() - 3)) << "drained";
+    const QString output = qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
+    if (!output.isEmpty()) {
+        EXPECT_TRUE(surface.grab().save(QDir(output).filePath("sampler-playing.png")));
+    }
+    ControlObject::set(ConfigKey("[Sampler1]", "playposition"), .5); QTest::qWait(250);
+    EXPECT_EQ(4, pad->seconds());
+    // STOP ALL takes every playing pad back to its cue.
+    PulseCounter stop(QStringLiteral("[Sampler1]"), QStringLiteral("cue_gotoandstop"), &surface);
+    auto* stopAll = surface.findChild<QPushButton*>("decklab-samples-stop"); ASSERT_NE(nullptr, stopAll);
+    EXPECT_TRUE(stopAll->isEnabled());
+    stopAll->click();
+    EXPECT_EQ(1, stop.count);
+    ControlObject::set(ConfigKey("[Sampler1]", "play"), 0); QTest::qWait(250);
+    EXPECT_FALSE(pad->isChecked()); EXPECT_FALSE(stopAll->isEnabled());
+    surface.hide();
+}
+
+// r4-sampler: hold a pad for the docked edit sheet; the knob edits GAIN
+// there and never leaves the page; CLEAR acts on release.
+TEST_F(NativeDeckLabTest, SamplerHoldOpensTheEditSheetAndTheKnobEditsGain) {
+    auto controls = makeSamplerControls(1, 1);
+    ControlObject::set(ConfigKey("[Sampler1]", "track_loaded"), 1);
+    ControlObject::set(ConfigKey("[Sampler1]", "duration"), 4);
+    WDeckLab surface(config(), nullptr, players.get(), m_pEffectsManager.get());
+    surface.resize(800, 480); surface.show(); surface.selectPage(2); QCoreApplication::processEvents();
+    PulseCounter stutter(QStringLiteral("[Sampler1]"), QStringLiteral("play_stutter"), &surface);
+    PulseCounter eject(QStringLiteral("[Sampler1]"), QStringLiteral("eject"), &surface);
+    auto* pad = surface.findChild<QPushButton*>("decklab-sample-1"); ASSERT_NE(nullptr, pad);
+    auto* sheet = surface.findChild<QWidget*>("decklab-sampler-sheet"); ASSERT_NE(nullptr, sheet);
+    QTest::mousePress(pad, Qt::LeftButton);
+    EXPECT_EQ(1, stutter.count) << "the touch still plays the pad at once";
+    QTest::qWait(DeckLabSampler::kHoldMs + 150);
+    EXPECT_TRUE(sheet->isVisible()) << "a held pad opens its sheet";
+    QTest::mouseRelease(pad, Qt::LeftButton);
+    EXPECT_EQ(1, stutter.count);
+    EXPECT_TRUE(surface.rect().contains(QRect(sheet->mapTo(&surface, QPoint()), sheet->size())));
+    const QString output = qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
+    if (!output.isEmpty()) {
+        EXPECT_TRUE(surface.grab().save(QDir(output).filePath("sampler-edit-sheet.png")));
+    }
+    // The knob turns GAIN in 1 dB steps and stays on the page.
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_move"), 2);
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_move"), 0);
+    settle();
+    EXPECT_EQ(2, surface.currentPage());
+    EXPECT_NEAR(std::pow(10.0, 2 / 20.0), ControlObject::get(ConfigKey("[Sampler1]", "pregain")), 1e-6);
+    // MODE LOOP: the sampler repeats, and the pad remembers it.
+    surface.findChild<QPushButton*>("decklab-sampler-sheet-mode-1")->click();
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Sampler1]", "repeat")));
+    EXPECT_EQ(1, config()->getValue(ConfigKey("[DeckLabSampler]", "pad_1_mode"), 0));
+    // CLEAR (eject) is destructive: on release, never on touch-down.
+    auto* clear = surface.findChild<QPushButton*>("decklab-sampler-sheet-clear"); ASSERT_NE(nullptr, clear);
+    ASSERT_TRUE(clear->isEnabled());
+    QTest::mousePress(clear, Qt::LeftButton); EXPECT_EQ(0, eject.count);
+    QTest::mouseRelease(clear, Qt::LeftButton); EXPECT_EQ(1, eject.count);
+    EXPECT_FALSE(sheet->isVisible());
+    // Back closes the sheet without leaving; the next back opens Browse.
+    surface.findChild<DeckLabSampler*>("decklab-sampler")->editPad(1);
+    EXPECT_TRUE(sheet->isVisible());
+    surface.browseBack(); settle();
+    EXPECT_FALSE(sheet->isVisible()); EXPECT_EQ(2, surface.currentPage());
+    surface.browseBack(); settle();
+    EXPECT_EQ(1, surface.currentPage());
+    config()->setValue(ConfigKey("[DeckLabSampler]", "pad_1_mode"), 0);
+    surface.hide();
+}
+
+// r4-sampler: an empty pad loads from Browse and comes back; the FX lamp is
+// Lab FX's sampler send, whichever page changes it.
+TEST_F(NativeDeckLabTest, SamplerLoadReturnsToThePadsAndFxFollowsLabFx) {
+    m_pEffectsManager->setup(); m_pEffectsManager->ensureDeckLabEffects();
+    m_pEngineMixer->prepareAudio(mixxx::audio::SampleRate(44100));
+    auto controls = makeSamplerControls(1, 2);
+    WDeckLab surface(config(), nullptr, players.get(), m_pEffectsManager.get());
+    surface.resize(800, 480); surface.show(); surface.selectPage(2); QCoreApplication::processEvents();
+    surface.findChild<QPushButton*>("decklab-sample-2")->click();
+    EXPECT_EQ(1, surface.currentPage());
+    auto* load = surface.findChild<QPushButton*>("decklab-load-1"); ASSERT_NE(nullptr, load);
+    EXPECT_EQ(QStringLiteral("Load pad 2"), load->text());
+    ControlObject::set(ConfigKey("[Sampler2]", "track_loaded"), 1); settle();
+    EXPECT_EQ(2, surface.currentPage()) << "the loaded pad brings Browse back to the pads";
+    auto* fx = surface.findChild<QPushButton*>("decklab-sampler-fx"); ASSERT_NE(nullptr, fx);
+    EXPECT_FALSE(fx->isChecked());
+    fx->click();
+    EXPECT_TRUE(fx->isChecked());
+    // Lab FX's own SAMPLER FX key, while it has one (r4-labfx may replace it).
+    if (auto* labFx = surface.findChild<QPushButton*>("decklab-fx-samples"); labFx && labFx->isEnabled()) {
+        EXPECT_TRUE(labFx->isChecked()) << "one send, two lamps";
+        labFx->click();
+        QTest::qWait(250);
+        EXPECT_FALSE(fx->isChecked()) << "the lamp follows Lab FX on the display tick";
+    }
+    surface.hide();
+}
+
+// r4-sampler: more samplers than one bank (a controller mapping can ask for
+// more) become banks of sixteen, numbered on from 17.
+TEST_F(NativeDeckLabTest, SamplerBanksFollowTheConfiguredSamplerCount) {
+    const ConfigKey count("[App]", "num_samplers");
+    if (ControlObject::exists(count)) GTEST_SKIP() << "a player manager owns the sampler count here";
+    auto counter = std::make_unique<ControlObject>(count);
+    ControlObject::set(count, 32);
+    auto controls = makeSamplerControls(1, 32);
+    WDeckLab surface(config(), nullptr, players.get(), m_pEffectsManager.get());
+    surface.resize(800, 480); surface.show(); surface.selectPage(2); QCoreApplication::processEvents();
+    auto* bank = surface.findChild<QPushButton*>("decklab-sampler-bank"); ASSERT_NE(nullptr, bank);
+    EXPECT_TRUE(bank->isVisible()); EXPECT_GE(bank->height(), 44);
+    EXPECT_EQ(QStringLiteral("BANK A"), bank->text());
+    bank->click();
+    EXPECT_EQ(QStringLiteral("BANK B"), bank->text());
+    auto* first = surface.findChild<QPushButton*>("decklab-sample-1");
+    EXPECT_EQ(QStringLiteral("Pad 17, empty: tap to load"), first->accessibleName());
+    const QString output = qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
+    if (!output.isEmpty()) {
+        EXPECT_TRUE(surface.grab().save(QDir(output).filePath("sampler-bank-b.png")));
+    }
+    first->click();
+    EXPECT_EQ(1, surface.currentPage());
+    EXPECT_EQ(QStringLiteral("Load pad 17"), surface.findChild<QPushButton*>("decklab-load-1")->text());
     surface.hide();
 }
 

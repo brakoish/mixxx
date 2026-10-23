@@ -23,6 +23,7 @@
 class ControlObject;
 class ControlProxy;
 class DeckLabLabFx; // r4-labfx: the Lab FX page (widget/decklablabfx.h)
+class DeckLabSampler;
 class DeckLabStemPads;
 class DeckLabSystem;
 class DeckLabSystemUi;
@@ -63,6 +64,9 @@ class WDeckLab : public QWidget, public WBaseWidget {
     int currentPage() const { return m_page; }
     void browsePress();
     void browseBack();
+    // r4-sampler: opens the Sampler page (Lab FX's SMP destination links
+    // here); a sampler number also shows the bank that holds it.
+    void showSampler(int sampler = 0);
     void openSource();
     void openCollection();
     // r4-labfx: Lab FX out. Default: CUT (dry now); musical: RELEASE (the
@@ -112,6 +116,8 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void refreshTransport(int deck, const QString& prefix);
     QWidget* buildBrowse();
     QWidget* buildSampler();
+    void tickSampler(); // r4-sampler
+    bool samplersGetLabFx() const; // round4 merge: Lab FX targets SMP
     QWidget* buildEffects();
     QWidget* buildSettings();
     void showSources();
@@ -332,7 +338,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     std::array<QPointer<DeckLabPhraseBands>, 4> m_phraseBands{};
     std::array<qint64, 4> m_syncFeedbackUntil{};
     std::array<QPushButton*, 4> m_loadButtons{};
-    std::array<QPushButton*, 16> m_samples{};
+    DeckLabSampler* m_sampler = nullptr; // r4-sampler: the Sampler page
     std::array<QWidget*, 4> m_deckWaveforms{};
     // The waveform viewers (native GL windows) and the overlays hiding them.
     std::array<QPointer<QWidget>, 4> m_detailWaveforms{};
