@@ -65,6 +65,7 @@
 #include "widget/decklabbrowsemix.h"
 #include "widget/decklabdeckwidgets.h"
 #include "widget/decklablabfx.h"
+#include "widget/decklablanes.h"
 #include "widget/decklabtempopresenter.h"
 #include "widget/decklabsampler.h"
 #include "widget/wdecklab.h"
@@ -695,7 +696,9 @@ TEST_F(NativeDeckLabTest, PagesFit800By480) {
 }
 
 // r4-sampler (move 4): sixteen pads in a 4x4 grid, four wide like the EP-133
-// and the DJS-1000, under a DECKS strip; the side column keeps 44 px keys.
+// and the DJS-1000; the side column keeps 44 px keys. r4-waveforms: the decks
+// stay in view as two compact lanes over the DECKS row, which replaces the
+// page's own strip.
 TEST_F(NativeDeckLabTest, SamplerIsAFourByFourInstrumentWithTheDecksInView) {
     loadGenerated(1, 128); ProcessBuffer();
     panel->selectPage(2); QCoreApplication::processEvents();
@@ -704,7 +707,7 @@ TEST_F(NativeDeckLabTest, SamplerIsAFourByFourInstrumentWithTheDecksInView) {
     for (int slot = 1; slot <= 16; ++slot) {
         auto* pad = panel->findChild<QPushButton*>(QStringLiteral("decklab-sample-%1").arg(slot));
         ASSERT_NE(nullptr, pad); EXPECT_TRUE(pad->isVisible());
-        EXPECT_GE(pad->width(), 160); EXPECT_GE(pad->height(), 88);
+        EXPECT_GE(pad->width(), 160); EXPECT_GE(pad->height(), 60) << "r4-waveforms: 62 px pads under the lanes";
         bounds[slot - 1] = QRect(pad->mapTo(panel.get(), QPoint()), pad->size());
         EXPECT_TRUE(panel->rect().contains(bounds[slot - 1]));
         columns.insert(bounds[slot - 1].x()); rows.insert(bounds[slot - 1].y());
@@ -716,12 +719,17 @@ TEST_F(NativeDeckLabTest, SamplerIsAFourByFourInstrumentWithTheDecksInView) {
         EXPECT_EQ(bounds[4 * ((slot - 1) / 4)].y(), bounds[slot - 1].y()) << slot;
     }
     EXPECT_LT(bounds[0].x(), bounds[1].x()); EXPECT_LT(bounds[0].y(), bounds[4].y());
+    // Rows keep 4 px between them (a hidden edit sheet used to swallow them).
+    for (int row = 1; row < 4; ++row) EXPECT_GE(bounds[4 * row].y() - bounds[4 * (row - 1)].bottom(), 5) << row;
     auto* strip = panel->findChild<DeckLabSamplerDecks*>(QStringLiteral("decklab-sampler-decks"));
-    ASSERT_NE(nullptr, strip); EXPECT_TRUE(strip->isVisible());
-    EXPECT_EQ(44, strip->height()); EXPECT_EQ(44, strip->mapTo(panel.get(), QPoint()).y()) << "right under the rail";
+    ASSERT_NE(nullptr, strip); EXPECT_FALSE(strip->isVisible()) << "the lanes' DECKS row replaces the strip";
+    auto* row = panel->findChild<DeckLabLaneDecks*>(QStringLiteral("decklab-lane-decks"));
+    ASSERT_NE(nullptr, row); EXPECT_TRUE(row->isVisible());
+    EXPECT_EQ(32, row->height()); EXPECT_EQ(44 + 134, row->mapTo(panel.get(), QPoint()).y()) << "under the two lanes";
+    EXPECT_LE(row->mapTo(panel.get(), QPoint()).y() + row->height(), bounds[0].y()) << "the pads start under the row";
     QTest::qWait(250); // the display tick
-    EXPECT_TRUE(strip->decks()[0].loaded) << "the DECKS strip follows the decks on the display tick";
-    EXPECT_NEAR(128, strip->decks()[0].bpm, .01);
+    EXPECT_TRUE(row->state(1).loaded) << "the DECKS row follows the decks";
+    EXPECT_TRUE(row->state(1).bpm.contains("128"));
     for (const char* name : {"decklab-sampler-qnt", "decklab-sampler-sync", "decklab-sampler-edit", "decklab-sampler-fx",
                  "decklab-samples-stop"}) {
         auto* key = panel->findChild<QPushButton*>(QString::fromLatin1(name)); ASSERT_NE(nullptr, key) << name;
@@ -730,9 +738,148 @@ TEST_F(NativeDeckLabTest, SamplerIsAFourByFourInstrumentWithTheDecksInView) {
     EXPECT_FALSE(panel->findChild<QPushButton*>("decklab-sampler-bank")->isVisible()) << "16 samplers: one bank";
     EXPECT_FALSE(panel->findChild<QPushButton*>("decklab-samples-stop")->isEnabled()) << "nothing plays";
     capture(QStringLiteral("sampler-grid.png"));
-    strip->click(); EXPECT_EQ(0, panel->currentPage()) << "the strip goes back to Decks";
+    panel->selectPage(0); EXPECT_EQ(0, panel->currentPage());
     // Lab FX's SMP destination (and anyone else) opens the page this way.
     panel->showSampler(); EXPECT_EQ(2, panel->currentPage());
+}
+
+// r4-waveforms: the waveform lanes are on Decks (full), Sampler and Lab FX
+// (two compact lanes over the 32 px DECKS row), never on Browse (its deck dock
+// is the LOAD target) or Settings. Compact pages share one geometry, so a
+// Sampler/Lab FX switch never resizes a GL lane, and a lane keeps its width
+// on every page (its waveform column cache stays valid).
+TEST_F(NativeDeckLabTest, WaveformLanesShowOnDecksSamplerAndLabFxOnly) {
+    using decklab::lanes::Presentation;
+    EXPECT_EQ(Presentation::Full, decklab::lanes::presentationFor(0));
+    EXPECT_EQ(Presentation::None, decklab::lanes::presentationFor(1));
+    EXPECT_EQ(Presentation::Compact, decklab::lanes::presentationFor(2));
+    EXPECT_EQ(Presentation::Compact, decklab::lanes::presentationFor(3));
+    EXPECT_EQ(Presentation::None, decklab::lanes::presentationFor(4));
+    loadGenerated(1, 128); loadGenerated(2, 126); ProcessBuffer(); QTest::qWait(150);
+    auto* lanes = panel->waveformContainer();
+    auto* pages = panel->findChild<QWidget*>(QStringLiteral("decklab-pages")); ASSERT_NE(nullptr, pages);
+    auto* row = panel->findChild<DeckLabLaneDecks*>(QStringLiteral("decklab-lane-decks")); ASSERT_NE(nullptr, row);
+    const auto detail = [this](int deck) { return panel->findChild<QWidget*>(QStringLiteral("decklab-detail-%1").arg(deck)); };
+    const auto area = [this](QWidget* widget) { return QRect(widget->mapTo(panel.get(), QPoint()), widget->size()); };
+    for (int page = 0; page < 5; ++page) {
+        panel->selectPage(page); settle();
+        EXPECT_EQ(QSize(800, 480), panel->size()) << page;
+        const bool compact = decklab::lanes::presentationFor(page) == Presentation::Compact;
+        EXPECT_EQ(page == 0 || compact, lanes->isVisible()) << page;
+        EXPECT_EQ(compact, row->isVisible()) << page;
+        if (page == 0) {
+            EXPECT_EQ(436, lanes->height());
+            EXPECT_EQ(QRect(18, 44, 782, 95), area(detail(1)));
+            EXPECT_EQ(QRect(18, 141, 782, 95), area(detail(2)));
+        } else if (compact) {
+            // Two 66 px lanes and the DECKS row under the rail; the page
+            // gets the 270 px below them.
+            EXPECT_EQ(166, lanes->height()) << page;
+            EXPECT_EQ(QRect(18, 44, 782, 66), area(detail(1))) << page;
+            EXPECT_EQ(QRect(18, 112, 782, 66), area(detail(2))) << page;
+            EXPECT_FALSE(detail(3)->isVisible()) << page;
+            EXPECT_EQ(QRect(0, 178, 800, 32), area(row)) << page;
+            EXPECT_EQ(QRect(0, 210, 800, 270), area(pages)) << page;
+            EXPECT_TRUE(row->shows(1) && row->shows(2)) << page;
+            EXPECT_TRUE(row->state(2).bpm.contains("126")) << page;
+            // The lane's edge keeps its number (the one-line readouts are gone).
+            auto* edge = panel->findChild<QLabel*>(QStringLiteral("decklab-lane-edge-1"));
+            ASSERT_NE(nullptr, edge); EXPECT_EQ(QStringLiteral("1"), edge->text());
+            EXPECT_FALSE(panel->findChild<QWidget*>(QStringLiteral("decklab-mini-1"))->isVisible());
+        }
+        if (page == 2) capture(QStringLiteral("lanes-sampler.png"));
+        if (page == 3) capture(QStringLiteral("lanes-labfx.png"));
+    }
+    // Sampler to Lab FX and back: no resize reaches a lane.
+    struct ResizeCounter final : QObject {
+        int resizes = 0;
+        bool eventFilter(QObject* watched, QEvent* event) override {
+            if (event->type() == QEvent::Resize) ++resizes;
+            return QObject::eventFilter(watched, event);
+        }
+    } counter;
+    panel->selectPage(2); settle();
+    detail(1)->installEventFilter(&counter); detail(2)->installEventFilter(&counter);
+    panel->selectPage(3); settle(); panel->selectPage(2); settle();
+    EXPECT_EQ(0, counter.resizes) << "compact pages share the lanes' geometry";
+    // Decks to Sampler changes the height only.
+    panel->selectPage(0); settle();
+    EXPECT_EQ(782, detail(1)->width());
+    panel->selectPage(2); settle();
+    EXPECT_EQ(782, detail(1)->width());
+    detail(1)->removeEventFilter(&counter); detail(2)->removeEventFilter(&counter);
+    // Side by side on Decks stays side by side under the compact pages.
+    auto* choice = panel->findChild<QComboBox*>(QStringLiteral("decklab-waveform-layout")); ASSERT_NE(nullptr, choice);
+    choice->setCurrentIndex(1); QMetaObject::invokeMethod(choice, "activated", Q_ARG(int, 1)); settle();
+    panel->selectPage(0); settle();
+    const QSize sideBySide = detail(1)->size();
+    panel->selectPage(3); settle();
+    EXPECT_EQ(sideBySide.width(), detail(1)->width());
+    EXPECT_EQ(area(detail(1)).top(), area(detail(2)).top()) << "one row of two lanes";
+    EXPECT_EQ(134, detail(1)->height());
+    EXPECT_EQ(QRect(0, 178, 800, 32), area(row));
+    choice->setCurrentIndex(0); QMetaObject::invokeMethod(choice, "activated", Q_ARG(int, 0)); settle();
+    // 1024x600: taller compact lanes (96 px); the page keeps 330 px.
+    panel->resize(1024, 600); settle();
+    EXPECT_EQ(226, lanes->height());
+    EXPECT_EQ(96, detail(1)->height());
+    EXPECT_EQ(330, pages->height());
+    panel->resize(800, 480); settle();
+    EXPECT_EQ(166, lanes->height());
+    EXPECT_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "play")));
+}
+
+// r4-waveforms, four decks (the XDJ-AZ model): two scrolling lanes for the
+// two most relevant decks, the DECKS row for all four.
+TEST_F(NativeDeckLabTest, FourDeckCompactLanesFollowTheLayersAndNameEveryDeck) {
+    QMetaObject::invokeMethod(panel->findChild<QComboBox*>("decklab-deck-layout"), "activated", Q_ARG(int, 2));
+    for (int deck = 1; deck <= 3; ++deck) loadGenerated(deck, 120 + deck);
+    ProcessBuffer(); QTest::qWait(150);
+    panel->selectPage(3); settle();
+    auto* row = panel->findChild<DeckLabLaneDecks*>(QStringLiteral("decklab-lane-decks")); ASSERT_NE(nullptr, row);
+    ASSERT_TRUE(row->isVisible());
+    const auto detail = [this](int deck) { return panel->findChild<QWidget*>(QStringLiteral("decklab-detail-%1").arg(deck)); };
+    EXPECT_EQ(4, row->choice().rowCount);
+    for (int deck = 1; deck <= 4; ++deck) {
+        EXPECT_TRUE(row->shows(deck)) << deck;
+        EXPECT_NEAR(200, row->cellRect(deck).width(), 1) << deck;
+    }
+    // Nothing on air: the controller's layers (decks 1 and 2) keep the lanes.
+    EXPECT_EQ((std::array<int, 2>{1, 2}), row->choice().lanes);
+    EXPECT_TRUE(detail(1)->isVisible()); EXPECT_TRUE(detail(2)->isVisible());
+    EXPECT_FALSE(detail(3)->isVisible()); EXPECT_FALSE(detail(4)->isVisible());
+    EXPECT_EQ(66, detail(1)->height());
+    EXPECT_TRUE(row->state(3).loaded);
+    EXPECT_TRUE(row->state(3).bpm.contains("123"));
+    capture(QStringLiteral("lanes-labfx-four.png"));
+    panel->selectPage(0); settle();
+    for (int deck = 1; deck <= 4; ++deck) EXPECT_TRUE(detail(deck)->isVisible()) << deck;
+    EXPECT_FALSE(row->isVisible());
+}
+
+// r4-waveforms: compact lanes are display only. A press there never reaches
+// the viewer (no scratch while the hands are on the pads); on Decks it does.
+TEST_F(NativeDeckLabTest, CompactLanesTakeNoTouch) {
+    loadGenerated(1, 128); ProcessBuffer(); QTest::qWait(150);
+    auto* lane = panel->findChild<QWidget*>(QStringLiteral("decklab-detail-1")); ASSERT_NE(nullptr, lane);
+    struct PressCounter final : QObject {
+        int presses = 0;
+        bool eventFilter(QObject* watched, QEvent* event) override {
+            if (event->type() == QEvent::MouseButtonPress) ++presses;
+            return QObject::eventFilter(watched, event);
+        }
+    } counter;
+    lane->installEventFilter(&counter);
+    panel->selectPage(0); settle();
+    QTest::mousePress(lane, Qt::LeftButton); QTest::mouseRelease(lane, Qt::LeftButton);
+    EXPECT_EQ(1, counter.presses) << "Decks: the lane takes the touch (scratch)";
+    for (int page : {2, 3}) {
+        panel->selectPage(page); settle();
+        ASSERT_TRUE(lane->isVisible()) << page;
+        QTest::mousePress(lane, Qt::LeftButton); QTest::mouseRelease(lane, Qt::LeftButton);
+        EXPECT_EQ(1, counter.presses) << page;
+    }
+    lane->removeEventFilter(&counter);
 }
 
 TEST_F(NativeDeckLabTest, IndependentRmxDoesNotBorrowControllerChains) {
@@ -783,12 +930,16 @@ TEST_F(NativeDeckLabTest, LongMetadataCannotHideTempoOrExpandSurface) {
     EXPECT_EQ(104, strip(1)->height());
     auto* mini=panel->findChild<DeckLabMiniStrip*>("decklab-mini-1"); ASSERT_NE(nullptr,mini);
     EXPECT_FALSE(mini->isVisible());
+    // r4-browse: Browse has the deck dock, no lanes and no one-line readouts.
     panel->selectPage(1); QTest::qWait(150);
-    EXPECT_TRUE(mini->isVisible()); EXPECT_EQ(30, mini->height());
-    EXPECT_TRUE(mini->state().bpm.contains("128")); EXPECT_EQ(QSize(800,480),panel->size());
-    // r4-labfx: Lab FX is one full-height instrument; its footer reads the deck.
+    EXPECT_FALSE(mini->isVisible()); EXPECT_EQ(QSize(800,480),panel->size());
+    // r4-waveforms: Lab FX has compact lanes over the 32 px DECKS row (the
+    // one-line readouts are gone); its footer names the target.
     panel->selectPage(3); QTest::qWait(150);
     EXPECT_FALSE(mini->isVisible());
+    auto* row = panel->findChild<DeckLabLaneDecks*>("decklab-lane-decks"); ASSERT_NE(nullptr, row);
+    EXPECT_TRUE(row->isVisible()); EXPECT_EQ(32, row->height());
+    EXPECT_TRUE(row->state(1).bpm.contains("128"));
     auto* footer = panel->findChild<QPushButton*>("decklab-fx-deck"); ASSERT_NE(nullptr, footer);
     EXPECT_TRUE(footer->isVisible()); EXPECT_EQ(QSize(800,480),panel->size());
 }
@@ -4426,6 +4577,30 @@ TEST_F(DeckLabOverlayTest, DeckSetupAndConfirmationsHideWaveformsOnlyWhileShown)
     wizard->show();
     EXPECT_TRUE(panel->waveformsSuppressed());
     // TearDown destroys the surface with Deck Setup still open.
+}
+
+// r4-waveforms: on the compact pages nothing floats over the lanes: every
+// Sampler and Lab FX surface (the edit sheet included) sits in the page under
+// the DECKS row, and the rail's notices stay in the rail.
+TEST_F(DeckLabOverlayTest, CompactLanesOnSamplerAndLabFxHaveNothingOverThem) {
+    loadGenerated(1, 128); ProcessBuffer(); QTest::qWait(150);
+    QWindow* waveform = addWaveformWindow(1);
+    const auto area = [this](QWidget* widget) { return QRect(widget->mapTo(panel.get(), QPoint()), widget->size()); };
+    auto* zone = panel->findChild<QWidget*>(QStringLiteral("decklab-wave-zone")); ASSERT_NE(nullptr, zone);
+    auto* rail = panel->findChild<QWidget*>(QStringLiteral("decklab-rail")); ASSERT_NE(nullptr, rail);
+    auto* pages = panel->findChild<QStackedWidget*>(QStringLiteral("decklab-pages")); ASSERT_NE(nullptr, pages);
+    for (int page : {2, 3}) {
+        panel->selectPage(page); settle();
+        ASSERT_TRUE(waveform->isVisible()) << page;
+        EXPECT_EQ(0, checkOverlays(waveform)) << page;
+        EXPECT_FALSE(area(rail).intersects(area(zone))) << "rail notices live in the rail";
+        // Every visible widget of the page sits under the lanes.
+        for (auto* child : pages->currentWidget()->findChildren<QWidget*>()) {
+            if (child->isVisible()) EXPECT_FALSE(area(child).intersects(area(zone))) << page << " " << child->objectName().toStdString();
+        }
+    }
+    // The edit sheet is part of the page (DeckLabLanesTest docks it under
+    // the lanes at 800x270).
 }
 
 TEST_F(DeckLabOverlayTest, EveryOverlayOverTheWaveformsHidesThemOrIsNativeAndRaised) {

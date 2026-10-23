@@ -39,6 +39,9 @@ constexpr int kDecksHeight = 44;
 constexpr int kLinkWidth = 78;
 constexpr int kCompactLinkWidth = 44; // chevron only, beside three or four decks
 constexpr int kSideWidth = 100;
+// r4-waveforms: pads shorter than this (under the waveform lanes) keep the
+// title on the number's line and the BPM beside the time.
+constexpr int kCompactPadHeight = 84;
 const QChar kMinus(0x2212);
 
 QString tr(const char* text) {
@@ -387,9 +390,13 @@ void DeckLabSamplerPad::paintEvent(QPaintEvent*) {
     inked(kMuted, [&](const QColor& ink) {
         paintModeIcon(painter, icon, m_state.mode, ink);
     });
-    if (m_state.bpm > 0) {
+    // r4-waveforms: under the waveform lanes a pad is about 62 px tall. It
+    // then keeps one line for the title beside its number, and the BPM moves
+    // to the bottom row beside the time.
+    const bool compact = h < kCompactPadHeight;
+    const QString bpm = m_state.bpm > 0 ? QString::number(m_state.bpm) + tr(" BPM") : QString();
+    if (!bpm.isEmpty() && !compact) {
         painter.setFont(fonts.numeral16);
-        const QString bpm = QString::number(m_state.bpm) + tr(" BPM");
         const QRect bpmRect(top.left() + 24, top.top(), icon.left() - 6 - top.left() - 24, top.height());
         inked(kMuted, [&](const QColor& ink) {
             painter.setPen(ink);
@@ -399,7 +406,10 @@ void DeckLabSamplerPad::paintEvent(QPaintEvent*) {
     // Title: 16 px SemiBold, two lines at most, the second elided.
     painter.setFont(fonts.body);
     const QFontMetrics metrics(fonts.body);
-    const QRect titleRect(12, top.bottom() + 3, w - 22, std::max(0, h - 24 - (top.bottom() + 3)));
+    const int numberWidth = metrics.horizontalAdvance(QString::number(m_state.number));
+    const QRect titleRect = compact
+            ? QRect(top.left() + numberWidth + 10, top.top(), std::max(0, icon.left() - 8 - (top.left() + numberWidth + 10)), top.height())
+            : QRect(12, top.bottom() + 3, w - 22, std::max(0, h - 24 - (top.bottom() + 3)));
     const QString name = m_state.title;
     QString first = name;
     QString second;
@@ -420,7 +430,7 @@ void DeckLabSamplerPad::paintEvent(QPaintEvent*) {
     const QString lines = second.isEmpty() ? first : first + QChar(10) + second;
     inked(kText, [&](const QColor& ink) {
         painter.setPen(ink);
-        painter.drawText(titleRect, Qt::AlignLeft | Qt::AlignTop, lines);
+        painter.drawText(titleRect, Qt::AlignLeft | (compact ? Qt::AlignVCenter : Qt::AlignTop), lines);
     });
     // Bottom row: "⋯" teaches the hold; the time left while playing, the
     // length while idle.
@@ -431,14 +441,24 @@ void DeckLabSamplerPad::paintEvent(QPaintEvent*) {
         }
     });
     const QString time = timeText(m_seconds, lit);
+    int timeLeft = bottom.right();
     if (!time.isEmpty()) {
         painter.setFont(lit ? fonts.numeral18 : fonts.numeral16);
         const QFontMetrics timeMetrics(painter.font());
         const int width = tabularWidth(timeMetrics, time);
         const int baseline = baselineIn(bottom, timeMetrics);
+        timeLeft = bottom.right() - width;
         inked(lit ? kText : kMuted, [&](const QColor& ink) {
             painter.setPen(ink);
-            drawTabular(painter, bottom.right() - width, baseline, time);
+            drawTabular(painter, timeLeft, baseline, time);
+        });
+    }
+    if (!bpm.isEmpty() && compact) {
+        painter.setFont(fonts.numeral16);
+        const QRect bpmRect(bottom.left() + 24, bottom.top(), std::max(0, timeLeft - 10 - (bottom.left() + 24)), bottom.height());
+        inked(kMuted, [&](const QColor& ink) {
+            painter.setPen(ink);
+            painter.drawText(bpmRect, Qt::AlignRight | Qt::AlignVCenter, bpm);
         });
     }
 }
@@ -819,8 +839,11 @@ DeckLabSampler::DeckLabSampler(DeckLabSamplerEngine* engine, QWidget* parent)
     }
     m_sheet = buildSheet();
     m_sheet->setParent(grid);
-    m_grid->addWidget(m_sheet, 2, 0, 2, 4);
-    m_sheetRow = 2;
+    // r4-waveforms: the sheet joins the grid only while it is open. A hidden
+    // sheet spanning two rows made QGridLayout drop the 4 px gaps around
+    // those rows, so pads touched (visible with the shorter pads under the
+    // waveform lanes).
+    m_sheetRow = -1;
     m_sheet->hide();
     row->addWidget(grid, 1);
     row->addWidget(buildSide());
@@ -962,9 +985,23 @@ QWidget* DeckLabSampler::buildSheet() {
         }
         return l;
     };
-    // Identity and DONE.
+    // r4-waveforms: two rows, so the sheet fits two rows of pads under the
+    // waveform lanes (62 px pads at 800x480). STOP and CLEAR stay at
+    // opposite corners; the knob hint sits beside the modes.
+    // Row one: STOP, the pad, GAIN and DONE.
     auto* identity = new QHBoxLayout;
-    identity->setSpacing(10);
+    identity->setSpacing(8);
+    m_sheetStop = button(tr("STOP"), QStringLiteral("decklab-sampler-sheet-stop"));
+    m_sheetStop->setMinimumWidth(96);
+    connect(m_sheetStop, &QPushButton::clicked, this, [this] {
+        const int sampler = sheetSampler();
+        if (sampler > 0) {
+            m_engine->stop(sampler);
+        }
+        refreshSheet();
+    });
+    identity->addWidget(m_sheetStop);
+    identity->addSpacing(4);
     m_sheetNumber = label(QString(), "muted");
     m_sheetNumber->setObjectName(QStringLiteral("decklab-sampler-sheet-number"));
     identity->addWidget(m_sheetNumber);
@@ -972,13 +1009,39 @@ QWidget* DeckLabSampler::buildSheet() {
     m_sheetTitle->setObjectName(QStringLiteral("decklab-sampler-sheet-title"));
     m_sheetTitle->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     identity->addWidget(m_sheetTitle, 1);
+    identity->addWidget(label(tr("GAIN"), "muted"));
+    auto* down = button(QString(kMinus), QStringLiteral("decklab-sampler-sheet-gain-down"));
+    down->setAccessibleName(tr("Gain down 1 dB"));
+    down->setProperty("glyph", true);
+    down->setFixedWidth(48);
+    down->setAutoRepeat(true);
+    down->setAutoRepeatDelay(400);
+    down->setAutoRepeatInterval(150);
+    connect(down, &QPushButton::clicked, this, [this] { stepGain(-1); });
+    identity->addWidget(down);
+    m_sheetGain = label(QString(), "readout");
+    m_sheetGain->setObjectName(QStringLiteral("decklab-sampler-sheet-gain"));
+    m_sheetGain->setAlignment(Qt::AlignCenter);
+    m_sheetGain->setFixedWidth(80);
+    identity->addWidget(m_sheetGain);
+    auto* up = button(QStringLiteral("+"), QStringLiteral("decklab-sampler-sheet-gain-up"));
+    up->setAccessibleName(tr("Gain up 1 dB"));
+    up->setProperty("glyph", true);
+    up->setFixedWidth(48);
+    up->setAutoRepeat(true);
+    up->setAutoRepeatDelay(400);
+    up->setAutoRepeatInterval(150);
+    connect(up, &QPushButton::clicked, this, [this] { stepGain(1); });
+    identity->addWidget(up);
+    identity->addSpacing(4);
     auto* done = button(tr("DONE"), QStringLiteral("decklab-sampler-sheet-done"));
-    done->setMinimumWidth(96);
+    done->setMinimumWidth(88);
     connect(done, &QPushButton::clicked, this, [this] { closeSheet(); });
     identity->addWidget(done);
     column->addLayout(identity);
     column->addStretch(1);
-    // MODE and GAIN.
+    // Row two: MODE, the knob hint and CLEAR (destructive: on release, never
+    // while playing, at the far corner from STOP).
     auto* controls = new QHBoxLayout;
     controls->setSpacing(4);
     controls->addWidget(label(tr("MODE"), "muted"));
@@ -987,7 +1050,7 @@ QWidget* DeckLabSampler::buildSheet() {
     for (int mode = 0; mode < 3; ++mode) {
         auto* b = button(modes[mode], QStringLiteral("decklab-sampler-sheet-mode-%1").arg(mode));
         b->setCheckable(true);
-        b->setMinimumWidth(100);
+        b->setMinimumWidth(96);
         b->setAccessibleDescription(modeName(static_cast<DeckLabSamplerEngine::Mode>(mode)));
         connect(b, &QPushButton::clicked, this, [this, mode] {
             const int sampler = sheetSampler();
@@ -1002,55 +1065,13 @@ QWidget* DeckLabSampler::buildSheet() {
         m_sheetModes[mode] = b;
         controls->addWidget(b);
     }
-    controls->addStretch(1);
-    controls->addWidget(label(tr("GAIN"), "muted"));
-    controls->addSpacing(6);
-    auto* down = button(QString(kMinus), QStringLiteral("decklab-sampler-sheet-gain-down"));
-    down->setAccessibleName(tr("Gain down 1 dB"));
-    down->setProperty("glyph", true);
-    down->setFixedWidth(48);
-    down->setAutoRepeat(true);
-    down->setAutoRepeatDelay(400);
-    down->setAutoRepeatInterval(150);
-    connect(down, &QPushButton::clicked, this, [this] { stepGain(-1); });
-    controls->addWidget(down);
-    m_sheetGain = label(QString(), "readout");
-    m_sheetGain->setObjectName(QStringLiteral("decklab-sampler-sheet-gain"));
-    m_sheetGain->setAlignment(Qt::AlignCenter);
-    m_sheetGain->setFixedWidth(92);
-    controls->addWidget(m_sheetGain);
-    auto* up = button(QStringLiteral("+"), QStringLiteral("decklab-sampler-sheet-gain-up"));
-    up->setAccessibleName(tr("Gain up 1 dB"));
-    up->setProperty("glyph", true);
-    up->setFixedWidth(48);
-    up->setAutoRepeat(true);
-    up->setAutoRepeatDelay(400);
-    up->setAutoRepeatInterval(150);
-    connect(up, &QPushButton::clicked, this, [this] { stepGain(1); });
-    controls->addWidget(up);
-    column->addLayout(controls);
-    column->addStretch(1);
-    // STOP, the knob hint, CLEAR (destructive: on release, never while
-    // playing, at the far end from STOP).
-    auto* actions = new QHBoxLayout;
-    actions->setSpacing(8);
-    m_sheetStop = button(tr("STOP"), QStringLiteral("decklab-sampler-sheet-stop"));
-    m_sheetStop->setMinimumWidth(120);
-    connect(m_sheetStop, &QPushButton::clicked, this, [this] {
-        const int sampler = sheetSampler();
-        if (sampler > 0) {
-            m_engine->stop(sampler);
-        }
-        refreshSheet();
-    });
-    actions->addWidget(m_sheetStop);
     auto* hint = label(tr("Knob: gain · Back: close"), "muted");
     hint->setObjectName(QStringLiteral("decklab-sampler-sheet-hint"));
     hint->setAlignment(Qt::AlignCenter);
     hint->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    actions->addWidget(hint, 1);
+    controls->addWidget(hint, 1);
     m_sheetClear = button(tr("CLEAR"), QStringLiteral("decklab-sampler-sheet-clear"));
-    m_sheetClear->setMinimumWidth(120);
+    m_sheetClear->setMinimumWidth(104);
     connect(m_sheetClear, &QPushButton::clicked, this, [this] {
         const int sampler = sheetSampler();
         if (sampler > 0 && m_engine->loaded(sampler) && !m_engine->playing(sampler)) {
@@ -1060,8 +1081,8 @@ QWidget* DeckLabSampler::buildSheet() {
             refreshSheet();
         }
     });
-    actions->addWidget(m_sheetClear);
-    column->addLayout(actions);
+    controls->addWidget(m_sheetClear);
+    column->addLayout(controls);
     return sheet;
 }
 
@@ -1187,6 +1208,13 @@ void DeckLabSampler::openSheet(int index) {
     }
     m_sheet->show();
     m_sheet->raise();
+    // r4-waveforms: lay the sheet out now, so the title is elided to the
+    // width it really gets (it ran under GAIN on a first open).
+    if (layout()) {
+        layout()->activate();
+    }
+    m_grid->activate();
+    m_sheet->layout()->activate();
     refreshPad(index);
     refreshSheet();
     refreshSide();
@@ -1198,6 +1226,10 @@ void DeckLabSampler::closeSheet() {
     // isHidden(), not isVisible(): this also runs while the page hides.
     if (!m_sheet->isHidden()) {
         m_sheet->hide();
+    }
+    if (m_sheetRow >= 0) {
+        m_grid->removeWidget(m_sheet);
+        m_sheetRow = -1;
     }
     for (auto* pad : m_pads) {
         if (pad->isHidden()) {
@@ -1275,8 +1307,22 @@ void DeckLabSampler::stepGain(double db) {
     refreshPad(m_sheetPad);
 }
 
+void DeckLabSampler::setDecksStripShown(bool shown) {
+    if (shown == m_decksShown) {
+        return;
+    }
+    m_decksShown = shown;
+    m_decks->setVisible(shown);
+}
+
+bool DeckLabSampler::decksStripShown() const {
+    return m_decksShown;
+}
+
 void DeckLabSampler::tick(const std::array<DeckLabSamplerDeck, 4>& decks) {
-    m_decks->setDecks(decks);
+    if (m_decksShown) {
+        m_decks->setDecks(decks);
+    }
     // Only playing pads (and a pad that just stopped) repaint.
     for (int index = 0; index < kPads; ++index) {
         const int sampler = samplerAt(index);
@@ -1409,7 +1455,15 @@ void DeckLabSampler::refreshSheet() {
         closeSheet();
         return;
     }
-    setIf<QLabel>(m_sheetNumber, &QLabel::setText, &QLabel::text, tr("PAD %1").arg(sampler));
+    const QString number = tr("PAD %1").arg(sampler);
+    if (m_sheetNumber->text() != number) {
+        m_sheetNumber->setText(number);
+        // r4-waveforms: the number's new width first, then the title is
+        // elided to what is left (it ran under GAIN).
+        if (m_sheet->isVisible()) {
+            m_sheet->layout()->activate();
+        }
+    }
     const QString title = m_engine->title(sampler).trimmed();
     const QFontMetrics metrics(uiFont(18, QFont::DemiBold));
     setIf<QLabel>(m_sheetTitle,
