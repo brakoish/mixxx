@@ -22,6 +22,7 @@
 
 class ControlObject;
 class ControlProxy;
+class DeckLabLabFx; // r4-labfx: the Lab FX page (widget/decklablabfx.h)
 class DeckLabStemPads;
 class DeckLabSystem;
 class DeckLabSystemUi;
@@ -64,9 +65,11 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void browseBack();
     void openSource();
     void openCollection();
+    // r4-labfx: Lab FX out. Default: CUT (dry now); musical: RELEASE (the
+    // tail rings out); mute: ECHO OUT (the track drops for a bar).
     void releaseEffects(bool musical = false, bool mute = false);
-    // Ends touch holds (hold effects, rolls, the XY pad) whose release went
-    // astray; latched effects keep playing.
+    // Ends a Lab FX pad hold whose release went astray; a latched effect
+    // keeps playing.
     void endHolds();
     void setAudioOutputConfigured(bool configured);
     /// Deck Lab system integration (decklabd, Deck Setup, System pages).
@@ -117,7 +120,6 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void refreshDeck(int deck);
     void refreshLoadButtons();
     void refreshFx();
-    void applyEffects();
     void tickEffects();
     void tool(int id);
     void setKeyNotation(int notation);
@@ -174,8 +176,6 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void reclaimFocus();
     int displayedDeck(int side) const;
     void setDisplayedDeck(int side, int deck);
-    QString fxGroup() const;
-    QString fxSlot() const;
     QString channel(int deck) const;
 
     // Decks page refresh. State controls mark a deck dirty and one queued
@@ -337,41 +337,15 @@ class WDeckLab : public QWidget, public WBaseWidget {
     // The waveform viewers (native GL windows) and the overlays hiding them.
     std::array<QPointer<QWidget>, 4> m_detailWaveforms{};
     QHash<QObject*, QMetaObject::Connection> m_waveformSuppressors;
-    std::array<QPushButton*, 3> m_levers{};
-    std::array<QSlider*, 3> m_isolates{};
-    QComboBox* m_leverMode;
-    QComboBox* m_isoMode;
-    QComboBox* m_fxTime;
-    QSlider* m_depth;
-    QLabel* m_fxStatus;
-    QLabel* m_fxMessage = nullptr;
-    QWidget* m_fxBody;
+    // r4-labfx: the whole Lab FX page and its state.
+    DeckLabLabFx* m_labFx = nullptr;
     int m_page = -1;
     bool m_hasBrowsed = false;
-    bool m_updating = false;
-    int m_fxDeck = 1;
     int m_sampleTarget = 0;
     int m_sampleReturnPage = 2;
-    int m_fxSample = 1;
-    QString m_heldSamplerGroup;
-    QString m_heldSamplerRoll;
-    QLabel* m_sampleRollHint = nullptr;
-    bool m_fxActive = false;
-    bool m_fxReleasing = false;
-    bool m_fxMute = false;
-    bool m_fxReturning = false;
-    qint64 m_releaseAt = 0;
-    qint64 m_holdStarted = 0;
-    // The control whose touch keeps the current hold alive (hold effect,
-    // roll or XY pad), and its backstop in ms (0: none, the XY pad).
-    QPointer<QWidget> m_holdSource;
-    qint64 m_holdLimit = 0;
-    QString m_heldRoll;
     QString m_touchCue;
     QElapsedTimer m_clock;
     QTimer m_fxTimer;
-    qint64 m_lastFxTick = 0;
-    unsigned int m_heartbeat = 0;
     unsigned int m_toolSerial = 0;
     qint64 m_lastToolsReady = -10000;
     bool m_toolsOnline = false;
@@ -386,7 +360,5 @@ class WDeckLab : public QWidget, public WBaseWidget {
     double m_measuredFps = 0;
     int m_droppedFrames = 0;
     QLabel* m_performanceStatus = nullptr;
-    bool m_holdFx = false;
-    bool m_sampleRouting = false;
     std::unique_ptr<DeckLabBrowseState> m_browseState;
 };

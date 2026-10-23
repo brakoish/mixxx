@@ -66,6 +66,20 @@ void clickVisible(QWidget* root, const QString& name, const QString& text = QStr
     }
 }
 
+// r4-labfx: Lab FX is one page. Its five captures (app-screen-05 to 09) show
+// ECHO on deck 1, FILTER with the MID band out, ROLL, DUCK on MASTER and the
+// SMP link to the Sampler page. Every deck is empty here: nothing sounds.
+void labFxSmokeStep(QWidget* surface, int index) {
+    const auto press = [surface](const char* name) { clickVisible(surface, QString::fromLatin1(name)); };
+    switch (index) {
+    case 0: press("decklab-fx-effect-0"); press("decklab-fx-target-1"); break;
+    case 1: press("decklab-fx-effect-2"); press("decklab-fx-band-1"); break;
+    case 2: press("decklab-fx-band-1"); press("decklab-fx-effect-3"); break;
+    case 3: press("decklab-fx-effect-4"); press("decklab-fx-target-5"); break;
+    default: press("decklab-fx-effect-0"); press("decklab-fx-target-6"); break;
+    }
+}
+
 // Every control on the system pages, in Deck Setup, in Deck Lab sheets and in
 // Settings (decklab-settings-*: category buttons, toggles and combo boxes) is
 // a 44 px+ target in the real surface style, not just in unit tests.
@@ -444,7 +458,7 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
         // Capture the real parser/Library/PlayerManager surface, including the
         // empty native waveform viewers. These are not moving-audio evidence.
         if (*step < 5) surface->findChild<QPushButton*>(QStringLiteral("decklab-tab-%1").arg(*step))->click();
-        else if (*step < 10) { surface->selectPage(3); surface->findChild<QPushButton*>(QStringLiteral("decklab-fx-view-%1").arg(*step - 5))->click(); }
+        else if (*step < 10) { surface->selectPage(3); labFxSmokeStep(surface, *step - 5); }
         else if (*step < 15) { surface->selectPage(4); surface->findChild<QPushButton*>(QStringLiteral("decklab-settings-category-%1").arg(*step - 10))->click(); }
         else if (*step == 15) surface->openCollection();
         else if (*step == 16) surface->findChild<QPushButton*>("decklab-search")->click();
