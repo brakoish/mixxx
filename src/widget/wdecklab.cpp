@@ -1618,7 +1618,8 @@ bool hiddenFromHome(const QString& icon) {
 }
 QString homeRootKey(const QModelIndex& root) {
     const QString icon = root.data(SidebarModel::IconNameRole).toString();
-    return icon.isEmpty() ? QStringLiteral("root::") + root.data().toString() : QStringLiteral("root:") + icon;
+    return icon.isEmpty() ? QString(QStringLiteral("root::") + root.data().toString())
+                          : QString(QStringLiteral("root:") + icon);
 }
 QString rekordboxDevicePath(const QModelIndex& device) {
     return device.data(SidebarModel::DataRole).toStringList().value(0);
