@@ -22,6 +22,7 @@
 
 class ControlObject;
 class ControlProxy;
+class DeckLabPadBlock;
 class DeckLabStemPads;
 class DeckLabSystem;
 class DeckLabSystemUi;
@@ -101,8 +102,9 @@ class WDeckLab : public QWidget, public WBaseWidget {
             QWidget* parent = nullptr, const QString& name = {});
     QWidget* buildDecks();
     QWidget* buildTransport(int deck, bool followsLayer, QWidget* parent);
-    QWidget* buildHotcues(int deck, bool followsLayer, QWidget* parent);
-    void refreshHotcues(int deck, const QString& prefix);
+    // r4-decks: the pad block (decklabpads.h) for a side row or a card's MORE.
+    DeckLabPadBlock* buildPads(int deck, bool followsLayer, QWidget* parent);
+    void refreshPads(int deck, bool card);
     void showBeatgrid(int deck, bool followsLayer);
     void showTrackInfo(int actualDeck);
     void showControllerFxInfo();
@@ -215,6 +217,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
         bool looping = false;
         bool quantize = false;
         bool keylock = false;
+        bool slip = false; // r4-decks: SLIP in MORE
         bool synced = false; // sync lock: the SYNC button is lit
         bool feedback = false;
         double size = -1;
@@ -229,19 +232,9 @@ class WDeckLab : public QWidget, public WBaseWidget {
         QPushButton* twice = nullptr;
         QPushButton* quantize = nullptr;
         QPushButton* keylock = nullptr;
+        QPushButton* slip = nullptr;
         QPushButton* more = nullptr;
         TransportState shown;
-    };
-    struct HotcueState {
-        int deck = -1;
-        bool loaded = false;
-        bool playing = false;
-        std::array<qint64, 8> cues{};
-        bool operator==(const HotcueState&) const = default;
-    };
-    struct HotcuePads {
-        std::array<QPushButton*, 8> pads{};
-        HotcueState shown;
     };
     void markDeckDirty(int deck);
     void flushDirtyDecks();
@@ -274,8 +267,6 @@ class WDeckLab : public QWidget, public WBaseWidget {
     QHash<QString, TransportButtons> m_transport;
     std::array<QString, 2> m_sidePrefixes;
     std::array<QString, 4> m_cardPrefixes;
-    std::array<QString, 2> m_sideHotcuePrefixes;
-    std::array<QString, 4> m_cardHotcuePrefixes;
     QTimer m_meterTimer;
     DeckLabLevelMeter* m_masterMeter = nullptr;
     std::array<ControlProxy*, 2> m_mainVu{};
@@ -289,7 +280,8 @@ class WDeckLab : public QWidget, public WBaseWidget {
     std::array<QWidget*, 4> m_cards{};
     std::array<DeckLabDeckStrip*, 4> m_strips{};
     std::array<DeckLabMiniStrip*, 4> m_minis{};
-    // Stem pads per deck card (stems workstream; decklabstempads.h).
+    // Stem pads per deck (stems workstream; decklabstempads.h). r4-decks:
+    // they live in the side pad blocks (decks 1/3 left, 2/4 right).
     std::array<DeckLabStemPads*, 4> m_stemPads{};
     std::array<DeckLabStripState, 4> m_stripStates{};
     std::array<TrackPointer, 4> m_tracks{};
@@ -319,9 +311,12 @@ class WDeckLab : public QWidget, public WBaseWidget {
     std::array<QPushButton*, 5> m_tabs{};
     std::array<DeckLabLevelMeter*, 4> m_meters{};
     std::array<QWidget*, 4> m_cardTransports{};
+    // r4-decks: SYNC and MORE, the right column of each side pad block.
     std::array<QWidget*, 2> m_sideUtilities{};
-    std::array<QWidget*, 2> m_sideHotcues{};
-    QHash<QString, HotcuePads> m_hotcueButtons;
+    // r4-decks: pad blocks (decklabpads.h): one per side in two-deck view
+    // (follows the layer), one per card's MORE in four-deck view.
+    std::array<DeckLabPadBlock*, 2> m_sidePads{};
+    std::array<DeckLabPadBlock*, 4> m_cardPads{};
     bool m_sideBySideWaveforms = false;
     double m_linkedZoom = 0;
     bool m_zoomPending = false;

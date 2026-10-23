@@ -662,7 +662,8 @@ TEST_F(NativeDeckLabTest, DeckTextFollowsTheOnDeviceScale) {
     EXPECT_EQ(14, renderer.uiFont(9, QFont::Medium).pixelSize());
     EXPECT_EQ(QStringLiteral("Barlow Semi Condensed"), QFontInfo(renderer.numeralFont(DeckLabStripRenderer::kHero)).family());
     // Buttons and tabs: 16 px SemiBold Barlow, 44 px targets.
-    for (const char* name : {"decklab-tab-0", "decklab-usb", "decklab-1-quantize", "decklab-1-more", "decklab-hotcue-1-1"}) {
+    // r4-decks: QNT lives in MORE; the pad mode keys are on the surface.
+    for (const char* name : {"decklab-tab-0", "decklab-usb", "decklab-pads-1-mode-loop", "decklab-1-more", "decklab-hotcue-1-1"}) {
         auto* button = panel->findChild<QPushButton*>(QString::fromLatin1(name)); ASSERT_NE(nullptr, button) << name;
         EXPECT_EQ(16, button->font().pixelSize()) << name;
         EXPECT_EQ(QStringLiteral("Barlow"), QFontInfo(button->font()).family()) << name;
@@ -674,7 +675,7 @@ TEST_F(NativeDeckLabTest, DeckTextFollowsTheOnDeviceScale) {
             QStringLiteral(" WDeckLab QPushButton {min-height:20px;max-height:30px;padding:0px;}"));
     QTest::qWait(100);
     const char* const targets[] = {"decklab-tab-0", "decklab-tab-4", "decklab-usb", "decklab-performance-board-fx",
-            "decklab-1-quantize", "decklab-1-more", "decklab-2-beatsync", "decklab-hotcue-1-1", "decklab-hotcue-2-8"};
+            "decklab-pads-1-mode-cue", "decklab-1-more", "decklab-2-beatsync", "decklab-hotcue-1-1", "decklab-hotcue-2-8"};
     for (const char* name : targets) {
         auto* button = panel->findChild<QPushButton*>(QString::fromLatin1(name)); ASSERT_NE(nullptr, button) << name;
         EXPECT_TRUE(button->isVisible()) << name;
@@ -966,9 +967,14 @@ TEST_F(NativeDeckLabTest, DeckIdentityAndLabelledReadoutsFitWithoutStealingWavef
         EXPECT_EQ(340, overview->mapTo(panel.get(), QPoint()).y());
         EXPECT_EQ(104, strip(deck)->height()); EXPECT_EQ(236, strip(deck)->mapTo(panel.get(), QPoint()).y());
     }
+    // r4-decks: one pad block per side (4 px gap, two 44 px rows) takes the
+    // 96 px of the hot cue and transport rows; SYNC and MORE are its column.
+    auto* pads = panel->findChild<QWidget*>("decklab-pads-1"); ASSERT_NE(nullptr, pads);
+    EXPECT_NEAR(400, pads->width(), 1); EXPECT_EQ(96, pads->height());
+    EXPECT_EQ(384, pads->mapTo(panel.get(), QPoint()).y());
     auto* utilities = panel->findChild<QPushButton*>("decklab-1-more")->parentWidget();
-    EXPECT_NEAR(400, utilities->width(), 1); EXPECT_EQ(48, utilities->height());
-    EXPECT_EQ(432, utilities->mapTo(panel.get(), QPoint()).y());
+    EXPECT_EQ(pads, utilities->parentWidget());
+    EXPECT_EQ(436, panel->findChild<QPushButton*>("decklab-1-more")->mapTo(panel.get(), QPoint()).y());
 }
 
 TEST_F(NativeDeckLabTest, TransportStateAndTargetRemainTruthfulInPlayingFixture) {
@@ -1048,10 +1054,12 @@ TEST_F(NativeDeckLabTest, AutoLayoutShowsFourRealDecksAndRetainsLoadedUpperDecks
     ControlObject::set(ConfigKey("[DeckLabNative]", "layout_decks"), 2); QTest::qWait(150);
     EXPECT_TRUE(panel->findChild<QPushButton*>("decklab-card-4-play")->isVisible());
     for(int side=1;side<=2;++side) {
-        for(const auto& suffix:{"more","loop_halve","beatloop_activate","loop_double","quantize","keylock","beatsync"}) {
+        // r4-decks: the side rows are SYNC, MORE and the pad block.
+        for(const auto& suffix:{"more","beatsync"}) {
             auto* action=panel->findChild<QPushButton*>(QStringLiteral("decklab-%1-%2").arg(side).arg(QString::fromLatin1(suffix)));
             ASSERT_NE(nullptr,action); EXPECT_FALSE(action->isVisible()) << action->objectName().toStdString();
         }
+        EXPECT_FALSE(panel->findChild<QWidget*>(QStringLiteral("decklab-pads-%1").arg(side))->isVisible());
         for(int cue=1;cue<=8;++cue) {
             auto* pad=panel->findChild<QPushButton*>(QStringLiteral("decklab-hotcue-%1-%2").arg(side).arg(cue));
             ASSERT_NE(nullptr,pad); EXPECT_FALSE(pad->isVisible());
@@ -1100,16 +1108,18 @@ TEST_F(NativeDeckLabTest, AutoLayoutShowsFourRealDecksAndRetainsLoadedUpperDecks
     // restore both physical-side rows, including the real cue pads.
     QMetaObject::invokeMethod(choice,"activated",Q_ARG(int,1)); QTest::qWait(150);
     for(int side=1;side<=2;++side) {
-        for(const auto& suffix:{"more","loop_halve","beatloop_activate","loop_double","quantize","keylock","beatsync"}) {
-            auto* action=panel->findChild<QPushButton*>(QStringLiteral("decklab-%1-%2").arg(side).arg(QString::fromLatin1(suffix)));
-            ASSERT_NE(nullptr,action); EXPECT_TRUE(action->isVisible());
+        const QString pads=QStringLiteral("decklab-pads-%1-mode-").arg(side);
+        for(const auto& name:{QStringLiteral("decklab-%1-more").arg(side),QStringLiteral("decklab-%1-beatsync").arg(side),
+                    pads+QStringLiteral("cue"),pads+QStringLiteral("loop"),pads+QStringLiteral("roll")}) {
+            auto* action=panel->findChild<QPushButton*>(name);
+            ASSERT_NE(nullptr,action) << name.toStdString(); EXPECT_TRUE(action->isVisible());
             EXPECT_GE(action->height(),44); EXPECT_GE(action->width(),44);
             EXPECT_TRUE(panel->rect().contains(QRect(action->mapTo(panel.get(),QPoint()),action->size())));
         }
         // Adjacent touch targets keep at least a 4 px gap.
         auto* sync=panel->findChild<QPushButton*>(QStringLiteral("decklab-%1-beatsync").arg(side));
-        auto* keylock=panel->findChild<QPushButton*>(QStringLiteral("decklab-%1-keylock").arg(side));
-        EXPECT_GE(sync->mapTo(panel.get(),QPoint()).x()-(keylock->mapTo(panel.get(),QPoint()).x()+keylock->width()),4);
+        auto* lastPad=panel->findChild<QPushButton*>(QStringLiteral("decklab-hotcue-%1-4").arg(side));
+        EXPECT_GE(sync->mapTo(panel.get(),QPoint()).x()-(lastPad->mapTo(panel.get(),QPoint()).x()+lastPad->width()),4);
         for(int cue=1;cue<=8;++cue) {
             auto* pad=panel->findChild<QPushButton*>(QStringLiteral("decklab-hotcue-%1-%2").arg(side).arg(cue));
             ASSERT_NE(nullptr,pad); EXPECT_TRUE(pad->isVisible());
@@ -1860,45 +1870,63 @@ TEST_F(NativeDeckLabTest, SideUtilitiesOperateRealLoopsAndModesWithoutRetargetin
     auto find = [this](const QString& action) {
         return panel->findChild<QPushButton*>(QStringLiteral("decklab-1-") + action);
     };
-    auto* loop = find("beatloop_activate"); auto* half = find("loop_halve"); auto* twice = find("loop_double");
+    // r4-decks: loops are LOOP mode on the pads (any length in one touch;
+    // the lit length ends the loop). QNT and KEY LOCK live in MORE.
+    const auto pad = [this](int index) {
+        return panel->findChild<QPushButton*>(QStringLiteral("decklab-hotcue-1-%1").arg(index));
+    };
+    auto* loopMode = panel->findChild<QPushButton*>("decklab-pads-1-mode-loop"); ASSERT_NE(nullptr, loopMode);
+    QTest::mousePress(loopMode, Qt::LeftButton); QTest::mouseRelease(loopMode, Qt::LeftButton); settle();
+    // The generated track lasts 10 s: 16 beats fit at 128 BPM, 32 would not.
+    auto* quarter = pad(1); auto* half = pad(2); auto* four = pad(5); auto* longest = pad(7);
     auto* quantize = find("quantize"); auto* keylock = find("keylock"); auto* play = find("play");
-    ASSERT_NE(nullptr, loop); ASSERT_NE(nullptr, half); ASSERT_NE(nullptr, twice);
+    ASSERT_NE(nullptr, quarter); ASSERT_NE(nullptr, half); ASSERT_NE(nullptr, four); ASSERT_NE(nullptr, longest);
     ASSERT_NE(nullptr, quantize); ASSERT_NE(nullptr, keylock); ASSERT_NE(nullptr, play);
-    for (auto* action : {loop,half,twice,quantize,keylock,play}) {
-        EXPECT_EQ(44, action->height()); EXPECT_GE(action->width(), 44); EXPECT_TRUE(action->isEnabled());
+    for (auto* action : {quarter, half, four, longest, quantize, keylock, play}) {
+        EXPECT_EQ(44, action->height()); EXPECT_TRUE(action->isEnabled());
     }
-    EXPECT_EQ(QStringLiteral("LOOP\n4"), loop->text()); EXPECT_FALSE(loop->isChecked());
-    loop->click(); QCoreApplication::processEvents(); ProcessBuffer(); QTest::qWait(20);
-    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel1]", "loop_enabled")));
-    EXPECT_TRUE(loop->isChecked()); EXPECT_TRUE(loop->accessibleName().contains("on"));
-    half->click(); QCoreApplication::processEvents(); ProcessBuffer(); QTest::qWait(20);
-    EXPECT_DOUBLE_EQ(2, ControlObject::get(ConfigKey("[Channel1]", "beatloop_size")));
-    EXPECT_EQ(QStringLiteral("LOOP\n2"), loop->text());
-    twice->click(); QCoreApplication::processEvents(); ProcessBuffer(); QTest::qWait(20);
-    EXPECT_DOUBLE_EQ(4, ControlObject::get(ConfigKey("[Channel1]", "beatloop_size")));
-    loop->click(); QCoreApplication::processEvents(); ProcessBuffer(); QTest::qWait(20);
-    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "loop_enabled")));
-    EXPECT_FALSE(loop->isChecked());
-    EXPECT_DOUBLE_EQ(4, ControlObject::get(ConfigKey("[Channel1]", "beatloop_size")));
-    for(double size:{4.0,0.125}) {
-        ControlObject::set(ConfigKey("[Channel1]","beatloop_size"),size); ProcessBuffer(); QTest::qWait(150);
-        loop->click(); ProcessBuffer(); QTest::qWait(20);
-        ASSERT_DOUBLE_EQ(1,ControlObject::get(ConfigKey("[Channel1]","loop_enabled")));
-        loop->click(); ProcessBuffer(); QTest::qWait(20);
-        EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel1]","loop_enabled")));
-        EXPECT_DOUBLE_EQ(size,ControlObject::get(ConfigKey("[Channel1]","beatloop_size")));
+    for (auto* length : {quarter, half, four, longest}) {
+        EXPECT_TRUE(length->isVisible()); EXPECT_GE(length->width(), 44);
+    }
+    EXPECT_EQ(QStringLiteral("1/4"), quarter->text()); EXPECT_EQ(QStringLiteral("1/2"), half->text());
+    EXPECT_EQ(QStringLiteral("4"), four->text()); EXPECT_EQ(QStringLiteral("16"), longest->text());
+    EXPECT_EQ(QStringLiteral("32"), pad(8)->text());
+    const auto lit = [](QPushButton* button) {
+        return button->grab().toImage().pixelColor(2, button->height() / 2) == QColor(0xf2, 0xf4, 0xf7);
+    };
+    const auto loopOn = [] { return ControlObject::get(ConfigKey("[Channel1]", "loop_enabled")); };
+    const auto loopSize = [] { return ControlObject::get(ConfigKey("[Channel1]", "beatloop_size")); };
+    EXPECT_FALSE(lit(four));
+    four->click(); QCoreApplication::processEvents(); ProcessBuffer(); QTest::qWait(150);
+    EXPECT_DOUBLE_EQ(1, loopOn()); EXPECT_DOUBLE_EQ(4, loopSize());
+    EXPECT_TRUE(lit(four)); EXPECT_TRUE(four->accessibleName().contains("on"));
+    // Another length while looping: the loop takes it at once.
+    half->click(); QCoreApplication::processEvents(); ProcessBuffer(); QTest::qWait(150);
+    EXPECT_DOUBLE_EQ(1, loopOn()); EXPECT_DOUBLE_EQ(.5, loopSize());
+    EXPECT_TRUE(lit(half)); EXPECT_FALSE(lit(four));
+    // The lit length ends the loop; the length stays armed.
+    half->click(); QCoreApplication::processEvents(); ProcessBuffer(); QTest::qWait(150);
+    EXPECT_DOUBLE_EQ(0, loopOn()); EXPECT_DOUBLE_EQ(.5, loopSize()); EXPECT_FALSE(lit(half));
+    for (auto* length : {quarter, longest}) {
+        length->click(); ProcessBuffer(); QTest::qWait(150);
+        ASSERT_DOUBLE_EQ(1, loopOn());
+        const double size = loopSize();
+        length->click(); ProcessBuffer(); QTest::qWait(150);
+        EXPECT_DOUBLE_EQ(0, loopOn());
+        EXPECT_DOUBLE_EQ(size, loopSize());
         panel->findChild<QPushButton*>("decklab-1-zoom_in")->click();
         panel->findChild<QPushButton*>("decklab-1-zoom_out")->click(); QTest::qWait(150);
-        EXPECT_DOUBLE_EQ(size,ControlObject::get(ConfigKey("[Channel1]","beatloop_size")));
-        EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel1]","loop_enabled")));
+        EXPECT_DOUBLE_EQ(size, loopSize());
+        EXPECT_DOUBLE_EQ(0, loopOn());
     }
     quantize->click(); keylock->click(); QCoreApplication::processEvents();
     EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel1]", "quantize")));
     EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel1]", "keylock")));
     EXPECT_TRUE(quantize->isChecked()); EXPECT_TRUE(keylock->isChecked());
-    for (const auto& action : {"loop_halve", "beatloop_activate", "loop_double", "quantize", "keylock", "play"}) {
-        ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 0); QCoreApplication::processEvents();
-        auto* button = find(QString::fromLatin1(action));
+    // Touch-down acts on the deck the pads show; MORE's toggles act on
+    // release. A layer change in between never reaches deck 3.
+    for (auto* button : {four, quantize, keylock, play}) {
+        ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 0); QCoreApplication::processEvents(); settle();
         QTest::mousePress(button, Qt::LeftButton);
         ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 1); QCoreApplication::processEvents();
         QTest::mouseRelease(button, Qt::LeftButton);
@@ -1910,13 +1938,14 @@ TEST_F(NativeDeckLabTest, SideUtilitiesOperateRealLoopsAndModesWithoutRetargetin
         if (button->isCheckable()) EXPECT_FALSE(button->isChecked());
     }
     EXPECT_FALSE(play->isChecked());
-    ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 0); QCoreApplication::processEvents();
-    ControlObject::set(ConfigKey("[Channel1]", "beatloop_size"), .125); QTest::qWait(150);
-    EXPECT_EQ(QStringLiteral("LOOP\n1/8"), loop->text());
+    // Each deck keeps its own pad mode: deck 3 shows CUE, deck 1 LOOP.
+    EXPECT_EQ(QStringLiteral("E"), four->text());
+    ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 0); QCoreApplication::processEvents(); settle();
+    EXPECT_EQ(QStringLiteral("4"), four->text());
     ControlObject::set(ConfigKey("[DeckLabLeft]", "current"), 1); QCoreApplication::processEvents();
     QTest::qWait(kUnreplaceDelay + 1);
     m_pMixerDeck3->slotEjectTrack(1); ProcessBuffer(); QTest::qWait(150);
-    EXPECT_FALSE(loop->isEnabled()); EXPECT_FALSE(quantize->isEnabled()); EXPECT_FALSE(keylock->isEnabled());
+    EXPECT_FALSE(four->isEnabled()); EXPECT_FALSE(quantize->isEnabled()); EXPECT_FALSE(keylock->isEnabled());
 }
 
 TEST_F(NativeDeckLabTest, BrowseLoadCancelsChangedTargetAndOffersFourDirectDestinations) {
@@ -2045,10 +2074,11 @@ TEST_F(NativeDeckLabTest, LayoutRoundTripsKeepModeAndPitchReadoutsInsideEachDeck
                 // Four compact readouts carry their own lamps.
                 for(const auto& lamp:{"LOOP","KEY","QNT","SYNC"}) EXPECT_TRUE(readout->modesText().contains(lamp)) << lamp;
             } else {
-                // Two-deck view lights the side's buttons instead.
+                // Two-deck view: QNT and KEY LOCK light in the side's MORE;
+                // the readout lights LOOP and KEY (r4-decks).
                 EXPECT_TRUE(panel->findChild<QPushButton*>(QStringLiteral("decklab-%1-quantize").arg(deck))->isChecked());
                 EXPECT_TRUE(panel->findChild<QPushButton*>(QStringLiteral("decklab-%1-keylock").arg(deck))->isChecked());
-                EXPECT_TRUE(panel->findChild<QPushButton*>(QStringLiteral("decklab-%1-beatloop_activate").arg(deck))->isChecked());
+                for(const auto& lamp:{"LOOP","KEY","SYNC"}) EXPECT_TRUE(readout->modesText().contains(lamp)) << lamp;
             }
             EXPECT_TRUE(readout->renderer().overflowingParts().isEmpty())
                     << deck << " layout " << index << " " << readout->renderer().overflowingParts().join(',').toStdString();
@@ -2327,13 +2357,20 @@ TEST_F(NativeDeckLabTest, OnStatesAreFilledLampsNotOutlines) {
     for (const char* item : {"quantize", "keylock", "loop_enabled"})
         ControlObject::set(ConfigKey(QStringLiteral("[Channel1]"), QString::fromLatin1(item)), 0);
     ControlObject::set(ConfigKey("[Channel1]", "beatloop_size"), 4); ProcessBuffer(); settle();
-    for (const char* item : {"quantize", "keylock", "beatloop_activate"}) {
-        auto* button = panel->findChild<QPushButton*>(QStringLiteral("decklab-1-") + QString::fromLatin1(item));
+    // r4-decks: QNT and KEY LOCK in MORE, and a LOOP pad (4 beats).
+    auto* loopMode = panel->findChild<QPushButton*>("decklab-pads-1-mode-loop"); ASSERT_NE(nullptr, loopMode);
+    QTest::mousePress(loopMode, Qt::LeftButton); QTest::mouseRelease(loopMode, Qt::LeftButton); settle();
+    EXPECT_EQ(lit, fill(loopMode)) << "the current pad mode is a filled lamp";
+    for (const char* item : {"decklab-1-quantize", "decklab-1-keylock", "decklab-hotcue-1-5"}) {
+        auto* button = panel->findChild<QPushButton*>(QString::fromLatin1(item));
         ASSERT_NE(nullptr, button) << item;
+        // MORE's toggles are checkable; a pad's lamp is painted from state.
         EXPECT_FALSE(button->isChecked()) << item;
         EXPECT_EQ(panelFill, fill(button)) << item;
         button->click(); QCoreApplication::processEvents(); ProcessBuffer(); settle();
-        EXPECT_TRUE(button->isChecked()) << item;
+        if (button->isCheckable()) {
+            EXPECT_TRUE(button->isChecked()) << item;
+        }
         EXPECT_EQ(lit, fill(button)) << item << ": on is a filled lamp";
         EXPECT_EQ(44, button->height()) << item;
     }
@@ -2442,6 +2479,101 @@ TEST_F(NativeDeckLabTest, HotcuesSetWhilePlayingOnTouchDown) {
     QTest::qWait(kUnreplaceDelay + 1);
     m_pMixerDeck1->slotEjectTrack(1); ProcessBuffer(); QTest::qWait(150);
     EXPECT_FALSE(b->isEnabled());
+}
+
+// r4-decks (audit moves 1 and 2): pad modes and the readout's rows on the
+// real surface and engine: rolls held and always ended, STEM only for stem
+// tracks, OVER beyond the fader range, the phase meter's reference deck,
+// one-decimal BPM, SLIP in MORE, and the same pad block in four-deck MORE.
+TEST_F(NativeDeckLabTest, PadModesAndReadoutRowsFollowTheRealDecks) {
+    loadGenerated(1, 128, mixxx::track::io::key::A_MINOR);
+    loadGenerated(2, 100, mixxx::track::io::key::C_MAJOR); ProcessBuffer();
+    ControlObject::set(ConfigKey("[Channel1]", "quantize"), 0); settle(); QTest::qWait(150);
+    // The pads took the hot cue and transport rows: the waveforms keep
+    // their height, stem track or not.
+    EXPECT_EQ(244, panel->findChild<QWidget*>("decklab-deck-row")->height());
+    EXPECT_EQ(QStringLiteral("128.0"), strip(1)->state().bpm) << "one decimal, as on a CDJ";
+    // STEM appears only for a stem track.
+    auto* stem = panel->findChild<QPushButton*>("decklab-pads-1-mode-stem"); ASSERT_NE(nullptr, stem);
+    EXPECT_FALSE(stem->isEnabled()); EXPECT_TRUE(stem->text().isEmpty());
+    // ROLL: on while held, off on release, and off when the page changes.
+    auto* roll = panel->findChild<QPushButton*>("decklab-pads-1-mode-roll"); ASSERT_NE(nullptr, roll);
+    QTest::mousePress(roll, Qt::LeftButton); QTest::mouseRelease(roll, Qt::LeftButton); settle();
+    auto* quarter = panel->findChild<QPushButton*>("decklab-hotcue-1-3"); ASSERT_NE(nullptr, quarter);
+    EXPECT_EQ(QStringLiteral("1/4"), quarter->text());
+    const ConfigKey rolling("[Channel1]", "beatlooproll_0.25_activate");
+    ControlObject::set(ConfigKey("[Channel1]", "play"), 1); ProcessBuffer(); settle();
+    QTest::mousePress(quarter, Qt::LeftButton); ProcessBuffer();
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(rolling)) << "the roll starts on touch-down";
+    capture(QStringLiteral("decks-pads-roll.png"));
+    QTest::mouseRelease(quarter, Qt::LeftButton); ProcessBuffer();
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(rolling));
+    QTest::mousePress(quarter, Qt::LeftButton); ProcessBuffer();
+    ASSERT_DOUBLE_EQ(1, ControlObject::get(rolling));
+    panel->selectPage(1); settle();
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(rolling)) << "a page change ends a held roll";
+    QTest::mouseRelease(quarter, Qt::LeftButton); ProcessBuffer();
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(rolling));
+    panel->selectPage(0); settle();
+    // The mode is the deck's own: ROLL is still there.
+    EXPECT_EQ(QStringLiteral("1/4"), quarter->text());
+    ControlObject::set(ConfigKey("[Channel1]", "play"), 0); ProcessBuffer(); settle();
+    // Sync takes deck 2 from 100 to 128 BPM, far beyond its ±8% fader: OVER.
+    ControlObject::set(ConfigKey("[Channel1]", "sync_leader"), 1);
+    ControlObject::set(ConfigKey("[Channel2]", "sync_enabled"), 1); ProcessBuffer(); settle(); QTest::qWait(150);
+    ASSERT_GT(std::abs(ControlObject::get(ConfigKey("[Channel2]", "rate_ratio")) - 1), .08);
+    EXPECT_TRUE(strip(2)->state().overRange);
+    EXPECT_FALSE(strip(1)->state().overRange);
+    // The phase meter compares the follower with the master; the master has
+    // nothing to compare with.
+    EXPECT_EQ(1, strip(2)->state().referenceDeck);
+    EXPECT_EQ(0, strip(1)->state().referenceDeck);
+    EXPECT_GE(strip(2)->state().referencePhase, 0);
+    EXPECT_TRUE(strip(2)->renderer().overflowingParts().isEmpty());
+    capture(QStringLiteral("decks-sync-over-range.png"));
+    ControlObject::set(ConfigKey("[Channel2]", "sync_enabled"), 0);
+    ControlObject::set(ConfigKey("[Channel2]", "rate_ratio"), 1); ProcessBuffer(); settle(); QTest::qWait(150);
+    EXPECT_FALSE(strip(2)->state().overRange);
+    // SLIP in MORE, with its lamp on the readout.
+    auto* slip = panel->findChild<QPushButton*>("decklab-1-slip_enabled"); ASSERT_NE(nullptr, slip);
+    EXPECT_EQ(44, slip->height());
+    slip->click(); QCoreApplication::processEvents(); settle();
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel1]", "slip_enabled")));
+    EXPECT_TRUE(slip->isChecked()); EXPECT_TRUE(strip(1)->state().slip);
+    slip->click(); QCoreApplication::processEvents(); settle();
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "slip_enabled")));
+    // LOOP mode: one touch loops 4 beats, the LOOP key lamp shows it from CUE.
+    auto* loopMode = panel->findChild<QPushButton*>("decklab-pads-1-mode-loop"); ASSERT_NE(nullptr, loopMode);
+    QTest::mousePress(loopMode, Qt::LeftButton); QTest::mouseRelease(loopMode, Qt::LeftButton); settle();
+    panel->findChild<QPushButton*>("decklab-hotcue-1-5")->click(); ProcessBuffer(); settle(); QTest::qWait(150);
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel1]", "loop_enabled")));
+    capture(QStringLiteral("decks-pads-loop.png"));
+    auto* cueMode = panel->findChild<QPushButton*>("decklab-pads-1-mode-cue"); ASSERT_NE(nullptr, cueMode);
+    QTest::mousePress(cueMode, Qt::LeftButton); QTest::mouseRelease(cueMode, Qt::LeftButton); settle();
+    EXPECT_EQ(QStringLiteral("E"), panel->findChild<QPushButton*>("decklab-hotcue-1-5")->text());
+    EXPECT_TRUE(loopMode->accessibleName().contains("loop is running"));
+    ControlObject::set(ConfigKey("[Channel1]", "loop_enabled"), 0); settle();
+    // Four decks: each card's MORE holds the same pad block, QNT, KEY LOCK
+    // and SLIP, Track info and Edit grid.
+    QMetaObject::invokeMethod(panel->findChild<QComboBox*>("decklab-deck-layout"), "activated", Q_ARG(int, 2)); QTest::qWait(150);
+    EXPECT_EQ(138 + 44 + 48, panel->findChild<QWidget*>("decklab-deck-row")->height());
+    panel->findChild<QPushButton*>("decklab-card-1-more")->click(); QCoreApplication::processEvents();
+    auto* menu = panel->findChild<QMenu*>("decklab-card-1-more-menu"); ASSERT_NE(nullptr, menu); ASSERT_TRUE(menu->isVisible());
+    auto* block = panel->findChild<QWidget*>("decklab-card-pads-1"); ASSERT_NE(nullptr, block);
+    EXPECT_TRUE(block->isVisible());
+    for (const char* name : {"decklab-card-pads-1-mode-cue", "decklab-card-pads-1-mode-loop", "decklab-card-pads-1-mode-roll",
+                 "decklab-card-hotcue-1-1", "decklab-card-hotcue-1-8", "decklab-card-1-quantize", "decklab-card-1-keylock",
+                 "decklab-card-1-slip_enabled", "decklab-card-1-track-info", "decklab-card-1-grid"}) {
+        auto* key = panel->findChild<QPushButton*>(QString::fromLatin1(name)); ASSERT_NE(nullptr, key) << name;
+        EXPECT_TRUE(key->isVisible()) << name; EXPECT_EQ(44, key->height()) << name; EXPECT_GE(key->width(), 44) << name;
+        EXPECT_TRUE(menu->rect().contains(QRect(key->mapTo(menu, QPoint()), key->size()))) << name;
+    }
+    const QString output = qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
+    if (!output.isEmpty()) {
+        EXPECT_TRUE(menu->grab().save(QDir(output).filePath("decks-four-more-pads.png")));
+    }
+    menu->close(); QCoreApplication::processEvents();
+    for (int deck = 1; deck <= 2; ++deck) EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), "play")));
 }
 
 TEST_F(NativeDeckLabTest, XyPadAndHoldEffectsOutliveFourSecondsAndLostTouchesEndThem) {

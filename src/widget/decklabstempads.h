@@ -37,9 +37,10 @@ struct DeckLabStemPadState {
 
 class DeckLabStemPads;
 
-// One painted stem pad. The pad stays dark; the stem's colour is a bar at its
-// left edge (like a hot cue's badge), so a red stem never reads as live red.
-// Muted: dim fill, hollow colour bar, muted name with a strike line.
+// One painted stem pad. The stem's colour is only a 3 px underline (r4-decks,
+// audit PF-D58: never a fill or a side bar), so a red stem never reads as
+// live red and a cyan one never as deck 1. Playing: raised fill, white name.
+// Muted: the darkest fill, a dimmed underline, a muted name with a strike.
 class DeckLabStemPad final : public QAbstractButton {
     Q_OBJECT
   public:
@@ -75,11 +76,12 @@ class DeckLabStemPad final : public QAbstractButton {
 class DeckLabStemPads final : public QWidget {
     Q_OBJECT
   public:
+    // r4-decks: both presentations sit on the top row of a pad block
+    // (decklabpads.h) in STEM mode, which decides when they show.
     enum class Presentation {
-        Row,  // a 48 px row in a two-deck card (4 px gap above)
-        Menu, // a 44 px row inside the four-deck More menu
+        Row,  // the two-deck side pad block ("decklab-stems-N")
+        Menu, // the pad block in the four-deck MORE sheet ("decklab-card-stems-N")
     };
-    static constexpr int kRowHeight = 48;
     static constexpr int kPadHeight = 44;
 
     DeckLabStemPads(int deck,
@@ -99,9 +101,18 @@ class DeckLabStemPads final : public QWidget {
     int stemCount() const {
         return m_gestures.count();
     }
-    // Row presentation: the deck row reserves the stem row (some shown deck
-    // has stems). Without stems on this deck the row stays empty.
+    // The host pad block shows these pads (STEM mode on this deck). They are
+    // visible only while shown and a stem track is present.
     void setRowShown(bool shown);
+    // r4-decks: ALL brings every stem back at once (a held solo ends first).
+    void restoreAll();
+    // r4-decks: SOLO latch. While on, a touch plays only that stem (the
+    // others mute) and stays so; it never toggles and never holds.
+    void setSoloLatch(bool on);
+    bool soloLatch() const {
+        return m_soloLatch;
+    }
+    bool anyMuted() const;
     DeckLabStemPad* pad(int stem) const {
         return stem >= 0 && stem < DeckLabStemGestures::kStems ? m_pads[stem] : nullptr;
     }
@@ -118,6 +129,8 @@ class DeckLabStemPads final : public QWidget {
 
   signals:
     void presenceChanged(bool present);
+    // Some stem's mute changed (touch, controller or a load reset).
+    void mutesChanged();
 
   protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -159,4 +172,6 @@ class DeckLabStemPads final : public QWidget {
     bool m_present = false;
     bool m_rowShown = false;
     bool m_filtering = false;
+    bool m_soloLatch = false;
+    std::array<bool, DeckLabStemGestures::kStems> m_shownMutes{};
 };

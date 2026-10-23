@@ -764,6 +764,12 @@ TEST_F(DeckLabPhraseScreenTest, PhraseBandsAndCountdownFollowThePlayPosition) {
     EXPECT_EQ(high->phrases[2].color, one.phrase.color);
     EXPECT_EQ("Intro", strip(2)->state().phrase.name);
     EXPECT_TRUE(strip(3)->state().phrase.name.isEmpty());
+    // r4-decks: the phrase shares its row with the phase meter; a USB track
+    // never loses its beat position (audit PF-D25).
+    EXPECT_GE(one.phase, 0);
+    EXPECT_FALSE(strip(1)->renderer().rect(DeckLabStripRenderer::Part::Phase).isEmpty());
+    EXPECT_FALSE(strip(1)->renderer().rect(DeckLabStripRenderer::Part::Phase).intersects(
+            strip(1)->renderer().rect(DeckLabStripRenderer::Part::Phrase)));
 
     ASSERT_NE(nullptr, bands(1));
     EXPECT_TRUE(bands(1)->isVisible());
