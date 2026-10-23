@@ -4397,7 +4397,7 @@ void WDeckLab::showFolder(const QString& path) {
         }
         for (const QString& folder : folders) {
             auto* item = new QListWidgetItem(folder, b.items);
-            item->setData(DeckLabListDelegate::KeyRole, QStringLiteral("folder:") + folder);
+            item->setData(DeckLabListDelegate::KeyRole, QString(QStringLiteral("folder:") + folder));
             item->setData(DeckLabListDelegate::GlyphRole, static_cast<int>(decklab::Glyph::Folder));
             item->setData(DeckLabListDelegate::ChevronRole, true);
         }
