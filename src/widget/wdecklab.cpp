@@ -45,6 +45,8 @@
 
 #include "control/controlobject.h"
 #include "control/controlproxy.h"
+#include "decklab/decklabrail.h"
+#include "decklab/decklabsettings.h"
 #include "decklab/decklabsystempages.h"
 #include "decklab/decklabsystemui.h"
 #include "decklab/decklabui.h"
@@ -87,8 +89,10 @@ std::optional<QFont> s_fontBefore;
 // Settings (#decklab-settings): every control is a 44 px+ touch target
 // (32 px min-height + 5 px padding + 1 px borders for buttons, 42 + 2 for
 // combo boxes) and toggles that are on print as a white fill with ink text.
-// Its category list is a list, not a second tab rail: 52 px rows, a raised
-// fill and a white left edge on the selected one.
+// Its category list is a list, not a second tab rail: 56 px rows, a raised
+// fill and a white left edge on the selected one. r4-system: rows, switches,
+// segments and the category list paint themselves (decklab/decklabutility.h);
+// these rules keep any plain control in Settings at the same size.
 const QString kStyle = QStringLiteral(R"(
  WDeckLab {background:#0D0F12;color:#F2F4F7;font-family:"Barlow";font-size:16px;font-weight:500;}
  WDeckLab QWidget {color:#F2F4F7;font-family:"Barlow";font-size:16px;font-weight:500;}
@@ -129,8 +133,9 @@ const QString kStyle = QStringLiteral(R"(
  WDeckLab QWidget#decklab-settings QComboBox {min-height:42px;}
  WDeckLab QWidget#decklab-settings QLabel[label="true"] {font-size:14px;font-weight:600;color:#9AA3AF;}
  WDeckLab QWidget#decklab-settings-categories {background:#0D0F12;border-right:1px solid #2C313A;}
+ WDeckLab QWidget#decklab-settings {background:#0D0F12;}
  WDeckLab QWidget#decklab-settings-categories QPushButton {background:#0D0F12;color:#9AA3AF;border:0px;
-     border-left:3px solid #0D0F12;border-bottom:1px solid #2C313A;border-radius:0px;min-height:51px;max-height:51px;
+     border-left:3px solid #0D0F12;border-bottom:1px solid #2C313A;border-radius:0px;min-height:55px;max-height:55px;
      padding:0px 13px;text-align:left;font-weight:600;}
  WDeckLab QWidget#decklab-settings-categories QPushButton:pressed {background:#20242B;}
  WDeckLab QWidget#decklab-settings-categories QPushButton:checked {background:#20242B;color:#F2F4F7;
@@ -148,7 +153,7 @@ const QString kRailStyle = QStringLiteral(R"(
      font-family:"Barlow";font-size:16px;font-weight:600;}
  QPushButton[rail="true"]:pressed {background:#20242B;}
  QPushButton[rail="true"]:checked {color:#F2F4F7;background:#16191E;border-bottom:3px solid #F2F4F7;}
- QPushButton[rail="true"]:disabled {color:#4B525C;}
+ QPushButton[rail="true"]:disabled {color:#6B7380;}
  QPushButton[rail="true"][live="true"] {background:#20242B;color:#F2F4F7;}
  )");
 // Decks page surfaces: ground with 1-2 px line gaps between waveforms/cards.
@@ -515,24 +520,6 @@ QString timeText(double seconds) {
     seconds = std::max(0.0, seconds);
     return QStringLiteral("%1:%2").arg(int(seconds) / 60).arg(int(seconds) % 60, 2, 10, QLatin1Char('0'));
 }
-// Rail status lamps. They read as status, never as decks: white inverted
-// chips (amber is deck 2), and live red only while recording.
-QList<DeckLabChipButton::Chip> statusChips(int recording, bool audioDown, bool recentOverload, bool toolsOffline) {
-    const QColor live(0xff, 0x3d, 0x2e);
-    const QColor lamp(0xf2, 0xf4, 0xf7);
-    const auto text = [](const char* source) { return QCoreApplication::translate("WDeckLab", source); };
-    QList<DeckLabChipButton::Chip> chips;
-    if (recording == 2 || recording == 3)
-        chips.append(DeckLabChipButton::Chip{recording == 2 ? text(QT_TRANSLATE_NOOP("WDeckLab", "REC"))
-                                                            : text(QT_TRANSLATE_NOOP("WDeckLab", "REC II")),
-                live, true});
-    if (audioDown) chips.append(DeckLabChipButton::Chip{text(QT_TRANSLATE_NOOP("WDeckLab", "NO AUDIO")), lamp, true});
-    else if (recentOverload)
-        chips.append(DeckLabChipButton::Chip{text(QT_TRANSLATE_NOOP("WDeckLab", "DROPOUTS")), lamp, true});
-    if (toolsOffline && chips.isEmpty())
-        chips.append(DeckLabChipButton::Chip{text(QT_TRANSLATE_NOOP("WDeckLab", "SYSTEM OFF")), lamp, true});
-    return chips;
-}
 QString beatLoopSizeText(double size) {
     if (!util_isfinite(size) || size <= 0) return QStringLiteral("—");
     const double reciprocal = 1.0 / size;
@@ -813,6 +800,10 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     m_rail->setStyleSheet(kRailStyle);
     m_rail->setFixedHeight(44);
     auto* rail = row(m_rail);
+    // r4-system (Signature 2): the rail is a status bar that teaches. Fixed
+    // tab widths, Settings as a gear at the far right (the CDJ's UTILITY),
+    // and a fixed status zone in signal-flow order: USB, CTRL, WI-FI, REC,
+    // OUT and the main meter. Nothing here ever changes width.
     const QStringList names = {tr("Decks"), tr("Browse"), tr("Sampler"), tr("Lab FX"), tr("Settings")};
     rail->addWidget(new DeckLabMark(QDir(m_config->getResourcePath())
                                             .filePath(QStringLiteral("skins/DeckLab/decklab-icon-24.png")),
@@ -820,22 +811,18 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     const QStringList triggers = {"overview", "library", "samplers", "effects", "settings"};
     auto* navigation = new QButtonGroup(this);
     for (int page = 0; page < 5; ++page) {
-        m_tabs[page] = button(names[page], [this, page] { selectPage(page); }, this,
-                QStringLiteral("decklab-tab-%1").arg(page));
+        auto* tab = new DeckLabRailTab(names[page], page == 4, m_rail, QStringLiteral("decklab-tab-%1").arg(page));
+        connect(tab, &QPushButton::clicked, this, [this, page] { selectPage(page); });
+        m_tabs[page] = tab;
         m_tabs[page]->setProperty("rail", true);
-        m_tabs[page]->setCheckable(true);
         navigation->addButton(m_tabs[page], page);
         m_tabs[page]->setFixedHeight(44);
-        rail->addWidget(m_tabs[page], 1);
+        if (page < 4) rail->addWidget(m_tabs[page]);
         createControl(kTab, triggers[page]);
         watch(kTab, triggers[page], [this, page](double v) { if (v > 0) selectPage(page); });
     }
-    // qw-library: USB opens the stick in Browse, with or without the system
-    // service (Storage stays in Settings).
-    auto* usb = button(tr("USB"), [this] { openUsbInBrowse(); }, this, QStringLiteral("decklab-usb"));
-    usb->setProperty("rail", true);
-    usb->setFixedHeight(44);
-    rail->addWidget(usb);
+    // Spare width (wider panels) goes here, never into the tabs.
+    rail->addStretch(1);
     // Controller effect units as lamps; tapping opens the full read-only list.
     m_fxChips = new DeckLabChipButton(m_rail);
     m_fxChips->setObjectName(QStringLiteral("decklab-performance-board-fx"));
@@ -848,6 +835,65 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     m_fxChips->setAccessibleName(tr("Controller effects; read all unit and routing details"));
     connect(m_fxChips, &QPushButton::clicked, this, [this] { showControllerFxInfo(); });
     rail->addWidget(m_fxChips);
+    // r4-system: the status zone (decklab/decklabrail.h). The USB lamp keeps
+    // the qw-library call: a tap opens the stick in Browse, with or without
+    // the system service; a long press opens the status sheet.
+    DeckLabRail::Hooks railHooks;
+    railHooks.browseUsb = [this] { openUsbInBrowse(); };
+    railHooks.deckSetup = [this](int step) {
+        if (m_systemUi && m_systemUi->openWizard(step)) return;
+        // No Deck Setup service: Settings › Controller & audio has the rows.
+        selectPage(4);
+        if (m_settings) m_settings->showCategory(DeckLabSettingsPage::ControllerAudio);
+    };
+    railHooks.system = [this](int section) {
+        selectPage(4);
+        if (m_settings) m_settings->showUnit(static_cast<DeckLabSystemPage::Section>(section));
+    };
+    railHooks.toggleRecording = [this] { set(QStringLiteral("[Recording]"), QStringLiteral("toggle_recording"), 1); };
+    m_railUi = new DeckLabRail(this, m_rail, railHooks);
+    rail->addWidget(m_railUi->usb());
+    m_status = m_railUi->zone();
+    rail->addWidget(m_status);
+    m_railUi->setNoticeSpan(m_fxChips);
+    auto* mainLevel = new QWidget(m_rail);
+    auto* mainLevelBox = row(mainLevel);
+    mainLevelBox->setContentsMargins(6, 6, 6, 6);
+    m_masterMeter = new DeckLabLevelMeter(Qt::Vertical, 2, mainLevel);
+    m_masterMeter->setObjectName(QStringLiteral("decklab-master-meter"));
+    m_masterMeter->setAccessibleName(tr("Main output level"));
+    m_masterMeter->setFixedWidth(9);
+    m_masterMeter->setLevels(m_mainVu[0]->get(), m_mainVu[1]->get(), m_mainPeak->get() > 0);
+    mainLevelBox->addWidget(m_masterMeter);
+    rail->addWidget(mainLevel);
+    m_tabs[4]->setFixedWidth(44);
+    rail->addWidget(m_tabs[4]);
+    {
+        // Fixed tab widths for the session, from what the status zone needs.
+        const int fixed = 48 + m_fxChips->sizeHint().width() + m_railUi->usb()->width() + m_status->width() + 21 + 44;
+        const int tab = std::clamp((800 - fixed) / 4, 72, 96);
+        for (int page = 0; page < 4; ++page) m_tabs[page]->setFixedWidth(tab);
+        m_fxChips->setFixedWidth(m_fxChips->sizeHint().width());
+    }
+    // Sampler lamp: green while any sample plays (performance Move 5).
+    for (int slot = 1; slot <= 16; ++slot) {
+        watch(QStringLiteral("[Sampler%1]").arg(slot), QStringLiteral("play"), [this](double) {
+            bool playing = false;
+            for (int n = 1; n <= 16 && !playing; ++n) playing = value(QStringLiteral("[Sampler%1]").arg(n), "play") > 0;
+            static_cast<DeckLabRailTab*>(m_tabs[2])->setLamp(playing ? decklab::ui::Lamp::Go : decklab::ui::Lamp::Off);
+        });
+    }
+    // A held knob press, for scripts that report the release (hold to confirm).
+    createControl(kNative, QStringLiteral("browse_hold"));
+    watch(kNative, "browse_hold", [](double v) {
+        if (QWidget* page = decklab::knobClaimant()) {
+            QKeyEvent event(v > 0 ? QEvent::KeyPress : QEvent::KeyRelease, Qt::Key_Select, Qt::NoModifier);
+            QApplication::sendEvent(page, &event);
+        }
+    });
+    m_recordTick = new QTimer(this);
+    m_recordTick->setInterval(1000);
+    connect(m_recordTick, &QTimer::timeout, this, [this] { updateStatus(); });
     m_root->addWidget(m_rail);
     m_waveforms = new QWidget(this);
     m_waveforms->setObjectName(QStringLiteral("decklab-decks"));
@@ -886,49 +932,8 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     m_root->addWidget(m_waveforms, 1);
     m_root->addWidget(m_pages);
     m_deckControls->hide();
-    // Unambiguous lamps: NO AUDIO, DROPOUTS (recent), REC, SYSTEM OFF.
-    m_status = new DeckLabChipButton(m_rail);
-    m_status->setObjectName(QStringLiteral("decklab-status"));
-    m_status->setProperty("rail", true);
-    m_status->setFocusPolicy(Qt::NoFocus);
-    m_status->setFixedHeight(44);
-    // A fixed status zone, reserved even when nothing is lit: a lamp lighting
-    // mid-mix must never move the tabs. Sized for the widest combination.
-    int statusWidth = 0;
-    for (const auto& lit : {std::tuple{3, false, true, false}, std::tuple{3, true, false, false},
-                 std::tuple{2, true, false, false}, std::tuple{0, false, false, true}}) {
-        m_status->setChips(std::apply(statusChips, lit));
-        statusWidth = std::max(statusWidth, m_status->sizeHint().width());
-    }
-    m_status->setChips({});
-    m_status->setFixedWidth(statusWidth);
-    connect(m_status, &QPushButton::clicked, this, [this] {
-        // Deck Lab's own sheet, not a desktop message box. With no sound
-        // output, Fix goes straight to Deck Setup's Audio step.
-        const QString text = m_status->toolTip();
-        const bool audioDown = !m_outputConfigured || value("[SoundManager]", "status") != 2;
-        if (!audioDown) {
-            decklab::ui::Confirm::inform(this, tr("Status"), text);
-            return;
-        }
-        decklab::ui::Confirm::ask(this, tr("Status"), text, tr("Fix"), [this] {
-            if (m_systemUi && m_systemUi->openWizard(1)) return;
-            // No Deck Setup service: Settings → Setup has the same action.
-            selectPage(4);
-            if (auto* setup = findChild<QPushButton*>(QStringLiteral("decklab-settings-category-4"))) setup->click();
-        }, false);
-    });
-    rail->addWidget(m_status);
-    auto* mainLevel = new QWidget(m_rail);
-    auto* mainLevelBox = row(mainLevel);
-    mainLevelBox->setContentsMargins(6, 6, 6, 6);
-    m_masterMeter = new DeckLabLevelMeter(Qt::Vertical, 2, mainLevel);
-    m_masterMeter->setObjectName(QStringLiteral("decklab-master-meter"));
-    m_masterMeter->setAccessibleName(tr("Main output level"));
-    m_masterMeter->setFixedWidth(9);
-    m_masterMeter->setLevels(m_mainVu[0]->get(), m_mainVu[1]->get(), m_mainPeak->get() > 0);
-    mainLevelBox->addWidget(m_masterMeter);
-    rail->addWidget(mainLevel);
+    // r4-system: the status zone, its sheet and the main meter are built with
+    // the rail above (decklab/decklabrail.h).
     // Scripts write these directly; an open menu or dialog gets them instead.
     watch(kNative, "browse_press", [this](double v) {
         if (v > 0 && decklab::knobForBrowse("[DeckLabNative] browse_press", decklab::KnobAction::Press, 1)) browsePress();
@@ -2391,24 +2396,13 @@ QWidget* WDeckLab::buildEffects() {
 }
 
 QWidget* WDeckLab::buildSettings() {
-    auto* page = new QWidget(this);
-    // Named so the surface sheet can give every Settings control 44 px+.
-    page->setObjectName(QStringLiteral("decklab-settings"));
-    auto* layout = row(page);
-    auto* categories = new QWidget(page);
-    categories->setObjectName(QStringLiteral("decklab-settings-categories"));
-    categories->setAttribute(Qt::WA_StyledBackground);
-    categories->setFixedWidth(150);
-    auto* links = column(categories);
-    auto* pages = new QStackedWidget(page);
-    pages->setObjectName("decklab-settings-pages");
-    auto* categorySelection = new QButtonGroup(pages);
-    // Deck Lab system integration: Setup (Deck Setup) and System pages, native
-    // tool routing, banners. It only hooks the surface through these calls.
+    // r4-system (Signature 1): Settings is a utility list driven by the knob
+    // (decklab/decklabsettings.h). Deck Lab system integration (Deck Setup,
+    // the Unit pages, tool routing, rail notices) hooks in through these calls.
     DeckLabSystemUi::Hooks hooks;
-    hooks.showSystem = [this, pages](DeckLabSystemPage::Section section) {
-        selectPage(4); pages->setCurrentIndex(5);
-        if (auto* system = pages->findChild<DeckLabSystemPage*>(QStringLiteral("decklab-system-page"))) system->showSection(section);
+    hooks.showSystem = [this](DeckLabSystemPage::Section section) {
+        selectPage(4);
+        if (m_settings) m_settings->showUnit(section);
     };
     hooks.showDecks = [this] { selectPage(0); };
     hooks.applyLayout = [this](int decks) {
@@ -2424,6 +2418,8 @@ QWidget* WDeckLab::buildSettings() {
         return true;
     };
     hooks.beforeTool = [this] { releaseEffects(); };
+    hooks.notify = [this](const decklab::rail::Notice& notice) { if (m_railUi) m_railUi->notify(notice); };
+    hooks.statusChanged = [this] { updateStatus(); };
     m_systemUi = new DeckLabSystemUi(this, hooks);
     connect(m_systemUi, &DeckLabSystemUi::toolsConnectedChanged, this, [this](bool connected) {
         const bool wasOnline = m_toolsOnline;
@@ -2431,201 +2427,39 @@ QWidget* WDeckLab::buildSettings() {
         for (auto* b : m_toolButtons) b->setEnabled(m_toolsOnline);
         if (wasOnline != m_toolsOnline) updateStatus();
     });
-    const QStringList names{tr("Deck"), tr("Levels / Cue"), tr("Display"), tr("Library"), tr("Setup"), tr("System")};
-    for (int index = 0; index < names.size(); ++index) {
-        if (index == 5) {
-            // Wi-Fi, Bluetooth, screen, time, storage, power, about, maintenance.
-            pages->addWidget(m_systemUi->createSystemPage(pages));
-            auto* link = button(names[index], [pages, index] { pages->setCurrentIndex(index); }, categories,
-                    QStringLiteral("decklab-settings-category-%1").arg(index));
-            link->setCheckable(true); categorySelection->addButton(link, index); link->setProperty("rail", true);
-            connect(pages, &QStackedWidget::currentChanged, link, [link, index](int page) { link->setChecked(page == index); });
-            link->setFixedHeight(52); links->addWidget(link);
-            continue;
-        }
-        auto* scroll = new QScrollArea(pages);
-        scroll->setObjectName(QStringLiteral("decklab-settings-scroll-%1").arg(index));
-        scroll->setWidgetResizable(true);
-        scroll->setFrameShape(QFrame::NoFrame);
-        auto* content = new QWidget(scroll);
-        auto* rows = column(content, 10);
-        rows->setSpacing(7);
-        auto addRow = [content, rows](const QString& label, QWidget* setting) {
-            auto* line = row(nullptr, 12);
-            auto* caption = new QLabel(label, content);
-            caption->setMinimumWidth(160);
-            line->addWidget(caption, 1); line->addWidget(setting, 1);
-            rows->addLayout(line);
-        };
-        auto toggle = [this, content](const QString& label, const QString& group, const QString& item) {
-            auto* b = button(label, [this, group, item] { set(group, item, !value(group, item)); }, content);
-            b->setCheckable(true); b->setChecked(value(group, item) > 0);
-            const bool onOff = label == tr("On");
-            if (onOff) b->setText(b->isChecked() ? tr("On") : tr("Off"));
-            watch(group, item, [b, onOff](double v) {
-                b->setChecked(v > 0);
-                if (onOff) b->setText(v > 0 ? tr("On") : tr("Off"));
-            });
-            return b;
-        };
-        if (index == 0) {
-            auto* layout = new QComboBox(content); layout->setObjectName("decklab-deck-layout");
-            layout->addItem(tr("Auto · connected controller"), 0);
-            layout->addItem(tr("Two decks"), 2); layout->addItem(tr("Four decks"), 4);
-            layout->setCurrentIndex(std::max(0, layout->findData(m_config->getValue(ConfigKey("[DeckLab]", "DeckLayout"), 0))));
-            connect(layout, qOverload<int>(&QComboBox::activated), this, [this, layout](int n) {
-                m_config->setValue(ConfigKey("[DeckLab]", "DeckLayout"), layout->itemData(n).toInt()); updateLayers();
-            });
-            addRow(tr("Deck layout"), layout);
-            // Stems workstream: play stem files as stems or as a normal track.
-            if (auto* stems = DeckLabStemPads::createPlaybackSetting(m_config, content)) rows->addWidget(stems);
-            for (int deck = 1; deck <= 4; ++deck) {
-                // Section label: 14 px SemiBold caps.
-                auto* title = new QLabel(tr("DECK %1").arg(deck), content);
-                title->setProperty("label", true); rows->addWidget(title);
-                auto* switches = row(nullptr, 4);
-                switches->addWidget(toggle(tr("Quantize"), channel(deck), "quantize"));
-                switches->addWidget(toggle(tr("Slip"), channel(deck), "slip_enabled"));
-                switches->addWidget(toggle(tr("Key lock"), channel(deck), "keylock"));
-                rows->addLayout(switches);
-                auto* range = new QComboBox(content);
-                range->setObjectName(QStringLiteral("decklab-tempo-range-%1").arg(deck));
-                range->setAccessibleName(tr("Deck %1 tempo range").arg(deck));
-                const std::array<double, 3> ranges{0.08, 0.16, 0.50};
-                for (double amount : ranges) range->addItem(QStringLiteral("±%1%").arg(amount * 100), amount);
-                auto showRange = [range](double v) {
-                    if (!std::isfinite(v) || v <= 0) return;
-                    const QSignalBlocker blocker(range);
-                    int index = -1;
-                    for (int n = 0; n < 3; ++n) if (std::abs(range->itemData(n).toDouble() - v) < 1e-6) index = n;
-                    if (range->count() > 3) range->removeItem(3);
-                    if (index < 0) {
-                        range->addItem(tr("±%1% · current").arg(v * 100, 0, 'g', 4), v);
-                        index = 3;
-                    }
-                    range->setCurrentIndex(index);
-                };
-                showRange(value(channel(deck), "rateRange"));
-                watch(channel(deck), "rateRange", showRange);
-                auto enableRange = [this, deck, range] {
-                    range->setEnabled(!value(channel(deck), "play") && !value(channel(deck), "sync_enabled"));
-                    range->setToolTip(range->isEnabled() ? tr("Tempo slider range") : tr("Stop this deck and release Sync to change range"));
-                };
-                watch(channel(deck), "play", [enableRange](double) { enableRange(); });
-                watch(channel(deck), "sync_enabled", [enableRange](double) { enableRange(); });
-                connect(range, qOverload<int>(&QComboBox::activated), this, [this, deck, range](int n) {
-                    const double amount = range->itemData(n).toDouble();
-                    if (std::isfinite(amount) && amount > 0 && !value(channel(deck), "play") && !value(channel(deck), "sync_enabled"))
-                        set(channel(deck), "rateRange", amount);
-                });
-                enableRange(); addRow(tr("Tempo range"), range);
-            }
-        } else if (index == 1) {
-            for (int deck = 1; deck <= 4; ++deck) addRow(tr("Deck %1 headphones").arg(deck), toggle(tr("Cue"), channel(deck), "pfl"));
-            auto* split = toggle(tr("On"), "[Master]", "headSplit");
-            split->setObjectName("decklab-head-split"); split->setAccessibleName(tr("Split cue"));
-            addRow(tr("Split cue"), split);
-            auto* mix = new QSlider(Qt::Horizontal, content);
-            mix->setMinimumHeight(44); mix->setRange(0, 100);
-            mix->setValue(int((value("[Master]", "headMix") + 1) * 50));
-            connect(mix, &QSlider::valueChanged, this, [this](int v) { set("[Master]", "headMix", v / 50.0 - 1); });
-            watch("[Master]", "headMix", [mix](double v) { if (!mix->isSliderDown()) { const QSignalBlocker blocker(mix); mix->setValue(int((v + 1) * 50)); } });
-            addRow(tr("Cue ← blend → Main"), mix);
-        } else if (index == 2) {
-            auto* keys = new QComboBox(content);
-            keys->addItems({tr("Lancelot · 8A / 8B"), tr("Open Key · 8m / 8d"), tr("Musical · Am / C")});
-            QString notation = m_config->getValueString(ConfigKey("[Key]", "KeyNotation"));
-            keys->setCurrentIndex(notation == "OpenKey" ? 1 : notation == "Traditional" ? 2 : 0);
-            connect(keys, qOverload<int>(&QComboBox::activated), this, &WDeckLab::setKeyNotation);
-            addRow(tr("Key format"), keys);
-            auto* waveLayout = new QComboBox(content);
-            waveLayout->setObjectName(QStringLiteral("decklab-waveform-layout"));
-            waveLayout->addItem(tr("Stacked"), 0);
-            waveLayout->addItem(tr("Side by side"), 1);
-            waveLayout->setCurrentIndex(m_sideBySideWaveforms ? 1 : 0);
-            connect(waveLayout, qOverload<int>(&QComboBox::activated), this, [this, waveLayout](int n) {
-                const bool sideBySide = waveLayout->itemData(n).toInt() == 1;
-                if (sideBySide == m_sideBySideWaveforms) return;
-                for (auto* menu : findChildren<QMenu*>())
-                    if (menu->objectName().endsWith(QStringLiteral("more-menu"))) menu->close();
-                releaseTouchCue(); ++m_interactionEpoch;
-                m_sideBySideWaveforms = sideBySide;
-                m_config->setValue(ConfigKey("[DeckLab]", "WaveformLayout"), sideBySide ? 1 : 0);
-                updateLayers();
-            });
-            addRow(tr("Decks waveform layout"), waveLayout);
-            auto* fps = new QComboBox(content);
-            fps->addItems({tr("30 FPS · lower draw cost"), tr("60 FPS · smoother motion")});
-            fps->setCurrentIndex(WaveformWidgetFactory::instance()->getFrameRate() > 30 ? 1 : 0);
-            connect(fps, qOverload<int>(&QComboBox::activated), this, [](int n) {
-                WaveformWidgetFactory::instance()->setFrameRate(n ? 60 : 30);
-            });
-            addRow(tr("Waveform frame rate"), fps);
-            auto* zoom = new QSlider(Qt::Horizontal, content);
-            zoom->setMinimumHeight(44); zoom->setRange(1, 10);
-            zoom->setValue(int(value(channel(1), "waveform_zoom")));
-            connect(zoom, &QSlider::valueChanged, this, [this](int v) {
-                for (int deck = 1; deck <= 2; ++deck) set(channel(deck), "waveform_zoom", v);
-            });
-            addRow(tr("Waveform zoom"), zoom);
-            auto* grid = new QSlider(Qt::Horizontal, content);
-            grid->setRange(0, 100); grid->setMinimumHeight(44);
-            grid->setValue(WaveformWidgetFactory::instance()->getBeatGridAlpha());
-            connect(grid, &QSlider::valueChanged, this, [](int v) { WaveformWidgetFactory::instance()->setDisplayBeatGridAlpha(v); });
-            addRow(tr("Beatgrid brightness"), grid);
-            auto* appearance = new QComboBox(content);
-            auto* factory = WaveformWidgetFactory::instance();
-            const auto& types = factory->getAvailableTypes();
-            for (int n = 0; n < types.size(); ++n) {
-                if (types[n].getType() == WaveformWidgetType::Empty) continue;
-                appearance->addItem(types[n].getDisplayName(), n);
-                if (types[n].getType() == factory->getType()) appearance->setCurrentIndex(appearance->count() - 1);
-            }
-            connect(appearance, qOverload<int>(&QComboBox::activated), this, [appearance, factory](int n) { factory->setWidgetTypeFromHandle(appearance->itemData(n).toInt()); });
-            addRow(tr("Waveform colours"), appearance);
-        } else if (index == 3) {
-            auto* played = button(tr("Dim played tracks"), [this] {
-                bool next = !m_config->getValue(ConfigKey("[Library]", "ApplyPlayedTrackColor"), true);
-                m_config->setValue(ConfigKey("[Library]", "ApplyPlayedTrackColor"), next);
-                BaseTrackTableModel::setApplyPlayedTrackColor(next);
-                if (m_libraryWidget) m_libraryWidget->update();
-            }, content);
-            played->setCheckable(true);
-            played->setChecked(m_config->getValue(ConfigKey("[Library]", "ApplyPlayedTrackColor"), true));
-            rows->addWidget(played);
-            for (const auto& action : {qMakePair(tr("Get music"), 2), qMakePair(tr("Sample Maker"), 3),
-                         qMakePair(tr("Record mix to USB"), 4), qMakePair(tr("Check USB drives"), 10)}) {
-                auto* b = button(action.first, [this, id = action.second] { tool(id); }, content,
-                        action.second == 2 ? QStringLiteral("decklab-tool-get-music")
-                        : action.second == 3 ? QStringLiteral("decklab-tool-sample-maker")
-                                             : QStringLiteral("decklab-tool-%1").arg(action.second));
-                b->setEnabled(false); m_toolButtons.append(b); rows->addWidget(b);
-            }
-        } else {
-            // Setup: Deck Setup (controller, audio, layout) plus diagnostics.
-            rows->addWidget(m_systemUi->createSetupPanel(content));
-            m_performanceStatus = new QLabel(content); rows->addWidget(m_performanceStatus);
-            // Small-screen type scale: secondary 15 px Medium, buttons 16 px.
-            m_performanceStatus->setStyleSheet(QStringLiteral("font-size:15px;font-weight:500;color:#9aa3af;"));
-            auto* advanced = button(tr("Advanced settings"), [this] {
-                releaseEffects(); emit advancedPreferencesRequested();
-            }, content, QStringLiteral("decklab-advanced-settings"));
-            // Same 44 px button as the rest of Settings (32 + 5 + 5 + 1 + 1).
-            advanced->setStyleSheet(QStringLiteral("font-size:16px;font-weight:600;min-height:32px;"));
-            rows->addWidget(advanced);
-        }
-        rows->addStretch(); scroll->setWidget(content);
-        new DeckLabTouchScrollGuard(scroll->viewport(), content);
-        pages->addWidget(scroll);
-        auto* link = button(names[index], [pages, index] { pages->setCurrentIndex(index); }, categories,
-                QStringLiteral("decklab-settings-category-%1").arg(index));
-        link->setCheckable(true); categorySelection->addButton(link, index);
-        link->setChecked(index == 0); link->setProperty("rail", true);
-        connect(pages, &QStackedWidget::currentChanged, link, [link, index](int page) { link->setChecked(page == index); });
-        link->setFixedHeight(52); links->addWidget(link);
-    }
-    links->addStretch(); layout->addWidget(categories); layout->addWidget(pages, 1);
-    return page;
+    DeckLabSettingsPage::Hooks settings;
+    settings.value = [this](const QString& group, const QString& item) { return value(group, item); };
+    settings.set = [this](const QString& group, const QString& item, double v) { set(group, item, v); };
+    settings.watch = [this](const QString& group, const QString& item, std::function<void(double)> callback) {
+        watch(group, item, std::move(callback));
+    };
+    settings.deckLayoutChosen = [this](int layout) {
+        m_config->setValue(ConfigKey("[DeckLab]", "DeckLayout"), layout); updateLayers();
+    };
+    settings.autoDecks = [this] { return m_autoDeckLayout == 4 ? 4 : 2; };
+    settings.fourDecksShown = [this] { return m_fourDeckLayout; };
+    settings.sideBySide = [this] { return m_sideBySideWaveforms; };
+    settings.waveformLayoutChosen = [this](bool sideBySide) {
+        if (sideBySide == m_sideBySideWaveforms) return;
+        for (auto* menu : findChildren<QMenu*>())
+            if (menu->objectName().endsWith(QStringLiteral("more-menu"))) menu->close();
+        releaseTouchCue(); ++m_interactionEpoch;
+        m_sideBySideWaveforms = sideBySide;
+        m_config->setValue(ConfigKey("[DeckLab]", "WaveformLayout"), sideBySide ? 1 : 0);
+        updateLayers();
+    };
+    settings.keyNotationChosen = [this](int notation) { setKeyNotation(notation); };
+    settings.dimPlayedChosen = [this](bool dim) {
+        m_config->setValue(ConfigKey("[Library]", "ApplyPlayedTrackColor"), dim);
+        BaseTrackTableModel::setApplyPlayedTrackColor(dim);
+        if (m_libraryWidget) m_libraryWidget->update();
+    };
+    settings.tool = [this](int id) { tool(id); };
+    settings.advanced = [this] { releaseEffects(); emit advancedPreferencesRequested(); };
+    settings.leave = [this] { selectPage(0); };
+    m_settings = new DeckLabSettingsPage(m_config, m_systemUi, settings, this);
+    m_toolButtons.append(m_settings->toolButtons());
+    return m_settings;
 }
 
 void WDeckLab::ensureDeckSurfaces(int deck) {
@@ -4242,31 +4076,57 @@ void WDeckLab::attachSystem(DeckLabSystem* system) {
 }
 void WDeckLab::updateStatus() {
     int overloads = int(value("[App]", "audio_latency_overload_count"));
-    int recording = int(value("[Recording]", "status"));
+    // [Recording] status: 2 recording, 3 recording into the next split file.
+    const int recordingStatus = int(value("[Recording]", "status"));
+    const bool recording = recordingStatus == 2 || recordingStatus == 3;
     const bool audioDown = !m_outputConfigured || value("[SoundManager]", "status") != 2;
-    // OVERLOAD lights for ten seconds after the counter rises, so it reports
+    // DROPOUTS lights for ten seconds after the counter rises, so it reports
     // fresh dropouts instead of staying lit for the rest of the session.
     if (overloads > m_lastOverloads) m_overloadUntil = m_clock.elapsed() + 10000;
     m_lastOverloads = overloads;
     const bool recentOverload = m_overloadUntil != 0 && m_clock.elapsed() < m_overloadUntil;
-    // One plain line per state; the status sheet shows them, and with no
-    // sound output its Fix button opens Deck Setup at the Audio step.
+    // r4-system: the rail's inputs. The system half (service, USB, Wi-Fi,
+    // controller, heat) is cached by the system UI and changes only on events.
+    decklab::rail::Inputs inputs;
+    if (recording && m_recordingSince < 0) m_recordingSince = m_clock.elapsed();
+    if (!recording) m_recordingSince = -1;
+    if (recording != m_recordTick->isActive()) { if (recording) m_recordTick->start(); else m_recordTick->stop(); }
+    inputs.recording = recording;
+    inputs.recordingSeconds = recording ? (m_clock.elapsed() - m_recordingSince) / 1000 : 0;
+    inputs.recentDropouts = recentOverload;
+    inputs.dropouts = overloads;
+    // Start-up opens the sound devices after the skin: don't flash NO OUTPUT.
+    inputs.outputWorking = !audioDown;
+    if (audioDown && m_clock.elapsed() < 1500) {
+        inputs.outputPending = true;
+        QTimer::singleShot(1600 - int(m_clock.elapsed()), this, [this] { updateStatus(); });
+    }
+    if (m_systemUi) m_systemUi->fillRailInputs(inputs);
+    if (!inputs.serviceOnline) {
+        // Without the system service the USB lamp still knows the sticks.
+        if (m_usbScannedAt < 0 || m_clock.elapsed() - m_usbScannedAt > 5000) {
+            m_usbScannedAt = m_clock.elapsed();
+            m_usbSticksSeen = int(decklab::findUsbSticks().size());
+        }
+        inputs.usbDrives = m_usbSticksSeen;
+    }
+    // One plain line per state, for the tool tip and accessibility.
     QStringList lines;
-    if (recording == 2) lines.append(tr("Recording your mix."));
-    else if (recording == 3) lines.append(tr("Recording paused."));
-    if (audioDown) lines.append(tr("No sound output. Tap Fix to choose one in Deck Setup."));
+    if (recording) lines.append(tr("Recording your mix."));
+    if (audioDown && !inputs.outputPending) lines.append(tr("No sound output. Tap Fix to choose one in Deck Setup."));
     if (!m_toolsOnline) lines.append(tr("System service offline. DJing is unaffected."));
     if (overloads) lines.append(tr("Audio dropouts: %1").arg(overloads));
     const QString text = lines.join(QLatin1Char('\n'));
-    const auto chips = statusChips(recording, audioDown, recentOverload, !m_toolsOnline);
     // Called for every waveform measurement too: unchanged status must not
-    // repaint or relayout. The zone keeps its width when nothing is lit.
-    m_status->setChips(chips);
+    // repaint or relayout. The zone keeps its width whatever is lit.
+    if (m_railUi) m_railUi->setInputs(inputs);
     setToolTipIf(m_status, text);
-    setAccessibleNameIf(m_status, text.isEmpty() ? tr("Status: all good") : text);
-    setEnabledIf(m_status, !chips.isEmpty());
-    if (m_performanceStatus) setTextIf(m_performanceStatus, tr("Waveforms: %1 FPS · %2 dropped\nAudio dropouts: %3")
-            .arg(m_measuredFps, 0, 'f', 1).arg(m_droppedFrames).arg(overloads));
+    // The gear's lamp is the unit's health (hot, low power, service offline).
+    if (auto* gear = static_cast<DeckLabRailTab*>(m_tabs[4]))
+        gear->setLamp(inputs.undervoltage || inputs.heat == QStringLiteral("hot") ? decklab::ui::Lamp::Caution
+                        : inputs.serviceAttached && !inputs.serviceOnline           ? decklab::ui::Lamp::Caution
+                                                                                     : decklab::ui::Lamp::Off);
+    if (m_settings) m_settings->setHealth(m_measuredFps, m_droppedFrames, overloads);
 }
 bool WDeckLab::eventFilter(QObject* watched, QEvent* event) {
     if (watched->objectName().startsWith(QStringLiteral("decklab-info-hit-")) && m_page == 0 &&

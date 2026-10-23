@@ -16,6 +16,7 @@
 #include <QApplication>
 #include <QElapsedTimer>
 #include <QKeyEvent>
+#include <QList>
 #include <QMenu>
 #include <QPointer>
 #include <QString>
@@ -36,10 +37,50 @@ enum class KnobAction {
 struct KnobOwner {
     QWidget* blocker = nullptr; // the menu or modal dialog that is really open
     bool popup = false;
+    bool claimed = false; // r4-system: a Deck Lab page or sheet (claimKnob)
     bool browse() const {
         return blocker == nullptr;
     }
 };
+
+// r4-system: Deck Lab pages and sheets that the knob drives while they are
+// shown (Settings, the rail status sheet, Deck Lab sheets, Deck Setup), like a
+// CDJ's UTILITY screen. The most recent visible claim owns the knob after real
+// popups and modal dialogs; it gets Up/Down for a turn, Return for a press and
+// Escape for back. Claims are weak: a destroyed or hidden claimant never
+// keeps the knob.
+inline QList<QPointer<QWidget>>& knobClaims() {
+    static QList<QPointer<QWidget>> claims;
+    return claims;
+}
+
+inline void releaseKnob(QWidget* widget) {
+    auto& claims = knobClaims();
+    for (int index = static_cast<int>(claims.size()) - 1; index >= 0; --index) {
+        if (claims.at(index).isNull() || claims.at(index).data() == widget) {
+            claims.removeAt(index);
+        }
+    }
+}
+
+inline void claimKnob(QWidget* widget) {
+    if (!widget) {
+        return;
+    }
+    releaseKnob(widget);
+    knobClaims().append(QPointer<QWidget>(widget));
+}
+
+inline QWidget* knobClaimant() {
+    const auto& claims = knobClaims();
+    for (int index = static_cast<int>(claims.size()) - 1; index >= 0; --index) {
+        QWidget* widget = claims.at(index).data();
+        if (widget && widget->isVisible()) {
+            return widget;
+        }
+    }
+    return nullptr;
+}
 
 inline KnobOwner knobOwner() {
     KnobOwner owner;
@@ -48,6 +89,9 @@ inline KnobOwner knobOwner() {
         owner.popup = true;
     } else if (QWidget* modal = QApplication::activeModalWidget()) {
         owner.blocker = modal;
+    } else if (QWidget* claim = knobClaimant()) {
+        owner.blocker = claim;
+        owner.claimed = true;
     }
     return owner;
 }
@@ -59,7 +103,9 @@ inline QString describeKnobOwner(const KnobOwner& owner) {
     const QString kind = QString::fromLatin1(owner.blocker->metaObject()->className());
     const QString name = owner.blocker->objectName();
     return QStringLiteral("%1 is open (%2%3)")
-            .arg(owner.popup ? QStringLiteral("a menu") : QStringLiteral("a dialog"),
+            .arg(owner.claimed ? QStringLiteral("a Deck Lab page")
+                            : owner.popup ? QStringLiteral("a menu")
+                                          : QStringLiteral("a dialog"),
                     kind,
                     name.isEmpty() ? QString() : QStringLiteral(" \"") + name + QLatin1Char('"'));
 }
@@ -86,7 +132,9 @@ inline void logKnobRedirected(const char* control, const KnobOwner& owner) {
     qDebug().noquote() << QStringLiteral("DeckLab knob: %1 ignored by Browse because %2; the %3 gets it")
                                   .arg(QString::fromLatin1(control),
                                           describeKnobOwner(owner),
-                                          owner.popup ? QStringLiteral("menu") : QStringLiteral("dialog"));
+                                          owner.claimed ? QStringLiteral("page")
+                                                  : owner.popup ? QStringLiteral("menu")
+                                                                : QStringLiteral("dialog"));
 }
 
 // The open menu or dialog gets the knob: turn = Up/Down (menus) or
@@ -97,6 +145,34 @@ inline void forwardKnob(const KnobOwner& owner, KnobAction action, double steps)
         return;
     }
     QWidget* target = owner.blocker;
+    if (owner.claimed) {
+        // r4-system: the Deck Lab page itself moves its focus ring.
+        QPointer<QWidget> page(target);
+        const auto key = [&page](int code) {
+            if (!page) {
+                return;
+            }
+            QKeyEvent press(QEvent::KeyPress, code, Qt::NoModifier);
+            QApplication::sendEvent(page, &press);
+            if (!page) {
+                return;
+            }
+            QKeyEvent release(QEvent::KeyRelease, code, Qt::NoModifier);
+            QApplication::sendEvent(page, &release);
+        };
+        if (action == KnobAction::Move) {
+            if (!std::isfinite(steps) || steps == 0) {
+                return;
+            }
+            const int count = std::clamp(static_cast<int>(std::lround(std::abs(steps))), 1, 50);
+            for (int n = 0; n < count; ++n) {
+                key(steps < 0 ? Qt::Key_Up : Qt::Key_Down);
+            }
+        } else {
+            key(action == KnobAction::Back ? Qt::Key_Escape : Qt::Key_Return);
+        }
+        return;
+    }
     if (!owner.popup || !qobject_cast<QMenu*>(target)) {
         if (QWidget* focus = target->focusWidget()) {
             target = focus;

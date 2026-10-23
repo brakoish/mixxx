@@ -67,8 +67,12 @@ QString channelPairLabel(int channelBase);
 /// Deck Setup test tones start quiet: Main may be a club PA and the
 /// headphones may already be on someone's ears. Peak level in dBFS.
 constexpr double kTestToneDbfs = -24.0;
+/// r4-system (sound check): a second tap on the same pad adds 6 dB, never more.
+constexpr double kTestToneBoostDbfs = -18.0;
 /// Linear peak amplitude of a test tone (kTestToneDbfs, about 0.063).
 double testToneAmplitude();
+/// Linear peak amplitude at `dbfs`, clamped to kTestToneBoostDbfs.
+double testToneAmplitude(double dbfs);
 
 struct LoadedTrack {
     QString group; // "[Channel1]", "[Sampler3]", "[PreviewDeck1]"

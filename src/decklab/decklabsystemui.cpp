@@ -11,9 +11,11 @@
 #include <QPushButton>
 #include <QWidget>
 #include <algorithm>
+#include <cmath>
 
 #include "control/controlproxy.h"
 #include "decklab/decklabdclient.h"
+#include "decklab/decklabutility.h"
 #include "decklab/decklaboverlay.h"
 #include "decklab/decklabsetupwizard.h"
 #include "decklab/decklabsystem.h"
@@ -23,130 +25,18 @@
 
 using namespace decklab::ui;
 
-namespace {
-enum class BannerKind {
-    Alert,
-    Warning,
-    Info,
-};
-
-// Compact pill over the top of the surface. Informational banners pass
-// touches through to the controls beneath; only actionable ones take taps.
-// Native windows above the GL waveforms (decklab/decklaboverlay.h), painted
-// opaque: there is no compositor to blend them with a waveform.
-class Banner : public TouchButton {
-  public:
-    Banner(BannerKind kind, Icon icon, bool actionable, QWidget* parent, const QString& name)
-            : TouchButton(QString(), parent, 44),
-              m_kind(kind),
-              m_icon(icon),
-              m_actionable(actionable) {
-        setObjectName(name);
-        setFocusPolicy(Qt::NoFocus);
-        setAttribute(Qt::WA_TransparentForMouseEvents, !actionable);
-        hide();
-        decklab::overlay::keepAboveWaveforms(this);
-    }
-    void setMessage(const QString& text) {
-        setText(text);
-        setAccessibleName(text);
-        const int textWidth = QFontMetrics(uiFont(font(), 16, QFont::DemiBold)).horizontalAdvance(text);
-        m_width = 16 + 22 + 10 + textWidth + (m_actionable ? 30 : 16);
-        update();
-    }
-    int preferredWidth() const {
-        return m_width;
-    }
-
-  protected:
-    void paintEvent(QPaintEvent*) override {
-        QPainter painter(this);
-        painter.setRenderHint(QPainter::Antialiasing);
-        // Opaque brand surfaces. Info: panel and line. Caution (heat, power):
-        // raised fill with a white edge, never amber (amber is deck 2).
-        // Alert (no sound output): live red, because the room hears nothing.
-        QColor background(isDown() ? kRaise : kPanel);
-        QColor border(kLine);
-        QColor accent(kText);
-        if (m_kind == BannerKind::Alert) {
-            border = QColor(kLive);
-            accent = QColor(kLive);
-        } else if (m_kind == BannerKind::Warning) {
-            background = QColor(kRaise);
-            border = QColor(kText);
-        }
-        painter.setPen(QPen(border, 1.2));
-        painter.setBrush(background);
-        painter.drawRoundedRect(QRectF(rect()).adjusted(0.6, 0.6, -0.6, -0.6), 4, 4);
-        paintIcon(painter, QRectF(14, (height() - 20) / 2.0, 20, 20), m_icon, accent);
-        const QFont bold = uiFont(font(), 16, QFont::DemiBold);
-        painter.setFont(bold);
-        painter.setPen(QColor(kText));
-        const int right = m_actionable ? 30 : 14;
-        painter.drawText(QRect(44, 0, std::max(0, width() - 44 - right), height()),
-                Qt::AlignLeft | Qt::AlignVCenter,
-                QFontMetrics(bold).elidedText(text(), Qt::ElideRight, std::max(0, width() - 44 - right)));
-        if (m_actionable) {
-            painter.setFont(uiFont(font(), 20, QFont::DemiBold));
-            painter.setPen(accent);
-            painter.drawText(QRect(width() - 26, 0, 16, height()), Qt::AlignCenter, QStringLiteral("›"));
-        }
-    }
-
-  private:
-    BannerKind m_kind;
-    Icon m_icon;
-    bool m_actionable;
-    int m_width = 200;
-};
-
-Banner* asBanner(QPushButton* button) {
-    return static_cast<Banner*>(button);
-}
-} // namespace
-
 DeckLabSystemUi::DeckLabSystemUi(QWidget* surface, Hooks hooks)
         : QObject(surface),
           m_surface(surface),
           m_hooks(std::move(hooks)) {
-    m_audioBanner = new Banner(BannerKind::Alert, Icon::Speaker, true, surface, QStringLiteral("decklab-banner-audio"));
-    asBanner(m_audioBanner)->setMessage(tr("No audio output  ·  Set up"));
-    connect(m_audioBanner, &QPushButton::clicked, this, [this] { openWizard(1); });
-    m_offerBanner = new Banner(BannerKind::Info, Icon::Controller, true, surface, QStringLiteral("decklab-banner-offer"));
-    connect(m_offerBanner, &QPushButton::clicked, this, [this] {
-        const QString key = m_offerKey;
-        m_offerKey.clear();
-        m_offerBanner->hide();
-        openWizard(0, key);
-    });
-    m_thermalBanner = new Banner(BannerKind::Warning, Icon::Warning, false, surface, QStringLiteral("decklab-banner-thermal"));
-    m_toast = new Banner(BannerKind::Info, Icon::Info, false, surface, QStringLiteral("decklab-banner-toast"));
-    m_toastTimer.setSingleShot(true);
-    connect(&m_toastTimer, &QTimer::timeout, this, [this] {
-        m_toast->hide();
-        layoutBanners();
-    });
-    m_probeTimer.setSingleShot(true);
-    connect(&m_probeTimer, &QTimer::timeout, this, [this] {
-        m_probeWarning.clear();
-        layoutBanners();
-    });
+    // An unknown controller is offered for 30 s: a notice, then a NEW lamp
+    // on the rail's controller slot.
     m_offerTimer.setSingleShot(true);
     connect(&m_offerTimer, &QTimer::timeout, this, [this] {
         m_offerKey.clear();
-        m_offerBanner->hide();
-        layoutBanners();
+        m_offerName.clear();
+        refreshRail();
     });
-    // Startup opens devices after the skin; don't flash the banner meanwhile.
-    m_audioDebounce.setSingleShot(true);
-    m_audioDebounce.setInterval(900);
-    connect(&m_audioDebounce, &QTimer::timeout, this, [this] { updateAudioBanner(); });
-    m_tab = new ControlProxy(QStringLiteral("[Tab]"), QStringLiteral("current"), this, ControlFlag::NoWarnIfMissing);
-    m_tab->connectValueChanged(this, [this](double) { updateAudioBanner(); }, Qt::QueuedConnection);
-    m_soundStatus = new ControlProxy(QStringLiteral("[SoundManager]"), QStringLiteral("status"), this,
-            ControlFlag::NoWarnIfMissing);
-    m_soundStatus->connectValueChanged(this, [this](double) { m_audioDebounce.start(); }, Qt::QueuedConnection);
-    surface->installEventFilter(this);
 }
 
 DeckLabSystemUi::~DeckLabSystemUi() = default;
@@ -163,13 +53,6 @@ bool DeckLabSystemUi::toolsConnected() const {
     return m_system && m_system->isReady();
 }
 
-bool DeckLabSystemUi::eventFilter(QObject* watched, QEvent* event) {
-    if (watched == m_surface && (event->type() == QEvent::Resize || event->type() == QEvent::Show)) {
-        layoutBanners();
-    }
-    return QObject::eventFilter(watched, event);
-}
-
 DeckLabSystemPage* DeckLabSystemUi::createSystemPage(QWidget* parent) {
     auto* page = new DeckLabSystemPage(parent);
     page->setLegacyTool([this](int id) { return m_hooks.legacyTool && m_hooks.legacyTool(id); });
@@ -181,28 +64,23 @@ DeckLabSystemPage* DeckLabSystemUi::createSystemPage(QWidget* parent) {
 }
 
 QWidget* DeckLabSystemUi::createSetupPanel(QWidget* parent) {
-    auto* panel = card(parent);
+    // Controller & audio as utility rows (S-21): the state on the right,
+    // Run Deck Setup as the action.
+    auto* panel = new QWidget(parent);
     panel->setObjectName(QStringLiteral("decklab-setup-panel"));
-    applyStyle(panel);
-    auto* layout = vbox(panel, 14, 6);
-    auto* top = hbox(12);
-    auto* text = new QWidget(panel);
-    auto* textLayout = vbox(text, 0, 2);
-    textLayout->addWidget(title(tr("Deck Setup"), text));
-    m_setupController = muted(tr("Plug in any Mixxx-supported controller and play."), text);
-    m_setupController->setObjectName(QStringLiteral("decklab-setup-controller-state"));
-    textLayout->addWidget(m_setupController);
-    m_setupAudio = muted(QString(), text);
-    m_setupAudio->setObjectName(QStringLiteral("decklab-setup-audio-state"));
-    textLayout->addWidget(m_setupAudio);
-    top->addWidget(text, 1);
-    auto* setup = primaryButton(tr("Deck Setup"), panel, QStringLiteral("decklab-deck-setup"), 52);
-    setup->setFixedWidth(160);
-    setup->setEnabled(m_system != nullptr);
-    connect(setup, &QPushButton::clicked, this, [this] { openWizard(0); });
-    top->addWidget(setup);
-    m_setupButton = setup;
-    layout->addLayout(top);
+    auto* layout = vbox(panel, 0, 0);
+    m_setupController = new decklab::ui::ActionRow(tr("Controller"), panel, QStringLiteral("decklab-setup-controller-state"));
+    connect(m_setupController.data(), &QPushButton::clicked, this, [this] { openWizard(0); });
+    layout->addWidget(m_setupController);
+    m_setupAudio = new decklab::ui::ActionRow(tr("Sound"), panel, QStringLiteral("decklab-setup-audio-state"));
+    connect(m_setupAudio.data(), &QPushButton::clicked, this, [this] { openWizard(1); });
+    layout->addWidget(m_setupAudio);
+    m_setupButton = new decklab::ui::ActionRow(tr("Run Deck Setup"), panel, QStringLiteral("decklab-deck-setup"));
+    m_setupButton->setHint(tr("Plug in any Mixxx-supported controller."));
+    m_setupButton->setDisabledHint(tr("Unavailable: system service offline"));
+    m_setupButton->setEnabled(m_system != nullptr);
+    connect(m_setupButton.data(), &QPushButton::clicked, this, [this] { openWizard(0); });
+    layout->addWidget(m_setupButton);
     updateSetupPanel();
     return panel;
 }
@@ -220,9 +98,29 @@ void DeckLabSystemUi::attach(DeckLabSystem* system) {
     }
     connect(system, &DeckLabSystem::readyChanged, this, [this](bool ready) {
         emit toolsConnectedChanged(ready);
-        layoutBanners();
+        if (ready && m_system) {
+            QPointer<DeckLabSystemUi> self(this);
+            m_system->client()->call(QStringLiteral("wifi.status"), {}, [self](const DeckLabdReply& reply) {
+                if (self && reply.ok) {
+                    self->m_wifi = reply.result;
+                    self->refreshRail();
+                }
+            });
+        }
+        refreshRail();
     });
-    connect(system, &DeckLabSystem::thermalChanged, this, [this] { layoutBanners(); });
+    connect(system, &DeckLabSystem::thermalChanged, this, [this] { refreshRail(); });
+    connect(system, &DeckLabSystem::usbChanged, this, [this](const QJsonArray&) { refreshRail(); });
+    connect(system, &DeckLabSystem::devicesChanged, this, [this] { refreshRail(); });
+    connect(system->client(), &DeckLabdClient::eventReceived, this, [this](const QString& topic, const QJsonObject& data) {
+        if (topic == QStringLiteral("wifi.changed")) {
+            m_wifi = data;
+            m_wifi.remove(QStringLiteral("error"));
+            refreshRail();
+        } else if (topic == QStringLiteral("power.undervoltage")) {
+            refreshRail();
+        }
+    });
     connect(system, &DeckLabSystem::notice, this, [this](const QString& text) { showToast(text, 6000); });
     connect(system, &DeckLabSystem::controllerArrived, this, [this](const QString& key, const QString& name, bool known) {
         if (!known) {
@@ -242,17 +140,20 @@ void DeckLabSystemUi::attach(DeckLabSystem* system) {
             m_hooks.applyLayout(decks);
         }
     });
-    connect(system, &DeckLabSystem::controllersChanged, this, [this] { updateSetupPanel(); });
+    connect(system, &DeckLabSystem::controllersChanged, this, [this] {
+        updateSetupPanel();
+        refreshRail();
+    });
     connect(system, &DeckLabSystem::audioChanged, this, [this] {
         updateSetupPanel();
-        m_audioDebounce.start();
+        refreshRail();
     });
     if (m_setupButton) {
         m_setupButton->setEnabled(true);
     }
     emit toolsConnectedChanged(system->isReady());
     updateSetupPanel();
-    m_audioDebounce.start();
+    refreshRail();
     bool probe = false;
     const int probeSeconds = qEnvironmentVariableIntValue("DECKLAB_OVERLAY_PROBE", &probe);
     if (probe && probeSeconds >= 0) {
@@ -279,59 +180,142 @@ void DeckLabSystemUi::attach(DeckLabSystem* system) {
 
 void DeckLabSystemUi::setAudioOutputConfigured(bool configured) {
     m_outputConfigured = configured;
-    m_audioDebounce.start();
+    updateSetupPanel();
 }
 
-void DeckLabSystemUi::updateAudioBanner() {
-    const int page = static_cast<int>(m_tab->get());
-    const bool working = m_outputConfigured && m_soundStatus->get() == 2;
-    // Browse needs its full height for search; Settings → Setup has the
-    // same action inline. Everywhere else the banner stays until fixed.
-    const bool show = m_system && !working && page != 1 && page != 5 && !(m_wizard && m_wizard->isVisible());
-    m_audioBanner->setVisible(show);
-    layoutBanners();
-}
-
-void DeckLabSystemUi::layoutBanners() {
-    if (!m_surface) {
+void DeckLabSystemUi::notify(const QString& text, decklab::ui::Lamp lamp, std::function<void()> action, int milliseconds) {
+    if (!m_hooks.notify || text.isEmpty()) {
         return;
     }
-    const QString thermal = !m_probeWarning.isEmpty() ? m_probeWarning
-                                                      : (m_system ? m_system->thermalWarning() : QString());
-    asBanner(m_thermalBanner)->setMessage(thermal);
-    m_thermalBanner->setVisible(!thermal.isEmpty());
-    if (m_wizard && m_wizard->isVisible()) {
-        m_audioBanner->hide();
-        m_offerBanner->hide();
-    }
-    int top = 46;
-    for (QPushButton* banner : {m_audioBanner, m_offerBanner, m_thermalBanner, m_toast}) {
-        if (!banner->isVisibleTo(m_surface)) {
-            continue;
-        }
-        const int width = std::min(asBanner(banner)->preferredWidth(), m_surface->width() - 32);
-        banner->setGeometry((m_surface->width() - width) / 2, top, width, banner->height());
-        decklab::overlay::raiseAboveWaveforms(banner);
-        top += banner->height() + 6;
-    }
+    decklab::rail::Notice notice;
+    notice.text = text;
+    notice.lamp = lamp;
+    notice.action = std::move(action);
+    notice.milliseconds = milliseconds;
+    m_hooks.notify(notice);
 }
 
 void DeckLabSystemUi::showOverlayProbe() {
-    m_probeWarning = tr("Overlay check: warning banner above the waveforms");
-    m_probeTimer.start(30000);
-    showToast(tr("Overlay check: toast above the waveforms"), 30000);
+    // Real-display check: news goes to the rail, nothing covers the waveforms.
+    showToast(tr("Overlay check: rail notice"), 30000);
     offerController(QStringLiteral("overlay-check"), tr("Overlay check"));
-    layoutBanners();
+}
+
+void DeckLabSystemUi::refreshRail() {
+    using decklab::rail::Inputs;
+    Inputs rail;
+    rail.serviceAttached = m_system != nullptr;
+    rail.serviceOnline = m_system && m_system->isReady();
+    if (m_system) {
+        // USB drives, rekordbox exports and the recording drive.
+        const QJsonArray drives = rail.serviceOnline ? m_system->usbDrives() : QJsonArray();
+        const QString directory = m_system->recordingDirectory();
+        QStringList names;
+        for (const auto& value : drives) {
+            const QJsonObject drive = value.toObject();
+            const QString label = drive.value(QStringLiteral("label")).toString(tr("USB drive"));
+            const bool readOnly = drive.value(QStringLiteral("read_only")).toBool(true);
+            rail.usbRekordbox |= drive.value(QStringLiteral("rekordbox")).toBool();
+            if (!readOnly && decklab::isPathOnMount(directory, drive.value(QStringLiteral("mount")).toString())) {
+                rail.usbRecordTarget = true;
+                rail.recordTarget = label;
+                rail.recordHoursFree = drive.value(QStringLiteral("free_mb")).toDouble(-1) / 606.0;
+            }
+            names.append(readOnly ? tr("%1 (read-only)").arg(label) : label);
+        }
+        rail.usbDrives = static_cast<int>(drives.size());
+        rail.usbSummary = names.join(QStringLiteral(" · "));
+        // Wi-Fi.
+        if (rail.serviceOnline && !m_wifi.isEmpty()) {
+            if (!m_wifi.value(QStringLiteral("enabled")).toBool(true)) {
+                rail.wifi = Inputs::Wifi::Off;
+            } else if (m_wifi.value(QStringLiteral("connected")).toBool()) {
+                rail.wifi = Inputs::Wifi::Connected;
+                rail.ssid = m_wifi.value(QStringLiteral("ssid")).toString();
+                rail.signal = m_wifi.value(QStringLiteral("signal")).toInt(-1);
+            } else {
+                rail.wifi = Inputs::Wifi::Disconnected;
+            }
+        }
+        // Controllers: working beats found.
+        for (const auto& info : m_system->controllers()) {
+            if (info.open) {
+                rail.controller = Inputs::Controller::Working;
+                rail.controllerName = info.name;
+                break;
+            }
+            if (rail.controller == Inputs::Controller::None) {
+                rail.controller = Inputs::Controller::Found;
+                rail.controllerName = info.name;
+            }
+        }
+        rail.controllerNew = !m_offerKey.isEmpty();
+        if (rail.controllerNew && !m_offerName.isEmpty()) {
+            rail.controllerName = m_offerName;
+        }
+        // Sound routing summary.
+        const auto plan = m_system->currentAudioPlan();
+        if (plan.main.isValid()) {
+            rail.soundSummary = tr("%1 %2").arg(decklab::prettyAudioName(plan.main.device),
+                    decklab::channelPairLabel(plan.main.channelBase));
+            if (plan.headphones.isValid()) {
+                rail.soundSummary += tr(" · phones %1").arg(decklab::channelPairLabel(plan.headphones.channelBase));
+            }
+        }
+        // Heat and power: a notice once when it gets hot, the sheet always.
+        const QJsonObject thermal = m_system->thermal();
+        rail.temperature = thermal.value(QStringLiteral("temp_c")).toDouble(-1);
+        const QString level = thermal.value(QStringLiteral("level")).toString();
+        rail.heat = level == QStringLiteral("hot") || level == QStringLiteral("warm") ? level : QString();
+        rail.undervoltage = m_system->undervoltage();
+        if (rail.heat == QStringLiteral("hot") && m_lastHeat != rail.heat) {
+            notify(tr("Hot · %1 °C · give it air").arg(std::round(rail.temperature)), decklab::ui::Lamp::Caution);
+        }
+        m_lastHeat = rail.heat;
+    }
+    if (rail == m_rail) {
+        return;
+    }
+    m_rail = rail;
+    if (m_hooks.statusChanged) {
+        m_hooks.statusChanged();
+    }
+}
+
+void DeckLabSystemUi::fillRailInputs(decklab::rail::Inputs& inputs) const {
+    const bool output = inputs.outputWorking;
+    const bool pending = inputs.outputPending;
+    const bool recording = inputs.recording;
+    const qint64 seconds = inputs.recordingSeconds;
+    const bool dropouts = inputs.recentDropouts;
+    const int count = inputs.dropouts;
+    inputs = m_rail;
+    inputs.outputWorking = output;
+    inputs.outputPending = pending;
+    inputs.recording = recording;
+    inputs.recordingSeconds = seconds;
+    inputs.recentDropouts = dropouts;
+    inputs.dropouts = count;
+}
+
+void DeckLabSystemUi::readiness(QString* value, decklab::ui::Lamp* lamp) const {
+    using decklab::ui::Lamp;
+    const bool sound = m_system ? m_system->currentAudioPlan().main.isValid() && m_outputConfigured : m_outputConfigured;
+    const bool controller = m_rail.controller == decklab::rail::Inputs::Controller::Working;
+    if (!sound) {
+        *value = tr("No sound");
+        *lamp = Lamp::LiveOutline;
+    } else if (!controller) {
+        *value = tr("Sound ready · no controller");
+        *lamp = Lamp::On;
+    } else {
+        *value = tr("Ready");
+        *lamp = Lamp::Go;
+    }
 }
 
 void DeckLabSystemUi::showToast(const QString& text, int milliseconds) {
-    if (text.isEmpty()) {
-        return;
-    }
-    asBanner(m_toast)->setMessage(text);
-    m_toast->show();
-    m_toastTimer.start(milliseconds);
-    layoutBanners();
+    notify(text, decklab::ui::Lamp::On, {}, milliseconds);
 }
 
 void DeckLabSystemUi::offerController(const QString& key, const QString& name) {
@@ -339,10 +323,16 @@ void DeckLabSystemUi::offerController(const QString& key, const QString& name) {
         return;
     }
     m_offerKey = key;
-    asBanner(m_offerBanner)->setMessage(tr("New controller: %1  ·  Set up").arg(name.isEmpty() ? tr("USB device") : name));
-    m_offerBanner->show();
+    m_offerName = name.isEmpty() ? tr("USB device") : name;
+    // The whole notice is the button (A-06, A-07).
+    notify(tr("New controller: %1 · set up").arg(m_offerName), decklab::ui::Lamp::On, [this, key] {
+        m_offerKey.clear();
+        m_offerName.clear();
+        refreshRail();
+        openWizard(0, key);
+    });
     m_offerTimer.start(30000);
-    layoutBanners();
+    refreshRail();
 }
 
 DeckLabSetupWizard* DeckLabSystemUi::openWizard(int step, const QString& controllerKey) {
@@ -357,8 +347,8 @@ DeckLabSetupWizard* DeckLabSystemUi::openWizard(int step, const QString& control
         connect(m_wizard.data(), &DeckLabSetupWizard::finished, this, [this](bool) {
             m_wizard = nullptr;
             QTimer::singleShot(0, this, [this] {
-                updateAudioBanner();
                 updateSetupPanel();
+                refreshRail();
             });
         });
         connect(m_wizard.data(), &DeckLabSetupWizard::layoutChosen, this, [this](int decks) {
@@ -372,12 +362,15 @@ DeckLabSetupWizard* DeckLabSystemUi::openWizard(int step, const QString& control
             }
         });
     }
+    // The offered controller is what Deck Setup opens on.
+    const QString key = controllerKey.isEmpty() && step == 0 ? m_offerKey : controllerKey;
     m_offerKey.clear();
-    m_offerBanner->hide();
+    m_offerName.clear();
+    m_offerTimer.stop();
     using Step = DeckLabSetupWizard::Step;
     const QList<Step> steps{Step::Controller, Step::Audio, Step::Layout, Step::Done};
-    m_wizard->start(steps.at(std::clamp(step, 0, 3)), controllerKey);
-    layoutBanners();
+    m_wizard->start(steps.at(std::clamp(step, 0, 3)), key);
+    refreshRail();
     return m_wizard;
 }
 
@@ -391,7 +384,6 @@ DeckLabSetupWizard* DeckLabSystemUi::openFirstRun() {
     auto* wizard = openWizard(0);
     if (wizard) {
         wizard->startFirstRun();
-        layoutBanners();
     }
     return wizard;
 }
@@ -400,32 +392,38 @@ void DeckLabSystemUi::updateSetupPanel() {
     if (!m_setupController || !m_setupAudio) {
         return;
     }
+    using decklab::ui::Lamp;
     if (!m_system) {
-        m_setupAudio->setText(QString());
+        m_setupController->setValue(tr("Not set up"));
+        m_setupController->setLamp(Lamp::Off);
+        m_setupAudio->setValue(m_outputConfigured ? tr("Playing out") : tr("No sound output"));
+        m_setupAudio->setLamp(m_outputConfigured ? Lamp::Go : Lamp::LiveOutline);
         return;
     }
     QStringList working;
+    bool found = false;
     for (const auto& info : m_system->controllers()) {
+        found = true;
         if (info.open) {
             const QString mapping = info.mapping.isEmpty() ? QString() : MappingInfo(info.mapping).getName();
-            working.append(mapping.isEmpty() ? info.name : tr("%1 · %2").arg(info.name, mapping));
+            working.append(mapping.isEmpty() || mapping == info.name ? info.name : tr("%1 · %2").arg(info.name, mapping));
         }
     }
-    m_setupController->setText(working.isEmpty() ? tr("No controller is set up yet.")
-                                                 : tr("Controller: %1").arg(working.join(QStringLiteral(", "))));
+    m_setupController->setValue(!working.isEmpty() ? working.join(QStringLiteral(", "))
+                    : found                       ? tr("Found · not working yet")
+                                                  : tr("No controller set up"));
+    m_setupController->setLamp(!working.isEmpty() ? Lamp::Go : found ? Lamp::Caution : Lamp::Off);
     const auto plan = m_system->currentAudioPlan();
     if (!plan.main.isValid()) {
-        m_setupAudio->setText(tr("No audio output. Tap Deck Setup to choose one."));
+        m_setupAudio->setValue(tr("No sound output"));
+        m_setupAudio->setLamp(Lamp::LiveOutline);
         return;
     }
-    QString text = tr("Main: %1 %2").arg(decklab::prettyAudioName(plan.main.device),
-            decklab::channelPairLabel(plan.main.channelBase));
-    text += plan.headphones.isValid()
-            ? tr("   ·   Headphones: %1 %2")
-                      .arg(decklab::prettyAudioName(plan.headphones.device),
-                              decklab::channelPairLabel(plan.headphones.channelBase))
-            : tr("   ·   Headphones off");
-    m_setupAudio->setText(text);
+    QString text = tr("%1 %2").arg(decklab::prettyAudioName(plan.main.device), decklab::channelPairLabel(plan.main.channelBase));
+    text += plan.headphones.isValid() ? tr(" · phones %1").arg(decklab::channelPairLabel(plan.headphones.channelBase))
+                                      : tr(" · phones off");
+    m_setupAudio->setValue(text);
+    m_setupAudio->setLamp(m_outputConfigured ? Lamp::Go : Lamp::LiveOutline);
 }
 
 bool DeckLabSystemUi::handleTool(int id) {
@@ -486,11 +484,9 @@ void DeckLabSystemUi::launchApp(const QString& app, const QString& name) {
                             button->hide();
                         }
                     }
-                    self->showToast(tr("%1 isn't installed on this unit.").arg(name), 7000);
+                    self->showToast(tr("%1 isn't installed on this unit").arg(name), 7000);
                     return;
                 }
-                self->showToast(reply.errorMessage.isEmpty() ? tr("%1 could not be opened.").arg(name)
-                                                             : reply.errorMessage,
-                        7000);
+                self->showToast(tr("Couldn't open %1").arg(name), 7000);
             });
 }

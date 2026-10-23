@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "decklab/decklabui.h"
 
+#include <QAbstractButton>
 #include <QAbstractItemView>
 #include <QBoxLayout>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QEvent>
 #include <QFrame>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMouseEvent>
@@ -20,6 +22,7 @@
 #include <utility>
 
 #include "decklab/decklaboverlay.h"
+#include "library/decklabknob.h"
 #include "moc_decklabui.cpp"
 #include "widget/decklabcombodelegate.h"
 
@@ -34,6 +37,7 @@ const char* const kMuted = "#9aa3af";
 const char* const kText = "#f2f4f7";
 const char* const kLive = "#ff3d2e";
 const char* const kSelect = "#f2f4f7";
+const char* const kGo = "#2fd27a";
 
 namespace {
 // The system kit's own sheet (System pages, Deck Setup, the Setup panel and
@@ -779,6 +783,12 @@ Confirm::Confirm(QWidget* host)
     host->installEventFilter(this);
     // Covers the whole host: hide the native GL waveforms while shown.
     decklab::overlay::suppressWaveformsWhileVisible(this);
+    // r4-system: the knob drives the sheet (turn, press; back dismisses), so
+    // a turn never opens Browse behind it.
+    m_knob = new KnobNavigator(this, [this] {
+        close();
+        return true;
+    });
 }
 
 bool Confirm::eventFilter(QObject* watched, QEvent* event) {
@@ -861,6 +871,711 @@ Confirm* Confirm::build(QWidget* host,
 
 Confirm* Confirm::inform(QWidget* host, const QString& heading, const QString& text) {
     return ask(host, heading, text, QString(), std::function<void()>(), false);
+}
+
+// ------------------------------------------------------------ r4-system --
+
+namespace {
+// The 2 px white encoder focus ring, drawn on top of the focused control.
+class FocusRing final : public QWidget {
+  public:
+    explicit FocusRing(QWidget* parent)
+            : QWidget(parent) {
+        setObjectName(QStringLiteral("decklab-knob-ring"));
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setAttribute(Qt::WA_NoSystemBackground);
+        setFocusPolicy(Qt::NoFocus);
+        setProperty("knobSkip", true);
+    }
+    void setEditing(bool editing) {
+        if (m_editing != editing) {
+            m_editing = editing;
+            update();
+        }
+    }
+
+  protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        // Editing: a heavier ring, so "turn changes the value" reads at a glance.
+        const double width = m_editing ? 3.0 : 2.0;
+        painter.setPen(QPen(QColor(kText), width));
+        painter.setBrush(Qt::NoBrush);
+        const double inset = width / 2.0;
+        painter.drawRoundedRect(QRectF(rect()).adjusted(inset, inset, -inset, -inset), 4, 4);
+    }
+
+  private:
+    bool m_editing = false;
+};
+} // namespace
+
+void paintLamp(QPainter& painter, const QPointF& center, double radius, Lamp lamp) {
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing);
+    switch (lamp) {
+    case Lamp::Off:
+        painter.setPen(QPen(QColor(kDim), 1.5));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawEllipse(center, radius - 0.75, radius - 0.75);
+        break;
+    case Lamp::On:
+    case Lamp::Go:
+    case Lamp::Live:
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(lamp == Lamp::On ? kText : lamp == Lamp::Go ? kGo : kLive));
+        painter.drawEllipse(center, radius, radius);
+        break;
+    case Lamp::LiveOutline:
+        painter.setPen(QPen(QColor(kLive), 2.0));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawEllipse(center, radius - 1.0, radius - 1.0);
+        break;
+    case Lamp::Caution: {
+        const QRectF box(center.x() - radius, center.y() - radius, radius * 2, radius * 2);
+        QPainterPath dot;
+        dot.addEllipse(box);
+        painter.setClipPath(dot);
+        paintCautionHatch(painter, box);
+        painter.setClipping(false);
+        painter.setPen(QPen(QColor(kText), 1.5));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawEllipse(center, radius - 0.75, radius - 0.75);
+        break;
+    }
+    }
+    painter.restore();
+}
+
+void paintCautionHatch(QPainter& painter, const QRectF& rect, double radius) {
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing);
+    QPainterPath shape;
+    shape.addRoundedRect(rect, radius, radius);
+    painter.setClipPath(shape, Qt::IntersectClip);
+    painter.fillRect(rect, QColor(kRaise));
+    QColor stripe(kText);
+    stripe.setAlphaF(0.25);
+    painter.setPen(QPen(stripe, 2.0));
+    for (double offset = -rect.height(); offset < rect.width(); offset += 6.0) {
+        painter.drawLine(QPointF(rect.left() + offset, rect.bottom()),
+                QPointF(rect.left() + offset + rect.height(), rect.top()));
+    }
+    painter.restore();
+}
+
+void paintGlyph(QPainter& painter, const QRectF& area, Glyph glyph, const QColor& color) {
+    if (glyph == Glyph::Lock) {
+        paintIcon(painter, area, Icon::Lock, color);
+        return;
+    }
+    if (glyph == Glyph::Warning) {
+        paintIcon(painter, area, Icon::Warning, color);
+        return;
+    }
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing);
+    const double size = std::min(area.width(), area.height());
+    const QRectF r(area.center().x() - size / 2, area.center().y() - size / 2, size, size);
+    const double w = std::max(1.75, size / 12.0); // 2 px at 24
+    const auto at = [&r](double x, double y) {
+        return QPointF(r.left() + x * r.width(), r.top() + y * r.height());
+    };
+    QPainterPath path;
+    switch (glyph) {
+    case Glyph::Back:
+        path.moveTo(at(0.62, 0.22));
+        path.lineTo(at(0.36, 0.5));
+        path.lineTo(at(0.62, 0.78));
+        break;
+    case Glyph::Chevron:
+        path.moveTo(at(0.4, 0.22));
+        path.lineTo(at(0.66, 0.5));
+        path.lineTo(at(0.4, 0.78));
+        break;
+    case Glyph::Gear: {
+        path.addEllipse(r.center(), size * 0.28, size * 0.28);
+        path.addEllipse(r.center(), size * 0.1, size * 0.1);
+        for (int tooth = 0; tooth < 8; ++tooth) {
+            const double angle = tooth * M_PI / 4;
+            path.moveTo(r.center() + QPointF(std::cos(angle), std::sin(angle)) * size * 0.3);
+            path.lineTo(r.center() + QPointF(std::cos(angle), std::sin(angle)) * size * 0.43);
+        }
+        QPen pen(color, w);
+        pen.setCapStyle(Qt::RoundCap);
+        painter.setPen(pen);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPath(path);
+        painter.restore();
+        return;
+    }
+    case Glyph::Check:
+        path.moveTo(at(0.2, 0.52));
+        path.lineTo(at(0.42, 0.74));
+        path.lineTo(at(0.82, 0.3));
+        break;
+    case Glyph::Minus:
+        path.moveTo(at(0.25, 0.5));
+        path.lineTo(at(0.75, 0.5));
+        break;
+    case Glyph::Plus:
+        path.moveTo(at(0.25, 0.5));
+        path.lineTo(at(0.75, 0.5));
+        path.moveTo(at(0.5, 0.25));
+        path.lineTo(at(0.5, 0.75));
+        break;
+    case Glyph::Close:
+        path.moveTo(at(0.28, 0.28));
+        path.lineTo(at(0.72, 0.72));
+        path.moveTo(at(0.72, 0.28));
+        path.lineTo(at(0.28, 0.72));
+        break;
+    case Glyph::Warning:
+    case Glyph::Lock:
+        break;
+    }
+    strokePath(painter, path, color, w);
+    painter.restore();
+}
+
+QFont numberFont(const QFont& base, int pixels) {
+    QFont font = base;
+    font.setFamilies({QStringLiteral("Barlow Semi Condensed"), QStringLiteral("Barlow")});
+    font.setPixelSize(std::max(14, pixels));
+    font.setWeight(QFont::DemiBold);
+    return font;
+}
+
+QFont capsFont(const QFont& base, int pixels) {
+    QFont font = uiFont(base, pixels, QFont::DemiBold);
+    font.setCapitalization(QFont::AllUppercase);
+    font.setLetterSpacing(QFont::PercentageSpacing, 106);
+    return font;
+}
+
+KnobNavigator::KnobNavigator(QWidget* root, std::function<bool()> back)
+        : QObject(root),
+          m_root(root),
+          m_back(std::move(back)) {
+    root->installEventFilter(this);
+    if (root->isVisible()) {
+        decklab::claimKnob(root);
+    }
+}
+
+KnobNavigator::~KnobNavigator() {
+    decklab::releaseKnob(m_root);
+}
+
+void KnobNavigator::setScope(QWidget* scope) {
+    if (m_scope.data() == scope) {
+        return;
+    }
+    m_scope = scope;
+    setEditing(false);
+    if (m_ring) {
+        m_ring->hide();
+    }
+}
+
+QWidget* KnobNavigator::scope() const {
+    return m_scope ? m_scope.data() : m_root;
+}
+
+QList<QWidget*> KnobNavigator::candidates() const {
+    QWidget* area = scope();
+    QList<QWidget*> list;
+    const auto children = area->findChildren<QWidget*>();
+    for (auto* widget : children) {
+        if (!widget->isVisible() || !widget->isEnabled() || widget->property("knobSkip").toBool() ||
+                widget->testAttribute(Qt::WA_TransparentForMouseEvents) || widget->width() <= 0 ||
+                widget->height() <= 0) {
+            continue;
+        }
+        if (!qobject_cast<QAbstractButton*>(widget) && !dynamic_cast<KnobTarget*>(widget)) {
+            continue;
+        }
+        list.append(widget);
+    }
+    // Reading order: rows top to bottom (8 px bands), then left to right.
+    std::stable_sort(list.begin(), list.end(), [area](QWidget* left, QWidget* right) {
+        const QPoint a = left->mapTo(area, QPoint(0, 0));
+        const QPoint b = right->mapTo(area, QPoint(0, 0));
+        const int bandA = a.y() / 8;
+        const int bandB = b.y() / 8;
+        return bandA != bandB ? bandA < bandB : a.x() < b.x();
+    });
+    return list;
+}
+
+void KnobNavigator::focus(QWidget* control) {
+    if (m_current.data() != control) {
+        setEditing(false);
+    }
+    m_current = control;
+    if (!control) {
+        if (m_ring) {
+            m_ring->hide();
+        }
+        return;
+    }
+    for (QWidget* parent = control->parentWidget(); parent; parent = parent->parentWidget()) {
+        if (auto* area = qobject_cast<QScrollArea*>(parent)) {
+            area->ensureWidgetVisible(control, 8, 8);
+            break;
+        }
+    }
+    control->installEventFilter(this);
+    placeRing();
+    emit focusChanged(control);
+}
+
+void KnobNavigator::focusFirst() {
+    const auto list = candidates();
+    // The page's selected row (the checked category) first.
+    for (auto* widget : list) {
+        const auto* button = qobject_cast<QAbstractButton*>(widget);
+        if (button && button->property("knobHome").toBool() && button->isChecked()) {
+            focus(widget);
+            return;
+        }
+    }
+    focus(list.isEmpty() ? nullptr : list.first());
+}
+
+void KnobNavigator::move(int steps) {
+    if (steps == 0) {
+        return;
+    }
+    if (m_editing && m_current) {
+        if (auto* target = dynamic_cast<KnobTarget*>(m_current.data())) {
+            target->knobTurn(steps);
+            return;
+        }
+    }
+    const auto list = candidates();
+    if (list.isEmpty()) {
+        focus(nullptr);
+        return;
+    }
+    const int index = m_current ? static_cast<int>(list.indexOf(m_current.data())) : -1;
+    if (index < 0) {
+        focusFirst();
+        return;
+    }
+    if (!m_ring || !m_ring->isVisible()) {
+        // The first turn only shows where the ring is.
+        focus(m_current);
+        return;
+    }
+    focus(list.at(std::clamp(index + steps, 0, static_cast<int>(list.size()) - 1)));
+}
+
+void KnobNavigator::press() {
+    if (!m_current || !m_current->isVisible() || !m_current->isEnabled() || !candidates().contains(m_current)) {
+        focusFirst();
+        return;
+    }
+    if (!m_ring || !m_ring->isVisible()) {
+        // Never act on a control the DJ can't see is focused.
+        focus(m_current);
+        return;
+    }
+    if (auto* target = dynamic_cast<KnobTarget*>(m_current.data())) {
+        if (m_editing) {
+            target->knobCommit();
+            setEditing(false);
+            return;
+        }
+        setEditing(target->knobPress());
+        return;
+    }
+    if (auto* button = qobject_cast<QAbstractButton*>(m_current.data())) {
+        QPointer<KnobNavigator> self(this);
+        button->click();
+        if (self) {
+            placeRing();
+        }
+    }
+}
+
+void KnobNavigator::back() {
+    if (m_editing && m_current) {
+        if (auto* target = dynamic_cast<KnobTarget*>(m_current.data())) {
+            target->knobCancel();
+        }
+        setEditing(false);
+        return;
+    }
+    if (m_back) {
+        m_back();
+    }
+}
+
+void KnobNavigator::hold(bool down) {
+    if (!m_current) {
+        return;
+    }
+    if (auto* target = dynamic_cast<KnobTarget*>(m_current.data())) {
+        target->knobHold(down);
+    }
+}
+
+void KnobNavigator::clear() {
+    setEditing(false);
+    if (m_ring) {
+        m_ring->hide();
+    }
+}
+
+void KnobNavigator::setEditing(bool editing) {
+    m_editing = editing;
+    if (m_ring) {
+        static_cast<FocusRing*>(m_ring.data())->setEditing(editing);
+    }
+}
+
+void KnobNavigator::placeRing() {
+    if (!m_current || !m_current->isVisible() || !m_current->parentWidget()) {
+        if (m_ring) {
+            m_ring->hide();
+        }
+        return;
+    }
+    QWidget* host = m_current->parentWidget();
+    if (!m_ring || m_ring->parentWidget() != host) {
+        if (m_ring) {
+            m_ring->hide();
+            m_ring->deleteLater();
+        }
+        m_ring = new FocusRing(host);
+    }
+    static_cast<FocusRing*>(m_ring.data())->setEditing(m_editing);
+    m_ring->setGeometry(m_current->geometry());
+    m_ring->raise();
+    m_ring->show();
+}
+
+bool KnobNavigator::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == m_root) {
+        switch (event->type()) {
+        case QEvent::Show:
+            decklab::claimKnob(m_root);
+            break;
+        case QEvent::Hide:
+            decklab::releaseKnob(m_root);
+            clear();
+            break;
+        case QEvent::KeyPress: {
+            const auto* key = static_cast<QKeyEvent*>(event);
+            switch (key->key()) {
+            case Qt::Key_Up:
+                move(-1);
+                return true;
+            case Qt::Key_Down:
+                move(1);
+                return true;
+            case Qt::Key_Return:
+            case Qt::Key_Enter:
+                if (!key->isAutoRepeat()) {
+                    press();
+                }
+                return true;
+            case Qt::Key_Escape:
+                back();
+                return true;
+            case Qt::Key_Select:
+                if (!key->isAutoRepeat()) {
+                    hold(true);
+                }
+                return true;
+            default:
+                break;
+            }
+            break;
+        }
+        case QEvent::KeyRelease: {
+            const auto* key = static_cast<QKeyEvent*>(event);
+            if (key->key() == Qt::Key_Select && !key->isAutoRepeat()) {
+                hold(false);
+                return true;
+            }
+            break;
+        }
+        default:
+            break;
+        }
+    } else if (watched == m_current.data()) {
+        if (event->type() == QEvent::Move || event->type() == QEvent::Resize || event->type() == QEvent::Show) {
+            placeRing();
+        } else if (event->type() == QEvent::Hide) {
+            clear();
+        }
+    }
+    return QObject::eventFilter(watched, event);
+}
+
+HoldButton::HoldButton(const QString& text, QWidget* parent, const QString& objectName, int height)
+        : TouchButton(text, parent, height) {
+    setObjectName(objectName);
+    setAccessibleName(text);
+    setAccessibleDescription(tr("Hold for about a second to confirm"));
+    // 25 fps sweep, only while a finger (or the knob) holds it.
+    m_tick.setInterval(40);
+    connect(&m_tick, &QTimer::timeout, this, [this] {
+        if (m_since.elapsed() >= kHoldMs) {
+            fire();
+            return;
+        }
+        update();
+    });
+    m_disarm.setSingleShot(true);
+    m_disarm.setInterval(3000);
+    connect(&m_disarm, &QTimer::timeout, this, [this] {
+        m_armed = false;
+        update();
+    });
+}
+
+void HoldButton::setRow(Icon icon, const QString& detail) {
+    m_row = true;
+    m_icon = icon;
+    m_detail = detail;
+    setTouchHeight(64);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    update();
+}
+
+void HoldButton::setDetail(const QString& detail) {
+    if (m_detail != detail) {
+        m_detail = detail;
+        update();
+    }
+}
+
+void HoldButton::setReason(const QString& reason) {
+    if (m_reason == reason) {
+        return;
+    }
+    m_reason = reason;
+    if (!reason.isEmpty()) {
+        stop();
+        m_armed = false;
+    }
+    setEnabled(reason.isEmpty());
+    setAccessibleDescription(reason.isEmpty() ? tr("Hold for about a second to confirm") : reason);
+    update();
+}
+
+void HoldButton::setResult(const QString& result) {
+    m_result = result;
+    update();
+}
+
+double HoldButton::progress() const {
+    return m_holding ? std::clamp(m_since.elapsed() / static_cast<double>(kHoldMs), 0.0, 1.0) : 0.0;
+}
+
+bool HoldButton::begin() {
+    if (!isEnabled()) {
+        return false;
+    }
+    if (m_gate) {
+        const QString refusal = m_gate();
+        if (!refusal.isEmpty()) {
+            emit refused(refusal);
+            return false;
+        }
+    }
+    m_armed = false;
+    m_disarm.stop();
+    m_result.clear();
+    m_holding = true;
+    m_since.start();
+    m_tick.start();
+    update();
+    return true;
+}
+
+void HoldButton::stop() {
+    // Let go early: snap back, nothing happens.
+    m_holding = false;
+    m_tick.stop();
+    update();
+}
+
+void HoldButton::fire() {
+    m_tick.stop();
+    m_holding = false;
+    m_armed = false;
+    m_disarm.stop();
+    update();
+    emit confirmed();
+}
+
+bool HoldButton::knobPress() {
+    if (!isEnabled()) {
+        return false;
+    }
+    if (m_gate) {
+        const QString refusal = m_gate();
+        if (!refusal.isEmpty()) {
+            m_armed = false;
+            emit refused(refusal);
+            update();
+            return false;
+        }
+    }
+    if (m_armed) {
+        // Second press within 3 s: the knob's version of holding.
+        fire();
+        return false;
+    }
+    m_armed = true;
+    m_disarm.start();
+    update();
+    return false;
+}
+
+bool HoldButton::knobHold(bool down) {
+    if (down) {
+        return begin();
+    }
+    if (m_holding) {
+        stop();
+    }
+    return true;
+}
+
+void HoldButton::knobCancel() {
+    m_armed = false;
+    m_disarm.stop();
+    stop();
+}
+
+void HoldButton::mousePressEvent(QMouseEvent* event) {
+    // Not a click: only a completed hold acts.
+    if (event->button() != Qt::LeftButton) {
+        event->ignore();
+        return;
+    }
+    begin();
+    event->accept();
+}
+
+void HoldButton::mouseReleaseEvent(QMouseEvent* event) {
+    if (m_holding) {
+        stop();
+    }
+    event->accept();
+}
+
+void HoldButton::mouseMoveEvent(QMouseEvent* event) {
+    // Sliding off the button cancels, like letting go.
+    if (m_holding && !rect().contains(event->position().toPoint())) {
+        stop();
+    }
+    event->accept();
+}
+
+void HoldButton::hideEvent(QHideEvent* event) {
+    m_armed = false;
+    m_disarm.stop();
+    stop();
+    TouchButton::hideEvent(event);
+}
+
+void HoldButton::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    const QRectF frame = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+    const bool enabled = isEnabled();
+    painter.setPen(QColor(m_armed || m_holding ? kText : kLine));
+    painter.setBrush(QColor(m_holding ? kRaise : kPanel));
+    painter.drawRoundedRect(frame, 4, 4);
+    const double sweep = progress();
+    QRectF filled = frame;
+    filled.setWidth(frame.width() * sweep);
+    if (sweep > 0) {
+        // The white fill sweeps left to right like a playhead.
+        QPainterPath clip;
+        clip.addRoundedRect(frame, 4, 4);
+        painter.save();
+        painter.setClipPath(clip);
+        painter.fillRect(filled, QColor(kText));
+        painter.restore();
+    }
+    const auto content = [&](bool ink) {
+        const QColor text = ink ? QColor(kGround) : QColor(enabled ? kText : kDim);
+        const QColor second = ink ? QColor(kGround) : QColor(kMuted);
+        if (!m_row) {
+            painter.setFont(uiFont(font(), 16, QFont::DemiBold));
+            painter.setPen(text);
+            const QString label = m_armed ? tr("Press again") : m_result.isEmpty() ? QPushButton::text() : m_result;
+            painter.drawText(rect().adjusted(8, 0, -8, 0),
+                    Qt::AlignCenter,
+                    QFontMetrics(painter.font()).elidedText(label, Qt::ElideRight, std::max(0, width() - 16)));
+            return;
+        }
+        paintIcon(painter, QRectF(16, (height() - 24) / 2.0, 24, 24), m_icon, text);
+        const int right = width() - 132;
+        const QFont titleFont = capsFont(font(), 16);
+        painter.setFont(titleFont);
+        painter.setPen(text);
+        painter.drawText(QRect(52, 8, std::max(0, right - 52), 26),
+                Qt::AlignLeft | Qt::AlignVCenter,
+                QFontMetrics(titleFont).elidedText(QPushButton::text(), Qt::ElideRight, std::max(0, right - 52)));
+        const QString line = !m_result.isEmpty() ? m_result : !m_reason.isEmpty() ? m_reason : m_detail;
+        const QFont lineFont = uiFont(font(), 15, QFont::Medium);
+        painter.setFont(lineFont);
+        // A reason (locked) prints in text colour: it is the thing to read.
+        painter.setPen(!ink && (!m_reason.isEmpty() || !m_result.isEmpty()) ? QColor(kText) : second);
+        painter.drawText(QRect(52, 34, std::max(0, width() - 68), 22),
+                Qt::AlignLeft | Qt::AlignVCenter,
+                QFontMetrics(lineFont).elidedText(line, Qt::ElideRight, std::max(0, width() - 68)));
+        painter.setFont(capsFont(font(), 14));
+        painter.setPen(ink ? QColor(kGround) : QColor(enabled ? (m_armed ? kText : kMuted) : kDim));
+        painter.drawText(QRect(right, 8, 116, 26), Qt::AlignRight | Qt::AlignVCenter,
+                m_armed ? tr("Press again") : tr("Hold"));
+    };
+    content(false);
+    if (sweep > 0) {
+        painter.save();
+        painter.setClipRect(filled);
+        content(true);
+        painter.restore();
+    }
+}
+
+GlyphButton::GlyphButton(Glyph glyph, const QString& accessibleName, QWidget* parent, const QString& objectName,
+        int size)
+        : TouchButton(QString(), parent, size),
+          m_glyph(glyph) {
+    setObjectName(objectName);
+    setAccessibleName(accessibleName);
+    setFixedWidth(size);
+}
+
+void GlyphButton::setGlyph(Glyph glyph) {
+    if (m_glyph != glyph) {
+        m_glyph = glyph;
+        update();
+    }
+}
+
+void GlyphButton::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    const QRectF frame = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+    painter.setPen(QColor(isDown() ? kText : kLine));
+    painter.setBrush(QColor(isDown() ? kRaise : kPanel));
+    painter.drawRoundedRect(frame, 4, 4);
+    const double size = std::min(24, std::min(width(), height()) - 12);
+    paintGlyph(painter,
+            QRectF((width() - size) / 2.0, (height() - size) / 2.0, size, size),
+            m_glyph,
+            QColor(isEnabled() ? kText : kDim));
 }
 
 } // namespace decklab::ui

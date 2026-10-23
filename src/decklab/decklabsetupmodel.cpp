@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QJsonDocument>
 #include <QRegularExpression>
+#include <algorithm>
 #include <cmath>
 
 namespace decklab {
@@ -143,6 +144,10 @@ QString channelPairLabel(int channelBase) {
 
 double testToneAmplitude() {
     return std::pow(10.0, kTestToneDbfs / 20.0);
+}
+
+double testToneAmplitude(double dbfs) {
+    return std::pow(10.0, std::min(dbfs, kTestToneBoostDbfs) / 20.0);
 }
 
 bool isPathOnMount(const QString& path, const QString& mountPath) {

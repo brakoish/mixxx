@@ -96,7 +96,7 @@ int alsaCardNumber(const QString& text) {
 
 // Sine burst written straight to one device while Mixxx's own streams are
 // closed. Runs on a worker thread; returns an error text or empty.
-QString playToneOnDevice(int deviceIndex, int baseChannel, int side, double sampleRate) {
+QString playToneOnDevice(int deviceIndex, int baseChannel, int side, double sampleRate, double amplitude) {
     const PaDeviceInfo* info = Pa_GetDeviceInfo(deviceIndex);
     if (!info) {
         return QObject::tr("Output not found");
@@ -136,14 +136,15 @@ QString playToneOnDevice(int deviceIndex, int baseChannel, int side, double samp
         }
     }
     if (error != paNoError) {
-        return QString::fromUtf8(Pa_GetErrorText(error));
+        // The detail goes to the log; the DJ gets what to do (F-20).
+        qWarning() << "DeckLab test tone: cannot open the output:" << Pa_GetErrorText(error);
+        return QObject::tr("Couldn't play on that output. Pick another one.");
     }
     error = Pa_StartStream(stream);
     if (error == paNoError) {
         // Left low, right high, both in between: easy to tell apart by ear.
         const double frequency = side == 0 ? 523.25 : side == 1 ? 783.99 : 659.25;
-        // Quiet (-24 dBFS) with 50 ms fades: it may play on a club PA.
-        const double amplitude = decklab::testToneAmplitude();
+        // Quiet (-24 dBFS, -18 at most) with 50 ms fades: it may play on a club PA.
         const int frames = static_cast<int>(sampleRate * 0.9);
         const int fade = std::max(1, static_cast<int>(sampleRate * 0.05));
         constexpr int kChunk = 512;
@@ -174,9 +175,11 @@ QString playToneOnDevice(int deviceIndex, int baseChannel, int side, double samp
         Pa_StopStream(stream);
     }
     Pa_CloseStream(stream);
-    return error == paNoError || error == paOutputUnderflowed
-            ? QString()
-            : QString::fromUtf8(Pa_GetErrorText(error));
+    if (error == paNoError || error == paOutputUnderflowed) {
+        return QString();
+    }
+    qWarning() << "DeckLab test tone: playback failed:" << Pa_GetErrorText(error);
+    return QObject::tr("Couldn't play on that output. Pick another one.");
 }
 } // namespace
 
@@ -1027,7 +1030,7 @@ bool DeckLabSystem::applyAudio(const decklab::AudioPlan& plan, QString* error) {
     return true;
 }
 
-void DeckLabSystem::playTestTone(const decklab::AudioRoute& route, int side, Done done) {
+void DeckLabSystem::playTestTone(const decklab::AudioRoute& route, int side, Done done, double dbfs) {
     auto* sound = m_services.sound.get();
     if (!sound || !route.isValid()) {
         done(false, tr("Choose an output first."));
@@ -1062,8 +1065,9 @@ void DeckLabSystem::playTestTone(const decklab::AudioRoute& route, int side, Don
     sound->closeActiveConfig();
     auto result = std::make_shared<QString>();
     const int base = route.channelBase;
-    QThread* worker = QThread::create([deviceIndex, base, side, rate, result] {
-        *result = playToneOnDevice(deviceIndex, base, side, rate);
+    const double amplitude = decklab::testToneAmplitude(dbfs);
+    QThread* worker = QThread::create([deviceIndex, base, side, rate, amplitude, result] {
+        *result = playToneOnDevice(deviceIndex, base, side, rate, amplitude);
     });
     connect(worker, &QThread::finished, this, [this, worker, result, done] {
         worker->deleteLater();

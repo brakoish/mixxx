@@ -13,6 +13,7 @@
 #include <QLineEdit>
 #include <QLocale>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSet>
@@ -27,6 +28,7 @@
 #include "control/controlobject.h"
 #include "decklab/decklabdclient.h"
 #include "decklab/decklabsystem.h"
+#include "decklab/decklabinstruments.h"
 #include "decklab/decklabui.h"
 #include "moc_decklabsystempages.cpp"
 #include "util/versionstore.h"
@@ -35,6 +37,7 @@ using namespace decklab::ui;
 using Section = DeckLabSystemPage::Section;
 
 namespace {
+constexpr int kHeatTile = 100;
 
 // Public source of this Mixxx fork, for the GPL source offer on About. A fork
 // that publishes its own builds points this at its own repository.
@@ -102,13 +105,16 @@ class SectionPage : public QWidget {
         auto* header = new QWidget(this);
         header->setFixedHeight(52);
         auto* headerRow = hbox(8);
-        headerRow->setContentsMargins(4, 4, 12, 4);
+        headerRow->setContentsMargins(8, 4, 12, 4);
         header->setLayout(headerRow);
-        auto* back = button(tr("‹  System"), header, QStringLiteral("decklab-system-back"), 44);
-        back->setProperty("quiet", true);
-        back->setFixedWidth(120);
+        // One page header (R-15): a 44 px back glyph, the breadcrumb, the title.
+        auto* back = new GlyphButton(Glyph::Back, tr("Back to Unit"), header, QStringLiteral("decklab-system-back"));
         connect(back, &QPushButton::clicked, owner, [owner] { owner->showSection(Section::Home); });
         headerRow->addWidget(back);
+        auto* crumb = new QLabel(tr("UNIT /"), header);
+        crumb->setObjectName(QStringLiteral("decklab-system-crumb"));
+        crumb->setStyleSheet(QStringLiteral("font-size:14px;font-weight:600;color:#9AA3AF;"));
+        headerRow->addWidget(crumb);
         m_heading = title(heading, header);
         headerRow->addWidget(m_heading, 1);
         m_headerExtra = hbox(8);
@@ -492,18 +498,18 @@ class WifiPage : public SectionPage {
             });
             lineLayout->addWidget(row, 1);
             if (saved) {
-                auto* forget = button(tr("Forget"), line, QStringLiteral("decklab-wifi-forget"), 56);
-                forget->setFixedWidth(96);
-                connect(forget, &QPushButton::clicked, this, [this, ssid] {
-                    Confirm::ask(window(), tr("Forget %1?").arg(ssid),
-                            tr("Deck Lab won't join this network automatically any more."),
-                            tr("Forget"), [this, ssid] {
-                                call(QStringLiteral("wifi.forget"), QJsonObject{{QStringLiteral("ssid"), ssid}},
-                                        [this, ssid](const DeckLabdReply& reply) {
-                                            say(reply.ok ? tr("Forgot %1.").arg(ssid) : failure(reply), !reply.ok);
-                                            refreshStatus();
-                                            scan();
-                                        });
+                // Hold to forget (Signature 4): no modal, no accidental brush.
+                auto* forget = new HoldButton(tr("Forget"), line, QStringLiteral("decklab-wifi-forget"), 56);
+                forget->setFixedWidth(112);
+                connect(forget, &QPushButton::clicked, this, [this] { say(tr("Hold Forget to forget a network.")); });
+                connect(forget, &HoldButton::confirmed, this, [this, ssid] {
+                    call(QStringLiteral("wifi.forget"), QJsonObject{{QStringLiteral("ssid"), ssid}},
+                            [this, ssid](const DeckLabdReply& reply) {
+                                say(reply.ok ? tr("Forgot %1. You'll need the password again.").arg(ssid)
+                                             : failure(reply),
+                                        !reply.ok);
+                                refreshStatus();
+                                scan();
                             });
                 });
                 lineLayout->addWidget(forget);
@@ -779,13 +785,11 @@ class BluetoothPage : public SectionPage {
             });
             lineLayout->addWidget(action);
             if (paired) {
-                auto* forget = button(tr("Forget"), line, QStringLiteral("decklab-bt-forget"), 56);
-                forget->setFixedWidth(96);
-                connect(forget, &QPushButton::clicked, this, [this, address, name] {
-                    Confirm::ask(window(), tr("Forget %1?").arg(name),
-                            tr("You'll need to pair it again to use it."), tr("Forget"),
-                            [this, address] { run(QStringLiteral("bt.forget"), address); });
-                });
+                // Hold to forget (Signature 4).
+                auto* forget = new HoldButton(tr("Forget"), line, QStringLiteral("decklab-bt-forget"), 56);
+                forget->setFixedWidth(112);
+                connect(forget, &QPushButton::clicked, this, [this] { say(tr("Hold Forget to forget a device.")); });
+                connect(forget, &HoldButton::confirmed, this, [this, address] { run(QStringLiteral("bt.forget"), address); });
                 lineLayout->addWidget(forget);
             }
             m_listLayout->addWidget(line);
@@ -1241,14 +1245,16 @@ class StoragePage : public SectionPage {
                         tr("Make writable"), [this, drive] { useForRecordings(drive); }, false);
             });
             actions->addWidget(record, 1);
-            auto* eject = button(tr("Eject"), panel, QStringLiteral("decklab-drive-eject"), 48);
+            // Hold to eject (Signature 4). Refused up front, with the reason,
+            // if a loaded track lives here or a recording writes to it.
+            auto* eject = new HoldButton(tr("Eject"), panel, QStringLiteral("decklab-drive-eject"), 48);
+            eject->setGate([this, drive] { return m_system ? m_system->ejectRefusal(drive) : QString(); });
+            connect(eject, &HoldButton::refused, this, [this](const QString& refusal) { say(refusal, true); });
             connect(eject, &QPushButton::clicked, this, [this, drive] {
-                // Refuse up front, with the reason, if a loaded track lives here.
-                const QString refusal = m_system->ejectRefusal(drive);
-                if (!refusal.isEmpty()) {
-                    say(refusal, true);
-                    return;
-                }
+                const QString refusal = m_system ? m_system->ejectRefusal(drive) : QString();
+                say(refusal.isEmpty() ? tr("Hold Eject to eject the drive.") : refusal, !refusal.isEmpty());
+            });
+            connect(eject, &HoldButton::confirmed, this, [this, drive] {
                 m_system->ejectDrive(drive, [self = QPointer<StoragePage>(this)](bool ok, const QString& text) {
                     if (self) {
                         self->say(text, !ok);
@@ -1315,42 +1321,31 @@ class StoragePage : public SectionPage {
 };
 
 // ---------------------------------------------------------------- Power --
+// r4-system (Signature 4): hold to confirm. Hold 1.2 s while the white fill
+// sweeps like a playhead; let go early and nothing happens. While anything
+// plays the rows dim and say why. The result appears in place.
 class PowerPage : public SectionPage {
   public:
     explicit PowerPage(DeckLabSystemPage* owner)
             : SectionPage(owner, Section::Power, tr("Power")) {
-        m_restart = addPowerAction(Icon::Restart, tr("Restart Deck Lab"),
-                tr("Reload the DJ software. Takes about 15 seconds."), QStringLiteral("decklab-power-restart"),
-                [this] {
-                    ask(tr("Restart Deck Lab?"), tr("The DJ software closes and opens again. Your settings are saved."),
-                            tr("Restart"), [this] {
-                                if (m_system) {
-                                    m_system->restartDeckLab();
-                                }
-                            });
-                });
-        m_reboot = addPowerAction(Icon::Power, tr("Reboot"), tr("Restart the whole unit."),
-                QStringLiteral("decklab-power-reboot"), [this] {
-                    ask(tr("Reboot Deck Lab?"), tr("The unit restarts. This takes about a minute."), tr("Reboot"),
-                            [this] { power(QStringLiteral("reboot")); });
-                });
-        m_shutdown = addPowerAction(Icon::Power, tr("Shut down"), tr("Turn Deck Lab off safely before unplugging it."),
-                QStringLiteral("decklab-power-shutdown"), [this] {
-                    ask(tr("Shut down Deck Lab?"),
-                            tr("The screen goes dark. Wait until the green light stops blinking, then unplug the power."),
-                            tr("Shut down"), [this] { power(QStringLiteral("shutdown")); });
-                });
-        m_layout->addWidget(muted(tr("These are refused while any deck or sampler is playing."), m_content));
+        m_restart = addHold(Icon::Restart, tr("Restart app"), tr("About 15 s. Settings are kept."),
+                QStringLiteral("decklab-power-restart"), QStringLiteral("restart"));
+        m_reboot = addHold(Icon::Restart, tr("Restart unit"), tr("About a minute."),
+                QStringLiteral("decklab-power-reboot"), QStringLiteral("reboot"));
+        m_shutdown = addHold(Icon::Power, tr("Turn off"), tr("Do this before unplugging."),
+                QStringLiteral("decklab-power-shutdown"), QStringLiteral("shutdown"));
         m_layout->addStretch(1);
+        // While shown: dim the rows the moment a deck starts.
+        m_poll.setInterval(1000);
+        connect(&m_poll, &QTimer::timeout, this, [this] { refreshReasons(); });
     }
 
     void activate() override {
-        const bool service = online();
-        m_reboot->setEnabled(service);
-        m_shutdown->setEnabled(service);
-        m_reboot->setTexts(tr("Reboot"), service ? tr("Restart the whole unit.") : tr("Needs the system service."));
-        m_shutdown->setTexts(tr("Shut down"),
-                service ? tr("Turn Deck Lab off safely before unplugging it.") : tr("Needs the system service."));
+        refreshReasons();
+        m_poll.start();
+    }
+    void deactivate() override {
+        m_poll.stop();
     }
 
   protected:
@@ -1359,43 +1354,40 @@ class PowerPage : public SectionPage {
     }
 
   private:
-    Row* addPowerAction(Icon icon, const QString& name, const QString& detail, const QString& objectName,
-            std::function<void()> action) {
-        auto* row = new Row(name, detail, m_content, objectName);
-        row->setRowIcon(icon);
-        row->setChevron(true);
-        connect(row, &QPushButton::clicked, this, std::move(action));
+    HoldButton* addHold(Icon icon, const QString& name, const QString& detail, const QString& objectName,
+            const QString& action) {
+        auto* row = new HoldButton(name, m_content, objectName);
+        row->setRow(icon, detail);
+        row->setGate([this] { return m_owner->playingRefusal(); });
+        connect(row, &HoldButton::refused, this, [this](const QString& reason) { say(reason, true); });
+        connect(row, &QPushButton::clicked, this, [this] { say(tr("Hold the row to confirm.")); });
+        connect(row, &HoldButton::confirmed, this, [this, row, action] {
+            const QString refusal = m_owner->power(action);
+            if (!refusal.isEmpty()) {
+                say(refusal, true);
+                return;
+            }
+            row->setResult(action == QStringLiteral("shutdown")
+                            ? tr("Turning off… unplug when the green light stops blinking.")
+                            : action == QStringLiteral("reboot") ? tr("Restarting the unit…")
+                                                                 : tr("Restarting the app…"));
+        });
         m_layout->addWidget(row);
         return row;
     }
 
-    void ask(const QString& heading, const QString& text, const QString& confirm, std::function<void()> action) {
-        if (m_system && m_system->anyPlaying()) {
-            say(tr("Stop all decks and samplers first."), true);
-            return;
-        }
-        Confirm::ask(window(), heading, text, confirm, [this, action] {
-            // Check again: a controller may have started a deck meanwhile.
-            if (m_system && m_system->anyPlaying()) {
-                say(tr("Stop all decks and samplers first."), true);
-                return;
-            }
-            action();
-        });
+    void refreshReasons() {
+        const QString playing = m_owner->playingRefusal();
+        const bool service = online();
+        m_restart->setReason(playing);
+        m_reboot->setReason(!playing.isEmpty() ? playing : service ? QString() : tr("Unavailable: system service offline."));
+        m_shutdown->setReason(!playing.isEmpty() ? playing : service ? QString() : tr("Unavailable: system service offline."));
     }
 
-    void power(const QString& action) {
-        call(QStringLiteral("system.power"), QJsonObject{{QStringLiteral("action"), action}},
-                [this, action](const DeckLabdReply& reply) {
-                    say(reply.ok ? (action == QStringLiteral("reboot") ? tr("Rebooting…") : tr("Shutting down…"))
-                                 : failure(reply),
-                            !reply.ok);
-                });
-    }
-
-    Row* m_restart;
-    Row* m_reboot;
-    Row* m_shutdown;
+    HoldButton* m_restart;
+    HoldButton* m_reboot;
+    HoldButton* m_shutdown;
+    QTimer m_poll;
 };
 
 // ---------------------------------------------------------------- About --
@@ -1473,6 +1465,12 @@ class AboutPage : public SectionPage {
         addSource(1, tr("Licence"), tr("GNU GPL, version 2 or later"), QStringLiteral("decklab-about-licence"));
         m_layout->addWidget(source);
         m_layout->addWidget(panel);
+        auto* maintenance = new Row(tr("Maintenance"), tr("Logs, reset, desktop"), m_content,
+                QStringLiteral("decklab-about-maintenance"));
+        maintenance->setRowIcon(Icon::Wrench);
+        maintenance->setChevron(true);
+        connect(maintenance, &QPushButton::clicked, owner, [owner] { owner->showSection(Section::Maintenance); });
+        m_layout->addWidget(maintenance);
         m_layout->addStretch(1);
         m_refresh.setInterval(5000);
         connect(&m_refresh, &QTimer::timeout, this, [this] { refresh(); });
@@ -1599,39 +1597,106 @@ DeckLabSystemPage::DeckLabSystemPage(QWidget* parent)
     root->addWidget(m_stack);
     auto* home = new QWidget(m_stack);
     home->setObjectName(QStringLiteral("decklab-system-home"));
-    auto* homeLayout = vbox(home, 14, 10);
-    homeLayout->setContentsMargins(14, 10, 14, 14);
+    auto* homeLayout = vbox(home, 16, 8);
+    homeLayout->setContentsMargins(8, 4, 16, 16);
     auto* header = hbox(8);
-    header->addWidget(title(tr("System"), home), 1);
-    m_serviceState = muted(QString(), home);
+    auto* back = new GlyphButton(Glyph::Back, tr("Back to Settings"), home, QStringLiteral("decklab-system-home-back"));
+    connect(back, &QPushButton::clicked, this, &DeckLabSystemPage::backRequested);
+    header->addWidget(back);
+    auto* crumb = new QLabel(tr("SETTINGS /"), home);
+    crumb->setObjectName(QStringLiteral("decklab-system-crumb"));
+    crumb->setStyleSheet(QStringLiteral("font-size:14px;font-weight:600;color:#9AA3AF;"));
+    header->addWidget(crumb);
+    header->addWidget(title(tr("Unit"), home), 1);
+    // Said only when something is wrong (Y-01, Y-05).
+    m_serviceState = new QLabel(home);
     m_serviceState->setObjectName(QStringLiteral("decklab-system-service-state"));
+    m_serviceState->setProperty("role", QStringLiteral("caution"));
     m_serviceState->setWordWrap(false);
     header->addWidget(m_serviceState);
     homeLayout->addLayout(header);
     auto* grid = new QGridLayout();
-    grid->setHorizontalSpacing(10);
-    grid->setVerticalSpacing(10);
-    const QList<std::tuple<Section, Icon, QString>> tiles{
-            {Section::Wifi, Icon::Wifi, tr("Wi-Fi")},
-            {Section::Bluetooth, Icon::Bluetooth, tr("Bluetooth")},
-            {Section::Screen, Icon::Screen, tr("Screen")},
-            {Section::Time, Icon::Clock, tr("Date & time")},
-            {Section::Storage, Icon::Usb, tr("Storage")},
-            {Section::Power, Icon::Power, tr("Power")},
-            {Section::About, Icon::Info, tr("About")},
-            {Section::Maintenance, Icon::Wrench, tr("Maintenance")},
+    grid->setHorizontalSpacing(8);
+    grid->setVerticalSpacing(8);
+    grid->setContentsMargins(8, 0, 0, 0);
+    // The back panel of the unit (Signature 3): eight live tiles, 4 x 2.
+    const QList<std::tuple<int, QString, QString>> tiles{
+            {static_cast<int>(Section::Wifi), tr("Wi-Fi"), QStringLiteral("wifi")},
+            {static_cast<int>(Section::Bluetooth), tr("Bluetooth"), QStringLiteral("bluetooth")},
+            {static_cast<int>(Section::Screen), tr("Screen"), QStringLiteral("screen")},
+            {static_cast<int>(Section::Time), tr("Time"), QStringLiteral("time")},
+            {static_cast<int>(Section::Storage), tr("USB"), QStringLiteral("storage")},
+            {kHeatTile, tr("Heat"), QStringLiteral("heat")},
+            {static_cast<int>(Section::Power), tr("Power"), QStringLiteral("power")},
+            {static_cast<int>(Section::About), tr("About"), QStringLiteral("about")},
     };
     int index = 0;
-    for (const auto& [section, icon, name] : tiles) {
-        auto* tile = new Tile(icon, name, home, QStringLiteral("decklab-system-tile-%1").arg(sectionKey(section)));
-        const Section target = section;
+    for (const auto& [key, name, objectKey] : tiles) {
+        auto* tile = new DeckLabLiveTile(name, home, QStringLiteral("decklab-system-tile-%1").arg(objectKey));
+        // Heat details live on About.
+        const Section target = key == kHeatTile ? Section::About : static_cast<Section>(key);
         connect(tile, &QPushButton::clicked, this, [this, target] { showSection(target); });
-        grid->addWidget(tile, index / 2, index % 2);
-        m_tiles.insert(static_cast<int>(section), tile);
+        grid->addWidget(tile, index / 4, index % 4);
+        m_tiles.insert(key, tile);
         ++index;
     }
-    homeLayout->addLayout(grid);
-    homeLayout->addStretch(1);
+    for (Section quiet : {Section::Screen, Section::Power, Section::About}) {
+        m_tiles.value(static_cast<int>(quiet))->setLampVisible(false);
+    }
+    // Screen: brightness inline, snapped to 10s, with booth presets (Y-27, Y-28).
+    auto* screen = m_tiles.value(static_cast<int>(Section::Screen));
+    auto* steps = hbox(4);
+    auto* dimmer = new GlyphButton(Glyph::Minus, tr("Dimmer"), screen, QStringLiteral("decklab-tile-brightness-down"));
+    auto* brighter = new GlyphButton(Glyph::Plus, tr("Brighter"), screen, QStringLiteral("decklab-tile-brightness-up"));
+    dimmer->setMinimumWidth(44);
+    dimmer->setMaximumWidth(QWIDGETSIZE_MAX);
+    brighter->setMinimumWidth(44);
+    brighter->setMaximumWidth(QWIDGETSIZE_MAX);
+    dimmer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    brighter->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    steps->addWidget(dimmer);
+    steps->addWidget(brighter);
+    auto* presets = hbox(4);
+    auto* booth = button(tr("Booth"), screen, QStringLiteral("decklab-tile-brightness-booth"), 44);
+    auto* day = button(tr("Daylight"), screen, QStringLiteral("decklab-tile-brightness-day"), 44);
+    presets->addWidget(booth);
+    presets->addWidget(day);
+    screen->controls()->addLayout(steps);
+    screen->controls()->addLayout(presets);
+    connect(dimmer, &QPushButton::clicked, this, [this] {
+        setBrightness(m_brightness <= 10 ? 5 : ((m_brightness + 9) / 10 - 1) * 10);
+    });
+    connect(brighter, &QPushButton::clicked, this, [this] { setBrightness(std::min(100, (m_brightness / 10 + 1) * 10)); });
+    connect(booth, &QPushButton::clicked, this, [this] { setBrightness(30); });
+    connect(day, &QPushButton::clicked, this, [this] { setBrightness(100); });
+    m_brightnessSend.setSingleShot(true);
+    m_brightnessSend.setInterval(120);
+    connect(&m_brightnessSend, &QTimer::timeout, this, [this] {
+        if (m_system && m_system->isReady() && m_brightness >= 5) {
+            m_system->client()->call(QStringLiteral("display.set"),
+                    QJsonObject{{QStringLiteral("brightness"), m_brightness}}, [](const DeckLabdReply&) {});
+        }
+    });
+    // Power: hold to restart or turn off, right here.
+    auto* powerTile = m_tiles.value(static_cast<int>(Section::Power));
+    for (const auto& [label, action, name] : {std::tuple{tr("Restart app"), QStringLiteral("restart"),
+                                                      QStringLiteral("decklab-tile-power-restart")},
+                 std::tuple{tr("Turn off"), QStringLiteral("shutdown"), QStringLiteral("decklab-tile-power-off")}}) {
+        auto* hold = new HoldButton(label, powerTile, name, 44);
+        hold->setGate([this] { return playingRefusal(); });
+        connect(hold, &HoldButton::refused, this, [hold](const QString& reason) { hold->setResult(reason); });
+        connect(hold, &HoldButton::confirmed, this, [this, hold, action = action] {
+            const QString refusal = power(action);
+            hold->setResult(refusal.isEmpty() ? (action == QStringLiteral("shutdown") ? tr("Turning off…")
+                                                                                       : tr("Restarting…"))
+                                              : refusal);
+        });
+        powerTile->controls()->addWidget(hold);
+        m_powerHolds.append(hold);
+    }
+    homeLayout->addLayout(grid, 1);
+    m_clockTimer.setSingleShot(true);
+    connect(&m_clockTimer, &QTimer::timeout, this, [this] { refreshClock(); });
     m_stack->addWidget(home);
     const QList<QWidget*> sections{new WifiPage(this),
             new BluetoothPage(this),
@@ -1664,6 +1729,9 @@ void DeckLabSystemPage::setEmbedded(bool embedded) {
     for (auto* back : backs) {
         back->setVisible(!embedded);
     }
+    for (auto* crumb : findChildren<QLabel*>(QStringLiteral("decklab-system-crumb"))) {
+        crumb->setVisible(!embedded);
+    }
 }
 
 void DeckLabSystemPage::setSystem(DeckLabSystem* system) {
@@ -1674,9 +1742,11 @@ void DeckLabSystemPage::setSystem(DeckLabSystem* system) {
     if (system) {
         connect(system, &DeckLabSystem::readyChanged, this, [this](bool) { refreshTiles(); });
         connect(system, &DeckLabSystem::usbChanged, this, [this](const QJsonArray&) { refreshTiles(); });
+        connect(system, &DeckLabSystem::thermalChanged, this, [this] { refreshTiles(); });
         connect(system->client(), &DeckLabdClient::eventReceived, this, [this](const QString& topic, const QJsonObject&) {
             if (m_current == Section::Home && isVisible() &&
-                    (topic.startsWith(QStringLiteral("wifi.")) || topic.startsWith(QStringLiteral("bt.")))) {
+                    (topic.startsWith(QStringLiteral("wifi.")) || topic.startsWith(QStringLiteral("bt.")) ||
+                            topic.startsWith(QStringLiteral("thermal.")))) {
                 refreshTiles();
             }
         });
@@ -1701,31 +1771,139 @@ void DeckLabSystemPage::showEvent(QShowEvent* event) {
 }
 
 void DeckLabSystemPage::hideEvent(QHideEvent* event) {
+    m_clockTimer.stop();
     QWidget::hideEvent(event);
+}
+
+QWidget* DeckLabSystemPage::tile(Section section) const {
+    return m_tiles.value(static_cast<int>(section));
+}
+
+QString DeckLabSystemPage::playingRefusal() const {
+    return m_system && m_system->anyPlaying() ? tr("Stop all decks and samplers first.") : QString();
+}
+
+QString DeckLabSystemPage::power(const QString& action) {
+    // Checked again here: a controller may have started a deck meanwhile.
+    const QString playing = playingRefusal();
+    if (!playing.isEmpty()) {
+        return playing;
+    }
+    if (!m_system) {
+        return tr("Unavailable: system service offline.");
+    }
+    if (action == QStringLiteral("restart")) {
+        m_system->restartDeckLab();
+        return QString();
+    }
+    if (!m_system->isReady()) {
+        return tr("Unavailable: system service offline.");
+    }
+    m_system->client()->call(QStringLiteral("system.power"), QJsonObject{{QStringLiteral("action"), action}},
+            [](const DeckLabdReply&) {});
+    return QString();
+}
+
+void DeckLabSystemPage::setBrightness(int value) {
+    if (m_brightness < 0) {
+        return;
+    }
+    // Never below 5 %, so the screen can't go black.
+    m_brightness = std::clamp(value, 5, 100);
+    if (auto* screen = m_tiles.value(static_cast<int>(Section::Screen))) {
+        screen->set(Lamp::Off, QStringLiteral("%1 %").arg(m_brightness), QString(), {});
+    }
+    m_brightnessSend.start();
+}
+
+void DeckLabSystemPage::refreshClock() {
+    auto* time = m_tiles.value(static_cast<int>(Section::Time));
+    if (!time) {
+        return;
+    }
+    if (!m_now.isValid()) {
+        time->set(Lamp::Off, QStringLiteral("--:--"), QString(), {tr("Time not known yet")});
+        return;
+    }
+    const QDateTime now = m_now.addMSecs(QDateTime::currentMSecsSinceEpoch() - m_nowAt);
+    QString city = m_zone.section(QLatin1Char('/'), -1);
+    city.replace(QLatin1Char('_'), QLatin1Char(' '));
+    const QString area = m_zone.contains(QLatin1Char('/')) ? m_zone.section(QLatin1Char('/'), 0, 0) : QString();
+    time->set(time->property("synced").toBool() ? Lamp::Go : Lamp::Caution,
+            now.toString(QStringLiteral("HH:mm")),
+            QString(),
+            {QLocale().toString(now.date(), QStringLiteral("ddd d MMM")),
+                    m_zone.isEmpty() ? tr("Time zone not set") : area.isEmpty() ? city : tr("%1 (%2)").arg(city, area)});
+    if (isVisible()) {
+        // Next minute boundary, only while the home is shown.
+        m_clockTimer.start(std::max(1000, 60000 - now.time().second() * 1000 - now.time().msec()));
+    }
 }
 
 void DeckLabSystemPage::refreshTiles() {
     const bool online = m_system && m_system->isReady();
-    m_serviceState->setText(online ? tr("System service connected") : tr("System service offline"));
-    const QString offline = tr("Offline");
-    const auto tile = [this](Section section) { return m_tiles.value(static_cast<int>(section)); };
-    for (Section section : {Section::Wifi, Section::Bluetooth, Section::Screen, Section::Time, Section::Maintenance}) {
-        tile(section)->setSubtitle(offline);
-    }
-    tile(Section::Power)->setSubtitle(tr("Restart or shut down"));
-    tile(Section::About)->setSubtitle(tr("Mixxx %1").arg(VersionStore::version()));
+    m_serviceState->setText(online ? QString() : tr("System service offline · Wi-Fi, Bluetooth and power are paused"));
+    m_serviceState->setVisible(!online && m_system);
+    const auto tile = [this](int key) { return m_tiles.value(key); };
+    const QString unavailable = tr("Unavailable");
     if (!online) {
-        tile(Section::Storage)->setSubtitle(offline);
+        for (Section section : {Section::Wifi, Section::Bluetooth, Section::Screen, Section::Time}) {
+            tile(static_cast<int>(section))->set(Lamp::Caution, QString(), QString(), {unavailable});
+        }
+        tile(static_cast<int>(Section::Wifi))->setSignal(-1);
+        tile(kHeatTile)->set(Lamp::Off, QString(), QString(), {unavailable});
+    }
+    for (auto* hold : std::as_const(m_powerHolds)) {
+        hold->setResult(QString());
+        hold->setReason(!online && hold->objectName().endsWith(QStringLiteral("off")) ? tr("Unavailable") : QString());
+    }
+    tile(static_cast<int>(Section::Power))->set(Lamp::Off, QString(), QString(), {});
+    tile(static_cast<int>(Section::About))->set(Lamp::Off, QString(), tr("Deck Lab"), {tr("Source & licences")});
+    // USB: a capacity bar per drive, the recording drive marked.
+    const QJsonArray drives = online ? m_system->usbDrives() : QJsonArray();
+    QList<DeckLabLiveTile::Bar> bars;
+    const QString recording = m_system ? m_system->recordingDirectory() : QString();
+    for (const auto& value : drives) {
+        if (bars.size() == 2) {
+            break;
+        }
+        const QJsonObject drive = value.toObject();
+        DeckLabLiveTile::Bar bar;
+        bar.name = drive.value(QStringLiteral("label")).toString(tr("USB drive"));
+        const double size = drive.value(QStringLiteral("size_mb")).toDouble(0);
+        const double free = drive.value(QStringLiteral("free_mb")).toDouble(0);
+        bar.used = size > 0 ? 1.0 - free / size : 0;
+        bar.locked = drive.value(QStringLiteral("read_only")).toBool(true);
+        bar.record = !bar.locked && decklab::isPathOnMount(recording, drive.value(QStringLiteral("mount")).toString());
+        // WAV, 44.1 kHz stereo: about 606 MB an hour.
+        bar.detail = bar.record ? tr("REC · %1 h free").arg(std::floor(free / 606.0))
+                : bar.locked    ? tr("Read-only · %1 free").arg(formatMegabytes(free))
+                                : tr("%1 free").arg(formatMegabytes(free));
+        bars.append(bar);
+    }
+    auto* usb = tile(static_cast<int>(Section::Storage));
+    usb->setBars(bars);
+    usb->set(drives.isEmpty() ? Lamp::Off : Lamp::Go, QString(), QString(),
+            drives.isEmpty() ? QStringList{online ? tr("No USB drive") : unavailable}
+                    : drives.size() > 2 ? QStringList{tr("+%1 more").arg(drives.size() - 2)}
+                                        : QStringList{});
+    if (!online || !isVisible()) {
         return;
     }
-    tile(Section::Maintenance)->setSubtitle(tr("Desktop for servicing"));
-    const int drives = m_system->usbDrives().size();
-    tile(Section::Storage)->setSubtitle(drives == 0 ? tr("No USB drive")
-                    : drives == 1               ? tr("1 USB drive")
-                                                : tr("%1 USB drives").arg(drives));
-    if (!isVisible()) {
-        return;
-    }
+    // Heat: from the cached thermal state, refined by system.info below.
+    const QJsonObject thermal = m_system->thermal();
+    const auto heat = [this, tile](double temperature, const QString& level, bool lowPower) {
+        tile(kHeatTile)->set(lowPower || level == QStringLiteral("hot") || level == QStringLiteral("warm") ? Lamp::Caution
+                                                                                                           : Lamp::Go,
+                temperature >= 0 ? tr("%1 °C").arg(std::round(temperature)) : QString(),
+                QString(),
+                {lowPower                         ? tr("Low power · check the supply")
+                                : level == QStringLiteral("hot")  ? tr("Hot · give it air")
+                                : level == QStringLiteral("warm") ? tr("Warm")
+                                                                  : tr("Fine")});
+    };
+    heat(thermal.value(QStringLiteral("temp_c")).toDouble(-1), thermal.value(QStringLiteral("level")).toString(),
+            m_system->undervoltage());
     QPointer<DeckLabSystemPage> self(this);
     auto* client = m_system->client();
     client->call(QStringLiteral("wifi.status"), {}, [self](const DeckLabdReply& reply) {
@@ -1735,11 +1913,16 @@ void DeckLabSystemPage::refreshTiles() {
         const auto& status = reply.result;
         auto* wifi = self->m_tiles.value(static_cast<int>(Section::Wifi));
         if (!status.value(QStringLiteral("enabled")).toBool(true)) {
-            wifi->setSubtitle(tr("Off"));
+            wifi->setSignal(-1);
+            wifi->set(Lamp::Off, QString(), tr("Off"), {});
         } else if (status.value(QStringLiteral("connected")).toBool()) {
-            wifi->setSubtitle(tr("Connected · %1").arg(status.value(QStringLiteral("ssid")).toString()));
+            const int signal = status.value(QStringLiteral("signal")).toInt(-1);
+            wifi->setSignal(std::max(0, signal));
+            wifi->set(Lamp::Go, QString(), status.value(QStringLiteral("ssid")).toString(),
+                    {signal >= 0 ? tr("Signal %1 %").arg(signal) : tr("Connected")});
         } else {
-            wifi->setSubtitle(tr("Not connected"));
+            wifi->setSignal(0);
+            wifi->set(Lamp::Off, QString(), tr("Not connected"), {tr("Tap to choose a network")});
         }
     });
     client->call(QStringLiteral("bt.status"), {}, [self](const DeckLabdReply& reply) {
@@ -1748,11 +1931,11 @@ void DeckLabSystemPage::refreshTiles() {
         }
         auto* bluetooth = self->m_tiles.value(static_cast<int>(Section::Bluetooth));
         if (!reply.result.value(QStringLiteral("available")).toBool(true)) {
-            bluetooth->setSubtitle(tr("No adapter"));
+            bluetooth->set(Lamp::Off, QString(), tr("None"), {tr("This unit has no Bluetooth")});
             return;
         }
         if (!reply.result.value(QStringLiteral("powered")).toBool()) {
-            bluetooth->setSubtitle(tr("Off"));
+            bluetooth->set(Lamp::Off, QString(), tr("Off"), {});
             return;
         }
         QString connected;
@@ -1761,32 +1944,54 @@ void DeckLabSystemPage::refreshTiles() {
                 connected = device.toObject().value(QStringLiteral("name")).toString();
             }
         }
-        bluetooth->setSubtitle(connected.isEmpty() ? tr("On · high latency") : tr("On · %1").arg(connected));
+        // "On · high latency" with nothing connected read like a fault (Y-03).
+        bluetooth->set(connected.isEmpty() ? Lamp::On : Lamp::Go, QString(),
+                connected.isEmpty() ? tr("On") : connected,
+                {connected.isEmpty() ? tr("Nothing connected") : tr("Connected · arrives late")});
     });
     client->call(QStringLiteral("display.get"), {}, [self](const DeckLabdReply& reply) {
         if (!self || !reply.ok) {
             return;
         }
         auto* screen = self->m_tiles.value(static_cast<int>(Section::Screen));
-        screen->setSubtitle(reply.result.value(QStringLiteral("available")).toBool()
-                        ? tr("Brightness %1%").arg(reply.result.value(QStringLiteral("brightness")).toInt())
-                        : tr("Fixed brightness"));
+        const bool available = reply.result.value(QStringLiteral("available")).toBool();
+        for (auto* control : screen->findChildren<QPushButton*>()) {
+            control->setVisible(available);
+        }
+        if (!available) {
+            self->m_brightness = -1;
+            screen->set(Lamp::Off, QString(), tr("Fixed"), {tr("This screen sets its own brightness")});
+            return;
+        }
+        self->m_brightness = std::clamp(reply.result.value(QStringLiteral("brightness")).toInt(100), 5, 100);
+        screen->set(Lamp::Off, QStringLiteral("%1 %").arg(self->m_brightness), QString(), {});
     });
     client->call(QStringLiteral("time.status"), {}, [self](const DeckLabdReply& reply) {
         if (!self || !reply.ok) {
             return;
         }
-        QString zone = reply.result.value(QStringLiteral("timezone")).toString();
-        zone.replace(QLatin1Char('_'), QLatin1Char(' '));
-        self->m_tiles.value(static_cast<int>(Section::Time))->setSubtitle(zone.isEmpty() ? tr("Time zone not set") : zone);
+        self->m_zone = reply.result.value(QStringLiteral("timezone")).toString();
+        self->m_now = QDateTime::fromString(reply.result.value(QStringLiteral("now")).toString(), Qt::ISODate);
+        self->m_nowAt = QDateTime::currentMSecsSinceEpoch();
+        self->m_tiles.value(static_cast<int>(Section::Time))
+                ->setProperty("synced",
+                        reply.result.value(QStringLiteral("ntp")).toBool() &&
+                                reply.result.value(QStringLiteral("synced")).toBool());
+        self->refreshClock();
     });
-    client->call(QStringLiteral("system.info"), {}, [self](const DeckLabdReply& reply) {
+    client->call(QStringLiteral("system.info"), {}, [self, heat](const DeckLabdReply& reply) {
         if (!self || !reply.ok) {
             return;
         }
         const QString version = reply.result.value(QStringLiteral("decklab_version")).toString();
         if (!version.isEmpty()) {
-            self->m_tiles.value(static_cast<int>(Section::About))->setSubtitle(tr("Deck Lab %1").arg(version));
+            self->m_tiles.value(static_cast<int>(Section::About))
+                    ->set(Lamp::Off, QString(), version, {tr("Source & licences")});
         }
+        const QJsonObject thermal = self->m_system ? self->m_system->thermal() : QJsonObject();
+        heat(reply.result.value(QStringLiteral("temp_c")).toDouble(-1),
+                thermal.value(QStringLiteral("level")).toString(),
+                reply.result.value(QStringLiteral("undervoltage_now")).toBool() ||
+                        (self->m_system && self->m_system->undervoltage()));
     });
 }
