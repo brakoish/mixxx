@@ -41,6 +41,9 @@ class QStackedWidget;
 class QVBoxLayout;
 class QGridLayout;
 struct DeckLabBrowseState;
+namespace decklab {
+struct UsbStick;
+} // namespace decklab
 
 // A native appliance surface. All audio remains in Mixxx's existing engine.
 // No window coordinates, injected keys, desktop focus polling or MIDI IPC.
@@ -132,6 +135,30 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void showLoadUnavailable(int slot);
     int matchReferenceDeck();
     QStringList browseSegments() const;
+    // qw-library: source home, USB sticks, search scope, Match bar, knob focus.
+    QWidget* buildMatchBar(QWidget* parent);
+    void showHome(const QString& highlight = QString());
+    void rebuildHome(const QString& highlight);
+    void refreshHomeIfSticksChanged();
+    QString homeRootSubtitle(const QModelIndex& root);
+    QString stickSubtitle(const decklab::UsbStick& stick);
+    int libraryTrackCount();
+    void openHomeRow(int row);
+    void openStick(const QString& path);
+    void showFolder(const QString& path);
+    void openFolderRow(int row);
+    void openFolderTracks();
+    QModelIndex sidebarIndexForPath(const QString& path);
+    void retryRekordboxRead();
+    QString currentSourceName() const;
+    void openUsbInBrowse();
+    void showOnlyMatches();
+    void applyMatchFilter(bool force);
+    void updateMatchBar();
+    void scheduleMatchCount();
+    void refreshMatchCount();
+    void scheduleFocusReclaim();
+    void reclaimFocus();
     int displayedDeck(int side) const;
     void setDisplayedDeck(int side, int deck);
     QString fxGroup() const;

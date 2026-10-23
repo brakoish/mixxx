@@ -269,18 +269,13 @@ void seedDemoLibrary(Library* library, const QString& folder) {
     library->searchTracksInCollection(QString());
 }
 
-bool selectSidebarRoot(WDeckLab* surface, const QString& icon) {
-    auto* sidebar = surface->findChild<WLibrarySidebar*>();
-    if (!sidebar) return false;
-    auto* model = sidebar->model();
-    for (int row = 0; row < model->rowCount(); ++row) {
-        const QModelIndex index = model->index(row, 0);
-        if (index.data(SidebarModel::IconNameRole).toString() == icon) {
-            sidebar->setCurrentIndex(index);
-            return true;
-        }
-    }
-    return false;
+// A generated plain USB stick (no rekordbox export) in the smoke profile, so
+// the source list shows a stick first. One silent track and one folder.
+void seedDemoStick(const QString& root) {
+    const QString stick = QDir(root).filePath(QStringLiteral("decklab/3A1F-0C2D"));
+    if (!QDir().mkpath(QDir(stick).filePath(QStringLiteral("House")))) return;
+    writeSilentWav(QDir(stick).filePath(QStringLiteral("Demo Stick Track.wav")), 2);
+    decklab::setUsbStickRootsForTesting({QDir(root).filePath(QStringLiteral("decklab"))});
 }
 
 bool selectListItem(WDeckLab* surface, const QString& text) {
@@ -402,6 +397,7 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
             // The system captures end on the first-run flow; close it so Browse is what gets captured.
             clickVisible(surface, QStringLiteral("decklab-setup-close"));
             seedDemoLibrary(surface->library(), QDir(config->getSettingsPath()).filePath("decklab-demo-music"));
+            seedDemoStick(QDir(config->getSettingsPath()).filePath("decklab-demo-media"));
             const auto press = [surface] { surface->browsePress(); return true; };
             auto captures = std::make_shared<QList<BrowseCapture>>(QList<BrowseCapture>{
                     {"sources", 500, [surface] {
@@ -410,7 +406,8 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                          ControlObject::set(ConfigKey("[DeckLabNative]", "browse_sources"), 1);
                          ControlObject::set(ConfigKey("[DeckLabNative]", "browse_sources"), 0);
                          QCoreApplication::processEvents();
-                         return selectSidebarRoot(surface, QStringLiteral("tracks"));
+                         // The source list: the stick first, then "Library".
+                         return selectListItem(surface, QStringLiteral("Library"));
                      }},
                     {"categories", 400, press},
                     {"artists", 400, [surface] {
@@ -444,7 +441,17 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                          surface->selectPage(1);
                          return selectTrack(surface, "Spiral Steps");
                      }},
+                    {"match-bar", 900, [surface] {
+                         // Faster tracks only, filtered: the Match bar and the
+                         // breadcrumb say what is shown.
+                         clickVisible(surface, QStringLiteral("decklab-match-faster"));
+                         clickVisible(surface, QStringLiteral("decklab-match-only"));
+                         QCoreApplication::processEvents();
+                         return selectTrack(surface, "Signal Fire");
+                     }},
                     {"four-decks", 700, [surface] {
+                         clickVisible(surface, QStringLiteral("decklab-match-only"));
+                         clickVisible(surface, QStringLiteral("decklab-match-both"));
                          QMetaObject::invokeMethod(surface->findChild<QComboBox*>("decklab-deck-layout"), "activated", Q_ARG(int, 2));
                          surface->selectPage(1);
                          return selectTrack(surface, "Signal Fire");

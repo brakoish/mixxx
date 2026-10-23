@@ -18,6 +18,10 @@ class WLibrary;
 class WLibrarySidebar;
 class WSearchLineEdit;
 class KeyboardEventFilter;
+class QTimer;
+namespace decklab {
+enum class KnobAction;
+} // namespace decklab
 
 class LoadToGroupController : public QObject {
     Q_OBJECT
@@ -143,6 +147,14 @@ class LibraryControl : public QObject {
 
     // Simulate pressing a key on the keyboard
     void emitKeyEvent(QKeyEvent&& event);
+    // Deck Lab: route one browse-knob event while the native surface is
+    // active. Refreshes the focus classification, then sends the event to
+    // Browse ([DeckLabNative] nativeAction) or, when a menu or modal dialog
+    // really is open, to that window. Returns false outside Deck Lab.
+    bool nativeKnob(const char* control,
+            decklab::KnobAction action,
+            double steps,
+            const char* nativeAction);
 
     // Controls to navigate vertically within currently focused widget (up/down buttons)
     std::unique_ptr<ControlPushButton> m_pMoveUp;
@@ -165,6 +177,10 @@ class LibraryControl : public QObject {
     std::unique_ptr<ControlEncoder> m_pMoveFocus;
     std::unique_ptr<ControlPushButton> m_pFocusedWidgetCO;
     FocusWidget m_focusedWidget;
+    // Deck Lab: re-checks the reported focus while a menu or dialog is
+    // reported, because a kiosk without a window manager may never send a
+    // focus signal when it closes.
+    QTimer* m_pNativeFocusPoll;
     std::unique_ptr<ControlPushButton> m_pRefocusPrevWidgetCO;
     FocusWidget m_prevFocusedWidget;
 

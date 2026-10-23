@@ -25,6 +25,9 @@
 #include <QStackedWidget>
 #include <QStyle>
 #include <QStyleOptionViewItem>
+#include <QMessageBox>
+#include <QSignalBlocker>
+#include <QTemporaryDir>
 #include <QTest>
 #include <QTextDocument>
 #include <QTextBrowser>
@@ -33,6 +36,7 @@
 #include "control/controlproxy.h"
 #include "effects/effectchain.h"
 #include "effects/effectslot.h"
+#include "library/decklabknob.h"
 #include "library/libraryfeature.h"
 #include "library/librarycontrol.h"
 #include "library/sidebarmodel.h"
@@ -106,9 +110,10 @@ class TestPlayers final : public PlayerManagerInterface {
 class TestSource final : public LibraryFeature {
   public:
     explicit TestSource(UserSettingsPointer config, const QString& icon = QString(),
-            const QString& name = QStringLiteral("USB library"))
+            const QString& name = QStringLiteral("USB library"), bool sample = true)
             : LibraryFeature(nullptr, config, icon), name(name) {
         auto* root = model.setRootItem(TreeItem::newRoot(this));
+        if (!sample) return;
         auto* genres = root->appendChild("Genres"); genres->appendChild("House"); genres->appendChild("Techno");
     }
     QVariant title() override { return name; }
@@ -143,8 +148,18 @@ class NativeDeckLabTest : public BaseSignalPathTest {
         source = std::make_unique<TestSource>(config());
         // A generated stand-in for Mixxx's collection root ("tracks" feature).
         collection = std::make_unique<TestSource>(config(), QStringLiteral("tracks"), QStringLiteral("Collection"));
+        // Desktop roots the appliance keeps under "More sources", generated.
+        autoDj = std::make_unique<TestSource>(config(), QStringLiteral("autodj"), QStringLiteral("Auto DJ"), false);
+        rekordbox = std::make_unique<TestSource>(config(), QStringLiteral("rekordbox"), QStringLiteral("Rekordbox"), false);
+        computer = std::make_unique<TestSource>(config(), QStringLiteral("computer"), QStringLiteral("Computer"), false);
         model = std::make_unique<SidebarModel>(); model->addLibraryFeature(source.get());
         model->addLibraryFeature(collection.get());
+        model->addLibraryFeature(autoDj.get());
+        model->addLibraryFeature(rekordbox.get());
+        model->addLibraryFeature(computer.get());
+        // USB sticks come from a generated, initially empty mount folder.
+        ASSERT_TRUE(QDir().mkpath(media.filePath(QStringLiteral("decklab"))));
+        decklab::setUsbStickRootsForTesting({media.filePath(QStringLiteral("decklab"))});
         navigation = std::make_unique<LibraryControl>(nullptr);
         soundStatus = std::make_unique<ControlObject>(ConfigKey("[SoundManager]", "status"));
         players = std::make_unique<TestPlayers>(); players->decks={m_pMixerDeck1.get(),m_pMixerDeck2.get(),m_pMixerDeck3.get(),fourthDeck.get()};
@@ -167,11 +182,16 @@ class NativeDeckLabTest : public BaseSignalPathTest {
     }
     void TearDown() override {
         panel.reset(); soundStatus.reset(); players.reset(); navigation.reset(); model.reset(); source.reset();
-        collection.reset();
+        collection.reset(); autoDj.reset(); rekordbox.reset(); computer.reset();
+        decklab::setUsbStickRootsForTesting({});
         fourthDeck.reset(); WaveformWidgetFactory::destroy(); BaseSignalPathTest::TearDown();
     }
     std::unique_ptr<TestSource> source;
     std::unique_ptr<TestSource> collection;
+    std::unique_ptr<TestSource> autoDj;
+    std::unique_ptr<TestSource> rekordbox;
+    std::unique_ptr<TestSource> computer;
+    QTemporaryDir media;
     std::unique_ptr<SidebarModel> model;
     std::unique_ptr<WDeckLab> panel;
     std::unique_ptr<TestPlayers> players;
@@ -201,6 +221,56 @@ class NativeDeckLabTest : public BaseSignalPathTest {
     void capture(const QString& name) {
         const QString output = qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
         if (!output.isEmpty()) EXPECT_TRUE(panel->grab().save(QDir(output).filePath(name))) << name.toStdString();
+    }
+    QListWidget* browseList() const {
+        return panel->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
+    }
+    QStringList listTexts() const {
+        QStringList texts;
+        if (auto* list = browseList()) for (int row = 0; row < list->count(); ++row) texts << list->item(row)->text();
+        return texts;
+    }
+    bool selectRow(const QString& text) const {
+        auto* list = browseList();
+        for (int row = 0; list && row < list->count(); ++row) {
+            if (list->item(row)->text() == text) { list->setCurrentRow(row); return true; }
+        }
+        return false;
+    }
+    QStringList crumbs() const {
+        auto* crumb = static_cast<DeckLabBreadcrumb*>(panel->findChild<QWidget*>(QStringLiteral("decklab-breadcrumb")));
+        return crumb ? crumb->segments() : QStringList();
+    }
+    // A generated stick folder at media/decklab/<uuid>.
+    QString makeStick(const QString& uuid, bool rekordboxExport) {
+        const QString path = media.filePath(QStringLiteral("decklab/") + uuid);
+        EXPECT_TRUE(QDir().mkpath(path));
+        if (rekordboxExport) {
+            EXPECT_TRUE(QDir().mkpath(path + QStringLiteral("/PIONEER/rekordbox")));
+            QFile pdb(path + QStringLiteral("/PIONEER/rekordbox/export.pdb"));
+            EXPECT_TRUE(pdb.open(QIODevice::WriteOnly));
+        }
+        return path;
+    }
+    // Mixxx's file browser tree ("Computer") down to path, as generated items.
+    void mirrorFolder(const QString& path) {
+        auto root = TreeItem::newRoot(computer.get());
+        TreeItem* at = root->appendChild(QStringLiteral("/"), QStringLiteral("/"));
+        QString walked = QStringLiteral("/");
+        for (const QString& part : QDir::cleanPath(path).split(QLatin1Char('/'), Qt::SkipEmptyParts)) {
+            walked += part + QLatin1Char('/');
+            at = at->appendChild(part, walked);
+        }
+        computer->model.setRootItem(std::move(root));
+    }
+    // The rekordbox feature's row for a stick (imported or not yet read).
+    void addRekordboxDevice(const QString& label, const QString& path, bool imported) {
+        auto root = TreeItem::newRoot(rekordbox.get());
+        auto* device = root->appendChild(label, QVariant(QList<QString>{path,
+                imported ? QStringLiteral("::isNotRecordboxDevice::") : QStringLiteral("::isRecordboxDevice::")}));
+        if (imported) device->appendChild(QStringLiteral("Generated Playlist"), QVariant(QList<QString>{path + QStringLiteral("/1"),
+                QStringLiteral("::isNotRecordboxDevice::")}));
+        rekordbox->model.setRootItem(std::move(root));
     }
 };
 
@@ -316,7 +386,10 @@ TEST_F(NativeDeckLabTest, UsbUtilityReturnsDirectlyToNativeSources) {
     ControlObject::set(ConfigKey("[DeckLabNative]", "browse_sources"), 0);
     QCoreApplication::processEvents();
     EXPECT_EQ(1, panel->currentPage()); EXPECT_FALSE(sidebar->rootIndex().isValid());
-    EXPECT_TRUE(sidebar->isVisible()); EXPECT_EQ(before, source->activations);
+    // The source list is the first screen.
+    EXPECT_TRUE(browseList()->isVisible()); EXPECT_FALSE(sidebar->isVisible());
+    EXPECT_EQ(QStringList{QStringLiteral("Sources")}, crumbs());
+    EXPECT_EQ(before, source->activations);
 }
 
 TEST_F(NativeDeckLabTest, TouchSearchUsesNativeKeyboardAndReturnsWaveforms) {
@@ -334,10 +407,11 @@ TEST_F(NativeDeckLabTest, TouchSearchUsesNativeKeyboardAndReturnsWaveforms) {
 
 TEST_F(NativeDeckLabTest, ToolRequestCanRepeatWithoutTimingRace) {
     ControlObject::set(ConfigKey("[DeckLabNative]", "tools_ready"), 1); QCoreApplication::processEvents();
-    auto* usb = panel->findChild<QPushButton*>("decklab-usb"); ASSERT_NE(nullptr, usb);
-    usb->click(); const double serial = ControlObject::get(ConfigKey("[DeckLabNative]", "tool_serial"));
-    usb->click(); EXPECT_EQ(serial + 1, ControlObject::get(ConfigKey("[DeckLabNative]", "tool_serial")));
-    EXPECT_EQ(1, ControlObject::get(ConfigKey("[DeckLabNative]", "tool_request")));
+    // The rail's USB opens Browse now; Settings keeps the storage tool.
+    auto* storage = panel->findChild<QPushButton*>("decklab-tool-10"); ASSERT_NE(nullptr, storage);
+    storage->click(); const double serial = ControlObject::get(ConfigKey("[DeckLabNative]", "tool_serial"));
+    storage->click(); EXPECT_EQ(serial + 1, ControlObject::get(ConfigKey("[DeckLabNative]", "tool_serial")));
+    EXPECT_EQ(10, ControlObject::get(ConfigKey("[DeckLabNative]", "tool_request")));
 }
 
 TEST_F(NativeDeckLabTest, SplitCueToggleReportsItsActualState) {
@@ -1823,8 +1897,20 @@ TEST_F(NativeDeckLabTest, BrowseToolsMatchPlayingFourthDeckAndGuardStaleUnload) 
     for (auto* action : menu->actions())
         if (action->text() == QStringLiteral("Match Deck 4")) match = action;
     ASSERT_NE(nullptr, match); ASSERT_TRUE(match->isEnabled()); match->trigger();
+    QCoreApplication::processEvents();
+    // B-42: no hidden search and no source switch; the Match bar and the
+    // breadcrumb show the filter, with a clear.
     auto* search = panel->findChild<WSearchLineEdit*>(); ASSERT_NE(nullptr, search);
-    EXPECT_TRUE(search->currentText().contains(QStringLiteral("~bpm:134.00")));
+    EXPECT_TRUE(search->currentText().isEmpty());
+    EXPECT_TRUE(library->isVisible());
+    auto* bar = panel->findChild<QWidget*>("decklab-match-bar"); ASSERT_NE(nullptr, bar);
+    EXPECT_TRUE(bar->isVisible());
+    auto* only = static_cast<DeckLabActionButton*>(panel->findChild<QPushButton*>("decklab-match-only"));
+    ASSERT_NE(nullptr, only);
+    EXPECT_EQ(DeckLabActionButton::Tone::Selected, only->tone());
+    ASSERT_FALSE(crumbs().isEmpty());
+    EXPECT_TRUE(crumbs().last().startsWith(QStringLiteral("Matches deck 4"))) << crumbs().join(" / ").toStdString();
+    EXPECT_TRUE(panel->findChild<QPushButton*>("decklab-match-clear")->isVisible());
     auto* unload = menu->findChild<QAction*>("decklab-unload-4"); ASSERT_NE(nullptr, unload);
     EXPECT_FALSE(unload->isEnabled());
     EXPECT_TRUE(fourthDeck->getEngineDeck()->getEngineBuffer()->isTrackLoaded());
@@ -2187,16 +2273,18 @@ TEST_F(NativeDeckLabTest, GenericControllerBrowseOpensBrowseWithoutTouchingDecks
     m_pMixerDeck1->loadFakeTrack(false, 128); ProcessBuffer(); QCoreApplication::processEvents();
     const auto before = deckSnapshot();
     ASSERT_EQ(0, panel->currentPage());
-    // An encoder turn on the Decks page opens Browse where it was left.
+    // An encoder turn on the Decks page opens Browse where it was left: the
+    // source list.
     pulseControl("[Library]", "MoveVertical", -1);
     EXPECT_EQ(1, panel->currentPage());
-    EXPECT_TRUE(sidebar->isVisible());
-    EXPECT_EQ(0, sidebar->currentIndex().row());
+    auto* home = browseList(); ASSERT_NE(nullptr, home);
+    EXPECT_TRUE(home->isVisible());
+    EXPECT_EQ(0, home->currentRow());
     EXPECT_EQ(0, source->activations);
     pulseControl("[Library]", "MoveVertical", 1);
-    EXPECT_EQ(1, sidebar->currentIndex().row());
+    EXPECT_EQ(1, home->currentRow());
     pulseControl("[Library]", "MoveVertical", -1);
-    EXPECT_EQ(0, sidebar->currentIndex().row());
+    EXPECT_EQ(0, home->currentRow());
     // The browse-knob press of those mappings (MoveFocusForward) enters.
     pulseControl("[Library]", "MoveFocusForward");
     EXPECT_EQ(1, source->activations);
@@ -2280,10 +2368,11 @@ TEST_F(NativeDeckLabTest, CollectionOpensCategoriesAndBackReturnsToSources) {
     panel->selectPage(1); QCoreApplication::processEvents();
     const QPersistentModelIndex collectionRoot = model->index(1, 0);
     ASSERT_EQ(QStringLiteral("tracks"), collectionRoot.data(SidebarModel::IconNameRole).toString());
-    sidebar->setCurrentIndex(collectionRoot); QCoreApplication::processEvents();
+    // Mixxx's collection is "Library" on the source list.
+    ASSERT_TRUE(selectRow(QStringLiteral("Library"))); QCoreApplication::processEvents();
     auto* card = static_cast<DeckLabTrackCard*>(panel->findChild<QWidget*>("decklab-track-card"));
     ASSERT_NE(nullptr, card);
-    EXPECT_EQ(QStringLiteral("Collection"), card->title());
+    EXPECT_EQ(QStringLiteral("Library"), card->title());
     panel->browsePress(); QCoreApplication::processEvents();
     auto* list = panel->findChild<QListWidget*>("decklab-browse-categories"); ASSERT_NE(nullptr, list);
     ASSERT_TRUE(list->isVisible());
@@ -2294,7 +2383,7 @@ TEST_F(NativeDeckLabTest, CollectionOpensCategoriesAndBackReturnsToSources) {
     EXPECT_EQ(1, collection->activations);
     auto* crumb = static_cast<DeckLabBreadcrumb*>(panel->findChild<QWidget*>("decklab-breadcrumb"));
     ASSERT_NE(nullptr, crumb);
-    EXPECT_EQ(QStringList{QStringLiteral("Collection")}, crumb->segments());
+    EXPECT_EQ(QStringList{QStringLiteral("Library")}, crumb->segments());
     // A knob turn highlights a category without opening it.
     ControlObject::set(ConfigKey("[Playlist]", "SelectPlaylist"), 2); QCoreApplication::processEvents();
     EXPECT_EQ(2, list->currentRow());
@@ -2304,9 +2393,11 @@ TEST_F(NativeDeckLabTest, CollectionOpensCategoriesAndBackReturnsToSources) {
     const QString output = qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
     if (!output.isEmpty()) EXPECT_TRUE(panel->grab().save(QDir(output).filePath("browse-categories-fixture.png")));
     panel->browseBack(); QCoreApplication::processEvents();
-    EXPECT_TRUE(sidebar->isVisible());
-    EXPECT_FALSE(list->isVisible());
-    EXPECT_EQ(collectionRoot, QPersistentModelIndex(sidebar->currentIndex()));
+    // Back to the source list, on the source just left.
+    EXPECT_TRUE(list->isVisible());
+    EXPECT_FALSE(sidebar->isVisible());
+    ASSERT_NE(nullptr, list->currentItem());
+    EXPECT_EQ(QStringLiteral("Library"), list->currentItem()->text());
     EXPECT_EQ(QStringList{QStringLiteral("Sources")}, crumb->segments());
 }
 
@@ -2339,6 +2430,388 @@ TEST_F(NativeDeckLabTest, BrowseScalesCleanlyTo1024x600And1280x800) {
                     QStringLiteral("browse-%1x%2.png").arg(size.width()).arg(size.height()))));
         }
     }
+}
+
+// qw-library: C-01. A menu or dialog that opened and closed must never leave
+// the browse knob dead. The kiosk has no window manager, so no focus signal
+// may follow the close; the knob must work without a tap.
+TEST_F(NativeDeckLabTest, BrowseKnobKeepsWorkingAfterMenusAndDialogsCloseWithoutATap) {
+    panel->selectPage(1); QCoreApplication::processEvents();
+    auto* list = browseList(); ASSERT_NE(nullptr, list);
+    ASSERT_TRUE(list->isVisible());
+    ASSERT_GE(list->count(), 3);
+    list->setCurrentRow(0);
+    const ConfigKey knob("[Library]", "MoveVertical");
+    const ConfigKey focus("[Library]", "focused_widget");
+    auto* tools = panel->findChild<QPushButton*>("decklab-browse-tools"); ASSERT_NE(nullptr, tools);
+    // 1. A menu really is open: the knob belongs to it and Browse stays put.
+    tools->click(); QCoreApplication::processEvents();
+    QPointer<QMenu> menu = panel->findChild<QMenu*>("decklab-browse-tools-menu");
+    ASSERT_TRUE(menu); ASSERT_TRUE(menu->isVisible());
+    const int redirected = decklab::knobEventsRedirected();
+    ControlObject::set(knob, 1); QCoreApplication::processEvents();
+    EXPECT_EQ(0, list->currentRow());
+    EXPECT_GT(decklab::knobEventsRedirected(), redirected);
+    EXPECT_EQ(static_cast<double>(FocusWidget::ContextMenu), ControlObject::get(focus));
+    // 2. It closes and nothing re-activates the window.
+    {
+        const QSignalBlocker noFocusSignals(qApp);
+        menu->close();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    }
+    ASSERT_FALSE(menu);
+    // 3. The next turn moves Browse. Scripts that read focused_widget first
+    // (the Numark overlay skips 4 and up) see the knob free again.
+    ControlObject::set(knob, 1); QCoreApplication::processEvents();
+    EXPECT_EQ(1, list->currentRow());
+    EXPECT_LT(ControlObject::get(focus), 4);
+    // The Numark overlay's turn control takes the same route.
+    ControlObject::set(ConfigKey("[Playlist]", "SelectPlaylist"), 1); QCoreApplication::processEvents();
+    EXPECT_EQ(2, list->currentRow());
+    ControlObject::set(ConfigKey("[Playlist]", "SelectPlaylist"), -2); QCoreApplication::processEvents();
+    EXPECT_EQ(0, list->currentRow());
+    // 4. A modal dialog and a message box follow the same rule.
+    for (int kind = 0; kind < 2; ++kind) {
+        QPointer<QDialog> dialog = kind == 0 ? new QDialog(panel.get())
+                                             : new QMessageBox(QMessageBox::Information, QStringLiteral("Status"),
+                                                       QStringLiteral("Generated message"), QMessageBox::Ok, panel.get());
+        dialog->setWindowModality(Qt::ApplicationModal);
+        dialog->show(); QCoreApplication::processEvents();
+        ASSERT_EQ(dialog.data(), QApplication::activeModalWidget()) << kind;
+        const int row = list->currentRow();
+        const int activations = source->activations;
+        ControlObject::set(knob, 1); QCoreApplication::processEvents();
+        EXPECT_EQ(row, list->currentRow()) << kind;
+        EXPECT_EQ(static_cast<double>(FocusWidget::Dialog), ControlObject::get(focus)) << kind;
+        // A script's direct press goes to the dialog, never to Browse behind it.
+        ControlObject::set(ConfigKey("[DeckLabNative]", "browse_press"), 1);
+        ControlObject::set(ConfigKey("[DeckLabNative]", "browse_press"), 0);
+        QCoreApplication::processEvents();
+        EXPECT_EQ(activations, source->activations) << kind;
+        EXPECT_EQ(1, panel->currentPage()) << kind;
+        {
+            const QSignalBlocker noFocusSignals(qApp);
+            if (dialog) dialog->hide();
+            delete dialog.data();
+        }
+        ControlObject::set(knob, 1); QCoreApplication::processEvents();
+        EXPECT_EQ(row + 1, list->currentRow()) << kind;
+        EXPECT_LT(ControlObject::get(focus), 4) << kind;
+        ControlObject::set(knob, -1); QCoreApplication::processEvents();
+    }
+    // 5. The press opens the highlighted source again.
+    list->setCurrentRow(0);
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_press"), 1);
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_press"), 0);
+    QCoreApplication::processEvents();
+    EXPECT_EQ(1, source->activations);
+    EXPECT_TRUE(sidebar->rootIndex().isValid());
+}
+
+// qw-library: B-35 and B-36. Search stays in the source you are in and the
+// breadcrumb says so.
+TEST_F(NativeDeckLabTest, SearchStaysInTheSourceYouAreIn) {
+    panel->selectPage(1); QCoreApplication::processEvents();
+    ASSERT_TRUE(selectRow(QStringLiteral("Library")));
+    panel->browsePress(); QCoreApplication::processEvents();
+    ASSERT_EQ(QStringList{QStringLiteral("Library")}, crumbs());
+    const int before = collection->activations;
+    panel->findChild<QPushButton*>("decklab-search")->click(); QCoreApplication::processEvents();
+    EXPECT_TRUE(library->isVisible());
+    EXPECT_EQ(before + 1, collection->activations); // its own tracks, not a reset
+    EXPECT_EQ(QStringLiteral("Library"), crumbs().value(0));
+    auto* keyboard = panel->findChild<QWidget*>("decklab-keyboard"); ASSERT_NE(nullptr, keyboard);
+    ASSERT_TRUE(keyboard->isVisible());
+    for (auto* b : keyboard->findChildren<QPushButton*>()) if (b->text() == "Q") { b->click(); break; }
+    QTest::qWait(800);
+    ASSERT_GE(crumbs().size(), 2);
+    EXPECT_EQ(QStringLiteral("Library"), crumbs().first());
+    EXPECT_EQ(QString::fromUtf8("Search “q”"), crumbs().last());
+    panel->findChild<QPushButton*>("decklab-search-done")->click();
+    // On a stick, search its tracks.
+    const QString stick = makeStick(QStringLiteral("3A1F-0C2D"), true);
+    addRekordboxDevice(QStringLiteral("DJ USB"), stick, true);
+    panel->browseBack(); panel->browseBack(); QCoreApplication::processEvents();
+    ASSERT_EQ(QStringList{QStringLiteral("Sources")}, crumbs());
+    ASSERT_TRUE(selectRow(QStringLiteral("USB stick (3A1F)"))) << listTexts().join(" / ").toStdString();
+    panel->browsePress(); QCoreApplication::processEvents();
+    ASSERT_EQ(QStringList{QStringLiteral("DJ USB")}, crumbs());
+    const int stickBefore = rekordbox->activations;
+    panel->findChild<QPushButton*>("decklab-search")->click(); QCoreApplication::processEvents();
+    EXPECT_TRUE(library->isVisible());
+    EXPECT_EQ(stickBefore + 1, rekordbox->activations);
+    EXPECT_EQ(QStringLiteral("DJ USB"), crumbs().value(0));
+    panel->findChild<QPushButton*>("decklab-search-done")->click();
+}
+
+// qw-library: B-01, B-03, B-05, U-03. The first screen says what is inside:
+// sticks first by label, "Library", two-line rows, desktop roots under More.
+TEST_F(NativeDeckLabTest, SourceListPutsSticksFirstAndSaysWhatIsInside) {
+    const QString plain = makeStick(QStringLiteral("55AA-1234"), false);
+    ASSERT_TRUE(QDir().mkpath(plain + QStringLiteral("/House")));
+    ASSERT_TRUE(QDir().mkpath(plain + QStringLiteral("/System Volume Information")));
+    { QFile track(plain + QStringLiteral("/Generated Track.mp3")); ASSERT_TRUE(track.open(QIODevice::WriteOnly)); }
+    makeStick(QStringLiteral("3A1F-0C2D"), true);
+    panel->selectPage(1); QCoreApplication::processEvents();
+    auto* list = browseList(); ASSERT_NE(nullptr, list); ASSERT_TRUE(list->isVisible());
+    EXPECT_EQ((QStringList{"USB stick (3A1F)", "USB stick (55AA)", "USB library", "Library", "More sources"}), listTexts());
+    const auto subtitle = [list](int row) {
+        return list->item(row)->data(DeckLabListDelegate::SubtitleRole).toString();
+    };
+    EXPECT_EQ(QStringLiteral("rekordbox · tap to read"), subtitle(0));
+    EXPECT_EQ(QStringLiteral("Files · 1 folder · 1 track"), subtitle(1));
+    EXPECT_EQ(QStringLiteral("1 item"), subtitle(2));
+    EXPECT_FALSE(subtitle(3).isEmpty());
+    EXPECT_EQ(QStringLiteral("Auto DJ · All USB exports · Computer"), subtitle(4));
+    // One glyph per concept.
+    EXPECT_EQ(static_cast<int>(decklab::Glyph::Usb), list->item(0)->data(DeckLabListDelegate::GlyphRole).toInt());
+    EXPECT_EQ(static_cast<int>(decklab::Glyph::Collection), list->item(3)->data(DeckLabListDelegate::GlyphRole).toInt());
+    EXPECT_EQ(static_cast<int>(decklab::Glyph::Sources), list->item(4)->data(DeckLabListDelegate::GlyphRole).toInt());
+    // Two-line rows, and 16/15 px type at 800x480.
+    EXPECT_GE(list->visualItemRect(list->item(0)).height(), 56);
+    capture(QStringLiteral("browse-source-home.png"));
+    // A plain stick opens its folder view: system folders hidden.
+    list->setCurrentRow(1);
+    panel->browsePress(); QCoreApplication::processEvents();
+    EXPECT_EQ((QStringList{"Tracks in this folder", "House"}), listTexts());
+    EXPECT_EQ(QStringList{QStringLiteral("USB stick (55AA)")}, crumbs());
+    ASSERT_TRUE(selectRow(QStringLiteral("House")));
+    panel->browsePress(); QCoreApplication::processEvents();
+    EXPECT_EQ((QStringList{"USB stick (55AA)", "House"}), crumbs());
+    EXPECT_EQ(QStringList{QStringLiteral("No music here")}, listTexts());
+    panel->browseBack(); QCoreApplication::processEvents();
+    // Its tracks come from Mixxx's file browser for that folder.
+    mirrorFolder(plain);
+    ASSERT_TRUE(selectRow(QStringLiteral("Tracks in this folder")));
+    panel->browsePress(); QCoreApplication::processEvents();
+    EXPECT_EQ(1, computer->activations);
+    EXPECT_TRUE(library->isVisible());
+    EXPECT_EQ((QStringList{"USB stick (55AA)", "Tracks"}), crumbs());
+    panel->browseBack(); panel->browseBack(); QCoreApplication::processEvents();
+    ASSERT_NE(nullptr, list->currentItem());
+    EXPECT_EQ(QStringLiteral("USB stick (55AA)"), list->currentItem()->text());
+    // "More sources" keeps the desktop roots reachable.
+    ASSERT_TRUE(selectRow(QStringLiteral("More sources")));
+    panel->browsePress(); QCoreApplication::processEvents();
+    EXPECT_TRUE(sidebar->isVisible());
+    EXPECT_EQ(5, model->rowCount(sidebar->rootIndex()));
+    EXPECT_EQ((QStringList{"Sources", "More sources"}), crumbs());
+    panel->browseBack(); QCoreApplication::processEvents();
+    EXPECT_TRUE(list->isVisible());
+    EXPECT_EQ(QStringLiteral("More sources"), list->currentItem()->text());
+    // The rail's USB opens the stick (U-01): with two, the list on the first.
+    auto* usb = panel->findChild<QPushButton*>("decklab-usb"); ASSERT_NE(nullptr, usb);
+    EXPECT_TRUE(usb->isEnabled());
+    panel->selectPage(0); usb->click(); QCoreApplication::processEvents();
+    EXPECT_EQ(1, panel->currentPage());
+    EXPECT_EQ(QStringLiteral("USB stick (3A1F)"), list->currentItem()->text());
+    // With one stick, straight into it.
+    QDir(media.filePath(QStringLiteral("decklab/3A1F-0C2D"))).removeRecursively();
+    panel->selectPage(0); usb->click(); QCoreApplication::processEvents();
+    EXPECT_EQ(1, panel->currentPage());
+    EXPECT_EQ(QStringList{QStringLiteral("USB stick (55AA)")}, crumbs());
+    EXPECT_EQ(QStringLiteral("Tracks in this folder"), list->item(0)->text());
+}
+
+// qw-library: B-10. An export that never finishes reading ends in an error
+// with a way out instead of an eternal "Reading…".
+TEST_F(NativeDeckLabTest, UnreadableRekordboxStickStopsReadingAndOffersItsFiles) {
+    config()->setValue(ConfigKey("[DeckLab]", "RekordboxReadTimeoutMs"), 300);
+    const QString stick = makeStick(QStringLiteral("3A1F-0C2D"), true);
+    ASSERT_TRUE(QDir().mkpath(stick + QStringLiteral("/Contents")));
+    addRekordboxDevice(QStringLiteral("DJ USB"), stick, false);
+    panel->selectPage(1); QCoreApplication::processEvents();
+    ASSERT_TRUE(selectRow(QStringLiteral("USB stick (3A1F)"))) << listTexts().join(" / ").toStdString();
+    panel->browsePress(); QCoreApplication::processEvents();
+    EXPECT_EQ(1, rekordbox->activations); // the read started
+    EXPECT_EQ(QStringList{QStringLiteral("DJ USB")}, crumbs());
+    auto* list = browseList();
+    ASSERT_GE(list->count(), 1);
+    EXPECT_EQ(QStringLiteral("Reading…"), list->item(0)->data(DeckLabListDelegate::CountRole).toString());
+    QTest::qWait(900);
+    EXPECT_EQ((QStringList{"Couldn't read this stick's rekordbox export", "Try again", "Browse its files"}), listTexts());
+    EXPECT_EQ(1, list->currentRow());
+    auto* card = static_cast<DeckLabTrackCard*>(panel->findChild<QWidget*>("decklab-track-card"));
+    EXPECT_EQ(QStringLiteral("DJ USB"), card->title());
+    capture(QStringLiteral("browse-usb-read-error.png"));
+    // Try again reads it again.
+    panel->browsePress(); QCoreApplication::processEvents();
+    EXPECT_EQ(2, rekordbox->activations);
+    EXPECT_EQ(QStringLiteral("Reading…"), list->item(0)->data(DeckLabListDelegate::CountRole).toString());
+    QTest::qWait(900);
+    ASSERT_TRUE(selectRow(QStringLiteral("Browse its files")));
+    panel->browsePress(); QCoreApplication::processEvents();
+    EXPECT_EQ(QStringList{QStringLiteral("Contents")}, listTexts());
+    EXPECT_EQ(QStringList{QStringLiteral("DJ USB")}, crumbs());
+    panel->browseBack(); QCoreApplication::processEvents();
+    EXPECT_EQ(QStringList{QStringLiteral("Sources")}, crumbs());
+    ASSERT_TRUE(selectRow(QStringLiteral("USB stick (3A1F)")));
+    EXPECT_EQ(QStringLiteral("rekordbox · couldn't read the export"),
+            list->currentItem()->data(DeckLabListDelegate::SubtitleRole).toString());
+}
+
+// qw-library: B-49..B-53. The Match bar shows the reference deck in its
+// colour, the BPM window and direction, the key rule, Only and a clear.
+TEST_F(NativeDeckLabTest, MatchBarShowsDeckWindowDirectionAndClears) {
+    using Tone = DeckLabActionButton::Tone;
+    panel->openCollection(); QCoreApplication::processEvents();
+    auto* bar = panel->findChild<QWidget*>("decklab-match-bar"); ASSERT_NE(nullptr, bar);
+    auto* summary = panel->findChild<DeckLabTwoLineLabel*>("decklab-match-summary"); ASSERT_NE(nullptr, summary);
+    auto* chip = panel->findChild<DeckLabDeckChip*>("decklab-match-deck"); ASSERT_NE(nullptr, chip);
+    auto* match = static_cast<DeckLabActionButton*>(panel->findChild<QPushButton*>("decklab-browse-match"));
+    auto* only = static_cast<DeckLabActionButton*>(panel->findChild<QPushButton*>("decklab-match-only"));
+    auto* faster = static_cast<DeckLabActionButton*>(panel->findChild<QPushButton*>("decklab-match-faster"));
+    auto* both = static_cast<DeckLabActionButton*>(panel->findChild<QPushButton*>("decklab-match-both"));
+    ASSERT_TRUE(match && only && faster && both);
+    ASSERT_TRUE(bar->isVisible());
+    // No deck loaded: neutral, never the match green (B-50).
+    EXPECT_EQ(QStringLiteral("Load a deck to match"), summary->primary());
+    EXPECT_FALSE(summary->active());
+    EXPECT_EQ(0, chip->deck());
+    EXPECT_EQ(Tone::Neutral, match->tone());
+    EXPECT_EQ(QStringLiteral("Load a deck"), match->detail());
+    EXPECT_FALSE(only->isEnabled());
+    // A paused reference: deck 1 at 122 BPM in 8A.
+    panel->selectPage(0);
+    loadGenerated(1, 122, mixxx::track::io::key::A_MINOR); ProcessBuffer(); QTest::qWait(250);
+    panel->openCollection(); QTest::qWait(250);
+    ASSERT_TRUE(bar->isVisible());
+    EXPECT_EQ(1, chip->deck());
+    EXPECT_TRUE(chip->automatic());
+    EXPECT_TRUE(chip->detail().contains(QStringLiteral("122.0"))) << chip->detail().toStdString();
+    EXPECT_EQ(QString::fromUtf8("115–129 BPM"), summary->primary());
+    EXPECT_TRUE(summary->active());
+    EXPECT_EQ(Tone::Active, match->tone());
+    EXPECT_EQ(Tone::Selected, both->tone());
+    // Faster only: the window starts at the reference.
+    faster->click(); QCoreApplication::processEvents();
+    EXPECT_EQ(QString::fromUtf8("122–129 BPM"), summary->primary());
+    EXPECT_EQ(Tone::Selected, faster->tone());
+    EXPECT_EQ(Tone::Neutral, both->tone());
+    EXPECT_EQ(decklab::TempoDirection::Faster, decklab::matchReference().direction);
+    EXPECT_TRUE(decklab::tempoInWindow(124, decklab::matchReference().window()));
+    EXPECT_FALSE(decklab::tempoInWindow(120, decklab::matchReference().window()));
+    // Pin the deck: a tap leaves Auto.
+    chip->click(); QTest::qWait(50);
+    EXPECT_FALSE(chip->automatic());
+    chip->click(); QTest::qWait(50);
+    EXPECT_TRUE(chip->automatic());
+    // Only: a visible filter on this list (B-42).
+    only->click(); QCoreApplication::processEvents();
+    EXPECT_EQ(Tone::Selected, only->tone());
+    ASSERT_FALSE(crumbs().isEmpty());
+    EXPECT_TRUE(crumbs().last().startsWith(QStringLiteral("Matches deck 1"))) << crumbs().join(" / ").toStdString();
+    capture(QStringLiteral("browse-match-bar.png"));
+    // The clear turns matching off: no bar, no filter, neutral header.
+    panel->findChild<QPushButton*>("decklab-match-clear")->click(); QCoreApplication::processEvents();
+    EXPECT_FALSE(bar->isVisible());
+    EXPECT_EQ(QStringLiteral("Off"), match->detail());
+    EXPECT_FALSE(crumbs().last().startsWith(QStringLiteral("Matches")));
+    match->click(); QTest::qWait(50);
+    EXPECT_TRUE(bar->isVisible());
+    EXPECT_EQ(Tone::Neutral, only->tone());
+    both->click(); QCoreApplication::processEvents();
+}
+
+// qw-library: B-29, B-30. LOAD targets carry the deck's identity and say
+// what they would replace.
+TEST_F(NativeDeckLabTest, LoadTargetsCarryDeckIdentityAndWhatTheyReplace) {
+    loadGenerated(2, 128); ProcessBuffer(); QCoreApplication::processEvents();
+    panel->openCollection(); QCoreApplication::processEvents();
+    auto* load1 = static_cast<DeckLabActionButton*>(panel->findChild<QPushButton*>("decklab-load-1"));
+    auto* load2 = static_cast<DeckLabActionButton*>(panel->findChild<QPushButton*>("decklab-load-2"));
+    ASSERT_TRUE(load1 && load2);
+    EXPECT_EQ(1, load1->deck());
+    EXPECT_EQ(2, load2->deck());
+    EXPECT_EQ(QStringLiteral("Empty"), load1->detail());
+    EXPECT_EQ(QStringLiteral("Replaces Generated Tone 128"), load2->detail());
+    // The deck colour bar shows even while the target is disabled.
+    const QImage image = load1->grab().toImage();
+    const QColor bar = image.pixelColor(3, image.height() / 2);
+    const QColor cyan = deckLabDeckColor(1);
+    EXPECT_LT(std::abs(bar.hue() - cyan.hue()), 12) << bar.name().toStdString();
+    ControlObject::set(ConfigKey("[Channel2]", "play"), 1); ProcessBuffer(); QCoreApplication::processEvents();
+    EXPECT_EQ(QStringLiteral("ON AIR"), load2->detail());
+    EXPECT_EQ(DeckLabActionButton::Tone::OnAir, load2->tone());
+    ControlObject::set(ConfigKey("[Channel2]", "play"), 0); ProcessBuffer(); QCoreApplication::processEvents();
+    auto* choice = panel->findChild<QComboBox*>("decklab-deck-layout");
+    QMetaObject::invokeMethod(choice, "activated", Q_ARG(int, 2)); QCoreApplication::processEvents();
+    auto* load4 = static_cast<DeckLabActionButton*>(panel->findChild<QPushButton*>("decklab-load-4"));
+    ASSERT_TRUE(load4->isVisible());
+    EXPECT_EQ(4, load4->deck());
+    EXPECT_EQ(QStringLiteral("Empty"), load4->detail());
+    capture(QStringLiteral("browse-load-identity.png"));
+}
+
+TEST(DeckLabBrowseMatchTest, TempoWindowDirectionDeltaAndKeyWords) {
+    using decklab::TempoDirection;
+    const auto both = decklab::tempoWindow(122, TempoDirection::Both);
+    EXPECT_NEAR(114.68, both.low, 1e-9);
+    EXPECT_NEAR(129.32, both.high, 1e-9);
+    EXPECT_EQ(QString::fromUtf8("115–129"), decklab::tempoWindowText(both));
+    EXPECT_EQ(QString::fromUtf8("115–122"), decklab::tempoWindowText(decklab::tempoWindow(122, TempoDirection::Slower)));
+    EXPECT_EQ(QString::fromUtf8("122–129"), decklab::tempoWindowText(decklab::tempoWindow(122, TempoDirection::Faster)));
+    EXPECT_TRUE(decklab::tempoInWindow(127.2, decklab::tempoWindow(120, TempoDirection::Both)));
+    EXPECT_FALSE(decklab::tempoInWindow(127.4, decklab::tempoWindow(120, TempoDirection::Both)));
+    EXPECT_FALSE(decklab::tempoInWindow(118, decklab::tempoWindow(120, TempoDirection::Faster)));
+    EXPECT_TRUE(decklab::tempoInWindow(118, decklab::tempoWindow(120, TempoDirection::Slower)));
+    EXPECT_FALSE(decklab::tempoWindow(0, TempoDirection::Both).isValid());
+    EXPECT_EQ(QString::fromUtf8("▲2.0"), decklab::bpmDeltaText(124, 122));
+    EXPECT_EQ(QString::fromUtf8("▼2.0"), decklab::bpmDeltaText(120, 122));
+    EXPECT_EQ(QString::fromUtf8("±0"), decklab::bpmDeltaText(122.01, 122));
+    EXPECT_EQ(QString::fromUtf8("▲18"), decklab::bpmDeltaText(140, 122));
+    EXPECT_TRUE(decklab::bpmDeltaText(0, 122).isEmpty());
+    using namespace mixxx::track::io::key;
+    EXPECT_EQ(QStringLiteral("Same key"), decklab::keyRelationText(A_MINOR, A_MINOR));
+    EXPECT_EQ(QString::fromUtf8("Relative 8A→8B"), decklab::keyRelationText(C_MAJOR, A_MINOR));
+    EXPECT_EQ(QStringLiteral("Key +1 (up)"), decklab::keyRelationText(E_MINOR, A_MINOR));
+    EXPECT_EQ(QString::fromUtf8("Key −1 (down)"), decklab::keyRelationText(D_MINOR, A_MINOR));
+    EXPECT_TRUE(decklab::keyRelationText(B_MINOR, A_MINOR).isEmpty());
+    EXPECT_EQ((QStringList{"8A", "8B", "7A", "9A"}), decklab::compatibleLancelotKeys(A_MINOR));
+    EXPECT_EQ((QStringList{"1A", "1B", "12A", "2A"}), decklab::compatibleLancelotKeys(G_SHARP_MINOR));
+}
+
+TEST(DeckLabBrowseMatchTest, MatchFilterIsOneQueryForKeyAndTempo) {
+    decklab::MatchReference reference;
+    reference.deck = 1;
+    reference.key = mixxx::track::io::key::A_MINOR;
+    reference.bpm = 122;
+    EXPECT_EQ(QStringLiteral("bpm:114.68-129.32 key:8A | bpm:114.68-129.32 key:8B | "
+                             "bpm:114.68-129.32 key:7A | bpm:114.68-129.32 key:9A"),
+            decklab::matchFilterQuery(reference));
+    reference.direction = decklab::TempoDirection::Faster;
+    EXPECT_TRUE(decklab::matchFilterQuery(reference).startsWith(QStringLiteral("bpm:122.00-129.32 key:8A")));
+    // A category filter or typed words stay required in every alternative.
+    const QString query = decklab::matchFilterQuery(reference, QStringLiteral("artist:=\"Demo Artist B\""));
+    EXPECT_EQ(4, query.count(QStringLiteral("artist:=\"Demo Artist B\" bpm:")));
+    reference.key = mixxx::track::io::key::INVALID;
+    EXPECT_EQ(QStringLiteral("bpm:122.00-129.32"), decklab::matchFilterQuery(reference));
+    reference.deck = 0;
+    EXPECT_TRUE(decklab::matchFilterQuery(reference).isEmpty());
+}
+
+TEST(DeckLabBrowseTest, UsbSticksAreListedByLabelWithExportsMarked) {
+    QTemporaryDir media;
+    const QString root = media.filePath(QStringLiteral("decklab"));
+    ASSERT_TRUE(QDir().mkpath(root + QStringLiteral("/55AA-1234/Music")));
+    ASSERT_TRUE(QDir().mkpath(root + QStringLiteral("/55AA-1234/.Trashes")));
+    ASSERT_TRUE(QDir().mkpath(root + QStringLiteral("/55AA-1234/PIONEER")));
+    ASSERT_TRUE(QDir().mkpath(root + QStringLiteral("/3A1F-0C2D/PIONEER/rekordbox")));
+    { QFile pdb(root + QStringLiteral("/3A1F-0C2D/PIONEER/rekordbox/export.pdb")); ASSERT_TRUE(pdb.open(QIODevice::WriteOnly)); }
+    { QFile track(root + QStringLiteral("/55AA-1234/Generated.flac")); ASSERT_TRUE(track.open(QIODevice::WriteOnly)); }
+    { QFile text(root + QStringLiteral("/55AA-1234/notes.txt")); ASSERT_TRUE(text.open(QIODevice::WriteOnly)); }
+    decklab::setUsbStickRootsForTesting({root});
+    const auto sticks = decklab::findUsbSticks();
+    decklab::setUsbStickRootsForTesting({});
+#if defined(Q_OS_LINUX)
+    ASSERT_EQ(2, sticks.size());
+    EXPECT_EQ(QStringLiteral("USB stick (3A1F)"), sticks[0].label);
+    EXPECT_TRUE(sticks[0].rekordbox);
+    EXPECT_EQ(QStringLiteral("USB stick (55AA)"), sticks[1].label);
+    EXPECT_FALSE(sticks[1].rekordbox);
+#endif
+    EXPECT_EQ(QStringList{QStringLiteral("Music")}, decklab::stickSubfolders(root + QStringLiteral("/55AA-1234")));
+    EXPECT_EQ(QStringList{QStringLiteral("Generated.flac")}, decklab::stickAudioFiles(root + QStringLiteral("/55AA-1234")));
 }
 
 TEST(DeckLabBrowseMatchTest, LancelotWheelHarmonicMatchTable) {

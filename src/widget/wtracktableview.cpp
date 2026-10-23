@@ -53,6 +53,7 @@ bool deckLabActive() {
 struct DeckLabRowMatch {
     decklab::HarmonicMatch harmonic = decklab::HarmonicMatch::None;
     bool tempo = false;
+    double bpm = 0; // the row's BPM, 0 when unknown or no reference
 };
 
 DeckLabRowMatch deckLabRowMatch(const QModelIndex& index, int keyColumn, int bpmColumn) {
@@ -69,7 +70,9 @@ DeckLabRowMatch deckLabRowMatch(const QModelIndex& index, int keyColumn, int bpm
     if (bpmColumn >= 0) {
         bool ok = false;
         const double bpm = index.siblingAtColumn(bpmColumn).data(Qt::EditRole).toDouble(&ok);
-        result.tempo = ok && decklab::tempoMatches(bpm, reference.bpm);
+        // The Match bar's window: slower, both or faster (one shared matcher).
+        result.tempo = ok && decklab::tempoInWindow(bpm, reference.window());
+        result.bpm = ok ? bpm : 0;
     }
     return result;
 }
@@ -164,9 +167,40 @@ class DeckLabBpmDelegate final : public DeckLabCellDelegate {
         painter->save();
         painter->setFont(opt.font);
         painter->setPen(ink);
-        painter->drawText(option.rect.adjusted(4, 0, -8, 0),
-                static_cast<int>(opt.displayAlignment),
-                opt.fontMetrics.elidedText(opt.text, Qt::ElideRight, option.rect.width() - 12));
+        // ▲/▼ difference to the reference deck (B-51) in a fixed right slot.
+        const decklab::MatchReference& reference = decklab::matchReference();
+        const QString delta = reference.active() ? decklab::bpmDeltaText(match.bpm, reference.bpm) : QString();
+        const int deltaWidth = delta.isEmpty() ? 0 : std::min(46, option.rect.width() / 2);
+        painter->drawText(option.rect.adjusted(4, 0, -8 - deltaWidth, 0),
+                Qt::AlignLeft | Qt::AlignVCenter,
+                opt.fontMetrics.elidedText(opt.text, Qt::ElideRight, option.rect.width() - 12 - deltaWidth));
+        if (!delta.isEmpty()) {
+            const QRect slot(option.rect.right() - 4 - deltaWidth, option.rect.top(), deltaWidth, option.rect.height());
+            const QColor tone = selected || match.tempo ? ink : decklab::colors::muted;
+            painter->setRenderHint(QPainter::Antialiasing);
+            const QFont small = decklab::numberFont(option.font, 14);
+            const QFontMetrics metrics(small);
+            const bool arrowed = delta.at(0) == QChar(0x25b2) || delta.at(0) == QChar(0x25bc);
+            const QString number = arrowed ? delta.mid(1) : delta;
+            const int numberWidth = metrics.horizontalAdvance(number);
+            const qreal x = slot.right() - numberWidth - 9;
+            const qreal y = slot.center().y();
+            // Painted arrows: no dependency on the font having the glyph.
+            if (arrowed) {
+                const bool up = delta.at(0) == QChar(0x25b2);
+                QPolygonF arrow;
+                arrow << QPointF(x, up ? y + 3 : y - 3) << QPointF(x + 7, up ? y + 3 : y - 3)
+                      << QPointF(x + 3.5, up ? y - 3 : y + 3);
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(tone);
+                painter->drawPolygon(arrow);
+            }
+            painter->setFont(small);
+            painter->setPen(tone);
+            painter->drawText(QRect(slot.right() - numberWidth, slot.top(), numberWidth + 1, slot.height()),
+                    Qt::AlignRight | Qt::AlignVCenter,
+                    number);
+        }
         painter->restore();
     }
 };
@@ -590,7 +624,7 @@ int deckLabColumnWidth(TrackModel::SortColumnId id) {
     case TrackModel::SortColumnId::Key:
         return 58;
     case TrackModel::SortColumnId::Bpm:
-        return 68;
+        return 104; // value and its difference to the reference deck
     case TrackModel::SortColumnId::Duration:
     case TrackModel::SortColumnId::Year:
     case TrackModel::SortColumnId::TimesPlayed:

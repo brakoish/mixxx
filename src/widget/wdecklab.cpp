@@ -16,6 +16,7 @@
 #include <QLineEdit>
 #include <QLabel>
 #include <QListWidget>
+#include <QLocale>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPainter>
@@ -27,12 +28,14 @@
 #include <QScrollArea>
 #include <QScroller>
 #include <QSlider>
+#include <QSet>
 #include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QStorageInfo>
 #include <QStyle>
 #include <QStyleOptionButton>
 #include <QTextBrowser>
+#include <QSqlQuery>
 #include <algorithm>
 #include <cmath>
 #include <tuple>
@@ -45,8 +48,11 @@
 #include "effects/effectchain.h"
 #include "effects/effectslot.h"
 #include "library/basetracktablemodel.h"
+#include "library/decklabknob.h"
 #include "library/library.h"
 #include "library/sidebarmodel.h"
+#include "library/trackcollection.h"
+#include "library/trackcollectionmanager.h"
 #include "library/trackmodel.h"
 #include "mixer/basetrackplayer.h"
 #include "mixer/playermanager.h"
@@ -446,11 +452,14 @@ class DeckLabPad final : public QPushButton {
 // Browse page state (browse-ui). Lives here so other pages never see it.
 struct DeckLabBrowseState {
     enum class List {
-        Sources,
+        Home,       // first screen: sticks first, then the library's sources
+        Sources,    // the native sidebar at some level
         Categories,
         Values,
+        Folder,     // a USB stick's folders (files view)
     };
-    List list = List::Sources;
+    List list = List::Home;
+    List itemsList = List::Sources; // what the category/value list currently holds
     QPersistentModelIndex source; // Collection root or Rekordbox USB device
     bool rekordbox = false;
     int trackCount = -1;
@@ -471,6 +480,36 @@ struct DeckLabBrowseState {
     DeckLabActionButton* preview = nullptr;
     DeckLabActionButton* match = nullptr;
     DeckLabToast* toast = nullptr;
+    // qw-library: source home, USB sticks and read errors.
+    QString homeKey;      // Home row to return to and highlight
+    bool fromMore = false; // the full source list was opened from "More sources"
+    QString stickPath;    // USB stick behind the current source or folder
+    QString stickName;
+    QString folderPath;   // Folder level: the folder listed
+    QString pendingStick; // rekordbox stick waiting for its device row
+    qint64 loadingSince = -1;
+    int readTimeoutMs = 20000;
+    bool loadFailed = false;
+    QHash<QString, int> stickTracks; // tracks read per rekordbox stick
+    QSet<QString> failedSticks;      // sticks whose export could not be read
+    QString homeSignature;
+    QTimer homeTimer;
+    qint64 libraryCountAt = -100000;
+    int libraryCount = -1;
+    // qw-library: the Match bar.
+    decklab::TempoDirection direction = decklab::TempoDirection::Both;
+    int pinnedDeck = 0; // 0 = follow the playing deck
+    bool matchOnly = false;
+    QString matchApplied; // query applied for "Only"
+    int matchCount = -1;
+    QTimer matchCountTimer;
+    QWidget* matchBar = nullptr;
+    DeckLabDeckChip* matchDeck = nullptr;
+    std::array<DeckLabActionButton*, 3> directions{};
+    DeckLabTwoLineLabel* matchSummary = nullptr;
+    DeckLabActionButton* matchOnlyButton = nullptr;
+    DeckLabActionButton* matchClear = nullptr;
+    bool reclaimQueued = false;
 };
 
 WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
@@ -581,10 +620,11 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
         createControl(kTab, triggers[page]);
         watch(kTab, triggers[page], [this, page](double v) { if (v > 0) selectPage(page); });
     }
-    auto* usb = button(tr("USB"), [this] { tool(1); }, this, QStringLiteral("decklab-usb"));
+    // qw-library: USB opens the stick in Browse, with or without the system
+    // service (Storage stays in Settings).
+    auto* usb = button(tr("USB"), [this] { openUsbInBrowse(); }, this, QStringLiteral("decklab-usb"));
     usb->setProperty("rail", true);
     usb->setFixedHeight(44);
-    m_toolButtons.append(usb); usb->setEnabled(false);
     rail->addWidget(usb);
     // Controller effect units as lamps; tapping opens the full read-only list.
     m_fxChips = new DeckLabChipButton(m_rail);
@@ -656,8 +696,13 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     m_masterMeter->setLevels(m_mainVu[0]->get(), m_mainVu[1]->get(), m_mainPeak->get() > 0);
     mainLevelBox->addWidget(m_masterMeter);
     rail->addWidget(mainLevel);
-    watch(kNative, "browse_press", [this](double v) { if (v > 0) browsePress(); });
-    watch(kNative, "browse_back", [this](double v) { if (v > 0) browseBack(); });
+    // Scripts write these directly; an open menu or dialog gets them instead.
+    watch(kNative, "browse_press", [this](double v) {
+        if (v > 0 && decklab::knobForBrowse("[DeckLabNative] browse_press", decklab::KnobAction::Press, 1)) browsePress();
+    });
+    watch(kNative, "browse_back", [this](double v) {
+        if (v > 0 && decklab::knobForBrowse("[DeckLabNative] browse_back", decklab::KnobAction::Back, -1)) browseBack();
+    });
     watch(kNative, "browse_sources", [this](double v) {
         if (v <= 0 || !m_sidebar) return;
         selectPage(1); setSearchOpen(false);
@@ -1275,17 +1320,48 @@ QModelIndex sidebarRoot(const QAbstractItemModel* model, const QString& icon) {
     return {};
 }
 decklab::Glyph sourceGlyph(const QModelIndex& index) {
+    // One glyph per concept, never reused for another source.
     const QString icon = rootIconName(index);
-    if (icon == QStringLiteral("tracks")) return decklab::Glyph::Collection;
+    const bool root = !index.parent().isValid();
+    if (icon == QStringLiteral("tracks")) return root ? decklab::Glyph::Collection : decklab::Glyph::Playlist;
     if (icon == QStringLiteral("crates")) return decklab::Glyph::Crate;
-    if (icon == QStringLiteral("autodj")) return decklab::Glyph::Playlist;
+    if (icon == QStringLiteral("autodj")) return decklab::Glyph::AutoDj;
+    if (icon == QStringLiteral("prepare")) return decklab::Glyph::Analyze;
     if (icon == QStringLiteral("history")) return decklab::Glyph::History;
-    if (icon == QStringLiteral("recordings")) return decklab::Glyph::Album;
+    if (icon == QStringLiteral("recordings")) return decklab::Glyph::Mic;
     if (icon == QStringLiteral("computer")) return decklab::Glyph::Folder;
-    if (icon == QStringLiteral("rekordbox") && !index.parent().isValid()) return decklab::Glyph::Usb;
+    if (icon == QStringLiteral("rekordbox") && root) return decklab::Glyph::Usb;
     if (isRekordboxDevice(index)) return decklab::Glyph::Usb;
     if (index.model() && index.model()->hasChildren(index)) return decklab::Glyph::Folder;
     return decklab::Glyph::Playlist;
+}
+// Desktop roots the appliance keeps under "More sources" (B-05). Sticks are
+// listed one by one instead of the Rekordbox folder.
+bool hiddenFromHome(const QString& icon) {
+    return icon == QStringLiteral("autodj") || icon == QStringLiteral("prepare") ||
+            icon == QStringLiteral("computer") || icon == QStringLiteral("rekordbox");
+}
+QString homeRootKey(const QModelIndex& root) {
+    const QString icon = root.data(SidebarModel::IconNameRole).toString();
+    return icon.isEmpty() ? QStringLiteral("root::") + root.data().toString() : QStringLiteral("root:") + icon;
+}
+QString rekordboxDevicePath(const QModelIndex& device) {
+    return device.data(SidebarModel::DataRole).toStringList().value(0);
+}
+// The rekordbox feature's row for the stick mounted at path, once it scanned.
+QModelIndex rekordboxDeviceFor(const QAbstractItemModel* model, const QString& path) {
+    const QModelIndex root = sidebarRoot(model, QStringLiteral("rekordbox"));
+    if (!root.isValid()) return {};
+    const QString wanted = QDir::cleanPath(path);
+    for (int row = 0; row < model->rowCount(root); ++row) {
+        const QModelIndex device = model->index(row, 0, root);
+        if (QDir::cleanPath(rekordboxDevicePath(device)) == wanted) return device;
+    }
+    return {};
+}
+// many holds %1 for the (grouped) count.
+QString countText(int count, const QString& one, const QString& many) {
+    return count == 1 ? one : QString(many).arg(QLocale().toString(count));
 }
 decklab::Glyph categoryGlyph(decklab::Category category) {
     switch (category) {
@@ -1365,32 +1441,23 @@ QWidget* WDeckLab::buildBrowse() {
             decklab::Glyph::More, 52);
     connect(tools, &QPushButton::clicked, this, [this, tools] {
         auto* menu = new QMenu(this);
+        menu->setObjectName(QStringLiteral("decklab-browse-tools-menu"));
         menu->setAttribute(Qt::WA_DeleteOnClose);
         menu->setStyleSheet(QStringLiteral("QMenu{font-size:16px;font-weight:500;}"));
         menu->addAction(tr("All tracks"), this, &WDeckLab::openCollection);
         menu->addAction(tr("Preview selected track"), this, [this] { togglePreview(); });
         menu->addAction(tr("Stop preview"), this, [this] { stopPreview(); });
-        int matchDeck = displayedDeck(0);
-        bool foundPlaying = false;
-        for (int deck = 1; deck <= 4; ++deck) {
-            if (!value(channel(deck), "track_loaded")) continue;
-            if (value(channel(deck), "play") && (!foundPlaying || value(channel(deck), "sync_leader") > 0)) {
-                matchDeck = deck; foundPlaying = true;
-            } else if (!foundPlaying && !value(channel(matchDeck), "track_loaded")) matchDeck = deck;
-        }
-        auto* match = menu->addAction(tr("Match Deck %1").arg(matchDeck), this, [this, deck = matchDeck] {
-            const double bpm = value(channel(deck), "bpm");
-            if (bpm > 0 && m_search) {
-                const QString key = KeyUtils::keyToString(KeyUtils::keyFromNumericValue(value(channel(deck), "visual_key")), KeyUtils::KeyNotation::Lancelot);
-                QString query = QStringLiteral("~bpm:%1").arg(bpm, 0, 'f', 2);
-                if (!key.isEmpty()) query += QStringLiteral(" ~key:%1").arg(key);
-                resetBrowseLevels();
-                if (m_library) m_library->searchTracksInCollection(query);
-                m_search->slotRestoreSearch(query);
-                showTracks();
-            }
-        });
-        match->setEnabled(value(channel(matchDeck), "track_loaded") && value(channel(matchDeck), "bpm") > 0);
+        // Match Deck filters what you are looking at (B-42): the current list,
+        // or the source you are inside; it never switches to another source.
+        const int matchDeck = matchReferenceDeck();
+        auto* match = menu->addAction(matchDeck ? tr("Match Deck %1").arg(matchDeck) : tr("Match Deck"),
+                this, [this] { showOnlyMatches(); });
+        match->setObjectName(QStringLiteral("decklab-tools-match"));
+        const auto& state = *m_browseState;
+        const bool hereIsAList = m_browseStack->currentIndex() != 0 || state.list == DeckLabList::Folder ||
+                (state.source.isValid() && (state.list == DeckLabList::Categories || state.list == DeckLabList::Values));
+        match->setEnabled(matchDeck > 0 && hereIsAList &&
+                (value(channel(matchDeck), "bpm") > 0 || value(channel(matchDeck), "visual_key") > 0));
         menu->addAction(tr("Clear filter"), this, [this] {
             clearBrowseFilter(); m_browseState->fromCategories = false;
             if (m_search) m_search->slotClearSearch();
@@ -1438,6 +1505,7 @@ QWidget* WDeckLab::buildBrowse() {
     layout->addLayout(heading);
     m_searchPanel = new QWidget(main); m_searchRow = row(m_searchPanel);
     layout->addWidget(m_searchPanel); m_searchPanel->hide();
+    layout->addWidget(buildMatchBar(main));
     m_browseStack = new QStackedWidget(main);
     layout->addWidget(m_browseStack, 1);
 
@@ -1450,7 +1518,8 @@ QWidget* WDeckLab::buildBrowse() {
     b.items->setObjectName(QStringLiteral("decklab-browse-categories"));
     b.items->setStyleSheet(QStringLiteral("QListWidget{background:#0D0F12;border:0;outline:0;}"));
     b.items->setItemDelegate(new DeckLabListDelegate(b.items));
-    b.items->setUniformItemSizes(true);
+    // Source rows are taller (two lines) than category rows.
+    b.items->setUniformItemSizes(false);
     b.items->setFrameShape(QFrame::NoFrame);
     b.items->setEditTriggers(QAbstractItemView::NoEditTriggers);
     b.items->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -1513,6 +1582,7 @@ QWidget* WDeckLab::buildBrowse() {
         auto selection = std::make_shared<QPersistentModelIndex>();
         auto* load = new DeckLabActionButton(tr("Load %1").arg(deck), pane);
         load->setObjectName(QStringLiteral("decklab-load-%1").arg(deck));
+        load->setDeck(deck);
         load->setAccessibleName(tr("Load deck %1").arg(deck));
         holdHeight(load, 52);
         m_loadButtons[deck - 1] = load;
@@ -1555,15 +1625,30 @@ QWidget* WDeckLab::buildBrowse() {
     connect(&b.matchTimer, &QTimer::timeout, this, [this] { refreshMatchReference(); });
     b.loadingTimer.setInterval(300);
     connect(&b.loadingTimer, &QTimer::timeout, this, [this] { checkRekordboxImport(); });
+    // A stick plugged in or pulled while the source list is shown.
+    b.homeTimer.setInterval(1500);
+    connect(&b.homeTimer, &QTimer::timeout, this, [this] { refreshHomeIfSticksChanged(); });
+    b.matchCountTimer.setSingleShot(true);
+    b.matchCountTimer.setInterval(150);
+    connect(&b.matchCountTimer, &QTimer::timeout, this, [this] { refreshMatchCount(); });
 
-    // Generic controller navigation, routed by LibraryControl.
+    // Generic controller navigation, routed by LibraryControl (which checks
+    // knob ownership). Scripts may write these directly, so check here too.
     watch(kNative, "browse_move", [this](double v) {
-        if (v != 0 && std::isfinite(v)) browseMove(int(std::clamp(v, -10000.0, 10000.0)), false);
+        if (v != 0 && std::isfinite(v) &&
+                decklab::knobForBrowse("[DeckLabNative] browse_move", decklab::KnobAction::Move, v)) {
+            browseMove(int(std::clamp(v, -10000.0, 10000.0)), false);
+        }
     });
     watch(kNative, "browse_select", [this](double v) {
-        if (v != 0 && std::isfinite(v)) browseMove(int(std::clamp(v, -10000.0, 10000.0)), true);
+        if (v != 0 && std::isfinite(v) &&
+                decklab::knobForBrowse("[DeckLabNative] browse_select", decklab::KnobAction::Move, v)) {
+            browseMove(int(std::clamp(v, -10000.0, 10000.0)), true);
+        }
     });
-    watch(kNative, "browse_enter", [this](double v) { if (v > 0) browseEnter(); });
+    watch(kNative, "browse_enter", [this](double v) {
+        if (v > 0 && decklab::knobForBrowse("[DeckLabNative] browse_enter", decklab::KnobAction::Enter, 1)) browseEnter();
+    });
     watch(kNative, "load_refused", [this](double v) { if (v > 0) showLoadRefused(int(v)); });
     // Registered before the constructor's own browse_sources handler, which
     // then resets the sidebar root.
@@ -1571,12 +1656,102 @@ QWidget* WDeckLab::buildBrowse() {
     watch(QStringLiteral("[PreviewDeck1]"), QStringLiteral("play"), [this](double) { refreshPreviewButton(); });
     watch(kTab, QStringLiteral("current"), [this](double v) { if (int(v) != 1) stopPreview(); });
     for (int deck = 1; deck <= 4; ++deck) {
-        for (const auto& key : {"bpm", "visual_key", "sync_leader"}) {
+        for (const auto& key : {"bpm", "visual_key", "sync_leader", "track_loaded", "play"}) {
             watch(channel(deck), QString::fromLatin1(key), [this](double) { scheduleMatchRefresh(); });
         }
     }
     refreshMatchReference();
     return m_browser;
+}
+
+QWidget* WDeckLab::buildMatchBar(QWidget* parent) {
+    // The Match bar (B-49..B-53): reference deck, BPM direction and window,
+    // key rule, how many tracks match, Only, and a clear. Shown over track
+    // lists while matching is on.
+    auto& b = *m_browseState;
+    const int savedDirection = m_config->getValue(ConfigKey("[DeckLab]", "BrowseMatchDirection"), 1);
+    b.direction = savedDirection == 0 ? decklab::TempoDirection::Slower
+            : savedDirection == 2     ? decklab::TempoDirection::Faster
+                                      : decklab::TempoDirection::Both;
+    b.matchBar = new QWidget(parent);
+    b.matchBar->setObjectName(QStringLiteral("decklab-match-bar"));
+    b.matchBar->setAttribute(Qt::WA_StyledBackground);
+    b.matchBar->setStyleSheet(QStringLiteral(
+            "QWidget#decklab-match-bar{background:#0D0F12;border-bottom:1px solid #2C313A;}"));
+    b.matchBar->setFixedHeight(46);
+    auto* bar = row(b.matchBar, 4);
+    bar->setContentsMargins(0, 1, 4, 1);
+    b.matchDeck = new DeckLabDeckChip(b.matchBar);
+    b.matchDeck->setObjectName(QStringLiteral("decklab-match-deck"));
+    holdHeight(b.matchDeck, 44);
+    b.matchDeck->setFixedWidth(128);
+    connect(b.matchDeck, &QPushButton::clicked, this, [this] {
+        // Auto, then each loaded deck in turn, then Auto again.
+        auto& state = *m_browseState;
+        int next = 0;
+        for (int deck = state.pinnedDeck + 1; deck <= 4; ++deck) {
+            if (value(channel(deck), "track_loaded") > 0) {
+                next = deck;
+                break;
+            }
+        }
+        state.pinnedDeck = next;
+        refreshMatchReference();
+    });
+    bar->addWidget(b.matchDeck);
+    struct Segment {
+        decklab::TempoDirection direction;
+        decklab::Glyph glyph;
+        QString name;
+        QString accessible;
+    };
+    const std::array<Segment, 3> segments{
+            Segment{decklab::TempoDirection::Slower, decklab::Glyph::ArrowDown,
+                    QStringLiteral("decklab-match-slower"), tr("Slower tracks only")},
+            Segment{decklab::TempoDirection::Both, decklab::Glyph::ArrowBoth,
+                    QStringLiteral("decklab-match-both"), tr("Slower and faster tracks")},
+            Segment{decklab::TempoDirection::Faster, decklab::Glyph::ArrowUp,
+                    QStringLiteral("decklab-match-faster"), tr("Faster tracks only")}};
+    for (int n = 0; n < 3; ++n) {
+        const Segment& segment = segments[n];
+        auto* button = browseButton(b.matchBar, QString(), segment.name, segment.accessible, segment.glyph, 44);
+        connect(button, &QPushButton::clicked, this, [this, direction = segment.direction, n] {
+            auto& state = *m_browseState;
+            state.direction = direction;
+            m_config->setValue(ConfigKey("[DeckLab]", "BrowseMatchDirection"), n);
+            refreshMatchReference();
+        });
+        b.directions[n] = button;
+        bar->addWidget(button);
+    }
+    b.matchSummary = new DeckLabTwoLineLabel(b.matchBar);
+    b.matchSummary->setObjectName(QStringLiteral("decklab-match-summary"));
+    bar->addWidget(b.matchSummary, 1);
+    b.matchOnlyButton = browseButton(b.matchBar, tr("Only"), QStringLiteral("decklab-match-only"),
+            tr("Show only matching tracks"), decklab::Glyph::None, 84);
+    connect(b.matchOnlyButton, &QPushButton::clicked, this, [this] {
+        auto& state = *m_browseState;
+        state.matchOnly = !state.matchOnly;
+        applyMatchFilter(true);
+        updateMatchBar();
+        updateBreadcrumb();
+        scheduleMatchCount();
+    });
+    bar->addWidget(b.matchOnlyButton);
+    b.matchClear = browseButton(b.matchBar, QString(), QStringLiteral("decklab-match-clear"),
+            tr("Turn matching off"), decklab::Glyph::Close, 44);
+    connect(b.matchClear, &QPushButton::clicked, this, [this] {
+        auto& state = *m_browseState;
+        state.matchOnly = false;
+        applyMatchFilter(true);
+        state.matchEnabled = false;
+        m_config->setValue(ConfigKey("[DeckLab]", "BrowseMatch"), 0);
+        refreshMatchReference();
+        updateBreadcrumb();
+    });
+    bar->addWidget(b.matchClear);
+    b.matchBar->hide();
+    return b.matchBar;
 }
 
 QWidget* WDeckLab::buildSampler() {
@@ -2245,9 +2420,15 @@ void WDeckLab::bindBrowser(WSearchLineEdit* search, WLibrarySidebar* sidebar, WL
     connect(sidebar->selectionModel(), &QItemSelectionModel::currentChanged, this,
             [this](const QModelIndex&, const QModelIndex&) { updateBreadcrumb(); refreshBrowseCard(); });
     connect(search, &WSearchLineEdit::search, this, [this](const QString&) {
-        // Typing replaces a category filter; the breadcrumb must not claim it.
-        m_browseState->filter.clear(); m_browseState->fromCategories = false;
+        // Typing replaces a category value filter but stays in the source
+        // (B-35); the breadcrumb says "Search “…” · n" (B-36).
+        auto& state = *m_browseState;
+        state.filter.clear();
+        state.valueLabel.clear();
+        if (state.matchOnly) applyMatchFilter(true);
         showTracks();
+        // Counts are final once the model has applied the query.
+        QTimer::singleShot(0, this, [this] { updateBreadcrumb(); scheduleMatchCount(); });
     });
     if (m_library) {
         connect(m_library, &Library::trackSelected, this, [this](TrackPointer track) {
@@ -2312,6 +2493,10 @@ void WDeckLab::showSources() {
     const QPersistentModelIndex highlighted(m_sidebar->currentIndex());
     m_browseStack->setCurrentWidget(b.listStack);
     if (value("[Sidebar]", "sidebar_visible") != 1) set("[Sidebar]", "sidebar_visible", 1);
+    if (b.list == DeckLabList::Home) {
+        if (b.itemsList != DeckLabList::Home) rebuildHome(b.homeKey);
+        else if (m_page == 1) refreshHomeIfSticksChanged();
+    }
     if (b.list == DeckLabList::Sources) {
         m_sidebar->setFocusProxy(nullptr);
         b.listStack->setCurrentWidget(m_sidebar);
@@ -2333,15 +2518,21 @@ void WDeckLab::showSources() {
         if (m_page == 1) b.items->setFocus(Qt::OtherFocusReason);
         if (b.items->currentRow() < 0 && b.items->count()) b.items->setCurrentRow(0);
     }
-    updateBreadcrumb(); refreshLoadButtons(); refreshBrowseCard();
+    if (b.list == DeckLabList::Home && m_page == 1) {
+        if (!b.homeTimer.isActive()) b.homeTimer.start();
+    } else {
+        b.homeTimer.stop();
+    }
+    updateBreadcrumb(); refreshLoadButtons(); refreshBrowseCard(); updateMatchBar();
 }
 void WDeckLab::showTracks() {
     if (!m_libraryWidget) return;
     m_browseStack->setCurrentWidget(m_libraryWidget);
     if (value("[Sidebar]", "sidebar_visible")) set("[Sidebar]", "sidebar_visible", 0);
     set("[Library]", "focused_widget", 3);
+    if (m_browseState) m_browseState->homeTimer.stop();
     syncSelectedTrack();
-    updateBreadcrumb(); refreshLoadButtons(); refreshBrowseCard();
+    updateBreadcrumb(); refreshLoadButtons(); refreshBrowseCard(); updateMatchBar(); scheduleMatchCount();
 }
 void WDeckLab::browsePress() {
     if (m_page != 1) { selectPage(1); return; }
@@ -2353,9 +2544,13 @@ void WDeckLab::browseEnter() {
     if (m_page != 1) { selectPage(1); return; }
     if (!m_sidebar || m_browseStack->currentIndex() != 0) return;
     auto& b = *m_browseState;
-    if (b.list == DeckLabList::Categories) openCategory(b.items->currentRow());
-    else if (b.list == DeckLabList::Values) openCategoryValue(b.items->currentRow());
-    else openSource();
+    switch (b.list) {
+    case DeckLabList::Home: openHomeRow(b.items->currentRow()); return;
+    case DeckLabList::Categories: openCategory(b.items->currentRow()); return;
+    case DeckLabList::Values: openCategoryValue(b.items->currentRow()); return;
+    case DeckLabList::Folder: openFolderRow(b.items->currentRow()); return;
+    case DeckLabList::Sources: openSource(); return;
+    }
 }
 void WDeckLab::browseMove(int delta, bool listLevel) {
     if (delta == 0 || !m_sidebar) return;
@@ -2418,16 +2613,33 @@ void WDeckLab::browseBack() {
         showSources();
         return;
     }
-    if (b.list == DeckLabList::Values) { showCategories(); return; }
-    if (b.list == DeckLabList::Categories) {
+    switch (b.list) {
+    case DeckLabList::Home:
+        selectPage(0);
+        return;
+    case DeckLabList::Values:
+        showCategories();
+        return;
+    case DeckLabList::Folder:
+        if (b.stickPath.isEmpty() || QDir::cleanPath(b.folderPath) == QDir::cleanPath(b.stickPath)) showHome(b.homeKey);
+        else showFolder(QFileInfo(b.folderPath).absolutePath());
+        return;
+    case DeckLabList::Categories: {
+        if (!b.fromMore) { showHome(b.homeKey); return; }
+        // Opened from "More sources": back to that list, on this source.
         const QPersistentModelIndex source = b.source;
         resetBrowseLevels();
+        b.fromMore = true;
+        b.list = DeckLabList::Sources;
         if (source.isValid()) {
             m_sidebar->setRootIndex(source.parent());
             m_sidebar->setCurrentIndex(source);
         }
         showSources();
         return;
+    }
+    case DeckLabList::Sources:
+        break;
     }
     if (b.returnRoot.isValid() && m_sidebar->rootIndex() == b.returnRoot && b.source.isValid()) {
         b.returnRoot = QPersistentModelIndex();
@@ -2436,29 +2648,86 @@ void WDeckLab::browseBack() {
         return;
     }
     const QPersistentModelIndex previous(m_sidebar->rootIndex());
-    if (previous.isValid()) {
-        m_sidebar->setRootIndex(previous.parent());
-        m_sidebar->setCurrentIndex(previous);
-        showSources();
-    } else selectPage(0);
+    if (!previous.isValid()) { showHome(b.fromMore ? QStringLiteral("more") : b.homeKey); return; }
+    if (!previous.parent().isValid() && !b.fromMore) { showHome(b.homeKey); return; }
+    m_sidebar->setRootIndex(previous.parent());
+    m_sidebar->setCurrentIndex(previous);
+    showSources();
 }
 QStringList WDeckLab::browseSegments() const {
     const auto& b = *m_browseState;
+    // Source names as a DJ knows them: Mixxx's collection is "Library", a
+    // stick is its label (no "Rekordbox" level in between).
     const auto pathTo = [](QModelIndex at) {
         QStringList path;
-        while (at.isValid()) { path.prepend(at.data().toString()); at = at.parent(); }
+        while (at.isValid()) {
+            const QModelIndex parent = at.parent();
+            if (!parent.isValid()) {
+                const QString icon = at.data(SidebarModel::IconNameRole).toString();
+                if (icon == QStringLiteral("tracks")) path.prepend(tr("Library"));
+                else if (icon != QStringLiteral("rekordbox") || path.isEmpty()) path.prepend(at.data().toString());
+            } else {
+                path.prepend(at.data().toString());
+            }
+            at = parent;
+        }
+        return path;
+    };
+    const auto folderPath = [&b] {
+        QStringList path{b.stickName.isEmpty() ? tr("USB stick") : b.stickName};
+        const QString relative = QDir(b.stickPath).relativeFilePath(b.folderPath);
+        if (!b.stickPath.isEmpty() && !relative.isEmpty() && relative != QStringLiteral(".") && !relative.startsWith(QStringLiteral(".."))) {
+            path += relative.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+        }
         return path;
     };
     const bool tracks = m_browseStack->currentIndex() != 0;
-    if (b.source.isValid() && ((!tracks && b.list != DeckLabList::Sources) || (tracks && b.fromCategories))) {
-        QStringList path = pathTo(b.source);
-        const bool filtered = tracks && !b.filter.isEmpty();
-        if ((!tracks && b.list == DeckLabList::Values) || filtered) path << decklab::categoryName(b.category);
-        if (tracks) path << (filtered ? b.valueLabel : decklab::categoryName(decklab::Category::AllTracks));
+    if (tracks) {
+        const QString typed = m_search ? m_search->currentText().trimmed() : QString();
+        QStringList path;
+        if (b.list == DeckLabList::Folder) {
+            path = folderPath();
+            if (typed.isEmpty() && !b.matchOnly) path << tr("Tracks");
+        } else if (b.source.isValid() && b.fromCategories) {
+            path = pathTo(b.source);
+            const bool filtered = !b.filter.isEmpty();
+            if (filtered) path << decklab::categoryName(b.category) << b.valueLabel;
+            else if (typed.isEmpty() && !b.matchOnly) path << decklab::categoryName(decklab::Category::AllTracks);
+        } else {
+            path = pathTo(m_sidebar->currentIndex());
+        }
+        if (path.isEmpty()) path << tr("Library");
+        auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+        const int count = table && table->model() ? table->model()->rowCount() : -1;
+        if (!typed.isEmpty()) {
+            path << (count >= 0 && !b.matchOnly ? tr("Search “%1” · %2").arg(typed, QLocale().toString(count))
+                                                : tr("Search “%1”").arg(typed));
+        }
+        if (b.matchOnly) {
+            const int deck = decklab::matchReference().deck;
+            const QString matches = deck > 0 ? tr("Matches deck %1").arg(deck) : tr("Matches");
+            path << (count >= 0 ? matches + QStringLiteral(" · ") + QLocale().toString(count) : matches);
+        }
         return path;
     }
-    QStringList path = pathTo(tracks ? m_sidebar->currentIndex() : m_sidebar->rootIndex());
-    if (b.rekordbox && !tracks && b.returnRoot.isValid() && m_sidebar->rootIndex() == b.returnRoot) {
+    switch (b.list) {
+    case DeckLabList::Home:
+        return {tr("Sources")};
+    case DeckLabList::Folder:
+        return folderPath();
+    case DeckLabList::Categories:
+        return b.source.isValid() ? pathTo(b.source) : QStringList{b.stickName.isEmpty() ? tr("USB stick") : b.stickName};
+    case DeckLabList::Values: {
+        QStringList path = pathTo(b.source);
+        path << decklab::categoryName(b.category);
+        return path;
+    }
+    case DeckLabList::Sources:
+        break;
+    }
+    if (!m_sidebar->rootIndex().isValid()) return {tr("Sources"), tr("More sources")};
+    QStringList path = pathTo(m_sidebar->rootIndex());
+    if (b.rekordbox && b.returnRoot.isValid() && m_sidebar->rootIndex() == b.returnRoot) {
         path << decklab::categoryName(decklab::Category::Playlists);
     }
     if (path.isEmpty()) path.append(tr("Sources"));
@@ -2500,6 +2769,7 @@ void WDeckLab::refreshLoadButtons() {
         load->setVisible(deck <= 2 || (m_fourDeckLayout && !m_sampleTarget));
         if (m_sampleTarget) {
             const bool ready = tracks && selected && !value(QStringLiteral("[Sampler%1]").arg(m_sampleTarget), "play");
+            load->setDeck(0);
             load->setText(deck == 1 ? tr("Load pad %1").arg(m_sampleTarget) : tr("Cancel"));
             load->setDetail(deck == 1 ? tr("Sampler") : tr("Back to pads"));
             load->setTone(deck == 1 && ready ? Tone::Ready : Tone::Neutral);
@@ -2510,12 +2780,23 @@ void WDeckLab::refreshLoadButtons() {
         const int target = m_fourDeckLayout ? deck : (deck <= 2 ? displayedDeck(deck - 1) : deck);
         const bool playing = value(channel(target), "play") > 0;
         const bool loaded = value(channel(target), "track_loaded") > 0;
+        // Deck identity (B-29) and what a load would replace (B-30).
+        QString title;
+        if (loaded && !playing) {
+            auto* player = m_players ? m_players->getPlayer(channel(target)) : nullptr;
+            if (const TrackPointer track = player ? player->getLoadedTrack() : TrackPointer()) {
+                title = track->getTitle().trimmed();
+                if (title.isEmpty()) title = QFileInfo(track->getLocation()).completeBaseName();
+            }
+        }
+        load->setDeck(target);
         load->setText(tr("Load %1").arg(target));
-        load->setDetail(playing ? tr("On air") : loaded ? tr("Paused") : tr("Empty deck"));
+        load->setDetail(playing ? tr("ON AIR") : loaded ? (title.isEmpty() ? tr("Loaded") : tr("Replaces %1").arg(title)) : tr("Empty"));
         load->setTone(playing ? Tone::OnAir : tracks && selected ? Tone::Ready : Tone::Neutral);
         load->setEnabled(!playing && tracks && selected);
         load->setAccessibleName(playing ? tr("Deck %1 is on air and cannot be loaded").arg(target)
-                                        : tr("Load deck %1").arg(target));
+                : title.isEmpty() ? tr("Load deck %1").arg(target)
+                                  : tr("Load deck %1, replaces %2").arg(target).arg(title));
     }
     refreshPreviewButton();
     scheduleMatchRefresh();
@@ -2523,18 +2804,26 @@ void WDeckLab::refreshLoadButtons() {
 void WDeckLab::resetBrowseLevels() {
     auto& b = *m_browseState;
     clearBrowseFilter();
-    b.list = DeckLabList::Sources;
+    b.list = DeckLabList::Home;
     b.source = QPersistentModelIndex();
     b.returnRoot = QPersistentModelIndex();
     b.fromCategories = false;
+    b.fromMore = false;
     b.rekordbox = false;
+    b.pendingStick.clear();
+    b.loadFailed = false;
+    b.loadingSince = -1;
     b.loadingTimer.stop();
 }
 void WDeckLab::clearBrowseFilter() {
     auto& b = *m_browseState;
-    if (b.filter.isEmpty()) return;
+    // Category value filters and "Only" matches are both filters on the
+    // current list; leaving it drops them.
+    const bool filtered = !b.filter.isEmpty() || !b.matchApplied.isEmpty();
     b.filter.clear();
-    if (m_libraryWidget) m_libraryWidget->search(QString());
+    b.matchOnly = false;
+    b.matchApplied.clear();
+    if (filtered && m_libraryWidget) m_libraryWidget->search(QString());
 }
 void WDeckLab::activateBrowseSource() {
     auto& b = *m_browseState;
@@ -2550,6 +2839,12 @@ void WDeckLab::enterCategories(const QModelIndex& source) {
     b.returnRoot = QPersistentModelIndex();
     b.categoryRow = 0;
     b.trackCount = -1;
+    b.pendingStick.clear();
+    b.loadFailed = false;
+    if (b.rekordbox) {
+        b.stickPath = rekordboxDevicePath(source);
+        b.stickName = source.data().toString();
+    }
     // A source opens unfiltered: drop typed or earlier category searches.
     if (m_search) m_search->slotRestoreSearch(QString());
     auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
@@ -2557,14 +2852,40 @@ void WDeckLab::enterCategories(const QModelIndex& source) {
     const bool ready = !b.rekordbox || rekordboxImported(source);
     if (ready && tracks && !tracks->currentSearch().isEmpty()) m_libraryWidget->search(QString());
     if (ready && table && table->model()) b.trackCount = table->model()->rowCount();
+    if (ready && b.rekordbox && b.trackCount >= 0) b.stickTracks.insert(b.stickPath, b.trackCount);
+    b.loadingSince = ready ? -1 : m_clock.elapsed();
     showCategories();
 }
 void WDeckLab::showCategories() {
     auto& b = *m_browseState;
     using decklab::Category;
-    const bool ready = !b.rekordbox || rekordboxImported(b.source);
+    const bool ready = !b.rekordbox ||
+            (b.pendingStick.isEmpty() && b.source.isValid() && rekordboxImported(b.source));
+    b.list = DeckLabList::Categories;
+    b.itemsList = DeckLabList::Categories;
+    if (b.rekordbox && !ready && b.loadFailed) {
+        // B-10: the export could not be read in time. Say so and offer the
+        // stick's files; a late read still opens the categories.
+        const QSignalBlocker blocker(b.items);
+        b.items->clear();
+        auto* error = new QListWidgetItem(tr("Couldn't read this stick's rekordbox export"), b.items);
+        error->setData(DeckLabListDelegate::GlyphRole, static_cast<int>(decklab::Glyph::Warning));
+        error->setData(DeckLabListDelegate::KeyRole, QStringLiteral("error"));
+        auto* retry = new QListWidgetItem(tr("Try again"), b.items);
+        retry->setData(DeckLabListDelegate::GlyphRole, static_cast<int>(decklab::Glyph::Retry));
+        retry->setData(DeckLabListDelegate::KeyRole, QStringLiteral("retry"));
+        retry->setData(DeckLabListDelegate::ChevronRole, true);
+        auto* files = new QListWidgetItem(tr("Browse its files"), b.items);
+        files->setData(DeckLabListDelegate::GlyphRole, static_cast<int>(decklab::Glyph::Folder));
+        files->setData(DeckLabListDelegate::KeyRole, QStringLiteral("files"));
+        files->setData(DeckLabListDelegate::ChevronRole, true);
+        if (b.stickPath.isEmpty()) files->setFlags(files->flags() & ~Qt::ItemIsEnabled);
+        b.items->setCurrentRow(1);
+        showSources();
+        return;
+    }
     const QAbstractItemModel* sources = m_sidebar ? m_sidebar->model() : nullptr;
-    const QString loading = tr("Loading…");
+    const QString loading = tr("Reading…");
     QList<std::tuple<Category, bool, QString>> entries;
     entries.append(std::make_tuple(Category::AllTracks, ready, !ready ? loading : b.trackCount >= 0 ? QString::number(b.trackCount) : QString()));
     if (b.rekordbox) {
@@ -2593,14 +2914,22 @@ void WDeckLab::showCategories() {
         }
         b.items->setCurrentRow(std::clamp(b.categoryRow, 0, std::max(0, b.items->count() - 1)));
     }
-    b.list = DeckLabList::Categories;
-    if (ready) b.loadingTimer.stop(); else b.loadingTimer.start();
+    if (ready) {
+        b.loadingTimer.stop();
+    } else {
+        if (b.loadingSince < 0) b.loadingSince = m_clock.elapsed();
+        b.loadingTimer.start();
+    }
     showSources();
 }
 void WDeckLab::openCategory(int rowIndex) {
     auto& b = *m_browseState;
     auto* item = b.items->item(rowIndex);
     if (!item || !(item->flags() & Qt::ItemIsEnabled) || !m_sidebar) return;
+    const QString action = item->data(DeckLabListDelegate::KeyRole).toString();
+    if (action == QStringLiteral("retry")) { retryRekordboxRead(); return; }
+    if (action == QStringLiteral("files")) { if (!b.stickPath.isEmpty()) showFolder(b.stickPath); return; }
+    if (!action.isEmpty()) return;
     using decklab::Category;
     const auto category = static_cast<Category>(item->data(DeckLabListDelegate::CategoryRole).toInt());
     b.categoryRow = rowIndex;
@@ -2680,13 +3009,44 @@ void WDeckLab::openCategoryValue(int rowIndex) {
 }
 void WDeckLab::checkRekordboxImport() {
     auto& b = *m_browseState;
-    if (!b.rekordbox || !b.source.isValid()) { b.loadingTimer.stop(); return; }
+    if (!b.rekordbox) { b.loadingTimer.stop(); return; }
+    if (!b.pendingStick.isEmpty()) {
+        // The rekordbox feature lists a stick only after its scan.
+        const QModelIndex device = m_sidebar ? rekordboxDeviceFor(m_sidebar->model(), b.pendingStick) : QModelIndex();
+        if (device.isValid()) {
+            b.pendingStick.clear();
+            b.source = device;
+            b.stickName = device.data().toString();
+            if (auto* model = qobject_cast<SidebarModel*>(m_sidebar->model())) {
+                model->doubleClicked(device);
+                model->clicked(device); // starts reading its export
+            }
+        }
+    }
+    if (b.pendingStick.isEmpty() && !b.source.isValid()) { b.loadingTimer.stop(); return; }
+    const bool imported = b.pendingStick.isEmpty() && rekordboxImported(b.source);
+    if (!imported) {
+        // B-10: a damaged export never finishes; stop saying "Reading…"
+        // after 20 s ([DeckLab] RekordboxReadTimeoutMs).
+        b.readTimeoutMs = std::max(100, m_config->getValue(ConfigKey("[DeckLab]", "RekordboxReadTimeoutMs"), 20000));
+        if (!b.loadFailed && b.loadingSince >= 0 && m_clock.elapsed() - b.loadingSince >= b.readTimeoutMs) {
+            b.loadFailed = true;
+            if (!b.stickPath.isEmpty()) b.failedSticks.insert(b.stickPath);
+            qWarning() << "DeckLab Browse: no rekordbox export read from" << b.stickName << "after"
+                       << b.readTimeoutMs << "ms";
+            if (m_page == 1 && b.list == DeckLabList::Categories && m_browseStack->currentIndex() == 0) showCategories();
+        }
+        return; // keep checking: a slow stick may still finish
+    }
     // Keep polling (one data() call) until Browse is visible again; never
     // move focus or Library state while another page is shown.
-    if (!rekordboxImported(b.source) || m_page != 1) return;
+    if (m_page != 1) return;
     b.loadingTimer.stop();
+    b.loadFailed = false;
+    b.failedSticks.remove(b.stickPath);
     auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
     if (table && table->model()) b.trackCount = table->model()->rowCount();
+    if (!b.stickPath.isEmpty() && b.trackCount >= 0) b.stickTracks.insert(b.stickPath, b.trackCount);
     if (b.list == DeckLabList::Categories && m_browseStack->currentIndex() == 0) showCategories();
 }
 void WDeckLab::syncSelectedTrack() {
@@ -2704,17 +3064,48 @@ void WDeckLab::refreshBrowseCard() {
     if (!b.card || !m_browseStack) return;
     if (m_browseStack->currentIndex() != 0) { b.card->showTrack(b.selectedTrack); return; }
     const QString openHint = tr("Turn or swipe to choose · press or tap to open");
+    if (b.list == DeckLabList::Home || b.list == DeckLabList::Folder) {
+        const QListWidgetItem* item = b.items->currentItem();
+        if (!item) {
+            b.card->showItem(decklab::Glyph::Usb, tr("Sources"), tr("Plug in a USB stick to play its music"), QString());
+            return;
+        }
+        const QString key = item->data(DeckLabListDelegate::KeyRole).toString();
+        const auto glyph = static_cast<decklab::Glyph>(item->data(DeckLabListDelegate::GlyphRole).toInt());
+        QString subtitle = item->data(DeckLabListDelegate::SubtitleRole).toString();
+        QString hint = openHint;
+        if (b.list == DeckLabList::Folder) {
+            const QString count = item->data(DeckLabListDelegate::CountRole).toString();
+            subtitle = key == QStringLiteral("tracks") ? countText(count.toInt(), tr("1 track"), tr("%1 tracks"))
+                                                       : (b.stickName.isEmpty() ? tr("Folder") : b.stickName);
+            if (key == QStringLiteral("tracks")) hint = tr("Press or tap to show them");
+        } else if (key.startsWith(QStringLiteral("usb:"))) {
+            hint = subtitle.startsWith(tr("rekordbox")) ? tr("Opens its playlists and tracks") : tr("Opens its folders");
+        } else if (key == QStringLiteral("more")) {
+            hint = tr("Everything else this unit can browse");
+        } else if (key == QStringLiteral("root:tracks")) {
+            hint = tr("By artist, album, BPM and key");
+        }
+        b.card->showItem(glyph, item->text(), subtitle, hint);
+        return;
+    }
     if (b.list != DeckLabList::Sources) {
         const QListWidgetItem* item = b.items->currentItem();
         if (!item) return;
-        const QString source = b.source.isValid() ? b.source.data().toString() : QString();
+        const QString source = currentSourceName();
+        if (b.list == DeckLabList::Categories && b.loadFailed) {
+            b.card->showItem(decklab::Glyph::Warning, source, tr("Couldn't read this stick's rekordbox export."),
+                    tr("Try again, or browse its files."));
+            return;
+        }
         if (b.list == DeckLabList::Categories) {
             const auto category = static_cast<decklab::Category>(item->data(DeckLabListDelegate::CategoryRole).toInt());
             const QString count = item->data(DeckLabListDelegate::CountRole).toString();
+            const bool enabled = item->flags() & Qt::ItemIsEnabled;
             b.card->showItem(categoryGlyph(category), item->text(),
-                    count.isEmpty() || category != decklab::Category::AllTracks ? source
+                    !enabled || count.isEmpty() || category != decklab::Category::AllTracks ? source
                             : count == QStringLiteral("1") ? tr("%1 · 1 track").arg(source) : tr("%1 · %2 tracks").arg(source, count),
-                    (item->flags() & Qt::ItemIsEnabled) ? openHint : tr("Reading the USB export…"));
+                    enabled ? openHint : tr("Reading %1…").arg(source));
         } else {
             const QString count = item->data(DeckLabListDelegate::CountRole).toString();
             b.card->showItem(categoryGlyph(b.category), item->text(),
@@ -2727,21 +3118,21 @@ void WDeckLab::refreshBrowseCard() {
     }
     const QModelIndex index = m_sidebar ? m_sidebar->currentIndex() : QModelIndex();
     if (!index.isValid()) {
-        b.card->showItem(decklab::Glyph::Folder, tr("Sources"), tr("Library, playlists and USB drives"), openHint);
+        b.card->showItem(decklab::Glyph::Sources, tr("Sources"), tr("Library, playlists and USB sticks"), openHint);
         return;
     }
     QString subtitle;
     const QString icon = rootIconName(index);
     const int children = index.model()->rowCount(index);
     if (isCollectionSource(index)) subtitle = tr("Whole library, by category");
-    else if (isRekordboxDevice(index)) subtitle = rekordboxImported(index) ? tr("USB drive · rekordbox export") : tr("USB drive · reads its rekordbox export when opened");
-    else if (!index.parent().isValid() && icon == QStringLiteral("rekordbox")) subtitle = tr("USB drives with a rekordbox export");
+    else if (isRekordboxDevice(index)) subtitle = rekordboxImported(index) ? tr("USB stick · rekordbox export") : tr("USB stick · rekordbox · tap to read");
+    else if (!index.parent().isValid() && icon == QStringLiteral("rekordbox")) subtitle = tr("USB sticks with a rekordbox export");
     else if (children == 1) subtitle = tr("1 item");
     else if (children > 0) subtitle = tr("%1 items").arg(children);
-    else if (icon == QStringLiteral("history")) subtitle = tr("Played in an earlier session");
+    else if (icon == QStringLiteral("history")) subtitle = tr("Played in earlier sessions");
     else if (icon == QStringLiteral("crates")) subtitle = tr("Crate");
     else subtitle = tr("Track list");
-    b.card->showItem(sourceGlyph(index), index.data().toString(), subtitle, openHint);
+    b.card->showItem(sourceGlyph(index), isCollectionSource(index) ? tr("Library") : index.data().toString(), subtitle, openHint);
 }
 void WDeckLab::refreshPreviewButton() {
     if (!m_browseState) return;
@@ -2778,7 +3169,12 @@ void WDeckLab::scheduleMatchRefresh() {
     if (m_browseState && !m_browseState->matchTimer.isActive()) m_browseState->matchTimer.start();
 }
 int WDeckLab::matchReferenceDeck() {
-    // Same rule as Tools > Match Deck: the playing (sync leader) deck, else a loaded displayed deck.
+    // A deck pinned on the Match bar while it stays loaded; otherwise the same
+    // rule as before: the playing (sync leader) deck, else a loaded displayed deck.
+    if (m_browseState && m_browseState->pinnedDeck > 0 &&
+            value(channel(m_browseState->pinnedDeck), "track_loaded") > 0) {
+        return m_browseState->pinnedDeck;
+    }
     int matchDeck = displayedDeck(0);
     bool foundPlaying = false;
     for (int deck = 1; deck <= 4; ++deck) {
@@ -2794,35 +3190,44 @@ void WDeckLab::refreshMatchReference() {
     auto& b = *m_browseState;
     decklab::MatchReference reference;
     reference.enabled = b.matchEnabled;
+    reference.direction = b.direction;
     reference.deck = matchReferenceDeck();
+    reference.automatic = !(b.pinnedDeck > 0 && reference.deck == b.pinnedDeck);
     if (reference.deck) {
         reference.key = KeyUtils::keyFromNumericValue(value(channel(reference.deck), "visual_key"));
         reference.bpm = value(channel(reference.deck), "bpm");
     }
     if (b.match) {
+        // Green only when there really is a deck to match (B-50).
         QString detail = tr("Off");
-        if (b.matchEnabled) {
-            detail = tr("No deck");
-            if (reference.deck) {
-                QStringList parts{tr("D%1", "Short deck label, e.g. D2").arg(reference.deck)};
-                const QString key = KeyUtils::keyToString(reference.key);
-                if (reference.key != mixxx::track::io::key::INVALID && !key.isEmpty()) parts << key;
-                if (reference.bpm > 0) parts << QString::number(reference.bpm, 'f', 0);
-                detail = parts.join(QStringLiteral(" · "));
-            }
+        auto tone = DeckLabActionButton::Tone::Neutral;
+        if (b.matchEnabled && !reference.deck) {
+            detail = tr("Load a deck");
+        } else if (b.matchEnabled) {
+            QStringList parts{QString::number(reference.deck)};
+            const QString key = KeyUtils::keyToString(reference.key);
+            if (reference.key != mixxx::track::io::key::INVALID && !key.isEmpty()) parts << key;
+            if (reference.bpm > 0) parts << QLocale().toString(reference.bpm, 'f', 1);
+            detail = parts.join(QStringLiteral(" · "));
+            tone = DeckLabActionButton::Tone::Active;
         }
         b.match->setDetail(detail);
-        b.match->setTone(b.matchEnabled ? DeckLabActionButton::Tone::Active : DeckLabActionButton::Tone::Neutral);
-        b.match->setAccessibleName(b.matchEnabled ? tr("Harmonic match highlighting on, %1").arg(detail)
-                                                  : tr("Harmonic match highlighting off"));
+        b.match->setTone(tone);
+        b.match->setAccessibleName(!b.matchEnabled ? tr("Matching is off")
+                        : reference.deck         ? tr("Match tracks to deck %1: key and tempo").arg(reference.deck)
+                                                 : tr("Matching is on; load a deck to match"));
     }
-    if (reference.sameAs(decklab::matchReference())) return;
-    decklab::setMatchReference(reference);
-    // Repaint only: rows evaluate the new reference while painting.
-    if (auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr) {
-        if (table->isVisible()) table->viewport()->update();
+    if (!reference.sameAs(decklab::matchReference())) {
+        decklab::setMatchReference(reference);
+        // Repaint only: rows evaluate the new reference while painting.
+        if (auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr) {
+            if (table->isVisible()) table->viewport()->update();
+        }
+        if (b.card) b.card->refreshMatch();
+        if (b.matchOnly) applyMatchFilter(false);
+        scheduleMatchCount();
     }
-    if (b.card) b.card->refreshMatch();
+    updateMatchBar();
 }
 void WDeckLab::showLoadRefused(int deck) {
     if (m_browseState && m_browseState->toast) {
@@ -3393,6 +3798,18 @@ bool WDeckLab::eventFilter(QObject* watched, QEvent* event) {
     }
     if ((event->type() == QEvent::ApplicationDeactivate) ||
             event->type() == QEvent::TouchCancel) { ++m_interactionEpoch; releaseTouchCue(); releaseEffects(); }
+    // qw-library (C-01): the kiosk has no window manager to re-activate Mixxx
+    // after a menu, dialog or utility window closes. Do it here.
+    if (event->type() == QEvent::Hide && watched != this && watched->isWidgetType()) {
+        auto* widget = static_cast<QWidget*>(watched);
+        const Qt::WindowType type = widget->windowType();
+        if (widget->isWindow() && (type == Qt::Popup || type == Qt::Dialog || type == Qt::Sheet || type == Qt::Tool)) {
+            scheduleFocusReclaim();
+        }
+    } else if (event->type() == QEvent::ApplicationStateChange && watched == qApp &&
+            QGuiApplication::applicationState() == Qt::ApplicationActive) {
+        scheduleFocusReclaim();
+    }
     return QWidget::eventFilter(watched, event);
 }
 void WDeckLab::hideEvent(QHideEvent* event) { ++m_interactionEpoch; releaseTouchCue(); releaseEffects(); QWidget::hideEvent(event); }
@@ -3403,10 +3820,32 @@ void WDeckLab::releaseTouchCue() {
 
 void WDeckLab::setSearchOpen(bool open) {
     if (!m_keyboard || !m_searchPanel) return;
-    if (open && m_library && m_browseStack->currentIndex() == 0) {
-        // Searching from a list searches the whole collection.
-        resetBrowseLevels();
-        m_library->searchTracksInCollection(QString()); showTracks();
+    if (open && m_browseState && m_browseStack->currentIndex() == 0) {
+        // Search where you are (B-35): the stick, folder or source you are
+        // in; the whole library only from the source list itself.
+        auto& b = *m_browseState;
+        const bool inSource = b.source.isValid() &&
+                (b.list == DeckLabList::Categories || b.list == DeckLabList::Values ||
+                        (b.list == DeckLabList::Sources && b.returnRoot.isValid() && m_sidebar &&
+                                m_sidebar->rootIndex() == b.returnRoot));
+        if (b.list == DeckLabList::Folder) {
+            openFolderTracks();
+        } else if (inSource && b.rekordbox && !rekordboxImported(b.source)) {
+            if (b.toast) b.toast->showMessage(tr("Still reading %1…").arg(currentSourceName()), 2000);
+            return;
+        } else if (inSource) {
+            clearBrowseFilter();
+            activateBrowseSource();
+            b.category = decklab::Category::AllTracks;
+            b.fromCategories = true;
+            showTracks();
+        } else if (b.list == DeckLabList::Categories && !b.pendingStick.isEmpty()) {
+            if (b.toast) b.toast->showMessage(tr("Still reading %1…").arg(currentSourceName()), 2000);
+            return;
+        } else if (m_library) {
+            resetBrowseLevels();
+            m_library->searchTracksInCollection(QString()); showTracks();
+        }
     }
     m_keyboard->setVisible(open);
     m_searchPanel->setVisible(open || (m_search && !m_search->currentText().isEmpty()));
@@ -3414,6 +3853,487 @@ void WDeckLab::setSearchOpen(bool open) {
     if (m_browseState && m_browseState->card) m_browseState->card->setVisible(!open);
     if (m_page == 1) m_waveforms->setVisible(!open);
     if (open && m_search && m_search->lineEdit()) m_search->lineEdit()->setFocus(Qt::OtherFocusReason);
+    updateMatchBar();
+    if (m_browseState) updateBreadcrumb();
+}
+
+// qw-library: the source home (B-01..B-06, U-03). Sticks first by label, then
+// the library's own sources in sidebar order, desktop roots under "More".
+void WDeckLab::showHome(const QString& highlight) {
+    auto& b = *m_browseState;
+    resetBrowseLevels();
+    if (!highlight.isEmpty()) b.homeKey = highlight;
+    if (m_sidebar) m_sidebar->setRootIndex(QModelIndex());
+    rebuildHome(b.homeKey);
+    showSources();
+}
+namespace {
+QString stickSignature(const QList<decklab::UsbStick>& sticks) {
+    QStringList parts;
+    for (const auto& stick : sticks) parts << stick.path + (stick.rekordbox ? QStringLiteral("*") : QString());
+    return parts.join(QLatin1Char('|'));
+}
+} // namespace
+void WDeckLab::rebuildHome(const QString& highlight) {
+    auto& b = *m_browseState;
+    if (!m_sidebar || !b.items) return;
+    struct Row {
+        QString key;
+        QString name;
+        QString subtitle;
+        decklab::Glyph glyph;
+    };
+    QList<Row> rows;
+    const auto sticks = decklab::findUsbSticks();
+    b.homeSignature = stickSignature(sticks);
+    for (const auto& stick : sticks) {
+        rows.append({QStringLiteral("usb:") + stick.path, stick.label, stickSubtitle(stick), decklab::Glyph::Usb});
+    }
+    const QAbstractItemModel* model = m_sidebar->model();
+    QStringList hidden;
+    for (int row = 0; model && row < model->rowCount(); ++row) {
+        const QModelIndex root = model->index(row, 0);
+        const QString icon = root.data(SidebarModel::IconNameRole).toString();
+        if (hiddenFromHome(icon)) {
+            hidden << (icon == QStringLiteral("autodj") ? tr("Auto DJ")
+                            : icon == QStringLiteral("prepare") ? tr("Analyze")
+                            : icon == QStringLiteral("computer") ? tr("Computer")
+                                                                 : tr("All USB exports"));
+            continue;
+        }
+        rows.append({homeRootKey(root), icon == QStringLiteral("tracks") ? tr("Library") : root.data().toString(),
+                homeRootSubtitle(root), sourceGlyph(root)});
+    }
+    if (!hidden.isEmpty()) {
+        rows.append({QStringLiteral("more"), tr("More sources"), hidden.join(QStringLiteral(" · ")), decklab::Glyph::Sources});
+    }
+    QString keep = highlight;
+    if (keep.isEmpty() && b.itemsList == DeckLabList::Home && b.items->currentItem()) {
+        keep = b.items->currentItem()->data(DeckLabListDelegate::KeyRole).toString();
+    }
+    {
+        const QSignalBlocker blocker(b.items);
+        b.items->clear();
+        int current = 0;
+        for (int n = 0; n < rows.size(); ++n) {
+            auto* item = new QListWidgetItem(rows[n].name, b.items);
+            item->setData(DeckLabListDelegate::KeyRole, rows[n].key);
+            item->setData(DeckLabListDelegate::SubtitleRole, rows[n].subtitle);
+            item->setData(DeckLabListDelegate::GlyphRole, static_cast<int>(rows[n].glyph));
+            item->setData(DeckLabListDelegate::ChevronRole, true);
+            item->setData(Qt::AccessibleTextRole, rows[n].name + QStringLiteral(", ") + rows[n].subtitle);
+            if (rows[n].key == keep) current = n;
+        }
+        b.items->setCurrentRow(rows.isEmpty() ? -1 : current);
+    }
+    b.itemsList = DeckLabList::Home;
+}
+void WDeckLab::refreshHomeIfSticksChanged() {
+    auto& b = *m_browseState;
+    if (m_page != 1 || b.list != DeckLabList::Home || m_browseStack->currentIndex() != 0) {
+        b.homeTimer.stop();
+        return;
+    }
+    if (stickSignature(decklab::findUsbSticks()) == b.homeSignature) return;
+    rebuildHome(QString());
+    refreshBrowseCard();
+}
+QString WDeckLab::homeRootSubtitle(const QModelIndex& root) {
+    const QString icon = root.data(SidebarModel::IconNameRole).toString();
+    const int children = root.model() ? root.model()->rowCount(root) : 0;
+    if (icon == QStringLiteral("tracks")) {
+        const int count = libraryTrackCount();
+        return count >= 0 ? countText(count, tr("1 track on this unit"), tr("%1 tracks on this unit"))
+                          : tr("All your music, by artist, BPM and key");
+    }
+    if (icon == QStringLiteral("playlist")) {
+        return children ? countText(children, tr("1 playlist"), tr("%1 playlists")) : tr("No playlists yet");
+    }
+    if (icon == QStringLiteral("crates")) {
+        return children ? countText(children, tr("1 crate"), tr("%1 crates")) : tr("No crates yet");
+    }
+    if (icon == QStringLiteral("history")) return tr("Played in earlier sessions");
+    if (icon == QStringLiteral("recordings")) return tr("Mixes recorded on this unit");
+    return children ? countText(children, tr("1 item"), tr("%1 items")) : tr("Tracks");
+}
+QString WDeckLab::stickSubtitle(const decklab::UsbStick& stick) {
+    auto& b = *m_browseState;
+    if (stick.rekordbox) {
+        if (b.failedSticks.contains(stick.path)) return tr("rekordbox · couldn't read the export");
+        const QModelIndex device = m_sidebar ? rekordboxDeviceFor(m_sidebar->model(), stick.path) : QModelIndex();
+        if (device.isValid() && rekordboxImported(device)) {
+            QStringList parts{tr("rekordbox")};
+            const int tracks = b.stickTracks.value(stick.path, -1);
+            if (tracks >= 0) parts << countText(tracks, tr("1 track"), tr("%1 tracks"));
+            const int playlists = m_sidebar->model()->rowCount(device);
+            if (playlists > 0) parts << countText(playlists, tr("1 playlist"), tr("%1 playlists"));
+            return parts.join(QStringLiteral(" · "));
+        }
+        return tr("rekordbox · tap to read");
+    }
+    // A plain stick: what is at its top level (one directory read).
+    const int folders = static_cast<int>(decklab::stickSubfolders(stick.path).size());
+    const int files = static_cast<int>(decklab::stickAudioFiles(stick.path).size());
+    QStringList parts{tr("Files")};
+    if (folders) parts << countText(folders, tr("1 folder"), tr("%1 folders"));
+    if (files) parts << countText(files, tr("1 track"), tr("%1 tracks"));
+    if (!folders && !files) parts << tr("no music found");
+    return parts.join(QStringLiteral(" · "));
+}
+int WDeckLab::libraryTrackCount() {
+    auto& b = *m_browseState;
+    if (!m_library || !m_library->trackCollectionManager()) return -1;
+    if (m_clock.elapsed() - b.libraryCountAt < 10000) return b.libraryCount;
+    b.libraryCountAt = m_clock.elapsed();
+    QSqlQuery query(m_library->trackCollectionManager()->internalCollection()->database());
+    b.libraryCount = query.exec(QStringLiteral("SELECT COUNT(*) FROM library WHERE mixxx_deleted=0")) && query.next()
+            ? query.value(0).toInt()
+            : -1;
+    return b.libraryCount;
+}
+void WDeckLab::openHomeRow(int rowIndex) {
+    auto& b = *m_browseState;
+    auto* item = b.items->item(rowIndex);
+    if (!item || !(item->flags() & Qt::ItemIsEnabled) || !m_sidebar) return;
+    const QString key = item->data(DeckLabListDelegate::KeyRole).toString();
+    b.homeKey = key;
+    if (key.startsWith(QStringLiteral("usb:"))) {
+        openStick(key.mid(4));
+        return;
+    }
+    if (key == QStringLiteral("more")) {
+        b.fromMore = true;
+        b.list = DeckLabList::Sources;
+        m_sidebar->setRootIndex(QModelIndex());
+        m_sidebar->setCurrentIndex(m_sidebar->model()->index(0, 0));
+        showSources();
+        return;
+    }
+    QModelIndex root;
+    for (int row = 0; row < m_sidebar->model()->rowCount(); ++row) {
+        const QModelIndex candidate = m_sidebar->model()->index(row, 0);
+        if (homeRootKey(candidate) == key) { root = candidate; break; }
+    }
+    if (!root.isValid()) { rebuildHome(QString()); showSources(); return; }
+    b.fromMore = false;
+    b.list = DeckLabList::Sources;
+    m_sidebar->setRootIndex(QModelIndex());
+    m_sidebar->setCurrentIndex(root);
+    openSource();
+}
+void WDeckLab::openStick(const QString& path) {
+    auto& b = *m_browseState;
+    decklab::UsbStick stick;
+    bool found = false;
+    for (const auto& candidate : decklab::findUsbSticks()) {
+        if (candidate.path == path) { stick = candidate; found = true; }
+    }
+    if (!found) {
+        if (b.toast) b.toast->showMessage(tr("That USB stick is not plugged in any more"), 2600);
+        showHome(QString());
+        return;
+    }
+    resetBrowseLevels();
+    b.homeKey = QStringLiteral("usb:") + path;
+    b.stickPath = path;
+    b.stickName = stick.label;
+    if (!stick.rekordbox) { showFolder(path); return; }
+    auto* model = qobject_cast<SidebarModel*>(m_sidebar->model());
+    const QModelIndex device = rekordboxDeviceFor(m_sidebar->model(), path);
+    if (device.isValid()) {
+        b.list = DeckLabList::Sources;
+        m_sidebar->setRootIndex(QModelIndex());
+        m_sidebar->setCurrentIndex(device);
+        openSource(); // its categories; starts reading the export
+        return;
+    }
+    const QModelIndex root = sidebarRoot(m_sidebar->model(), QStringLiteral("rekordbox"));
+    if (!model || !root.isValid()) { showFolder(path); return; }
+    // The rekordbox feature lists sticks after a scan: start one, and read
+    // this stick as soon as its row appears (checkRekordboxImport).
+    model->clicked(root);
+    b.rekordbox = true;
+    b.pendingStick = path;
+    b.loadingSince = m_clock.elapsed();
+    b.trackCount = -1;
+    b.categoryRow = 0;
+    showCategories();
+}
+void WDeckLab::showFolder(const QString& path) {
+    auto& b = *m_browseState;
+    clearBrowseFilter();
+    b.loadingTimer.stop();
+    b.list = DeckLabList::Folder;
+    b.folderPath = QDir::cleanPath(path);
+    b.source = QPersistentModelIndex();
+    b.returnRoot = QPersistentModelIndex();
+    b.rekordbox = false;
+    b.fromCategories = false;
+    b.pendingStick.clear();
+    const QStringList files = decklab::stickAudioFiles(b.folderPath);
+    const QStringList folders = decklab::stickSubfolders(b.folderPath);
+    {
+        const QSignalBlocker blocker(b.items);
+        b.items->clear();
+        if (!files.isEmpty()) {
+            auto* item = new QListWidgetItem(tr("Tracks in this folder"), b.items);
+            item->setData(DeckLabListDelegate::KeyRole, QStringLiteral("tracks"));
+            item->setData(DeckLabListDelegate::GlyphRole, static_cast<int>(decklab::Glyph::Tracks));
+            item->setData(DeckLabListDelegate::CountRole, QString::number(files.size()));
+            item->setData(DeckLabListDelegate::ChevronRole, true);
+        }
+        for (const QString& folder : folders) {
+            auto* item = new QListWidgetItem(folder, b.items);
+            item->setData(DeckLabListDelegate::KeyRole, QStringLiteral("folder:") + folder);
+            item->setData(DeckLabListDelegate::GlyphRole, static_cast<int>(decklab::Glyph::Folder));
+            item->setData(DeckLabListDelegate::ChevronRole, true);
+        }
+        if (!b.items->count()) {
+            auto* item = new QListWidgetItem(tr("No music here"), b.items);
+            item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
+        }
+        b.items->setCurrentRow(0);
+    }
+    b.itemsList = DeckLabList::Folder;
+    showSources();
+}
+void WDeckLab::openFolderRow(int rowIndex) {
+    auto& b = *m_browseState;
+    auto* item = b.items->item(rowIndex);
+    if (!item || !(item->flags() & Qt::ItemIsEnabled)) return;
+    const QString key = item->data(DeckLabListDelegate::KeyRole).toString();
+    if (key == QStringLiteral("tracks")) openFolderTracks();
+    else if (key.startsWith(QStringLiteral("folder:"))) showFolder(QDir(b.folderPath).filePath(key.mid(7)));
+}
+void WDeckLab::openFolderTracks() {
+    auto& b = *m_browseState;
+    auto* model = m_sidebar ? qobject_cast<SidebarModel*>(m_sidebar->model()) : nullptr;
+    const QModelIndex folder = sidebarIndexForPath(b.folderPath);
+    if (!model || !folder.isValid()) {
+        if (b.toast) b.toast->showMessage(tr("This folder can't be opened"), 2400);
+        return;
+    }
+    model->clicked(folder); // Mixxx's file browser lists the folder's tracks
+    showTracks();
+}
+QModelIndex WDeckLab::sidebarIndexForPath(const QString& path) {
+    // Walks Mixxx's file browser ("Computer") down to path, listing each
+    // level on the way (one directory read per level).
+    auto* model = m_sidebar ? qobject_cast<SidebarModel*>(m_sidebar->model()) : nullptr;
+    if (!model) return {};
+    QModelIndex parent = sidebarRoot(model, QStringLiteral("computer"));
+    if (!parent.isValid()) return {};
+    QString target = QDir::cleanPath(path);
+    if (!target.endsWith(QLatin1Char('/'))) target += QLatin1Char('/');
+    for (int depth = 0; depth < 48; ++depth) {
+        QModelIndex best;
+        int bestLength = 0;
+        for (int row = 0; row < model->rowCount(parent); ++row) {
+            const QModelIndex child = model->index(row, 0, parent);
+            QString data = child.data(SidebarModel::DataRole).toString();
+            if (data.isEmpty() || data.startsWith(QStringLiteral("::"))) continue;
+            if (!data.endsWith(QLatin1Char('/'))) data += QLatin1Char('/');
+            if (target.startsWith(data) && data.size() > bestLength) {
+                best = child;
+                bestLength = static_cast<int>(data.size());
+            }
+        }
+        if (!best.isValid()) return {};
+        if (bestLength == target.size()) return best;
+        model->doubleClicked(best); // lists its subfolders
+        parent = best;
+    }
+    return {};
+}
+void WDeckLab::retryRekordboxRead() {
+    auto& b = *m_browseState;
+    b.loadFailed = false;
+    b.failedSticks.remove(b.stickPath);
+    b.loadingSince = m_clock.elapsed();
+    if (b.source.isValid()) {
+        activateBrowseSource(); // reads the export again
+    } else if (!b.stickPath.isEmpty()) {
+        b.pendingStick = b.stickPath;
+        const QModelIndex root = m_sidebar ? sidebarRoot(m_sidebar->model(), QStringLiteral("rekordbox")) : QModelIndex();
+        if (auto* model = m_sidebar ? qobject_cast<SidebarModel*>(m_sidebar->model()) : nullptr; model && root.isValid()) {
+            model->clicked(root);
+        }
+    }
+    showCategories();
+}
+QString WDeckLab::currentSourceName() const {
+    const auto& b = *m_browseState;
+    if (b.source.isValid()) return isCollectionSource(b.source) ? tr("Library") : b.source.data().toString();
+    return b.stickName.isEmpty() ? tr("USB stick") : b.stickName;
+}
+void WDeckLab::openUsbInBrowse() {
+    // U-01: the rail's USB opens the stick in Browse; with several sticks,
+    // the source list with the first one highlighted.
+    selectPage(1);
+    setSearchOpen(false);
+    if (!m_browseState || !m_sidebar) return;
+    const auto sticks = decklab::findUsbSticks();
+    if (sticks.size() == 1) {
+        showHome(QStringLiteral("usb:") + sticks.first().path);
+        openStick(sticks.first().path);
+        return;
+    }
+    showHome(sticks.isEmpty() ? QString() : QStringLiteral("usb:") + sticks.first().path);
+    if (sticks.isEmpty() && m_browseState->toast) {
+        m_browseState->toast->showMessage(tr("No USB stick. Plug one in to play its music."), 2600);
+    }
+}
+void WDeckLab::showOnlyMatches() {
+    // B-42: Tools › Match Deck filters what you are looking at and says so on
+    // the Match bar and in the breadcrumb, with a visible way out.
+    auto& b = *m_browseState;
+    if (m_browseStack->currentIndex() == 0) {
+        if (b.list == DeckLabList::Folder) {
+            openFolderTracks();
+        } else if (b.source.isValid() && (b.list == DeckLabList::Categories || b.list == DeckLabList::Values)) {
+            clearBrowseFilter();
+            activateBrowseSource();
+            b.category = decklab::Category::AllTracks;
+            b.fromCategories = true;
+            showTracks();
+        }
+        if (m_browseStack->currentIndex() == 0) {
+            if (b.toast) b.toast->showMessage(tr("Open a list, then pick Match Deck"), 2000);
+            return;
+        }
+    }
+    if (!b.matchEnabled) {
+        b.matchEnabled = true;
+        m_config->setValue(ConfigKey("[DeckLab]", "BrowseMatch"), 1);
+    }
+    b.matchOnly = true;
+    refreshMatchReference();
+    applyMatchFilter(true);
+    updateMatchBar();
+    updateBreadcrumb();
+}
+void WDeckLab::applyMatchFilter(bool force) {
+    if (!m_browseState || !m_libraryWidget) return;
+    auto& b = *m_browseState;
+    const QString typed = m_search ? m_search->currentText().trimmed() : QString();
+    // The list's own filter (a category value or typed words) stays required.
+    const QString extra = !b.filter.isEmpty() ? b.filter : (typed.contains(QLatin1Char('|')) ? QString() : typed);
+    QString query;
+    if (b.matchOnly) {
+        decklab::MatchReference reference = decklab::matchReference();
+        // Pitch drift re-filters only when the window moves by a quarter BPM.
+        reference.bpm = std::round(reference.bpm * 4.0) / 4.0;
+        query = decklab::matchFilterQuery(reference, extra);
+    }
+    if (!force && query == b.matchApplied) return;
+    const bool wasApplied = !b.matchApplied.isEmpty();
+    b.matchApplied = query;
+    if (!query.isEmpty()) m_libraryWidget->search(query);
+    else if (wasApplied || force) m_libraryWidget->search(extra);
+    scheduleMatchCount();
+}
+void WDeckLab::updateMatchBar() {
+    if (!m_browseState || !m_browseState->matchBar) return;
+    auto& b = *m_browseState;
+    const bool tracks = m_browseStack && m_libraryWidget && m_browseStack->currentWidget() == m_libraryWidget;
+    const bool keyboard = m_keyboard && m_keyboard->isVisible();
+    const bool shown = b.matchEnabled && tracks && (!keyboard || b.matchOnly);
+    setVisibleIf(b.matchBar, shown);
+    if (!shown) return;
+    using Tone = DeckLabActionButton::Tone;
+    const auto& reference = decklab::matchReference();
+    const bool active = reference.active();
+    QStringList detail;
+    const QString key = KeyUtils::keyToString(reference.key);
+    if (active && reference.key != mixxx::track::io::key::INVALID && !key.isEmpty()) detail << key;
+    if (active && reference.bpm > 0) detail << QLocale().toString(reference.bpm, 'f', 1);
+    b.matchDeck->setReference(active ? reference.deck : 0, reference.automatic,
+            active ? detail.join(QStringLiteral(" · ")) : tr("No deck"));
+    const std::array<decklab::TempoDirection, 3> order{decklab::TempoDirection::Slower,
+            decklab::TempoDirection::Both, decklab::TempoDirection::Faster};
+    for (int n = 0; n < 3; ++n) {
+        b.directions[n]->setTone(b.direction == order[n] ? Tone::Selected : Tone::Neutral);
+        b.directions[n]->setEnabled(active && reference.bpm > 0);
+    }
+    if (!active) {
+        b.matchSummary->setLines(tr("Load a deck to match"), QString(), false);
+    } else {
+        const auto window = reference.window();
+        b.matchSummary->setLines(window.isValid() ? tr("%1 BPM").arg(decklab::tempoWindowText(window)) : tr("Any tempo"),
+                reference.key != mixxx::track::io::key::INVALID ? tr("Key: same ±1 rel") : tr("Key: any"), true);
+    }
+    b.matchOnlyButton->setEnabled(active);
+    b.matchOnlyButton->setTone(b.matchOnly ? Tone::Selected : Tone::Neutral);
+    b.matchOnlyButton->setDetail(b.matchCount >= 0 ? countText(b.matchCount, tr("1 track"), tr("%1 tracks")) : QString());
+    b.matchOnlyButton->setAccessibleName(b.matchOnly ? tr("Showing only matching tracks; tap to show all")
+                                                     : tr("Show only matching tracks"));
+}
+void WDeckLab::scheduleMatchCount() {
+    if (m_browseState && !m_browseState->matchCountTimer.isActive()) m_browseState->matchCountTimer.start();
+}
+void WDeckLab::refreshMatchCount() {
+    if (!m_browseState) return;
+    auto& b = *m_browseState;
+    int count = -1;
+    const auto& reference = decklab::matchReference();
+    auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+    auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
+    const bool shown = m_libraryWidget && m_browseStack->currentWidget() == m_libraryWidget;
+    if (reference.active() && shown && tracks && table->model()) {
+        const QAbstractItemModel* rows = table->model();
+        if (b.matchOnly && !b.matchApplied.isEmpty()) {
+            count = rows->rowCount();
+        } else if (rows->rowCount() <= 4000) {
+            // Same rule as the filter: compatible key and inside the window.
+            const int keyColumn = tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Key);
+            const int bpmColumn = tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Bpm);
+            const auto window = reference.window();
+            const bool anyKey = reference.key == mixxx::track::io::key::INVALID;
+            count = 0;
+            for (int row = 0; row < rows->rowCount(); ++row) {
+                bool tempo = !window.isValid();
+                if (!tempo && bpmColumn >= 0) {
+                    bool ok = false;
+                    const double bpm = rows->index(row, bpmColumn).data(Qt::EditRole).toDouble(&ok);
+                    tempo = ok && decklab::tempoInWindow(bpm, window);
+                }
+                const bool key = anyKey || (keyColumn >= 0 &&
+                        decklab::harmonicMatch(decklab::keyFromText(rows->index(row, keyColumn).data().toString()),
+                                reference.key) != decklab::HarmonicMatch::None);
+                if (tempo && key) ++count;
+            }
+        }
+    }
+    if (count == b.matchCount) return;
+    b.matchCount = count;
+    updateMatchBar();
+    updateBreadcrumb();
+}
+void WDeckLab::scheduleFocusReclaim() {
+    if (!m_browseState || m_browseState->reclaimQueued) return;
+    m_browseState->reclaimQueued = true;
+    QTimer::singleShot(0, this, [this] { reclaimFocus(); });
+}
+void WDeckLab::reclaimFocus() {
+    if (!m_browseState) return;
+    m_browseState->reclaimQueued = false;
+    if (!isVisible() || QApplication::activePopupWidget() || QApplication::activeModalWidget()) return;
+    QWidget* top = window();
+    if (QApplication::activeWindow() != top) {
+        top->activateWindow();
+        qDebug() << "DeckLab knob: main window re-activated after a menu or dialog closed";
+    }
+    if (m_page != 1 || (m_keyboard && m_keyboard->isVisible())) return;
+    // Keep a visible focused control; otherwise the visible list takes focus.
+    QWidget* focus = QApplication::focusWidget();
+    if (focus && focus->window() == top && focus->isVisible()) return;
+    if (m_browseStack->currentIndex() != 0) {
+        if (QWidget* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr) table->setFocus(Qt::OtherFocusReason);
+    } else if (m_browseState->list == DeckLabList::Sources) {
+        if (m_sidebar) m_sidebar->setFocus(Qt::OtherFocusReason);
+    } else if (m_browseState->items) {
+        m_browseState->items->setFocus(Qt::OtherFocusReason);
+    }
 }
 
 void WDeckLab::openCollection() {

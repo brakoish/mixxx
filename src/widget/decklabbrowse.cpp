@@ -3,8 +3,11 @@
 
 #include <QAbstractItemModel>
 #include <QCoreApplication>
+#include <QDir>
 #include <QFileInfo>
 #include <QHash>
+#include <QSet>
+#include <QStorageInfo>
 #include <QLinearGradient>
 #include <QLocale>
 #include <QPainter>
@@ -21,6 +24,7 @@
 #include "track/keyutils.h"
 #include "track/track.h"
 #include "util/color/rgbcolor.h"
+#include "widget/decklabdeckwidgets.h"
 
 namespace decklab {
 
@@ -256,6 +260,236 @@ double tempoDifferencePercent(double trackBpm, double referenceBpm) {
     return (trackBpm / referenceBpm - 1.0) * 100.0;
 }
 
+TempoWindow tempoWindow(double referenceBpm, TempoDirection direction, double tolerance) {
+    if (!std::isfinite(referenceBpm) || referenceBpm <= 0) {
+        return {};
+    }
+    TempoWindow window;
+    window.low = direction == TempoDirection::Faster ? referenceBpm : referenceBpm * (1.0 - tolerance);
+    window.high = direction == TempoDirection::Slower ? referenceBpm : referenceBpm * (1.0 + tolerance);
+    return window;
+}
+
+bool tempoInWindow(double trackBpm, const TempoWindow& window) {
+    return window.isValid() && std::isfinite(trackBpm) && trackBpm > 0 &&
+            trackBpm >= window.low - 1e-6 && trackBpm <= window.high + 1e-6;
+}
+
+QString tempoWindowText(const TempoWindow& window) {
+    if (!window.isValid()) {
+        return {};
+    }
+    return QStringLiteral("%1%2%3")
+            .arg(std::lround(window.low))
+            .arg(QChar(0x2013))
+            .arg(std::lround(window.high));
+}
+
+QString bpmDeltaText(double trackBpm, double referenceBpm) {
+    if (!std::isfinite(trackBpm) || !std::isfinite(referenceBpm) ||
+            trackBpm <= 0 || referenceBpm <= 0) {
+        return {};
+    }
+    const double delta = trackBpm - referenceBpm;
+    if (std::abs(delta) < 0.05) {
+        return QString(QChar(0x00b1)) + QLatin1Char('0');
+    }
+    const double size = std::abs(delta);
+    return QString(QChar(delta > 0 ? 0x25b2 : 0x25bc)) +
+            QString::number(size, 'f', size < 9.95 ? 1 : 0);
+}
+
+QString keyRelationText(ChromaticKey track, ChromaticKey reference) {
+    switch (harmonicMatch(track, reference)) {
+    case HarmonicMatch::Same:
+        return translate("Same key");
+    case HarmonicMatch::Relative:
+        return translate("Relative %1→%2").arg(lancelotText(reference), lancelotText(track));
+    case HarmonicMatch::Adjacent: {
+        const int distance = (lancelot(track).number - lancelot(reference).number + 12) % 12;
+        return distance == 1 ? translate("Key +1 (up)") : translate("Key −1 (down)");
+    }
+    case HarmonicMatch::None:
+        break;
+    }
+    return {};
+}
+
+QStringList compatibleLancelotKeys(ChromaticKey reference) {
+    const LancelotPosition position = lancelot(reference);
+    if (!position.isValid()) {
+        return {};
+    }
+    const QChar letter = position.major ? QLatin1Char('B') : QLatin1Char('A');
+    const QChar other = position.major ? QLatin1Char('A') : QLatin1Char('B');
+    const auto wheel = [](int number) {
+        return (number + 11) % 12 + 1;
+    };
+    return {QString::number(position.number) + letter,
+            QString::number(position.number) + other,
+            QString::number(wheel(position.number - 1)) + letter,
+            QString::number(wheel(position.number + 1)) + letter};
+}
+
+QString matchFilterQuery(const MatchReference& reference, const QString& extra) {
+    if (!reference.active()) {
+        return {};
+    }
+    QStringList required;
+    if (!extra.trimmed().isEmpty()) {
+        required << extra.trimmed();
+    }
+    const TempoWindow window = reference.window();
+    if (window.isValid()) {
+        // QString::arg(double) always writes a '.' decimal point.
+        required << QStringLiteral("bpm:%1-%2").arg(window.low, 0, 'f', 2).arg(window.high, 0, 'f', 2);
+    }
+    const QStringList keys = compatibleLancelotKeys(reference.key);
+    if (keys.isEmpty()) {
+        return required.join(QLatin1Char(' '));
+    }
+    QStringList alternatives;
+    for (const QString& key : keys) {
+        QStringList terms = required;
+        terms << QStringLiteral("key:") + key;
+        alternatives << terms.join(QLatin1Char(' '));
+    }
+    return alternatives.join(QStringLiteral(" | "));
+}
+
+namespace {
+QStringList& usbStickTestRoots() {
+    static QStringList roots;
+    return roots;
+}
+
+#if defined(Q_OS_LINUX)
+// udev escapes characters such as spaces in /dev/disk link names ("\x20").
+QString udevUnescape(const QString& name) {
+    const QByteArray bytes = name.toUtf8();
+    QByteArray out;
+    for (int i = 0; i < bytes.size(); ++i) {
+        bool ok = false;
+        if (bytes[i] == '\\' && i + 3 < bytes.size() && bytes[i + 1] == 'x') {
+            const int value = bytes.mid(i + 2, 2).toInt(&ok, 16);
+            if (ok) {
+                out.append(static_cast<char>(value));
+                i += 3;
+                continue;
+            }
+        }
+        out.append(bytes[i]);
+    }
+    return QString::fromUtf8(out);
+}
+
+// Label of the filesystem whose UUID names the appliance mount folder.
+QString labelForUuid(const QString& uuid) {
+    const QString device =
+            QFileInfo(QDir(QStringLiteral("/dev/disk/by-uuid")), uuid).canonicalFilePath();
+    if (device.isEmpty()) {
+        return {};
+    }
+    const QDir labels(QStringLiteral("/dev/disk/by-label"));
+    const QStringList links = labels.entryList(
+            QDir::AllEntries | QDir::System | QDir::Hidden | QDir::NoDotAndDotDot);
+    for (const QString& link : links) {
+        if (QFileInfo(labels.filePath(link)).canonicalFilePath() == device) {
+            return udevUnescape(link).trimmed();
+        }
+    }
+    return {};
+}
+#endif
+} // namespace
+
+bool hasRekordboxExport(const QString& path) {
+    for (const auto* relative : {"PIONEER/rekordbox/export.pdb", ".PIONEER/rekordbox/export.pdb"}) {
+        if (QFileInfo(QDir(path).filePath(QString::fromLatin1(relative))).isFile()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void setUsbStickRootsForTesting(const QStringList& roots) {
+    usbStickTestRoots() = roots;
+}
+
+QList<UsbStick> findUsbSticks() {
+    QList<UsbStick> sticks;
+#if defined(Q_OS_LINUX)
+    const bool testing = !usbStickTestRoots().isEmpty();
+    QStringList roots = usbStickTestRoots();
+    if (!testing) {
+        const QString user = QString::fromLocal8Bit(qgetenv("USER"));
+        roots << QStringLiteral("/media/decklab");
+        if (!user.isEmpty() && user != QStringLiteral("decklab")) {
+            roots << QStringLiteral("/media/") + user << QStringLiteral("/run/media/") + user;
+        }
+    }
+    QSet<QString> seen;
+    for (const QString& root : std::as_const(roots)) {
+        const bool applianceRoot = QDir(root).dirName() == QStringLiteral("decklab");
+        const QFileInfoList entries = QDir(root).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+        for (const QFileInfo& entry : entries) {
+            const QString path = entry.absoluteFilePath();
+            if (seen.contains(path)) {
+                continue;
+            }
+            // Only real mounts: the appliance helper removes stale folders,
+            // but a desktop may leave empty ones behind.
+            if (!testing && QStorageInfo(path).rootPath() != path) {
+                continue;
+            }
+            seen.insert(path);
+            UsbStick stick;
+            stick.path = path;
+            if (applianceRoot) {
+                stick.label = testing ? QString() : labelForUuid(entry.fileName());
+                if (stick.label.isEmpty()) {
+                    stick.label = translate("USB stick (%1)")
+                                          .arg(entry.fileName().left(4).toUpper());
+                }
+            } else {
+                // udisks names desktop mount folders after the label.
+                stick.label = entry.fileName();
+            }
+            stick.rekordbox = hasRekordboxExport(path);
+            sticks.append(stick);
+        }
+    }
+    std::sort(sticks.begin(), sticks.end(), [](const UsbStick& a, const UsbStick& b) {
+        return QString::localeAwareCompare(a.label, b.label) < 0;
+    });
+#endif
+    return sticks;
+}
+
+QStringList stickAudioFiles(const QString& folder) {
+    static const QStringList patterns{QStringLiteral("*.mp3"), QStringLiteral("*.wav"),
+            QStringLiteral("*.flac"), QStringLiteral("*.aif"), QStringLiteral("*.aiff"),
+            QStringLiteral("*.m4a"), QStringLiteral("*.mp4"), QStringLiteral("*.ogg"),
+            QStringLiteral("*.opus"), QStringLiteral("*.wv"), QStringLiteral("*.alac")};
+    return QDir(folder).entryList(patterns, QDir::Files | QDir::Readable, QDir::Name | QDir::IgnoreCase);
+}
+
+QStringList stickSubfolders(const QString& folder) {
+    static const QStringList system{QStringLiteral("System Volume Information"),
+            QStringLiteral("$RECYCLE.BIN"), QStringLiteral("RECYCLER"), QStringLiteral("LOST.DIR"),
+            QStringLiteral("FOUND.000"), QStringLiteral("PIONEER"), QStringLiteral("lost+found")};
+    QStringList folders;
+    const QStringList entries = QDir(folder).entryList(
+            QDir::Dirs | QDir::NoDotAndDotDot | QDir::Readable, QDir::Name | QDir::IgnoreCase);
+    for (const QString& name : entries) {
+        if (name.startsWith(QLatin1Char('.')) || system.contains(name, Qt::CaseInsensitive)) {
+            continue;
+        }
+        folders << name;
+    }
+    return folders;
+}
+
 ChromaticKey keyFromText(const QString& text) {
     static QHash<QString, ChromaticKey> cache;
     const auto found = cache.constFind(text);
@@ -289,6 +523,7 @@ QColor keyWheelColor(ChromaticKey key) {
 
 bool MatchReference::sameAs(const MatchReference& other) const {
     return enabled == other.enabled && deck == other.deck && key == other.key &&
+            automatic == other.automatic && direction == other.direction &&
             std::abs(bpm - other.bpm) < 0.005;
 }
 
@@ -546,8 +781,62 @@ void paintGlyph(QPainter& painter, const QRectF& box, Glyph glyph, const QColor&
         break;
     }
     case Glyph::Usb:
-        painter.drawRoundedRect(QRectF(at(0.3, 0.38), at(0.7, 0.92)), 2, 2);
-        painter.drawRect(QRectF(at(0.38, 0.1), at(0.62, 0.38)));
+        // Stick body with its label notch, and the plug.
+        painter.drawRoundedRect(QRectF(at(0.28, 0.36), at(0.72, 0.92)), 2, 2);
+        painter.drawRect(QRectF(at(0.38, 0.08), at(0.62, 0.36)));
+        painter.drawLine(at(0.44, 0.18), at(0.44, 0.24));
+        painter.drawLine(at(0.56, 0.18), at(0.56, 0.24));
+        painter.drawLine(at(0.4, 0.62), at(0.6, 0.62));
+        break;
+    case Glyph::Mic:
+        painter.drawRoundedRect(QRectF(at(0.36, 0.06), at(0.64, 0.56)), s * 0.14, s * 0.14);
+        painter.drawArc(QRectF(at(0.22, 0.2), at(0.78, 0.72)), 180 * 16, 180 * 16);
+        painter.drawLine(at(0.5, 0.72), at(0.5, 0.9));
+        painter.drawLine(at(0.32, 0.92), at(0.68, 0.92));
+        break;
+    case Glyph::Sources:
+        for (qreal x : {0.1, 0.56}) {
+            for (qreal y : {0.1, 0.56}) {
+                painter.drawRoundedRect(QRectF(at(x, y), at(x + 0.34, y + 0.34)), 2, 2);
+            }
+        }
+        break;
+    case Glyph::AutoDj: {
+        painter.drawArc(QRectF(at(0.14, 0.14), at(0.86, 0.86)), 30 * 16, 300 * 16);
+        painter.drawPolyline(QPolygonF{at(0.62, 0.1), at(0.82, 0.3), at(0.56, 0.36)});
+        break;
+    }
+    case Glyph::Analyze:
+        painter.drawLine(at(0.16, 0.44), at(0.16, 0.84));
+        painter.drawLine(at(0.39, 0.16), at(0.39, 0.84));
+        painter.drawLine(at(0.62, 0.32), at(0.62, 0.84));
+        painter.drawLine(at(0.85, 0.56), at(0.85, 0.84));
+        break;
+    case Glyph::ArrowDown:
+        painter.drawLine(at(0.5, 0.12), at(0.5, 0.86));
+        painter.drawPolyline(QPolygonF{at(0.22, 0.58), at(0.5, 0.86), at(0.78, 0.58)});
+        break;
+    case Glyph::ArrowUp:
+        painter.drawLine(at(0.5, 0.14), at(0.5, 0.88));
+        painter.drawPolyline(QPolygonF{at(0.22, 0.42), at(0.5, 0.14), at(0.78, 0.42)});
+        break;
+    case Glyph::ArrowBoth:
+        painter.drawLine(at(0.5, 0.12), at(0.5, 0.88));
+        painter.drawPolyline(QPolygonF{at(0.24, 0.36), at(0.5, 0.1), at(0.76, 0.36)});
+        painter.drawPolyline(QPolygonF{at(0.24, 0.64), at(0.5, 0.9), at(0.76, 0.64)});
+        break;
+    case Glyph::Close:
+        painter.drawLine(at(0.2, 0.2), at(0.8, 0.8));
+        painter.drawLine(at(0.8, 0.2), at(0.2, 0.8));
+        break;
+    case Glyph::Warning:
+        painter.drawPolygon(QPolygonF{at(0.5, 0.08), at(0.94, 0.88), at(0.06, 0.88)});
+        painter.drawLine(at(0.5, 0.36), at(0.5, 0.6));
+        painter.drawPoint(at(0.5, 0.74));
+        break;
+    case Glyph::Retry:
+        painter.drawArc(QRectF(at(0.14, 0.14), at(0.86, 0.86)), 60 * 16, 290 * 16);
+        painter.drawPolyline(QPolygonF{at(0.5, 0.04), at(0.7, 0.16), at(0.52, 0.32)});
         break;
     case Glyph::Folder: {
         QPainterPath path;
@@ -634,6 +923,62 @@ void DeckLabActionButton::setGlyph(Glyph glyph) {
     update();
 }
 
+void DeckLabActionButton::setDeck(int deck) {
+    if (m_deck == deck) {
+        return;
+    }
+    m_deck = deck;
+    update();
+}
+
+void DeckLabActionButton::paintDeckTarget(QPainter& painter, const QColor& primary, const QColor& secondary) {
+    // LOAD target: deck-colour bar and badge always (dimmed when disabled),
+    // the action word, and what loading would do on the second line.
+    const bool enabled = isEnabled();
+    QColor deckColor = deckLabDeckColor(m_deck);
+    if (!enabled) {
+        deckColor.setAlpha(120);
+    }
+    const QRectF inner = QRectF(rect()).adjusted(1, 1, -1, -1);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(deckColor);
+    painter.drawRect(QRectF(inner.left(), inner.top(), 6, inner.height()));
+    const QFont primaryFont = strongFont(font());
+    const QFont detailFont = secondaryFont(font());
+    const QFontMetrics primaryMetrics(primaryFont);
+    const QFontMetrics detailMetrics(detailFont);
+    const int left = static_cast<int>(inner.left()) + 12;
+    const int right = static_cast<int>(inner.right()) - 6;
+    const bool twoLines = !m_detail.isEmpty() &&
+            height() >= primaryMetrics.height() + detailMetrics.height();
+    const int lineTop = twoLines
+            ? (height() - primaryMetrics.height() - detailMetrics.height() + 4) / 2
+            : (height() - primaryMetrics.height()) / 2;
+    const QRectF badge(left, lineTop + (primaryMetrics.height() - 22) / 2.0, 24, 22);
+    painter.drawRoundedRect(badge, 3, 3);
+    painter.setFont(numberFont(font(), 15));
+    painter.setPen(colors::ground);
+    painter.drawText(badge, Qt::AlignCenter, QString::number(m_deck));
+    QString label = text();
+    const QString suffix = QLatin1Char(' ') + QString::number(m_deck);
+    if (label.endsWith(suffix)) {
+        label.chop(suffix.size());
+    }
+    const int labelLeft = static_cast<int>(badge.right()) + 7;
+    painter.setFont(primaryFont);
+    painter.setPen(primary);
+    painter.drawText(QRect(labelLeft, lineTop, std::max(0, right - labelLeft), primaryMetrics.height()),
+            Qt::AlignLeft | Qt::AlignVCenter,
+            primaryMetrics.elidedText(label.toUpper(), Qt::ElideRight, std::max(0, right - labelLeft)));
+    if (twoLines) {
+        painter.setFont(detailFont);
+        painter.setPen(secondary);
+        painter.drawText(QRect(left, lineTop + primaryMetrics.height() - 4, std::max(0, right - left), detailMetrics.height()),
+                Qt::AlignLeft | Qt::AlignVCenter,
+                detailMetrics.elidedText(m_detail, Qt::ElideRight, std::max(0, right - left)));
+    }
+}
+
 void DeckLabActionButton::paintEvent(QPaintEvent*) {
     QStyleOptionButton option;
     initStyleOption(&option);
@@ -646,7 +991,39 @@ void DeckLabActionButton::paintEvent(QPaintEvent*) {
     QColor primary = enabled ? colors::ink : colors::dim;
     QColor secondary = enabled ? colors::muted : colors::dim;
     const QRectF inner = QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5);
+    if (m_deck > 0) {
+        switch (m_tone) {
+        case Tone::OnAir: {
+            QColor fill = colors::onAir;
+            fill.setAlpha(38);
+            painter.setPen(QPen(colors::onAir, 2));
+            painter.setBrush(fill);
+            painter.drawRoundedRect(inner, 2, 2);
+            primary = QColor(0xe6, 0xe6, 0xe6);
+            secondary = colors::onAir;
+            break;
+        }
+        case Tone::Ready:
+            // Ready to load: raised fill and full-contrast text, never red.
+            painter.setPen(QPen(colors::edge, 1));
+            painter.setBrush(colors::raise);
+            painter.drawRoundedRect(inner, 2, 2);
+            primary = colors::ink;
+            secondary = colors::ink;
+            break;
+        default:
+            break;
+        }
+        paintDeckTarget(painter, primary, secondary);
+        return;
+    }
     switch (m_tone) {
+    case Tone::Selected:
+        painter.setPen(QPen(colors::accent, 2));
+        painter.setBrush(colors::raise);
+        painter.drawRoundedRect(inner, 2, 2);
+        secondary = enabled ? colors::ink : colors::dim;
+        break;
     case Tone::OnAir: {
         QColor fill = colors::onAir;
         fill.setAlpha(38);
@@ -719,6 +1096,106 @@ void DeckLabActionButton::paintEvent(QPaintEvent*) {
                 Qt::AlignHCenter | Qt::AlignVCenter,
                 detailMetrics.elidedText(m_detail, Qt::ElideRight, content.width()));
     }
+}
+
+DeckLabDeckChip::DeckLabDeckChip(QWidget* parent)
+        : QPushButton(parent) {
+    setFocusPolicy(Qt::NoFocus);
+}
+
+void DeckLabDeckChip::setReference(int deck, bool automatic, const QString& detail) {
+    if (m_deck == deck && m_automatic == automatic && m_detail == detail) {
+        return;
+    }
+    m_deck = deck;
+    m_automatic = automatic;
+    m_detail = detail;
+    setAccessibleName(deck > 0
+                    ? (automatic ? tr("Match to deck %1 (automatic): %2").arg(deck).arg(detail)
+                                 : tr("Match to deck %1: %2").arg(deck).arg(detail))
+                    : detail);
+    update();
+}
+
+void DeckLabDeckChip::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    const QRectF frame = QRectF(rect()).adjusted(0.5, 3.5, -0.5, -3.5);
+    painter.setPen(QPen(colors::edge, 1));
+    painter.setBrush(isDown() ? colors::raise : colors::panel);
+    painter.drawRoundedRect(frame, 3, 3);
+    const QFont label = labelFont(font());
+    const QFont value = numberFont(font(), 16);
+    const QFontMetrics labelMetrics(label);
+    const QFontMetrics valueMetrics(value);
+    const int top = (height() - labelMetrics.height() - valueMetrics.height() + 4) / 2;
+    if (m_deck <= 0) {
+        // No reference deck: neutral, never the "match" green.
+        painter.setFont(secondaryFont(font()));
+        painter.setPen(colors::muted);
+        painter.drawText(rect().adjusted(10, 0, -8, 0), Qt::AlignLeft | Qt::AlignVCenter,
+                QFontMetrics(secondaryFont(font())).elidedText(m_detail, Qt::ElideRight, width() - 18));
+        return;
+    }
+    const QColor deckColor = deckLabDeckColor(m_deck);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(deckColor);
+    painter.drawRoundedRect(QRectF(frame.left(), frame.top(), 6, frame.height()), 2, 2);
+    const int left = 13;
+    const QString title = m_automatic ? tr("Deck %1 · auto").arg(m_deck) : tr("Deck %1").arg(m_deck);
+    painter.setFont(label);
+    painter.setPen(deckColor);
+    painter.drawText(QRect(left, top, width() - left - 6, labelMetrics.height()), Qt::AlignLeft | Qt::AlignVCenter,
+            labelMetrics.elidedText(title.toUpper(), Qt::ElideRight, width() - left - 6));
+    painter.setFont(value);
+    painter.setPen(colors::ink);
+    painter.drawText(QRect(left, top + labelMetrics.height() - 4, width() - left - 6, valueMetrics.height()),
+            Qt::AlignLeft | Qt::AlignVCenter,
+            valueMetrics.elidedText(m_detail, Qt::ElideRight, width() - left - 6));
+}
+
+DeckLabTwoLineLabel::DeckLabTwoLineLabel(QWidget* parent)
+        : QWidget(parent) {
+    setAttribute(Qt::WA_TransparentForMouseEvents);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    setFixedHeight(44);
+}
+
+void DeckLabTwoLineLabel::setLines(const QString& primary, const QString& secondary, bool active) {
+    if (m_primary == primary && m_secondary == secondary && m_active == active) {
+        return;
+    }
+    m_primary = primary;
+    m_secondary = secondary;
+    m_active = active;
+    setAccessibleName(secondary.isEmpty() ? primary : primary + QStringLiteral(", ") + secondary);
+    update();
+}
+
+void DeckLabTwoLineLabel::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    const QFont value = m_active ? numberFont(font(), 16) : secondaryFont(font());
+    const QFont label = labelFont(font());
+    const QFontMetrics valueMetrics(value);
+    const QFontMetrics labelMetrics(label);
+    const int width = std::max(0, this->width() - 8);
+    if (m_secondary.isEmpty()) {
+        painter.setFont(value);
+        painter.setPen(m_active ? colors::ink : colors::muted);
+        painter.drawText(QRect(4, 0, width, height()), Qt::AlignLeft | Qt::AlignVCenter,
+                valueMetrics.elidedText(m_primary, Qt::ElideRight, width));
+        return;
+    }
+    const int top = (height() - valueMetrics.height() - labelMetrics.height() + 4) / 2;
+    painter.setFont(value);
+    painter.setPen(m_active ? colors::ink : colors::muted);
+    painter.drawText(QRect(4, top, width, valueMetrics.height()), Qt::AlignLeft | Qt::AlignVCenter,
+            valueMetrics.elidedText(m_primary, Qt::ElideRight, width));
+    painter.setFont(label);
+    painter.setPen(colors::muted);
+    painter.drawText(QRect(4, top + valueMetrics.height() - 4, width, labelMetrics.height()),
+            Qt::AlignLeft | Qt::AlignVCenter,
+            labelMetrics.elidedText(m_secondary, Qt::ElideRight, width));
 }
 
 DeckLabBreadcrumb::DeckLabBreadcrumb(QWidget* parent)
@@ -824,10 +1301,7 @@ void DeckLabTrackCard::enableCovers() {
 
 void DeckLabTrackCard::showTrack(const TrackPointer& track) {
     if (!track) {
-        showItem(Glyph::Tracks,
-                tr("No track selected"),
-                tr("Turn the browse knob or tap a track"),
-                tr("Preview and Load use the highlighted track"));
+        showItem(Glyph::Tracks, tr("Pick a track"), QString(), QString());
         return;
     }
     const bool sameTrack = !m_itemMode && m_track == track;
@@ -896,20 +1370,21 @@ QString DeckLabTrackCard::matchSummary() const {
     if (m_itemMode || !reference.active()) {
         return {};
     }
-    // The reference deck is named on the Match button; keep this short.
+    // The reference deck is named on the Match bar; keep this short and say
+    // it in BPM: "Same key · ▼ 2.0 BPM slower".
     QStringList parts;
-    const HarmonicMatch harmonic = harmonicMatch(m_key, reference.key);
-    if (harmonic == HarmonicMatch::Same) {
-        parts << tr("Same key");
-    } else if (harmonic == HarmonicMatch::Relative) {
-        parts << tr("Relative key");
-    } else if (harmonic == HarmonicMatch::Adjacent) {
-        parts << tr("Key ±1");
+    const QString relation = keyRelationText(m_key, reference.key);
+    if (!relation.isEmpty()) {
+        parts << relation;
     }
-    const double difference = tempoDifferencePercent(m_bpm, reference.bpm);
-    if (std::isfinite(difference)) {
-        parts << QStringLiteral("%1%2%").arg(difference >= 0 ? QStringLiteral("+") : QString(),
-                         QLocale().toString(difference, 'f', 1));
+    if (std::isfinite(m_bpm) && m_bpm > 0 && reference.bpm > 0) {
+        const double delta = m_bpm - reference.bpm;
+        if (std::abs(delta) < 0.05) {
+            parts << tr("same BPM");
+        } else {
+            const QString size = QLocale().toString(std::abs(delta), 'f', 1);
+            parts << (delta > 0 ? tr("▲ %1 BPM faster").arg(size) : tr("▼ %1 BPM slower").arg(size));
+        }
     }
     if (parts.isEmpty()) {
         return {};
@@ -1026,7 +1501,7 @@ void DeckLabTrackCard::paintTrack(QPainter& painter) {
     const HarmonicMatch harmonic = reference.active()
             ? harmonicMatch(m_key, reference.key)
             : HarmonicMatch::None;
-    const bool tempo = reference.active() && tempoMatches(m_bpm, reference.bpm);
+    const bool tempo = reference.active() && tempoInWindow(m_bpm, reference.window());
     const int chipTop = artBox.bottom() + 9;
     const int chipHeight = compact ? 44 : 50;
     const int gap = 6;
@@ -1187,8 +1662,10 @@ DeckLabListDelegate::DeckLabListDelegate(QObject* parent)
         : QStyledItemDelegate(parent) {
 }
 
-QSize DeckLabListDelegate::sizeHint(const QStyleOptionViewItem& option, const QModelIndex&) const {
-    return QSize(option.rect.width(), 44);
+QSize DeckLabListDelegate::sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const {
+    // Source rows say what is inside on a second line.
+    const bool twoLines = !m_glyphProvider && !index.data(SubtitleRole).toString().isEmpty();
+    return QSize(option.rect.width(), twoLines ? 60 : 44);
 }
 
 void DeckLabListDelegate::paint(QPainter* painter,
@@ -1199,8 +1676,10 @@ void DeckLabListDelegate::paint(QPainter* painter,
     const QRect r = option.rect;
     const bool selected = option.state & QStyle::State_Selected;
     const bool enabled = index.flags() & Qt::ItemIsEnabled;
-    painter->fillRect(r, selected ? colors::raise : (index.row() % 2 ? QColor(0x12, 0x15, 0x19) : colors::ground));
-    painter->setPen(QColor(0x1c, 0x20, 0x26));
+    // Line separators on the ground (no zebra stripe); selection is a raised
+    // fill with a white edge.
+    painter->fillRect(r, selected ? colors::raise : colors::ground);
+    painter->setPen(colors::panel.lighter(115));
     painter->drawLine(r.bottomLeft(), r.bottomRight());
     if (selected) {
         painter->fillRect(QRect(r.left(), r.top(), 3, r.height()), colors::accent);
@@ -1208,7 +1687,38 @@ void DeckLabListDelegate::paint(QPainter* painter,
     int x = r.left() + 16;
     const QColor textColor = enabled ? colors::ink : colors::dim;
     const bool sources = static_cast<bool>(m_glyphProvider);
+    const QString subtitle = sources ? QString() : index.data(SubtitleRole).toString();
     const auto glyph = sources ? m_glyphProvider(index) : static_cast<Glyph>(index.data(GlyphRole).toInt());
+    if (!subtitle.isEmpty()) {
+        // Two-line source row: a 24 px glyph in text colour, the name and
+        // what is inside.
+        if (glyph != Glyph::None) {
+            paintGlyph(*painter, QRectF(x, r.center().y() - 12, 24, 24), glyph, enabled ? colors::ink : colors::dim);
+            x += 40;
+        }
+        const bool chevron = index.data(ChevronRole).toBool();
+        const int right = r.right() - (chevron ? 30 : 14);
+        if (chevron) {
+            paintGlyph(*painter, QRectF(r.right() - 26, r.center().y() - 7, 14, 14), Glyph::Chevron, colors::muted);
+        }
+        const QFont nameFont = strongFont(option.font);
+        const QFont lineFont = secondaryFont(option.font);
+        const QFontMetrics nameMetrics(nameFont);
+        const QFontMetrics lineMetrics(lineFont);
+        const int top = r.top() + (r.height() - nameMetrics.height() - lineMetrics.height()) / 2;
+        const int width = std::max(0, right - x);
+        painter->setFont(nameFont);
+        painter->setPen(textColor);
+        painter->drawText(QRect(x, top, width, nameMetrics.height()), Qt::AlignLeft | Qt::AlignVCenter,
+                nameMetrics.elidedText(index.data().toString(), Qt::ElideRight, width));
+        painter->setFont(lineFont);
+        painter->setPen(enabled ? colors::muted : colors::dim);
+        painter->drawText(QRect(x, top + nameMetrics.height(), width, lineMetrics.height()),
+                Qt::AlignLeft | Qt::AlignVCenter,
+                lineMetrics.elidedText(subtitle, Qt::ElideRight, width));
+        painter->restore();
+        return;
+    }
     if (glyph != Glyph::None) {
         paintGlyph(*painter, QRectF(x, r.center().y() - 10, 20, 20), glyph, selected ? colors::ink : colors::muted);
         x += 34;
@@ -1226,7 +1736,7 @@ void DeckLabListDelegate::paint(QPainter* painter,
         paintGlyph(*painter,
                 QRectF(r.right() - 26, r.center().y() - 7, 14, 14),
                 Glyph::Chevron,
-                QColor(0x5c, 0x5c, 0x5c));
+                colors::muted);
     }
     const QString count = sources ? QString() : index.data(CountRole).toString();
     const QFont countFont = numberFont(option.font, 15);

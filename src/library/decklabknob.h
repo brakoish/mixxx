@@ -1,0 +1,153 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+#pragma once
+
+// Deck Lab: who owns the controller's browse knob right now (audit C-01).
+//
+// Ownership is decided from what is actually open when the event arrives,
+// never from a cached focus classification. The kiosk has no window manager
+// to re-activate Mixxx after a menu, dialog or utility window closes, so the
+// focus signals that refresh a cached state can be missing; a stale "menu" or
+// "dialog" state then left the knob dead until the screen was tapped.
+//
+// Shared by LibraryControl (generic mappings) and the Browse page (scripts
+// that write [DeckLabNative] browse_* directly), so both entry points use the
+// same check, the same forwarding and the same log line.
+
+#include <QApplication>
+#include <QElapsedTimer>
+#include <QKeyEvent>
+#include <QMenu>
+#include <QPointer>
+#include <QString>
+#include <QWidget>
+#include <QtDebug>
+#include <algorithm>
+#include <cmath>
+
+namespace decklab {
+
+enum class KnobAction {
+    Move,  // turn: |steps| rows
+    Press, // knob press: open, preview, or select in an open menu
+    Enter, // move right: open only
+    Back,  // back, or close an open menu or dialog
+};
+
+struct KnobOwner {
+    QWidget* blocker = nullptr; // the menu or modal dialog that is really open
+    bool popup = false;
+    bool browse() const {
+        return blocker == nullptr;
+    }
+};
+
+inline KnobOwner knobOwner() {
+    KnobOwner owner;
+    if (QWidget* popup = QApplication::activePopupWidget()) {
+        owner.blocker = popup;
+        owner.popup = true;
+    } else if (QWidget* modal = QApplication::activeModalWidget()) {
+        owner.blocker = modal;
+    }
+    return owner;
+}
+
+inline QString describeKnobOwner(const KnobOwner& owner) {
+    if (!owner.blocker) {
+        return QStringLiteral("Browse owns it");
+    }
+    const QString kind = QString::fromLatin1(owner.blocker->metaObject()->className());
+    const QString name = owner.blocker->objectName();
+    return QStringLiteral("%1 is open (%2%3)")
+            .arg(owner.popup ? QStringLiteral("a menu") : QStringLiteral("a dialog"),
+                    kind,
+                    name.isEmpty() ? QString() : QStringLiteral(" \"") + name + QLatin1Char('"'));
+}
+
+// Knob events that went to an open menu or dialog instead of Browse.
+inline int& knobEventsRedirected() {
+    static int count = 0;
+    return count;
+}
+
+// "DeckLab knob: [Library] MoveVertical ignored by Browse because a menu is
+// open (QMenu "x"); the menu gets it". Debug level (always in mixxx.log),
+// at most twice a second for the same reason.
+inline void logKnobRedirected(const char* control, const KnobOwner& owner) {
+    ++knobEventsRedirected();
+    static QElapsedTimer last;
+    static QString lastReason;
+    const QString reason = QString::fromLatin1(control) + describeKnobOwner(owner);
+    if (last.isValid() && last.elapsed() < 500 && reason == lastReason) {
+        return;
+    }
+    last.start();
+    lastReason = reason;
+    qDebug().noquote() << QStringLiteral("DeckLab knob: %1 ignored by Browse because %2; the %3 gets it")
+                                  .arg(QString::fromLatin1(control),
+                                          describeKnobOwner(owner),
+                                          owner.popup ? QStringLiteral("menu") : QStringLiteral("dialog"));
+}
+
+// The open menu or dialog gets the knob: turn = Up/Down (menus) or
+// Tab/Backtab (dialogs), press = Return (menus) or Space (dialogs), back =
+// Escape, which closes it.
+inline void forwardKnob(const KnobOwner& owner, KnobAction action, double steps) {
+    if (!owner.blocker) {
+        return;
+    }
+    QWidget* target = owner.blocker;
+    if (!owner.popup || !qobject_cast<QMenu*>(target)) {
+        if (QWidget* focus = target->focusWidget()) {
+            target = focus;
+        }
+    }
+    QPointer<QWidget> receiver(target);
+    const auto send = [&receiver](int key) {
+        if (!receiver) {
+            return;
+        }
+        QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier);
+        QApplication::sendEvent(receiver, &press);
+        if (!receiver) {
+            return;
+        }
+        QKeyEvent release(QEvent::KeyRelease, key, Qt::NoModifier);
+        QApplication::sendEvent(receiver, &release);
+    };
+    switch (action) {
+    case KnobAction::Move: {
+        if (!std::isfinite(steps) || steps == 0) {
+            return;
+        }
+        const int count = std::clamp(static_cast<int>(std::lround(std::abs(steps))), 1, 50);
+        const int key = owner.popup ? (steps < 0 ? Qt::Key_Up : Qt::Key_Down)
+                                    : (steps < 0 ? Qt::Key_Backtab : Qt::Key_Tab);
+        for (int n = 0; n < count; ++n) {
+            send(key);
+        }
+        return;
+    }
+    case KnobAction::Press:
+    case KnobAction::Enter:
+        send(owner.popup ? Qt::Key_Return : Qt::Key_Space);
+        return;
+    case KnobAction::Back:
+        send(Qt::Key_Escape);
+        return;
+    }
+}
+
+// For [DeckLabNative] browse_* writes: true when Browse owns the knob now;
+// otherwise the event goes to the open menu or dialog (and is logged).
+inline bool knobForBrowse(const char* control, KnobAction action, double steps) {
+    const KnobOwner owner = knobOwner();
+    if (owner.browse()) {
+        return true;
+    }
+    logKnobRedirected(control, owner);
+    forwardKnob(owner, action, steps);
+    return false;
+}
+
+} // namespace decklab
