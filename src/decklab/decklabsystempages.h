@@ -97,6 +97,9 @@ class DeckLabSystemPage : public QWidget {
     QDateTime m_now;
     qint64 m_nowAt = 0;
     int m_brightness = -1;
+    // round4: a tap not yet confirmed by the service wins over a refresh.
+    bool m_brightnessPending = false;
+    quint32 m_brightnessEdit = 0;
     Section m_current = Section::Home;
     bool m_embedded = false;
     std::function<bool(int)> m_legacyTool;

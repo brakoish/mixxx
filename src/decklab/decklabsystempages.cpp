@@ -1673,8 +1673,17 @@ DeckLabSystemPage::DeckLabSystemPage(QWidget* parent)
     m_brightnessSend.setInterval(120);
     connect(&m_brightnessSend, &QTimer::timeout, this, [this] {
         if (m_system && m_system->isReady() && m_brightness >= 5) {
+            QPointer<DeckLabSystemPage> self(this);
+            const quint32 edit = m_brightnessEdit;
             m_system->client()->call(QStringLiteral("display.set"),
-                    QJsonObject{{QStringLiteral("brightness"), m_brightness}}, [](const DeckLabdReply&) {});
+                    QJsonObject{{QStringLiteral("brightness"), m_brightness}}, [self, edit](const DeckLabdReply&) {
+                        // Settled once the service has the latest tap.
+                        if (self && self->m_brightnessEdit == edit) {
+                            self->m_brightnessPending = false;
+                        }
+                    });
+        } else {
+            m_brightnessPending = false;
         }
     });
     // Power: hold to restart or turn off, right here.
@@ -1810,6 +1819,8 @@ void DeckLabSystemPage::setBrightness(int value) {
     }
     // Never below 5 %, so the screen can't go black.
     m_brightness = std::clamp(value, 5, 100);
+    m_brightnessPending = true;
+    ++m_brightnessEdit;
     if (auto* screen = m_tiles.value(static_cast<int>(Section::Screen))) {
         screen->set(Lamp::Off, QStringLiteral("%1 %").arg(m_brightness), QString(), {});
     }
@@ -1961,6 +1972,11 @@ void DeckLabSystemPage::refreshTiles() {
         if (!available) {
             self->m_brightness = -1;
             screen->set(Lamp::Off, QString(), tr("Fixed"), {tr("This screen sets its own brightness")});
+            return;
+        }
+        if (self->m_brightnessPending) {
+            // round4: this reply predates a Dimmer or Brighter tap still on
+            // its way; the old value must not overwrite (and then resend) it.
             return;
         }
         self->m_brightness = std::clamp(reply.result.value(QStringLiteral("brightness")).toInt(100), 5, 100);
