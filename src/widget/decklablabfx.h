@@ -114,6 +114,13 @@ class DeckLabLabFx final : public QWidget {
     void refresh();
     // The surface's 100 ms effect tick: heartbeat, tempo, beat phase, tails.
     void tick();
+    // r4-waveforms: the surface shows its waveform lanes and DECKS row above
+    // this page. The footer readout then drops the beat lamps and the clock
+    // the row already shows, and only names the target.
+    void setLanesShown(bool shown);
+    bool lanesShown() const {
+        return m_lanesShown;
+    }
 
     Effect effect() const {
         return m_effect;
@@ -233,6 +240,7 @@ class DeckLabLabFx final : public QWidget {
     bool m_tailBlink = false;
     bool m_available = false;
     bool m_ready = false;
+    bool m_lanesShown = false; // r4-waveforms
     // What the header readout last showed: effect, beat, target, loaded, BPM x10.
     std::array<int, 5> m_header{-1, -1, -1, -1, -1};
 

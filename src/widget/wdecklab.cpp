@@ -71,6 +71,7 @@
 #include "waveform/waveformwidgetfactory.h"
 #include "widget/decklabbrowse.h"
 #include "widget/decklablabfx.h"
+#include "widget/decklablanes.h" // r4-waveforms
 #include "widget/decklabsampler.h"         // r4-sampler
 #include "widget/decklabsamplercontrols.h" // r4-sampler
 #include "widget/decklabpads.h" // r4-decks: pad modes
@@ -844,6 +845,11 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     m_deckGrid->setContentsMargins(0, 0, 0, 0); m_deckGrid->setHorizontalSpacing(1); m_deckGrid->setVerticalSpacing(0);
     m_waveLayout->addWidget(m_waveZone, 0, 0);
     m_waveLayout->addWidget(m_deckRow, 1, 0);
+    // r4-waveforms: under compact lanes (Sampler, Lab FX) a 32 px DECKS row
+    // takes the readouts' place (widget/decklablanes.h).
+    m_laneDecks = new DeckLabLaneDecks(m_waveforms);
+    m_waveLayout->addWidget(m_laneDecks, 2, 0);
+    m_laneDecks->hide();
     m_waveLayout->setRowStretch(0, 1); m_waveLayout->setRowStretch(1, 0);
     m_pages = new QStackedWidget(this);
     m_pages->setObjectName("decklab-pages");
@@ -2135,16 +2141,21 @@ QWidget* WDeckLab::buildSampler() {
         m_sampler->setFxRouting(samplersGetLabFx());
     });
     page->setFxRouting(false);
+    // r4-waveforms: under compact lanes the DECKS row replaces the strip.
+    page->setDecksStripShown(decklab::lanes::presentationFor(2) != decklab::lanes::Presentation::Compact);
     return page;
 }
 
 // r4-sampler: the Sampler page's share of the display tick, only while it
-// is shown. The waveforms are hidden there, so Decks' tick skips the deck
-// clocks; they advance here instead, and the page repaints only the DECKS
-// strip cells and pads that changed (playing pads drain).
+// is shown; the page repaints only the pads that changed (playing pads
+// drain). r4-waveforms: with the compact lanes shown, Decks' tick moves the
+// deck clocks for the lanes' DECKS row; the page's own strip (and the deck
+// clocks below) only run when the strip is shown.
 void WDeckLab::tickSampler() {
     std::array<DeckLabSamplerDeck, 4> decks{};
-    for (int deck = 1; deck <= 4; ++deck) {
+    // r4-waveforms: with the lanes' DECKS row above, the strip is hidden and
+    // Decks' tick moves the clocks; nothing to compute here.
+    for (int deck = 1; deck <= 4 && m_sampler->decksStripShown(); ++deck) {
         const auto& d = m_deck[deck - 1];
         if (d.loaded->get() <= 0) continue;
         const double rawPosition = d.position->get();
@@ -2222,6 +2233,9 @@ QWidget* WDeckLab::buildEffects() {
     };
     host.showPage = [this](int page) { selectPage(page); };
     m_labFx = new DeckLabLabFx(std::move(host), this);
+    // r4-waveforms: with lanes and their DECKS row above, the footer only
+    // names the target.
+    m_labFx->setLanesShown(decklab::lanes::presentationFor(3) == decklab::lanes::Presentation::Compact);
     return m_labFx;
 }
 
@@ -2576,18 +2590,21 @@ void WDeckLab::selectPage(int page) {
     m_pages->setVisible(page != 0);
     m_deckControls->hide();
     m_root->removeWidget(m_waveforms);
-    if (page == 0) {
+    // r4-waveforms: which page shows the lanes, and how, is decided in one
+    // place (decklab::lanes::presentationFor): Decks full, Sampler and Lab
+    // FX two compact lanes over a DECKS row, Browse (its deck dock is the
+    // LOAD target) and Settings none. Compact pages share one height, so a
+    // Sampler/Lab FX switch never resizes the GL lanes.
+    const auto lanes = decklab::lanes::presentationFor(page);
+    if (lanes == decklab::lanes::Presentation::Full) {
         m_waveforms->setMinimumHeight(0); m_waveforms->setMaximumHeight(QWIDGETSIZE_MAX);
         m_root->insertWidget(1, m_waveforms, 1);
     } else {
         m_pages->setMinimumHeight(0); m_pages->setMaximumHeight(QWIDGETSIZE_MAX);
-        m_waveforms->setFixedHeight(page == 1 ? 104 : 140);
-        m_root->insertWidget(page == 1 ? 2 : 1, m_waveforms);
+        if (lanes == decklab::lanes::Presentation::Compact) m_waveforms->setFixedHeight(compactLaneZoneHeight());
+        m_root->insertWidget(1, m_waveforms);
     }
-    // round4 merge: only Decks shows the waveform lanes. Browse shows the deck
-    // dock instead (r4-browse), Sampler and Lab FX are full-height instruments
-    // that read their target deck themselves (r4-sampler, r4-labfx).
-    m_waveforms->setVisible(page == 0);
+    m_waveforms->setVisible(lanes != decklab::lanes::Presentation::None);
     m_root->setStretchFactor(m_pages, page == 0 ? 0 : 1);
     if (page == 1) {
         if (!m_hasBrowsed) { m_hasBrowsed = true; showSources(); }
@@ -3635,6 +3652,7 @@ void WDeckLab::refreshDeckClock(int deck) {
     if (m_strips[deck - 1]) m_strips[deck - 1]->setState(state);
     if (m_minis[deck - 1]) m_minis[deck - 1]->setState(state);
     refreshDockFor(deck); // r4-browse
+    if (!m_laneDecks->isHidden()) m_laneDecks->setDeck(deck, state, m_shownPosition[deck - 1]); // r4-waveforms
 }
 
 void WDeckLab::applyDeck(int deck) {
@@ -3649,6 +3667,7 @@ void WDeckLab::applyDeck(int deck) {
     }
     if (auto* mini = m_minis[deck - 1]) mini->setState(state);
     refreshDockFor(deck); // r4-browse
+    if (!m_laneDecks->isHidden()) m_laneDecks->setDeck(deck, state, m_shownPosition[deck - 1]); // r4-waveforms
     const int side = deck % 2 ? 0 : 1;
     if (displayedDeck(side) == deck) refreshTransport(deck, m_sidePrefixes[side]);
     refreshTransport(deck, m_cardPrefixes[deck - 1]);
@@ -3749,6 +3768,7 @@ void WDeckLab::flushDirtyDecks() {
 
 bool WDeckLab::deckShown(int deck) const {
     if ((m_page == 0 || m_page == 1) && m_fourDeckLayout) return true; // r4-browse: the dock shows all four
+    if (m_laneDecks && !m_laneDecks->isHidden()) return m_laneDecks->shows(deck); // r4-waveforms: the DECKS row
     return deck == m_layers[0] || deck == m_layers[1];
 }
 
@@ -3777,6 +3797,7 @@ void WDeckLab::tickDecks() {
     // any deck plays, a paused deck's phase meter follows the reference's
     // beat (cueing a drop on the one); unchanged parts never repaint.
     const bool flash = (now / 400) % 2 == 0;
+    if (!m_laneDecks->isHidden()) m_laneDecks->setFlash(flash); // r4-waveforms: only end-warning cells repaint
     bool anyPlaying = false;
     for (const auto& d : m_deck) anyPlaying |= d.play->get() > 0 && d.loaded->get() > 0;
     for (int deck = 1; deck <= 4; ++deck) {
@@ -4007,6 +4028,18 @@ void WDeckLab::updateStatus() {
     if (m_settings) m_settings->setHealth(m_measuredFps, m_droppedFrames, overloads);
 }
 bool WDeckLab::eventFilter(QObject* watched, QEvent* event) {
+    // r4-waveforms: compact lanes (Sampler, Lab FX) are display only: a
+    // press or wheel there never starts a scratch or a zoom while the hands
+    // are on the pads. Releases always pass, so a scratch begun on Decks ends.
+    if (m_page != 0 && (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonDblClick ||
+                event->type() == QEvent::Wheel) && watched->isWidgetType()) {
+        for (const auto& viewer : m_detailWaveforms)
+            if (viewer && (watched == viewer || viewer->isAncestorOf(static_cast<QWidget*>(watched)))) {
+                // Still a touch somewhere else for a Lab FX pad hold.
+                if (m_labFx && event->type() == QEvent::MouseButtonPress) m_labFx->noteTouch(watched, event);
+                return true;
+            }
+    }
     if (watched->objectName().startsWith(QStringLiteral("decklab-info-hit-")) && m_page == 0 &&
             event->type() == QEvent::KeyPress) {
         auto* key = static_cast<QKeyEvent*>(event);
@@ -4087,6 +4120,11 @@ void WDeckLab::setSearchOpen(bool open) {
     }
     m_keyboard->setVisible(open);
     m_searchPanel->setVisible(open || (m_search && !m_search->currentText().isEmpty()));
+    // r4-waveforms: Browse shows no lanes today. Should presentationFor()
+    // give it compact lanes, the keyboard takes their room while it is up
+    // (it never floats over them).
+    if (m_page == 1 && decklab::lanes::presentationFor(1) == decklab::lanes::Presentation::Compact)
+        setVisibleIf(m_waveforms, !open);
     // The keyboard leaves little height: keep Preview and LOAD, drop the card.
     if (m_browseState && m_browseState->card) m_browseState->card->setVisible(!open);
     // r4-browse: the deck dock moves into the pane above the keyboard (the
@@ -4691,6 +4729,21 @@ void WDeckLab::updateLayers() {
         if (m_deckWaveforms[index]) signature |= quint64(1) << (11 + index);
         if (m_overviews[index]) signature |= quint64(1) << (15 + index);
     }
+    // r4-waveforms: compact pages give their two lanes to the most relevant
+    // decks (on air, then the controller's layers, then loaded) and name the
+    // others on the DECKS row; a change of that choice relayouts.
+    const bool compact = decklab::lanes::presentationFor(m_page) == decklab::lanes::Presentation::Compact;
+    decklab::lanes::Choice laneChoice;
+    if (compact) {
+        std::array<decklab::lanes::Deck, 4> facts{};
+        for (int deck = 1; deck <= 4; ++deck)
+            facts[deck - 1] = {m_deck[deck - 1].loaded->get() > 0, m_deck[deck - 1].play->get() > 0};
+        laneChoice = decklab::lanes::choose(facts, {m_layers[0], m_layers[1]}, four);
+        signature |= quint64(laneChoice.lanes[0]) << 19 | quint64(laneChoice.lanes[1]) << 22 |
+                quint64(laneChoice.rowCount) << 25;
+        for (int index = 0; index < laneChoice.rowCount; ++index)
+            signature |= quint64(laneChoice.row[index]) << (28 + 3 * index);
+    }
     // r4-decks: stems are a pad mode (decklabpads.h), so a stem track no
     // longer changes the layout (round 3 took a 48 px row from the waveforms).
     if (signature == m_layoutSignature) {
@@ -4702,7 +4755,9 @@ void WDeckLab::updateLayers() {
     m_fxSummaryDirty = true; markDeckDirty(0);
     m_deckControls->hide();
     const bool decks = m_page == 0;
-    const bool separated = decks && m_sideBySideWaveforms;
+    // r4-waveforms: compact lanes keep the Decks arrangement, so a lane's
+    // width (and its waveform column cache) never changes between pages.
+    const bool separated = (decks || compact) && m_sideBySideWaveforms;
     // Waveform zone: stacked full-width lanes, or side by side (two columns).
     // Lanes keep their parent; they only move between grid cells.
     for (int index = 0; index < 4; ++index) {
@@ -4711,7 +4766,8 @@ void WDeckLab::updateLayers() {
         if (m_deckWaveforms[index]) m_zoneGrid->removeWidget(m_deckWaveforms[index]);
     }
     const std::array<int, 4> order = decks && four ? std::array<int, 4>{1, 2, 3, 4}
-                                                   : std::array<int, 4>{m_layers[0], m_layers[1], 0, 0};
+            : compact ? std::array<int, 4>{laneChoice.lanes[0], laneChoice.lanes[1], 0, 0}
+                      : std::array<int, 4>{m_layers[0], m_layers[1], 0, 0};
     const int count = decks && four ? 4 : 2;
     const int columns = separated ? 2 : 1;
     for (int deck = 1; deck <= 4; ++deck) {
@@ -4719,11 +4775,11 @@ void WDeckLab::updateLayers() {
         if (!lane) continue;
         int slot = -1;
         for (int index = 0; index < count; ++index) if (order[index] == deck) slot = index;
-        setVisibleIf(m_minis[deck - 1], !decks);
-        // Off Decks the one-line readout carries the number; the tag keeps
-        // only its color bar.
+        // r4-waveforms: the DECKS row replaces the one-line readouts, so the
+        // lane's edge keeps its number on every page.
+        setVisibleIf(m_minis[deck - 1], false);
         if (auto* tag = lane->findChild<QLabel*>(QStringLiteral("decklab-lane-edge-%1").arg(deck)))
-            setTextIf(tag, decks ? QString::number(deck) : QString());
+            setTextIf(tag, QString::number(deck));
         if (slot < 0) { setVisibleIf(lane, false); continue; }
         m_zoneGrid->addWidget(lane, slot / columns, slot % columns);
         m_zoneGrid->setRowStretch(slot / columns, 1);
@@ -4775,8 +4831,25 @@ void WDeckLab::updateLayers() {
                     : DeckLabStripRenderer::preferredHeight(DeckLabStripRenderer::Mode::Full) + kOverviewHeight +
                             4 + DeckLabPadBlock::kBlockHeight);
     setVisibleIf(m_deckRow, decks);
+    // r4-waveforms: the DECKS row under compact lanes; refreshDeck() below
+    // gives it every deck's state.
+    if (compact) m_laneDecks->setChoice(laneChoice);
+    setVisibleIf(m_laneDecks, compact);
     for (int deck = 1; deck <= 4; ++deck) refreshDeck(deck);
     refreshLoadButtons();
+}
+
+// r4-waveforms: compact lanes (Sampler, Lab FX) share one height, from the
+// room under the rail (800x480: two 66 px lanes and the 32 px DECKS row).
+int WDeckLab::compactLaneZoneHeight() const {
+    return decklab::lanes::compactZoneHeight(height() - (m_rail ? m_rail->height() : 44));
+}
+
+void WDeckLab::resizeEvent(QResizeEvent* event) {
+    QWidget::resizeEvent(event);
+    if (decklab::lanes::presentationFor(m_page) == decklab::lanes::Presentation::Compact) {
+        setFixedHeightIf(m_waveforms, compactLaneZoneHeight());
+    }
 }
 
 // r4-browse: the round-4 Browse signature moves (audit library.md section 3):

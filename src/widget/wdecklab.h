@@ -23,6 +23,7 @@
 class ControlObject;
 class ControlProxy;
 class DeckLabLabFx; // r4-labfx: the Lab FX page (widget/decklablabfx.h)
+class DeckLabLaneDecks; // r4-waveforms: the DECKS row under compact lanes (widget/decklablanes.h)
 class DeckLabSampler;
 class DeckLabPadBlock;
 class DeckLabStemPads;
@@ -102,6 +103,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
   protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
     void hideEvent(QHideEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override; // r4-waveforms: compact lane height
 
   private:
     ControlProxy* control(const QString& group, const QString& item);
@@ -139,6 +141,9 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void updateStatus();
     void updateBreadcrumb();
     void updateLayers();
+    // r4-waveforms: the compact lane zone's height for this surface (two
+    // lanes and the DECKS row, decklab::lanes::compactZoneHeight).
+    int compactLaneZoneHeight() const;
     void releaseTouchCue();
     void setSearchOpen(bool open);
     // Browse page internals (browse-ui workstream).
@@ -311,6 +316,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     std::array<QWidget*, 4> m_cards{};
     std::array<DeckLabDeckStrip*, 4> m_strips{};
     std::array<DeckLabMiniStrip*, 4> m_minis{};
+    DeckLabLaneDecks* m_laneDecks = nullptr; // r4-waveforms
     // Stem pads per deck (stems workstream; decklabstempads.h). r4-decks:
     // they live in the side pad blocks (decks 1/3 left, 2/4 right).
     std::array<DeckLabStemPads*, 4> m_stemPads{};

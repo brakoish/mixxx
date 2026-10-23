@@ -222,6 +222,11 @@ class DeckLabSampler final : public QWidget {
     void setInteractionEpoch(std::function<quint64()> epoch);
     // The display tick, while the page is visible.
     void tick(const std::array<DeckLabSamplerDeck, 4>& decks);
+    // r4-waveforms: in Deck Lab the waveform lanes and their DECKS row sit
+    // above the page and replace this strip; hidden, the pads take its
+    // height. Shown by default (the page on its own).
+    void setDecksStripShown(bool shown);
+    bool decksStripShown() const;
     // The Lab FX sampler send, owned by the surface; the FX lamp shows it.
     void setFxRouting(bool on);
     bool fxRouting() const {
@@ -322,6 +327,7 @@ class DeckLabSampler final : public QWidget {
     int m_banks = 1;
     bool m_editMode = false;
     bool m_fxRouting = false;
+    bool m_decksShown = true; // r4-waveforms
     bool m_dirty = true;
     int m_shownLevel = -1;
     std::function<quint64()> m_epoch;

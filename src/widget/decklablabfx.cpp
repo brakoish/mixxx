@@ -598,6 +598,10 @@ class DeckReadout final : public QPushButton {
         bool sampler = false;
         int samplersPlaying = 0;
         int samplersLoaded = 0;
+        // r4-waveforms: the waveform lanes' DECKS row is right above and
+        // shows the beat and the time left; the footer then only names the
+        // target (badge, play state, title).
+        bool compact = false;
         DeckLabLabFxDeck info;
         bool operator==(const State&) const = default;
     };
@@ -675,7 +679,7 @@ class DeckReadout final : public QPushButton {
         x = badge.right() + 10;
         // Right block first, so the title takes what is left.
         int right = width() - 12;
-        if (m_state.info.loaded) {
+        if (m_state.info.loaded && !m_state.compact) {
             painter.setFont(numeralFont(24));
             const QFontMetrics clockMetrics(painter.font());
             const int clockWidth = clockMetrics.horizontalAdvance(QStringLiteral("−00:00"));
@@ -692,6 +696,8 @@ class DeckReadout final : public QPushButton {
                         n == m_state.info.phase ? identity : kLine);
             }
             right -= 14;
+        }
+        if (m_state.info.loaded) {
             // Play state: green ▶ while playing, muted ❚❚ while paused.
             QPainterPath glyph;
             const double top = middle - 7;
@@ -1125,11 +1131,14 @@ void DeckLabLabFx::paintEvent(QPaintEvent*) {
     painter.fillRect(rect(), kGround);
     painter.setFont(labelFont());
     painter.setPen(usesBands(m_effect) ? kMuted : kDisabledText);
-    painter.drawText(m_bandCaption, Qt::AlignLeft | Qt::AlignVCenter, tr("FX BANDS"));
+    if (!m_bandCaption.isEmpty()) {
+        painter.drawText(m_bandCaption, Qt::AlignLeft | Qt::AlignVCenter, tr("FX BANDS"));
+    }
 }
 
 // Fixed geometry, computed once per resize: 800x436 below the rail on the
-// 7" screen, also 1024x556 and, should the waveform lanes stay, 800x296.
+// 7" screen, also 1024x556; r4-waveforms: 800x270 and 1024x330 under the
+// compact waveform lanes.
 void DeckLabLabFx::layoutChildren() {
     const int w = width(), h = height();
     const int margin = 6, gap = 6;
@@ -1192,8 +1201,11 @@ void DeckLabLabFx::layoutChildren() {
     m_pad->setColumnEdges(padEdges);
     const QSize action(156, 44);
     m_padAction->setGeometry((m_pad->width() - action.width()) / 2, m_pad->height() / 2 + 6, action.width(), action.height());
-    m_bandCaption = QRect(bandsLeft + 2, bodyTop, bandsWidth - 2, 20);
-    const int bandsTop = bodyTop + 22;
+    // r4-waveforms: under the waveform lanes (800x270) the caption steps
+    // aside so the three lamps keep 44 px; each lamp still says GETS FX/DRY.
+    const bool captioned = (bodyHeight - 22) / 3 - 4 >= 44;
+    m_bandCaption = captioned ? QRect(bandsLeft + 2, bodyTop, bandsWidth - 2, 20) : QRect();
+    const int bandsTop = bodyTop + (captioned ? 22 : 0);
     const int bandsHeight = std::max(0, bodyTop + bodyHeight - bandsTop);
     // HIGH on top, like an EQ.
     for (int row = 0; row < 3; ++row) {
@@ -2032,6 +2044,14 @@ void DeckLabLabFx::syncKeys() {
     update(m_bandCaption);
 }
 
+void DeckLabLabFx::setLanesShown(bool shown) {
+    if (shown == m_lanesShown) {
+        return;
+    }
+    m_lanesShown = shown;
+    refreshReadouts();
+}
+
 void DeckLabLabFx::refreshReadouts() {
     if (!m_readout) {
         return;
@@ -2047,6 +2067,7 @@ void DeckLabLabFx::refreshReadouts() {
         m_readout->setLines(readoutTitle(), readoutSubtitle());
     }
     DeckReadout::State state;
+    state.compact = m_lanesShown; // r4-waveforms
     if (m_target == kSampler) {
         state.sampler = true;
         if (m_host.value && isVisible()) {
@@ -2065,6 +2086,12 @@ void DeckLabLabFx::refreshReadouts() {
         // The readout ticks only while the page is shown.
         if (state.deck && m_host.deck && isVisible()) {
             state.info = m_host.deck(state.deck);
+            if (state.compact) {
+                // Not shown here: never a repaint for a clock second.
+                state.info.remaining.clear();
+                state.info.phase = -1;
+                state.info.endWarning = false;
+            }
         }
     }
     const DeckReadout::State& shown = m_deckReadout->state();
