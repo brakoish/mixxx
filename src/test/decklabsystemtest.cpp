@@ -770,7 +770,12 @@ TEST_F(DeckLabSystemTest, UseForRecordingsAsksBeforeMakingAReadOnlyDriveWritable
     QTest::qWait(100);
     EXPECT_FALSE(fake.calls.contains(QStringLiteral("usb.set_writable")));
     // Cancel leaves the drive alone.
-    visibleButton(sheet, QStringLiteral("decklab-confirm-cancel"))->click();
+    auto* cancel = visibleButton(sheet, QStringLiteral("decklab-confirm-cancel"));
+    ASSERT_NE(nullptr, cancel);
+    EXPECT_EQ(QStringLiteral("Cancel"), cancel->text());
+    EXPECT_EQ(QStringLiteral("Make writable"),
+            visibleButton(sheet, QStringLiteral("decklab-confirm-accept"))->text());
+    cancel->click();
     QTest::qWait(100);
     EXPECT_EQ(nullptr, openSheet(&host));
     EXPECT_FALSE(fake.calls.contains(QStringLiteral("usb.set_writable")));

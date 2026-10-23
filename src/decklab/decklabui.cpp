@@ -799,7 +799,10 @@ Confirm* Confirm::ask(QWidget* host,
         const QString& confirmText,
         std::function<void()> onConfirm,
         bool destructive) {
-    return build(host, heading, text, onConfirm ? tr("Cancel") : tr("OK"), confirmText, std::move(onConfirm), destructive);
+    // Decided before the call: argument evaluation order is unspecified, and
+    // the moved-from function would read as empty.
+    const QString dismissText = onConfirm ? tr("Cancel") : tr("OK");
+    return build(host, heading, text, dismissText, confirmText, std::move(onConfirm), destructive);
 }
 
 Confirm* Confirm::details(QWidget* host,
