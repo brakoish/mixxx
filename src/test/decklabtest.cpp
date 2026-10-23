@@ -726,7 +726,7 @@ TEST_F(NativeDeckLabTest, SamplerIsAFourByFourInstrumentWithTheDecksInView) {
     for (int row = 1; row < 4; ++row) EXPECT_GE(bounds[4 * row].y() - bounds[4 * (row - 1)].bottom(), 5) << row;
     auto* strip = panel->findChild<DeckLabSamplerDecks*>(QStringLiteral("decklab-sampler-decks"));
     ASSERT_NE(nullptr, strip); EXPECT_FALSE(strip->isVisible()) << "the lanes' DECKS row replaces the strip";
-    auto* row = panel->findChild<DeckLabLaneDecks*>(QStringLiteral("decklab-lane-decks"));
+    auto* row = dynamic_cast<DeckLabLaneDecks*>(panel->findChild<QWidget*>(QStringLiteral("decklab-lane-decks")));
     ASSERT_NE(nullptr, row); EXPECT_TRUE(row->isVisible());
     EXPECT_EQ(32, row->height()); EXPECT_EQ(44 + 134, row->mapTo(panel.get(), QPoint()).y()) << "under the two lanes";
     EXPECT_LE(row->mapTo(panel.get(), QPoint()).y() + row->height(), bounds[0].y()) << "the pads start under the row";
@@ -761,7 +761,7 @@ TEST_F(NativeDeckLabTest, WaveformLanesShowOnDecksSamplerAndLabFxOnly) {
     loadGenerated(1, 128); loadGenerated(2, 126); ProcessBuffer(); QTest::qWait(150);
     auto* lanes = panel->waveformContainer();
     auto* pages = panel->findChild<QWidget*>(QStringLiteral("decklab-pages")); ASSERT_NE(nullptr, pages);
-    auto* row = panel->findChild<DeckLabLaneDecks*>(QStringLiteral("decklab-lane-decks")); ASSERT_NE(nullptr, row);
+    auto* row = dynamic_cast<DeckLabLaneDecks*>(panel->findChild<QWidget*>(QStringLiteral("decklab-lane-decks"))); ASSERT_NE(nullptr, row);
     const auto detail = [this](int deck) { return panel->findChild<QWidget*>(QStringLiteral("decklab-detail-%1").arg(deck)); };
     const auto area = [this](QWidget* widget) { return QRect(widget->mapTo(panel.get(), QPoint()), widget->size()); };
     for (int page = 0; page < 5; ++page) {
@@ -839,7 +839,7 @@ TEST_F(NativeDeckLabTest, FourDeckCompactLanesFollowTheLayersAndNameEveryDeck) {
     for (int deck = 1; deck <= 3; ++deck) loadGenerated(deck, 120 + deck);
     ProcessBuffer(); QTest::qWait(150);
     panel->selectPage(3); settle();
-    auto* row = panel->findChild<DeckLabLaneDecks*>(QStringLiteral("decklab-lane-decks")); ASSERT_NE(nullptr, row);
+    auto* row = dynamic_cast<DeckLabLaneDecks*>(panel->findChild<QWidget*>(QStringLiteral("decklab-lane-decks"))); ASSERT_NE(nullptr, row);
     ASSERT_TRUE(row->isVisible());
     const auto detail = [this](int deck) { return panel->findChild<QWidget*>(QStringLiteral("decklab-detail-%1").arg(deck)); };
     EXPECT_EQ(4, row->choice().rowCount);
@@ -945,7 +945,7 @@ TEST_F(NativeDeckLabTest, LongMetadataCannotHideTempoOrExpandSurface) {
     // one-line readouts are gone); its footer names the target.
     panel->selectPage(3); QTest::qWait(150);
     EXPECT_FALSE(mini->isVisible());
-    auto* row = panel->findChild<DeckLabLaneDecks*>("decklab-lane-decks"); ASSERT_NE(nullptr, row);
+    auto* row = dynamic_cast<DeckLabLaneDecks*>(panel->findChild<QWidget*>("decklab-lane-decks")); ASSERT_NE(nullptr, row);
     EXPECT_TRUE(row->isVisible()); EXPECT_EQ(32, row->height());
     EXPECT_TRUE(row->state(1).bpm.contains("128"));
     auto* footer = panel->findChild<QPushButton*>("decklab-fx-deck"); ASSERT_NE(nullptr, footer);
@@ -3725,8 +3725,8 @@ TEST_F(NativeDeckLabTest, MatchBarShowsDeckWindowDirectionAndClears) {
     using Tone = DeckLabActionButton::Tone;
     panel->openCollection(); QCoreApplication::processEvents();
     auto* bar = panel->findChild<QWidget*>("decklab-match-bar"); ASSERT_NE(nullptr, bar);
-    auto* summary = panel->findChild<DeckLabTwoLineLabel*>("decklab-match-summary"); ASSERT_NE(nullptr, summary);
-    auto* chip = panel->findChild<DeckLabDeckChip*>("decklab-match-deck"); ASSERT_NE(nullptr, chip);
+    auto* summary = dynamic_cast<DeckLabTwoLineLabel*>(panel->findChild<QWidget*>("decklab-match-summary")); ASSERT_NE(nullptr, summary);
+    auto* chip = dynamic_cast<DeckLabDeckChip*>(panel->findChild<QPushButton*>("decklab-match-deck")); ASSERT_NE(nullptr, chip);
     auto* match = static_cast<DeckLabActionButton*>(panel->findChild<QPushButton*>("decklab-browse-match"));
     auto* only = static_cast<DeckLabActionButton*>(panel->findChild<QPushButton*>("decklab-match-only"));
     auto* faster = static_cast<DeckLabActionButton*>(panel->findChild<QPushButton*>("decklab-match-faster"));
@@ -3931,7 +3931,7 @@ TEST_F(NativeDeckLabTest, DeckDockIsTheLoadTargetAndRefusesOnAirInPlace) {
 TEST_F(NativeDeckLabTest, KnobLegendFollowsTheLevelAndSaysMenu) {
     using decklab::LegendLevel;
     panel->selectPage(1); QCoreApplication::processEvents();
-    auto* legend = panel->findChild<DeckLabKnobLegend*>("decklab-knob-legend"); ASSERT_NE(nullptr, legend);
+    auto* legend = dynamic_cast<DeckLabKnobLegend*>(panel->findChild<QWidget*>("decklab-knob-legend")); ASSERT_NE(nullptr, legend);
     EXPECT_TRUE(legend->isVisible()); EXPECT_EQ(24, legend->height());
     EXPECT_EQ(LegendLevel::Home, legend->level());
     // Back with nowhere to go: the legend flashes and says Back again goes to Decks.
@@ -3981,7 +3981,7 @@ TEST_F(NativeDeckLabTest, MixesWithDeckRowLeadsTheCategoriesAndOpensItsList) {
     // Its list: the fixture has no track table, so nothing mixes yet.
     panel->browsePress(); QCoreApplication::processEvents();
     EXPECT_EQ((QStringList{QStringLiteral("Library"), decklab::mixesTitle(1) + QStringLiteral(" · 0")}), crumbs());
-    auto* legend = panel->findChild<DeckLabKnobLegend*>("decklab-knob-legend"); ASSERT_NE(nullptr, legend);
+    auto* legend = dynamic_cast<DeckLabKnobLegend*>(panel->findChild<QWidget*>("decklab-knob-legend")); ASSERT_NE(nullptr, legend);
     EXPECT_EQ(decklab::LegendLevel::Tracks, legend->level());
     panel->browseBack(); QCoreApplication::processEvents();
     EXPECT_EQ(QStringList{QStringLiteral("Library")}, crumbs());
