@@ -37,7 +37,9 @@
 #include "decklab/decklabsetupwizard.h"
 #include "decklab/decklabsignals.h"
 #include "decklab/decklabsystem.h"
+#include "decklab/decklabrail.h"
 #include "decklab/decklabsystempages.h"
+#include "decklab/decklabui.h"
 #include "decklab/decklabui.h"
 #include "test/mixxxtest.h"
 #include "widget/decklabdeckwidgets.h"
@@ -845,6 +847,10 @@ TEST_F(DeckLabSystemTest, TestTonesStartQuietBehindALevelsWarning) {
     // -24 dBFS peak: about 6 % of full scale, a quarter of the old -12 dBFS.
     EXPECT_DOUBLE_EQ(-24.0, decklab::kTestToneDbfs);
     EXPECT_NEAR(0.0631, decklab::testToneAmplitude(), 0.0001);
+    // r4-system (sound check): a second tap adds 6 dB, never more.
+    EXPECT_DOUBLE_EQ(-18.0, decklab::kTestToneBoostDbfs);
+    EXPECT_NEAR(0.1259, decklab::testToneAmplitude(decklab::kTestToneBoostDbfs), 0.0001);
+    EXPECT_NEAR(0.1259, decklab::testToneAmplitude(0.0), 0.0001);
     DeckLabSystem::Services services;
     services.config = config();
     DeckLabSystem system(services, nullptr, socketPath());
@@ -859,7 +865,166 @@ TEST_F(DeckLabSystemTest, TestTonesStartQuietBehindALevelsWarning) {
     EXPECT_TRUE(levels->isVisibleTo(wizard));
     EXPECT_EQ(QStringLiteral("Turn MASTER and PHONES down before you test."), levels->text());
     EXPECT_GE(QFontInfo(levels->font()).pixelSize(), 16);
+    // Sound check: big tone pads, and YES / NO only after a tone.
+    for (const char* name : {"decklab-setup-test-left", "decklab-setup-test-right", "decklab-setup-test-phones"}) {
+        auto* pad = wizard->findChild<QPushButton*>(QString::fromLatin1(name));
+        ASSERT_NE(nullptr, pad) << name;
+        EXPECT_GE(pad->height(), 44) << name;
+    }
+    auto* heard = wizard->findChild<QPushButton*>(QStringLiteral("decklab-setup-heard-main"));
+    ASSERT_NE(nullptr, heard);
+    EXPECT_FALSE(heard->isVisibleTo(wizard));
+    // No output chosen: the pad says so in its panel, nothing plays.
+    wizard->findChild<QPushButton*>(QStringLiteral("decklab-setup-test-left"))->click();
+    QTest::qWait(20);
+    auto* question = wizard->findChild<QLabel*>(QStringLiteral("decklab-setup-question-main"));
+    ASSERT_NE(nullptr, question);
+    EXPECT_FALSE(question->text().isEmpty());
+    EXPECT_FALSE(heard->isVisibleTo(wizard));
 }
+
+// ------------------------------------------------------------ r4-system --
+
+TEST_F(DeckLabSystemTest, RailLampsTeachAndRedIsOnlyForLive) {
+    using decklab::rail::Inputs;
+    using decklab::rail::Slot;
+    using decklab::ui::Lamp;
+    Inputs in;
+    in.outputWorking = true;
+    in.serviceAttached = true;
+    in.serviceOnline = true;
+    in.wifi = Inputs::Wifi::Connected;
+    in.controller = Inputs::Controller::Working;
+    // All good: green lamps, nothing red.
+    for (Slot slot : {Slot::Controller, Slot::Network, Slot::Recording, Slot::Output}) {
+        EXPECT_NE(Lamp::Live, decklab::rail::slotView(slot, in).lamp);
+        EXPECT_NE(Lamp::LiveOutline, decklab::rail::slotView(slot, in).lamp);
+    }
+    EXPECT_EQ(Lamp::Go, decklab::rail::slotView(Slot::Output, in).lamp);
+    EXPECT_EQ(decklab::rail::Alert::None, decklab::rail::alertFor(in));
+    // Recording is live: red, with the elapsed time in the slot.
+    in.recording = true;
+    in.recordingSeconds = 754;
+    EXPECT_EQ(Lamp::Live, decklab::rail::slotView(Slot::Recording, in).lamp);
+    EXPECT_EQ(QStringLiteral("12:34"), decklab::rail::slotView(Slot::Recording, in).label);
+    EXPECT_EQ(QStringLiteral("1h02"), decklab::rail::recordingTime(3725));
+    // Dropouts and an offline service are caution, never red or amber.
+    in.recentDropouts = true;
+    EXPECT_EQ(Lamp::Caution, decklab::rail::slotView(Slot::Output, in).lamp);
+    in.serviceOnline = false;
+    EXPECT_EQ(Lamp::Caution, decklab::rail::slotView(Slot::Network, in).lamp);
+    // No sound output is the one red alert; low power is caution.
+    in.outputWorking = false;
+    EXPECT_EQ(decklab::rail::Alert::NoOutput, decklab::rail::alertFor(in));
+    in.outputPending = true; // start-up: devices not open yet
+    EXPECT_EQ(decklab::rail::Alert::None, decklab::rail::alertFor(in));
+    in.outputPending = false;
+    in.outputWorking = true;
+    in.undervoltage = true;
+    EXPECT_EQ(decklab::rail::Alert::LowPower, decklab::rail::alertFor(in));
+    // USB: presence, count and a rekordbox export.
+    in.usbDrives = 1;
+    in.usbRekordbox = true;
+    EXPECT_EQ(QStringLiteral("USB RB"), decklab::rail::usbView(in).label);
+    in.usbDrives = 2;
+    EXPECT_EQ(QStringLiteral("USB 2"), decklab::rail::usbView(in).label);
+    in.controllerNew = true;
+    EXPECT_EQ(QStringLiteral("NEW"), decklab::rail::slotView(Slot::Controller, in).label);
+}
+
+TEST_F(DeckLabSystemTest, HoldToConfirmNeedsTheWholeHold) {
+    QWidget host;
+    host.resize(400, 200);
+    auto* hold = new decklab::ui::HoldButton(QStringLiteral("Turn off"), &host, QStringLiteral("hold"));
+    hold->setGeometry(10, 10, 200, 44);
+    host.show();
+    int fired = 0;
+    QObject::connect(hold, &decklab::ui::HoldButton::confirmed, [&fired] { ++fired; });
+    // A tap never acts.
+    hold->click();
+    QTest::mouseClick(hold, Qt::LeftButton);
+    EXPECT_EQ(0, fired);
+    // Let go early: snaps back.
+    QTest::mousePress(hold, Qt::LeftButton);
+    QTest::qWait(500);
+    EXPECT_GT(hold->progress(), 0.2);
+    QTest::mouseRelease(hold, Qt::LeftButton);
+    EXPECT_EQ(0, fired);
+    EXPECT_DOUBLE_EQ(0, hold->progress());
+    // The whole 1.2 s.
+    QTest::mousePress(hold, Qt::LeftButton);
+    EXPECT_TRUE(QTest::qWaitFor([&] { return fired == 1; }, 2500));
+    QTest::mouseRelease(hold, Qt::LeftButton);
+    // The knob: press arms, a second press confirms; back disarms.
+    EXPECT_FALSE(hold->knobPress());
+    EXPECT_TRUE(hold->armed());
+    hold->knobCancel();
+    EXPECT_FALSE(hold->armed());
+    hold->knobPress();
+    hold->knobPress();
+    EXPECT_EQ(2, fired);
+    // A held knob press (scripts that report the release) works like a finger.
+    hold->knobHold(true);
+    EXPECT_TRUE(QTest::qWaitFor([&] { return fired == 3; }, 2500));
+    // A gate refuses with the reason; a reason locks it.
+    QString refused;
+    QObject::connect(hold, &decklab::ui::HoldButton::refused, [&refused](const QString& text) { refused = text; });
+    hold->setGate([] { return QStringLiteral("Stop all decks and samplers first."); });
+    QTest::mousePress(hold, Qt::LeftButton);
+    EXPECT_EQ(QStringLiteral("Stop all decks and samplers first."), refused);
+    EXPECT_FALSE(hold->holding());
+    QTest::mouseRelease(hold, Qt::LeftButton);
+    hold->setReason(QStringLiteral("Unavailable"));
+    EXPECT_FALSE(hold->isEnabled());
+}
+
+TEST_F(DeckLabSystemTest, UnitHomeTilesShowLiveValuesAndBrightnessInline) {
+    DeckLabFakeService fake;
+    ASSERT_TRUE(fake.listen(socketPath()));
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, socketPath());
+    QWidget host;
+    host.resize(800, 436);
+    auto* page = new DeckLabSystemPage(&host);
+    page->resize(800, 436);
+    page->setSystem(&system);
+    host.show();
+    system.start();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.isReady(); }, 3000));
+    page->showSection(DeckLabSystemPage::Section::Home);
+    auto* wifi = page->tile(DeckLabSystemPage::Section::Wifi);
+    auto* screen = page->tile(DeckLabSystemPage::Section::Screen);
+    auto* time = page->tile(DeckLabSystemPage::Section::Time);
+    ASSERT_NE(nullptr, wifi); ASSERT_NE(nullptr, screen); ASSERT_NE(nullptr, time);
+    // Live values, not descriptions (Y-02, Y-03, Y-27).
+    EXPECT_TRUE(QTest::qWaitFor([&] { return wifi->accessibleDescription().contains(QStringLiteral("Studio-WiFi")); }, 3000));
+    EXPECT_TRUE(QTest::qWaitFor([&] { return screen->accessibleDescription().startsWith(QStringLiteral("80 %")); }, 3000));
+    EXPECT_TRUE(QTest::qWaitFor([&] { return time->accessibleDescription().contains(QStringLiteral("London")); }, 3000));
+    EXPECT_FALSE(page->findChild<QLabel*>(QStringLiteral("decklab-system-service-state"))->isVisibleTo(page));
+    // Brightness inline: snapped to 10s, never below 5 %, booth preset 30 %.
+    visibleButton(page, QStringLiteral("decklab-tile-brightness-down"))->click();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return fake.display.value("brightness").toInt() == 70; }, 2000));
+    visibleButton(page, QStringLiteral("decklab-tile-brightness-booth"))->click();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return fake.display.value("brightness").toInt() == 30; }, 2000));
+    for (int press = 0; press < 6; ++press) {
+        visibleButton(page, QStringLiteral("decklab-tile-brightness-down"))->click();
+    }
+    ASSERT_TRUE(QTest::qWaitFor([&] { return fake.display.value("brightness").toInt() == 5; }, 2000));
+    // Power is hold-to-confirm, right on the tile; a tap does nothing.
+    auto* off = page->findChild<decklab::ui::HoldButton*>(QStringLiteral("decklab-tile-power-off"));
+    ASSERT_NE(nullptr, off);
+    off->click();
+    QTest::qWait(50);
+    EXPECT_FALSE(fake.calls.contains(QStringLiteral("system.power")));
+    // The Power page rows are hold rows too, with the copy deck's names.
+    page->showSection(DeckLabSystemPage::Section::Power);
+    auto* restart = page->findChild<decklab::ui::HoldButton*>(QStringLiteral("decklab-power-restart"));
+    ASSERT_NE(nullptr, restart);
+    EXPECT_EQ(QStringLiteral("Restart app"), restart->text());
+    EXPECT_EQ(64, restart->height());
+}
+
 
 TEST_F(DeckLabSystemTest, FirstRunFlowCompletesWithoutAControllerAndSetsTheFlag) {
     DeckLabFakeService fake;

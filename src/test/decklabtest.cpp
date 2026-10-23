@@ -41,6 +41,10 @@
 #include "decklab/decklabsetupwizard.h"
 #include "decklab/decklabsystem.h"
 #include "decklab/decklabsystemui.h"
+#include "decklab/decklabrail.h"
+#include "decklab/decklabsettings.h"
+#include "decklab/decklabutility.h"
+#include "library/decklabknob.h"
 #include "decklab/decklabui.h"
 #include "effects/effectchain.h"
 #include "effects/effectslot.h"
@@ -423,14 +427,16 @@ TEST_F(NativeDeckLabTest, ToolRequestCanRepeatWithoutTimingRace) {
 }
 
 TEST_F(NativeDeckLabTest, SplitCueToggleReportsItsActualState) {
-    auto* split = panel->findChild<QPushButton*>("decklab-head-split"); ASSERT_NE(nullptr, split);
+    // r4-system: a switch row that prints ON/OFF inside the switch.
+    auto* split = panel->findChild<decklab::ui::SwitchRow*>("decklab-head-split"); ASSERT_NE(nullptr, split);
+    EXPECT_EQ(QStringLiteral("Split cue"), split->text());
     ControlObject::set(ConfigKey("[Master]", "headSplit"), 0); QCoreApplication::processEvents();
-    EXPECT_EQ(QStringLiteral("Off"), split->text()); EXPECT_FALSE(split->isChecked());
+    EXPECT_EQ(QStringLiteral("OFF"), split->valueText()); EXPECT_FALSE(split->isChecked());
     split->click(); QCoreApplication::processEvents();
-    EXPECT_EQ(QStringLiteral("On"), split->text()); EXPECT_TRUE(split->isChecked());
+    EXPECT_EQ(QStringLiteral("ON"), split->valueText()); EXPECT_TRUE(split->isChecked());
     EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Master]", "headSplit")));
     ControlObject::set(ConfigKey("[Master]", "headSplit"), 0); QCoreApplication::processEvents();
-    EXPECT_EQ(QStringLiteral("Off"), split->text());
+    EXPECT_EQ(QStringLiteral("OFF"), split->valueText());
 }
 
 TEST_F(NativeDeckLabTest, TempoRangeReflectsControllerChanges) {
@@ -454,7 +460,7 @@ TEST_F(NativeDeckLabTest, ActiveNavigationCannotBeUncheckedByReselectingIt) {
     EXPECT_FALSE(panel->findChild<QPushButton*>("decklab-settings-category-0")->isChecked());
 }
 
-TEST_F(NativeDeckLabTest, SettingsTouchSwipeRevealsDeckFourWithoutTogglingQuantize) {
+TEST_F(NativeDeckLabTest, SettingsTouchSwipeScrollsWithoutTogglingQuantize) {
     panel->selectPage(4); QTest::qWait(50);
     for (int category = 0; category < 5; ++category) {
         auto* scroll = panel->findChild<QScrollArea*>(QStringLiteral("decklab-settings-scroll-%1").arg(category));
@@ -462,40 +468,85 @@ TEST_F(NativeDeckLabTest, SettingsTouchSwipeRevealsDeckFourWithoutTogglingQuanti
         EXPECT_TRUE(QScroller::hasScroller(scroll->viewport()));
         EXPECT_NE(static_cast<Qt::GestureType>(0), QScroller::grabbedGesture(scroll->viewport()));
     }
-    auto* scroll = panel->findChild<QScrollArea*>("decklab-settings-scroll-0");
+    // r4-system: one set of per-deck rows, driven by a deck selector.
+    panel->findChild<QPushButton*>("decklab-settings-category-1")->click(); QTest::qWait(50);
+    auto* scroll = panel->findChild<QScrollArea*>("decklab-settings-scroll-1");
     auto* viewport = scroll->viewport();
-    auto* deckFour = panel->findChild<QComboBox*>("decklab-tempo-range-4"); ASSERT_NE(nullptr, deckFour);
+    auto* range = panel->findChild<QWidget*>("decklab-settings-tempo-range-1"); ASSERT_NE(nullptr, range);
+    auto* quantize = panel->findChild<decklab::ui::SwitchRow*>("decklab-settings-quantize"); ASSERT_NE(nullptr, quantize);
     const auto fullyVisible = [viewport](QWidget* widget) {
         return viewport->rect().contains(QRect(widget->mapTo(viewport, QPoint()), widget->size()));
     };
-    ASSERT_GT(scroll->verticalScrollBar()->maximum(), 0);
-    ASSERT_FALSE(fullyVisible(deckFour));
-    std::array<double, 4> before;
-    for (int deck = 1; deck <= 4; ++deck)
-        before[deck - 1] = ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), "quantize"));
-    QPushButton* quantize = nullptr;
-    for (auto* button : scroll->findChildren<QPushButton*>())
-        if (button->text() == "Quantize") { quantize = button; break; }
-    ASSERT_NE(nullptr, quantize);
+    const double before = ControlObject::get(ConfigKey("[Channel1]", "quantize"));
     const QPoint start = quantize->mapTo(viewport, quantize->rect().center());
     swipeTouch(viewport, start, QPoint(start.x(), 10), 400);
-    EXPECT_GT(scroll->verticalScrollBar()->value(), 0);
-    for (int attempt = 0; attempt < 8 && !fullyVisible(deckFour); ++attempt)
-        swipeTouch(viewport, QPoint(viewport->width() / 2, viewport->height() - 30),
-                QPoint(viewport->width() / 2, 30));
-    EXPECT_TRUE(fullyVisible(deckFour));
-    for (int deck = 1; deck <= 4; ++deck)
-        EXPECT_DOUBLE_EQ(before[deck - 1], ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), "quantize")));
-    // Ordinary row taps remain commands after a swipe; no scrollbar or
-    // ensureWidgetVisible call is used to reach the fourth deck.
-    QPushButton* fourthQuantize = nullptr;
-    for (auto* button : scroll->findChildren<QPushButton*>())
-        if (button->text() == "Quantize") fourthQuantize = button;
-    ASSERT_NE(nullptr, fourthQuantize); ASSERT_TRUE(fullyVisible(fourthQuantize));
-    tapTouch(viewport, fourthQuantize->mapTo(viewport, fourthQuantize->rect().center()));
-    EXPECT_DOUBLE_EQ(before[3] > 0 ? 0 : 1, ControlObject::get(ConfigKey("[Channel4]", "quantize")));
-    QTest::mouseClick(fourthQuantize, Qt::LeftButton);
-    EXPECT_DOUBLE_EQ(before[3], ControlObject::get(ConfigKey("[Channel4]", "quantize")));
+    for (int attempt = 0; attempt < 8 && !fullyVisible(range); ++attempt)
+        swipeTouch(viewport, QPoint(viewport->width() / 2, viewport->height() - 30), QPoint(viewport->width() / 2, 30));
+    EXPECT_TRUE(fullyVisible(range));
+    // A swipe that starts on a switch never flips it.
+    EXPECT_DOUBLE_EQ(before, ControlObject::get(ConfigKey("[Channel1]", "quantize")));
+    if (!fullyVisible(quantize)) scroll->ensureWidgetVisible(quantize, 0, 0);
+    tapTouch(viewport, quantize->mapTo(viewport, quantize->rect().center()));
+    EXPECT_DOUBLE_EQ(before > 0 ? 0 : 1, ControlObject::get(ConfigKey("[Channel1]", "quantize")));
+    QTest::mouseClick(quantize, Qt::LeftButton);
+    EXPECT_DOUBLE_EQ(before, ControlObject::get(ConfigKey("[Channel1]", "quantize")));
+    // Deck 2 on the selector: the same rows act on deck 2.
+    auto* decks = panel->findChild<QComboBox*>("decklab-settings-deck-model"); ASSERT_NE(nullptr, decks);
+    QMetaObject::invokeMethod(decks, "activated", Q_ARG(int, 1)); QCoreApplication::processEvents();
+    const double deckTwo = ControlObject::get(ConfigKey("[Channel2]", "quantize"));
+    EXPECT_EQ(deckTwo > 0, quantize->isChecked());
+    QTest::mouseClick(quantize, Qt::LeftButton);
+    EXPECT_DOUBLE_EQ(deckTwo > 0 ? 0 : 1, ControlObject::get(ConfigKey("[Channel2]", "quantize")));
+    EXPECT_DOUBLE_EQ(before, ControlObject::get(ConfigKey("[Channel1]", "quantize")));
+}
+
+namespace {
+// r4-system: a controller write as a mapping makes it (press, then release).
+void r4Pulse(const char* group, const char* item, double value = 1) {
+    ControlObject::set(ConfigKey(group, item), value);
+    if (value > 0) ControlObject::set(ConfigKey(group, item), 0);
+    QCoreApplication::processEvents();
+}
+} // namespace
+
+TEST_F(NativeDeckLabTest, SettingsIsAUtilityListTheKnobDrives) {
+    // r4-system (Signature 1): turn moves, press opens or edits, back goes up
+    // one level; from the category list back returns to Decks.
+    panel->selectPage(4); QTest::qWait(50);
+    auto* settings = panel->findChild<DeckLabSettingsPage*>(); ASSERT_NE(nullptr, settings);
+    EXPECT_EQ(settings, decklab::knobClaimant());
+    EXPECT_EQ(DeckLabSettingsPage::Decks, settings->category());
+    EXPECT_EQ(0, settings->knobLevel());
+    r4Pulse("[Playlist]", "SelectTrackKnob", 1);
+    EXPECT_EQ(4, panel->currentPage());
+    EXPECT_EQ(panel->findChild<QWidget*>("decklab-settings-category-1"), settings->knob()->current());
+    r4Pulse("[Playlist]", "SelectTrackKnob", 1); // Headphones
+    r4Pulse("[Library]", "GoToItem");             // press opens it
+    EXPECT_EQ(DeckLabSettingsPage::Headphones, settings->category());
+    EXPECT_EQ(1, settings->knobLevel());
+    // Turns visit Headphones' rows; a press on a switch flips its control.
+    auto* split = panel->findChild<decklab::ui::SwitchRow*>("decklab-head-split"); ASSERT_NE(nullptr, split);
+    ControlObject::set(ConfigKey("[Master]", "headSplit"), 0); QCoreApplication::processEvents();
+    settings->knob()->focus(split);
+    r4Pulse("[Library]", "GoToItem");
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Master]", "headSplit")));
+    // The mix: press to edit, turn to change, back to restore.
+    auto* mix = panel->findChild<decklab::ui::StepperRow*>("decklab-head-mix"); ASSERT_NE(nullptr, mix);
+    const double mixBefore = ControlObject::get(ConfigKey("[Master]", "headMix"));
+    settings->knob()->focus(mix);
+    r4Pulse("[Library]", "GoToItem");
+    EXPECT_TRUE(settings->knob()->editing());
+    r4Pulse("[Playlist]", "SelectTrackKnob", 2);
+    EXPECT_NE(mixBefore, ControlObject::get(ConfigKey("[Master]", "headMix")));
+    r4Pulse("[Library]", "MoveFocusBackward"); // back: restores
+    EXPECT_FALSE(settings->knob()->editing());
+    EXPECT_NEAR(mixBefore, ControlObject::get(ConfigKey("[Master]", "headMix")), 1e-9);
+    r4Pulse("[Library]", "MoveFocusBackward"); // up to the list
+    EXPECT_EQ(0, settings->knobLevel());
+    r4Pulse("[Library]", "MoveFocusBackward"); // back to Decks
+    EXPECT_EQ(0, panel->currentPage());
+    EXPECT_NE(settings, decklab::knobClaimant());
+    ControlObject::set(ConfigKey("[Master]", "headSplit"), 0);
 }
 
 TEST_F(NativeDeckLabTest, SourcesTouchSwipeRevealsOffscreenRowsWithoutOpeningThem) {
@@ -525,26 +576,68 @@ TEST_F(NativeDeckLabTest, SourcesTouchSwipeRevealsOffscreenRowsWithoutOpeningThe
 }
 
 TEST_F(NativeDeckLabTest, InternalClockCannotClaimAConfiguredAudioOutput) {
-    auto* status = panel->findChild<DeckLabChipButton*>("decklab-status"); ASSERT_NE(nullptr, status);
+    auto* status = panel->findChild<DeckLabStatusZone*>("decklab-status"); ASSERT_NE(nullptr, status);
     auto* settingsTab = panel->findChild<QPushButton*>("decklab-tab-4"); ASSERT_NE(nullptr, settingsTab);
+    QTest::qWait(1700); // start-up opens the sound devices first: no alert flash
     ControlObject::set(ConfigKey("[SoundManager]", "status"), 2); QCoreApplication::processEvents();
     EXPECT_TRUE(status->toolTip().contains("No sound output"));
     // The status never points at a page that doesn't exist; Fix opens Deck Setup.
     EXPECT_FALSE(status->toolTip().contains(QString::fromUtf8("Settings →")));
-    ASSERT_FALSE(status->chips().isEmpty());
-    EXPECT_EQ(QStringLiteral("NO AUDIO"), status->chips().last().text);
-    // Status lamps are white inverted chips, never deck 2's amber.
-    EXPECT_EQ(QColor(0xf2, 0xf4, 0xf7), status->chips().last().lit);
+    // r4-system: no sound output holds the zone (live red outline: the room
+    // hears nothing), and the whole zone is the FIX button.
+    EXPECT_EQ(decklab::rail::Alert::NoOutput, status->alert());
+    EXPECT_EQ(QString::fromUtf8("NO OUTPUT · FIX"), status->alertText());
     const QRect zone = status->geometry();
     const QRect tab = settingsTab->geometry();
     panel->setAudioOutputConfigured(true); QCoreApplication::processEvents();
     EXPECT_FALSE(status->toolTip().contains("No sound output"));
+    EXPECT_EQ(decklab::rail::Alert::None, status->alert());
+    ASSERT_EQ(4, status->slotViews().size());
+    EXPECT_EQ(QStringLiteral("OUT"), status->slotViews().last().label);
+    EXPECT_EQ(decklab::ui::Lamp::Go, status->slotViews().last().lamp);
+    // Red only for live: nothing is live red while nothing records.
+    for (const auto& view : status->slotViews()) EXPECT_NE(decklab::ui::Lamp::Live, view.lamp) << qPrintable(view.label);
     // A fixed status zone: lamps lighting or going out never move the tabs.
     EXPECT_FALSE(status->isHidden());
     EXPECT_EQ(zone, status->geometry());
     EXPECT_EQ(tab, settingsTab->geometry());
     ControlObject::set(ConfigKey("[SoundManager]", "status"), 0); QCoreApplication::processEvents();
     EXPECT_TRUE(status->toolTip().contains("No sound output"));
+    EXPECT_EQ(decklab::rail::Alert::NoOutput, status->alert());
+    EXPECT_EQ(zone, status->geometry());
+}
+
+TEST_F(NativeDeckLabTest, RailKeepsFixedTabsAndTheUsbLampOpensTheStick) {
+    // r4-system (Signature 2): fixed tab widths, Settings as a gear at the far
+    // right, and the status zone in the rail, never over a page.
+    std::array<QRect, 5> tabs;
+    for (int page = 0; page < 5; ++page) {
+        auto* tab = panel->findChild<QPushButton*>(QStringLiteral("decklab-tab-%1").arg(page)); ASSERT_NE(nullptr, tab);
+        tabs[page] = tab->geometry();
+        EXPECT_EQ(44, tab->height());
+    }
+    EXPECT_EQ(tabs[0].width(), tabs[3].width());
+    EXPECT_EQ(44, tabs[4].width());
+    EXPECT_EQ(panel->width() - 1, tabs[4].right());
+    auto* usb = panel->findChild<DeckLabUsbLamp*>("decklab-usb"); ASSERT_NE(nullptr, usb);
+    auto* zone = panel->findChild<DeckLabStatusZone*>("decklab-status"); ASSERT_NE(nullptr, zone);
+    EXPECT_LT(usb->geometry().right(), zone->geometry().left() + 1);
+    ControlObject::set(ConfigKey("[Recording]", "status"), 2); QCoreApplication::processEvents();
+    EXPECT_EQ(decklab::ui::Lamp::Live, zone->slotViews().at(2).lamp);
+    for (int page = 0; page < 5; ++page)
+        EXPECT_EQ(tabs[page], panel->findChild<QPushButton*>(QStringLiteral("decklab-tab-%1").arg(page))->geometry());
+    ControlObject::set(ConfigKey("[Recording]", "status"), 0); QCoreApplication::processEvents();
+    // The status sheet: one line per subsystem, over the page below the rail.
+    auto* rail = panel->findChild<DeckLabRail*>(); ASSERT_NE(nullptr, rail);
+    auto* sheet = rail->openSheet(); ASSERT_NE(nullptr, sheet);
+    QCoreApplication::processEvents();
+    EXPECT_TRUE(sheet->isVisible());
+    EXPECT_EQ(44, sheet->geometry().top());
+    EXPECT_EQ(6, sheet->lines().size());
+    EXPECT_EQ(sheet, decklab::knobClaimant());
+    r4Pulse("[Library]", "MoveFocusBackward");
+    EXPECT_FALSE(sheet->isVisible());
+    EXPECT_EQ(0, panel->currentPage());
 }
 
 TEST_F(NativeDeckLabTest, PagesFit800By480) {
@@ -2713,15 +2806,18 @@ TEST_F(NativeDeckLabTest, GenericControllerBrowseOpensBrowseWithoutTouchingDecks
     pulseControl("[Library]", "MoveLeft");
     EXPECT_EQ(QStringLiteral("Genres"), sidebar->currentIndex().data().toString());
     EXPECT_EQ(QStringLiteral("USB library"), sidebar->rootIndex().data().toString());
-    // A focused settings combo box never receives the turn.
+    // A focused settings combo box never receives the turn. r4-system: on
+    // Settings the knob drives Settings' own focus ring (CDJ UTILITY).
     panel->selectPage(4);
     auto* range = panel->findChild<QComboBox*>("decklab-tempo-range-1"); ASSERT_NE(nullptr, range);
     const int rangeIndex = range->currentIndex();
     range->setFocus(); QCoreApplication::processEvents();
     pulseControl("[Playlist]", "SelectTrackKnob", 1);
-    EXPECT_EQ(1, panel->currentPage());
+    EXPECT_EQ(4, panel->currentPage());
     EXPECT_EQ(rangeIndex, range->currentIndex());
-    EXPECT_EQ(QStringLiteral("Moods"), sidebar->currentIndex().data().toString());
+    auto* settingsPage = panel->findChild<DeckLabSettingsPage*>(); ASSERT_NE(nullptr, settingsPage);
+    EXPECT_NE(nullptr, settingsPage->knob()->current());
+    EXPECT_EQ(QStringLiteral("Genres"), sidebar->currentIndex().data().toString());
     panel->selectPage(0);
     pulseControl("[Library]", "ScrollVertical", 1);
     EXPECT_EQ(1, panel->currentPage());
@@ -3554,9 +3650,13 @@ TEST_F(DeckLabOverlayTest, EveryOverlayOverTheWaveformsHidesThemOrIsNativeAndRai
     auto* ui = panel->findChild<DeckLabSystemUi*>();
     ASSERT_NE(nullptr, ui);
 
-    // Every small overlay is classified, shown or not.
+    // Every small overlay is classified, shown or not. r4-system: system
+    // banners are gone; their news goes to the rail, never over the page.
     for (const char* name : {"decklab-banner-audio", "decklab-banner-offer", "decklab-banner-thermal",
-                 "decklab-banner-toast", "decklab-toast"}) {
+                 "decklab-banner-toast"}) {
+        EXPECT_EQ(nullptr, panel->findChild<QWidget*>(QString::fromLatin1(name))) << name;
+    }
+    for (const char* name : {"decklab-toast"}) {
         auto* overlay = panel->findChild<QWidget*>(QString::fromLatin1(name));
         ASSERT_NE(nullptr, overlay) << name;
         EXPECT_EQ(decklab::overlay::Kind::AboveWaveforms, decklab::overlay::kind(overlay)) << name;
@@ -3570,48 +3670,58 @@ TEST_F(DeckLabOverlayTest, EveryOverlayOverTheWaveformsHidesThemOrIsNativeAndRai
     }
     EXPECT_EQ(WId(0), detail(1)->internalWinId());
 
-    // The no-audio banner (after its start-up debounce), the overlay probe's
-    // toast, warning banner and controller offer, and a load refusal.
-    auto* audio = panel->findChild<QWidget*>(QStringLiteral("decklab-banner-audio"));
-    EXPECT_TRUE(QTest::qWaitFor([&] { return audio->isVisible(); }, 3000));
+    // No sound output holds the rail's status zone (after the start-up
+    // grace); the probe's notice and controller offer slide into the rail;
+    // a load refusal is the one toast over the waveforms.
+    auto* zone = panel->findChild<DeckLabStatusZone*>(QStringLiteral("decklab-status"));
+    ASSERT_NE(nullptr, zone);
+    EXPECT_TRUE(QTest::qWaitFor([&] { return zone->alert() == decklab::rail::Alert::NoOutput; }, 3000));
     ui->showOverlayProbe();
     ControlObject::set(ConfigKey("[DeckLabNative]", "load_refused"), 2);
     ControlObject::set(ConfigKey("[DeckLabNative]", "load_refused"), 0);
     settle();
-    auto* thermal = panel->findChild<QWidget*>(QStringLiteral("decklab-banner-thermal"));
-    auto* toast = panel->findChild<QWidget*>(QStringLiteral("decklab-banner-toast"));
-    auto* offer = panel->findChild<QPushButton*>(QStringLiteral("decklab-banner-offer"));
+    auto* notice = panel->findChild<DeckLabRailNotice*>(QStringLiteral("decklab-rail-notice"));
+    auto* rail = panel->findChild<QWidget*>(QStringLiteral("decklab-rail"));
     auto* refusal = panel->findChild<QWidget*>(QStringLiteral("decklab-toast"));
-    ASSERT_TRUE(thermal->isVisible()); ASSERT_TRUE(toast->isVisible());
-    ASSERT_TRUE(offer->isVisible()); ASSERT_TRUE(refusal->isVisible());
-    EXPECT_TRUE(thermal->accessibleName().startsWith(QStringLiteral("Overlay check")));
+    ASSERT_NE(nullptr, notice); ASSERT_NE(nullptr, rail);
+    ASSERT_TRUE(notice->isVisible()); ASSERT_TRUE(refusal->isVisible());
+    EXPECT_TRUE(notice->noticeText().startsWith(QStringLiteral("Overlay check")));
+    EXPECT_EQ(rail, notice->parentWidget());
+    EXPECT_EQ(WId(0), notice->internalWinId());
+    EXPECT_FALSE(QRect(notice->mapTo(panel.get(), QPoint()), notice->size())
+                    .intersects(QRect(detail(1)->mapTo(panel.get(), QPoint()), detail(1)->size())));
+    EXPECT_FALSE(ui->offeredController().isEmpty());
     EXPECT_FALSE(panel->waveformsSuppressed());
     EXPECT_TRUE(waveform->isVisible());
-    EXPECT_GE(checkOverlays(waveform), 4);
+    EXPECT_GE(checkOverlays(waveform), 1);
     capture(QStringLiteral("overlay-banners-over-decks.png"));
 
     // A waveform window created later (another lane shown for the first
-    // time) is stacked above the banners, so they are raised again.
-    const int raised = decklab::overlay::raiseCount(thermal);
+    // time) is stacked above the toast, so it is raised again.
+    const int raised = decklab::overlay::raiseCount(refusal);
     QWindow* laterWaveform = addWaveformWindow(2);
     ASSERT_EQ(waveform->parent(), laterWaveform->parent());
-    EXPECT_GT(decklab::overlay::raiseCount(thermal), raised);
+    EXPECT_GT(decklab::overlay::raiseCount(refusal), raised);
 
-    // The controller offer takes the tap and opens Deck Setup over Decks.
-    QTest::mouseClick(offer, Qt::LeftButton);
+    // The controller offer is the next notice; the whole notice is the button.
+    notice->dismiss();
+    settle();
+    ASSERT_TRUE(notice->isVisible());
+    EXPECT_TRUE(notice->noticeText().contains(QStringLiteral("Overlay check")));
+    QTest::mouseClick(notice, Qt::LeftButton);
     settle();
     QPointer<DeckLabSetupWizard> wizard = ui->wizard();
     ASSERT_FALSE(wizard.isNull());
     EXPECT_TRUE(wizard->isVisible());
     EXPECT_TRUE(panel->waveformsSuppressed());
     EXPECT_FALSE(waveform->isVisible()); EXPECT_FALSE(laterWaveform->isVisible());
-    EXPECT_GE(checkOverlays(waveform), 2);
+    EXPECT_GE(checkOverlays(waveform), 1);
     capture(QStringLiteral("overlay-deck-setup-over-decks.png"));
     // A confirmation over Deck Setup.
     auto* confirm = decklab::ui::Confirm::ask(panel.get(), QStringLiteral("Generated question?"), QString(),
             QStringLiteral("Yes"), [] {});
     settle();
-    EXPECT_GE(checkOverlays(waveform), 3);
+    EXPECT_GE(checkOverlays(waveform), 2);
     confirm->close();
     wizard->findChild<QPushButton*>(QStringLiteral("decklab-setup-close"))->click();
     settle();
