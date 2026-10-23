@@ -2185,8 +2185,9 @@ TEST_F(NativeDeckLabTest, SideUtilitiesOperateRealLoopsAndModesWithoutRetargetin
     };
     auto* loopMode = panel->findChild<QPushButton*>("decklab-pads-1-mode-loop"); ASSERT_NE(nullptr, loopMode);
     QTest::mousePress(loopMode, Qt::LeftButton); QTest::mouseRelease(loopMode, Qt::LeftButton); settle();
-    // The generated track lasts 10 s: 16 beats fit at 128 BPM, 32 would not.
-    auto* quarter = pad(1); auto* half = pad(2); auto* four = pad(5); auto* longest = pad(7);
+    // The generated track lasts 5 s (441000 samples at 44.1 kHz): 8 beats fit
+    // at 128 BPM (3.75 s), 16 would not, so Mixxx refuses those.
+    auto* quarter = pad(1); auto* half = pad(2); auto* four = pad(5); auto* longest = pad(6);
     auto* quantize = find("quantize"); auto* keylock = find("keylock"); auto* play = find("play");
     ASSERT_NE(nullptr, quarter); ASSERT_NE(nullptr, half); ASSERT_NE(nullptr, four); ASSERT_NE(nullptr, longest);
     ASSERT_NE(nullptr, quantize); ASSERT_NE(nullptr, keylock); ASSERT_NE(nullptr, play);
@@ -2197,7 +2198,7 @@ TEST_F(NativeDeckLabTest, SideUtilitiesOperateRealLoopsAndModesWithoutRetargetin
         EXPECT_TRUE(length->isVisible()); EXPECT_GE(length->width(), 44);
     }
     EXPECT_EQ(QStringLiteral("1/4"), quarter->text()); EXPECT_EQ(QStringLiteral("1/2"), half->text());
-    EXPECT_EQ(QStringLiteral("4"), four->text()); EXPECT_EQ(QStringLiteral("16"), longest->text());
+    EXPECT_EQ(QStringLiteral("4"), four->text()); EXPECT_EQ(QStringLiteral("8"), longest->text());
     EXPECT_EQ(QStringLiteral("32"), pad(8)->text());
     const auto lit = [](QPushButton* button) {
         return button->grab().toImage().pixelColor(2, button->height() / 2) == QColor(0xf2, 0xf4, 0xf7);
