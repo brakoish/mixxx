@@ -958,10 +958,11 @@ void DeckLabActionButton::paintDeckTarget(QPainter& painter, const QColor& prima
     const int right = static_cast<int>(inner.right()) - 6;
     const bool twoLines = !m_detail.isEmpty() &&
             height() >= primaryMetrics.height() + detailMetrics.height();
+    // The badge sits on the first line; the second line starts below it.
     const int lineTop = twoLines
-            ? (height() - primaryMetrics.height() - detailMetrics.height() + 4) / 2
+            ? (height() - primaryMetrics.height() - detailMetrics.height() + 1) / 2
             : (height() - primaryMetrics.height()) / 2;
-    const QRectF badge(left, lineTop + (primaryMetrics.height() - 22) / 2.0, 24, 22);
+    const QRectF badge(left, lineTop + (primaryMetrics.height() - 20) / 2.0, 22, 20);
     painter.drawRoundedRect(badge, 3, 3);
     painter.setFont(numberFont(font(), 15));
     painter.setPen(colors::ground);
@@ -980,7 +981,7 @@ void DeckLabActionButton::paintDeckTarget(QPainter& painter, const QColor& prima
     if (twoLines) {
         painter.setFont(detailFont);
         painter.setPen(secondary);
-        painter.drawText(QRect(left, lineTop + primaryMetrics.height() - 4, std::max(0, right - left), detailMetrics.height()),
+        painter.drawText(QRect(left, lineTop + primaryMetrics.height() - 1, std::max(0, right - left), detailMetrics.height()),
                 Qt::AlignLeft | Qt::AlignVCenter,
                 detailMetrics.elidedText(m_detail, Qt::ElideRight, std::max(0, right - left)));
     }

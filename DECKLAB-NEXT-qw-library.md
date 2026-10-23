@@ -140,8 +140,30 @@ Captures: `browse-source-home.png`, `browse-usb-read-error.png`, `browse-match-b
 (native), and in the app smoke `app-browse-01-sources.png` (a generated plain stick first) and the new
 `app-browse-08-match-bar.png` (faster only + Only).
 
-## CI
-See the run table below.
+## CI and what is verified
+| Run | Result | Notes |
+|---|---|---|
+| 39878104683 | cancelled by GitHub | "repository invocation blocked" after 1m38s (ARM64 quota for the day; qw-perf and qw-system were cancelled at the same moment). A later dispatch returned "Actions has been disabled for this repository". The coordinator stopped all further runs. |
+
+**Verified locally (WSL, g++ 13, Qt 6.4, offscreen):**
+- Every touched source (`wdecklab.cpp`, `decklabbrowse.cpp`, `librarycontrol.cpp`, `wtracktableview.cpp`,
+  `decklabsmoke.cpp`, `decklabtest.cpp`) compiles with `-Wall -Wextra` against the real headers (syntax-only, moc for
+  `wdecklab.h`/`librarycontrol.h`), no warnings.
+- `decklabknob.h` against real Qt popups and dialogs (scratch harness): an open QMenu is the owner and gets Down/Escape;
+  after it closes with `QSignalBlocker(qApp)` the focus window is **null and no focus signal fires** (the kiosk bug
+  reproduced), while the live check returns Browse; modal QDialog and QMessageBox are detected, Space closes the box.
+- `decklabbrowse.cpp` built with thin stubs for Track/KeyUtils/CoverArtCache: the three new unit tests from
+  `decklabtest.cpp` (`TempoWindowDirectionDeltaAndKeyWords`, `MatchFilterIsOneQueryForKeyAndTempo`,
+  `UsbSticksAreListedByLabelWithExportsMarked`) pass, plus painted-widget checks (LOAD deck bar colour when disabled,
+  60 px two-line source rows vs 44 px category rows, Match chip deck colour).
+- `build_pi.py --check-inputs` PASS after the lock refresh; `tools/decklab/test_build_pi.py` 7/7.
+
+**Still needs CI (cannot run without the ARM64 Flatpak build):** link of the full app, the `NativeDeckLabTest` suite
+(6 new tests and 5 updated ones, which exercise the real `LibraryControl`, `SidebarModel` and `WLibrary`), the app smoke
+(`app-browse-01-sources.png` with a generated stick, new `app-browse-08-match-bar.png`) and the native captures
+(`browse-source-home.png`, `browse-usb-read-error.png`, `browse-match-bar.png`, `browse-load-identity.png`). Risk notes
+for the first run: the knob test closes menus and dialogs under `QSignalBlocker(qApp)` and expects the offscreen
+platform to report them gone at once (confirmed in the harness); the rekordbox test waits 900 ms for a 300 ms timeout.
 
 ## Gaps and follow-ups
 - Numark script gates (see §1): appliance-repo change needed for turns outside Browse.

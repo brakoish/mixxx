@@ -14,6 +14,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QLocale>
 #include <QMenu>
 #include <QPushButton>
 #include <QProgressBar>
@@ -2678,7 +2679,7 @@ TEST_F(NativeDeckLabTest, MatchBarShowsDeckWindowDirectionAndClears) {
     ASSERT_TRUE(bar->isVisible());
     EXPECT_EQ(1, chip->deck());
     EXPECT_TRUE(chip->automatic());
-    EXPECT_TRUE(chip->detail().contains(QStringLiteral("122.0"))) << chip->detail().toStdString();
+    EXPECT_TRUE(chip->detail().contains(QLocale().toString(122.0, 'f', 1))) << chip->detail().toStdString();
     EXPECT_EQ(QString::fromUtf8("115–129 BPM"), summary->primary());
     EXPECT_TRUE(summary->active());
     EXPECT_EQ(Tone::Active, match->tone());
