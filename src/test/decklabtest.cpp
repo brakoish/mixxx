@@ -181,6 +181,8 @@ class NativeDeckLabTest : public BaseSignalPathTest {
         decklab::setUsbStickRootsForTesting({media.filePath(QStringLiteral("decklab"))});
         navigation = std::make_unique<LibraryControl>(nullptr);
         soundStatus = std::make_unique<ControlObject>(ConfigKey("[SoundManager]", "status"));
+        // RecordingManager's status exists before the skin in the app.
+        recordingStatus = std::make_unique<ControlObject>(ConfigKey("[Recording]", "status"));
         players = std::make_unique<TestPlayers>(); players->decks={m_pMixerDeck1.get(),m_pMixerDeck2.get(),m_pMixerDeck3.get(),fourthDeck.get()};
         panel = std::make_unique<WDeckLab>(config(), nullptr, players.get(), m_pEffectsManager.get());
         sidebar = new WLibrarySidebar(panel.get()); sidebar->setModel(model.get());
@@ -200,7 +202,7 @@ class NativeDeckLabTest : public BaseSignalPathTest {
         panel->resize(800, 480); panel->show(); QCoreApplication::processEvents();
     }
     void TearDown() override {
-        panel.reset(); soundStatus.reset(); players.reset(); navigation.reset(); model.reset(); source.reset();
+        panel.reset(); soundStatus.reset(); recordingStatus.reset(); players.reset(); navigation.reset(); model.reset(); source.reset();
         collection.reset(); autoDj.reset(); rekordbox.reset(); computer.reset();
         decklab::setUsbStickRootsForTesting({});
         fourthDeck.reset(); WaveformWidgetFactory::destroy(); BaseSignalPathTest::TearDown();
@@ -216,6 +218,7 @@ class NativeDeckLabTest : public BaseSignalPathTest {
     std::unique_ptr<TestPlayers> players;
     std::unique_ptr<LibraryControl> navigation;
     std::unique_ptr<ControlObject> soundStatus;
+    std::unique_ptr<ControlObject> recordingStatus;
     std::unique_ptr<Deck> fourthDeck;
     WLibrarySidebar* sidebar = nullptr;
     WLibrary* library = nullptr;
