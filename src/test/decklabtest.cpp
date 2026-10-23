@@ -3144,6 +3144,10 @@ TEST_F(NativeDeckLabTest, SamplerPadsLightAndDrainOnTheDisplayTick) {
 // r4-sampler: hold a pad for the docked edit sheet; the knob edits GAIN
 // there and never leaves the page; CLEAR acts on release.
 TEST_F(NativeDeckLabTest, SamplerHoldOpensTheEditSheetAndTheKnobEditsGain) {
+    // One surface, as on the unit: the fixture's would take the knob turn
+    // below as "open Browse" and, through [DeckLabTab] current, drag this
+    // surface to Browse with it.
+    panel.reset();
     auto controls = makeSamplerControls(1, 1);
     ControlObject::set(ConfigKey("[Sampler1]", "track_loaded"), 1);
     ControlObject::set(ConfigKey("[Sampler1]", "duration"), 4);
