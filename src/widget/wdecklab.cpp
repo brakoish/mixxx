@@ -68,6 +68,7 @@
 #include "track/beats.h"
 #include "waveform/waveformwidgetfactory.h"
 #include "widget/decklabbrowse.h"
+#include "widget/decklablabfx.h"
 #include "widget/decklabstempads.h"
 #include "widget/wlibrary.h"
 #include "widget/wlibrarysidebar.h"
@@ -242,14 +243,6 @@ const QString kDialogStyle = QStringLiteral(R"(
  QPushButton:disabled {color:#4B525C;border-color:#1E2228;}
  )");
 const QColor kFxLamp(0xf2, 0xf4, 0xf7);
-// Hold effects and rolls end when the finger lifts. A touch whose release
-// never reaches its control is ended by the next touch elsewhere (see
-// eventFilter); this backstop of 8 bars at the deck's tempo is the last
-// resort. The XY pad has no time limit at all.
-qint64 holdBackstopMs(double bpm) {
-    const double tempo = util_isfinite(bpm) && bpm > 0 ? std::clamp(bpm, 60.0, 240.0) : 120.0;
-    return qint64(32 * 60000.0 / tempo);
-}
 // A SYNC press held this long toggles sync lock instead of matching once.
 constexpr int kSyncHoldMs = 500;
 // How long the one-shot match reads MATCHED.
@@ -455,61 +448,6 @@ class DeckLabTouchScrollGuard final : public QObject {
   private:
     QScroller* m_scroller;
     bool m_touchDragged = false;
-};
-// Mouse events also receive Qt's synthesized primary touchscreen contact.
-// TouchCancel and application deactivation are handled by the owning surface.
-// The effect follows the finger for as long as it is down: no time limit.
-class DeckLabXY final : public QWidget {
-  public:
-    DeckLabXY(std::function<void(double, double, bool)> send, QWidget* parent)
-            : QWidget(parent), m_send(std::move(send)) {
-        setMinimumHeight(70);
-        setObjectName(QStringLiteral("decklab-fx-xy"));
-        setAccessibleName(QCoreApplication::translate("WDeckLab", "XY filter: hold to sweep, release returns dry"));
-    }
-    bool isDown() const { return m_down; }
-  protected:
-    void paintEvent(QPaintEvent*) override {
-        // Brand panel and line; white (never live red) for the touch point.
-        const QColor panel(0x16, 0x19, 0x1e), line(0x2c, 0x31, 0x3a), muted(0x9a, 0xa3, 0xaf), text(0xf2, 0xf4, 0xf7);
-        QPainter p(this);
-        // Frame and centre lines first, without antialiasing: crisp 1 px.
-        p.fillRect(rect(), panel);
-        p.setPen(line); p.drawRect(rect().adjusted(0, 0, -1, -1));
-        p.drawLine(width() / 2, 0, width() / 2, height()); p.drawLine(0, height() / 2, width(), height() / 2);
-        p.setRenderHint(QPainter::Antialiasing, true);
-        QFont label;
-        label.setFamilies({QStringLiteral("Barlow")});
-        label.setPixelSize(14); label.setWeight(QFont::DemiBold);
-        p.setFont(label);
-        p.setPen(isEnabled() ? muted : line);
-        const QRect inner = rect().adjusted(10, 6, -10, -6);
-        p.drawText(inner, Qt::AlignLeft | Qt::AlignVCenter, QCoreApplication::translate("WDeckLab", "LPF"));
-        p.drawText(inner, Qt::AlignRight | Qt::AlignVCenter, QCoreApplication::translate("WDeckLab", "HPF"));
-        p.drawText(inner, Qt::AlignTop | Qt::AlignHCenter, QCoreApplication::translate("WDeckLab", "DEPTH"));
-        if (!m_down) {
-            QFont hint = label; hint.setPixelSize(15); hint.setWeight(QFont::Medium);
-            p.setFont(hint);
-            p.drawText(inner, Qt::AlignBottom | Qt::AlignHCenter, QCoreApplication::translate("WDeckLab", "Hold to sweep"));
-            return;
-        }
-        QColor cross = text; cross.setAlphaF(0.35f);
-        p.setPen(QPen(cross, 1));
-        p.drawLine(QPointF(m_point.x() + 0.5, 0), QPointF(m_point.x() + 0.5, height()));
-        p.drawLine(QPointF(0, m_point.y() + 0.5), QPointF(width(), m_point.y() + 0.5));
-        p.setPen(QPen(text, 2)); p.setBrush(Qt::NoBrush);
-        p.drawEllipse(QPointF(m_point), 12, 12);
-    }
-    void mousePressEvent(QMouseEvent* e) override { if (e->button() == Qt::LeftButton) { m_down = true; send(e); } }
-    void mouseMoveEvent(QMouseEvent* e) override { if (m_down) send(e); }
-    void mouseReleaseEvent(QMouseEvent*) override { if (m_down) { m_down = false; m_send(0, 0, false); update(); } }
-    void hideEvent(QHideEvent* e) override { if (m_down) { m_down = false; m_send(0, 0, false); } QWidget::hideEvent(e); }
-  private:
-    void send(QMouseEvent* e) { m_point = e->pos(); m_send(std::clamp(m_point.x() / double(std::max(1, width())), 0.0, 1.0),
-            1 - std::clamp(m_point.y() / double(std::max(1, height())), 0.0, 1.0), true); update(); }
-    std::function<void(double, double, bool)> m_send;
-    bool m_down = false;
-    QPoint m_point;
 };
 QString timeText(double seconds) {
     seconds = std::max(0.0, seconds);
@@ -2141,253 +2079,51 @@ QWidget* WDeckLab::buildSampler() {
 }
 
 QWidget* WDeckLab::buildEffects() {
-    auto* page = new QWidget(this);
-    page->setObjectName(QStringLiteral("decklab-labfx"));
-    page->setStyleSheet(kPerformStyle);
-    auto* layout = column(page, 5);
-    auto* heading = row(nullptr, 3);
-    auto* target = new QComboBox(page);
-    target->setObjectName("decklab-fx-target");
-    target->addItems({tr("Deck 1"), tr("Deck 2")});
-    connect(target, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
-        releaseEffects(); m_fxDeck = index + 1; refreshFx();
-    });
-    heading->addWidget(target);
-    // State lamp (DRY / ON / TAIL), then a plain line only when Lab FX
-    // cannot play (no track, effect missing).
-    m_fxStatus = new QLabel(tr("DRY"), page);
-    m_fxStatus->setObjectName(QStringLiteral("decklab-fx-status"));
-    m_fxStatus->setProperty("lamp", QStringLiteral("dry"));
-    m_fxStatus->setAlignment(Qt::AlignCenter);
-    heading->addSpacing(6);
-    heading->addWidget(m_fxStatus, 0, Qt::AlignVCenter);
-    m_fxMessage = new QLabel(page);
-    m_fxMessage->setObjectName(QStringLiteral("decklab-fx-message"));
-    m_fxMessage->setProperty("muted", true);
-    heading->addSpacing(6);
-    heading->addWidget(m_fxMessage, 1);
-    // RELEASE lets the echo tail ring out; ECHO OUT drops the track for a
-    // bar under the tail (it used to say "Mute tail", which it never did).
-    auto* release = button(tr("RELEASE"), [this] { releaseEffects(true); }, page, "decklab-fx-release");
-    release->setAccessibleName(tr("Release: back to dry, the tail rings out"));
-    heading->addWidget(release);
-    auto* echoOut = button(tr("ECHO OUT"), [this] { releaseEffects(true, true); }, page, "decklab-fx-mute");
-    echoOut->setAccessibleName(tr("Echo out: the track drops for one bar under the tail"));
-    heading->addWidget(echoOut);
-    layout->addLayout(heading);
-    m_fxBody = new QWidget(page);
-    auto* body = column(m_fxBody);
-    auto* tabs = row();
-    auto* views = new QStackedWidget(m_fxBody);
-    auto* selection = new QButtonGroup(views);
-    for (int n = 0; n < 5; ++n) {
-        const QStringList names{tr("Bands"), tr("Sweep"), tr("Hold"), tr("XY"), tr("Samples")};
-        auto* tab = button(names[n], [this, views, n] {
-            if(m_holdFx)releaseEffects(true);
-            if(!m_heldRoll.isEmpty()){set(channel(m_fxDeck),m_heldRoll,0);m_heldRoll.clear();}
-            if(!m_heldSamplerRoll.isEmpty()){set(m_heldSamplerGroup,m_heldSamplerRoll,0);m_heldSamplerRoll.clear();}
-            m_holdSource.clear();
-            views->setCurrentIndex(n);
-        }, page,
-                QStringLiteral("decklab-fx-view-%1").arg(n));
-        tab->setCheckable(true); tab->setChecked(n == 0); tab->setProperty("rail", true);
-        selection->addButton(tab); tabs->addWidget(tab, 1);
-    }
-    layout->addLayout(tabs);
-    views->setObjectName("decklab-fx-pages");
-    const QStringList bands{tr("LOW"), tr("MID"), tr("HIGH")};
-    auto* lever = new QWidget(views); auto* leverLayout = column(lever);
-    m_leverMode = new QComboBox(lever);
-    m_leverMode->setObjectName(QStringLiteral("decklab-fx-lever-mode"));
-    m_leverMode->addItems({tr("ECHO"), tr("REVERB"), tr("BAND SOLO")});
-    leverLayout->addWidget(m_leverMode);
-    auto* pads = row(nullptr, 3);
-    for (int n = 0; n < 3; ++n) {
-        m_levers[n] = button(bands[n], [this] { applyEffects(); }, lever,
-                QStringLiteral("decklab-fx-band-%1").arg(n));
-        m_levers[n]->setCheckable(true);
-        m_levers[n]->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-        pads->addWidget(m_levers[n], 1);
-    }
-    leverLayout->addLayout(pads, 1); views->addWidget(lever);
-    auto* isolate = new QWidget(views); auto* isolateLayout = column(isolate);
-    m_isoMode = new QComboBox(isolate);
-    m_isoMode->setObjectName(QStringLiteral("decklab-fx-iso-mode"));
-    // Short names, with what each side of the faders does printed beside.
-    m_isoMode->addItems({tr("ECHO    ‹ CUT · SEND ›"), tr("REVERB    ‹ CUT · SEND ›"),
-            tr("DRIVE    ‹ CUT · DRIVE ›"), tr("FILTER    ‹ LPF · HPF ›"),
-            tr("DUCK    ‹ ON-BEAT · OFF-BEAT ›")});
-    isolateLayout->addWidget(m_isoMode);
-    auto* channels = row(nullptr, 12);
-    for (int n = 0; n < 3; ++n) {
-        auto* band = new QWidget(isolate); auto* controls = column(band);
-        auto* label = new QLabel(bands[n], band); label->setAlignment(Qt::AlignCenter); controls->addWidget(label);
-        m_isolates[n] = new QSlider(Qt::Horizontal, band);
-        m_isolates[n]->setRange(-100, 100); m_isolates[n]->setMinimumHeight(44);
-        m_isolates[n]->setAccessibleName(tr("%1 isolate, centre is dry").arg(bands[n]));
-        connect(m_isolates[n], &QSlider::valueChanged, this, [this](int) { if (!m_updating) applyEffects(); });
-        controls->addWidget(m_isolates[n], 1);
-        controls->addWidget(button(tr("CENTRE"), [this, n] { m_isolates[n]->setValue(0); }, band));
-        channels->addWidget(band, 1);
-    }
-    isolateLayout->addLayout(channels, 1); views->addWidget(isolate);
-    auto* perform = new QWidget(views); auto* performLayout = new QGridLayout(perform);
-    performLayout->setContentsMargins(0, 0, 0, 0); performLayout->setSpacing(3);
-    // Hold effects: on while touched, off when the finger lifts (8-bar
-    // backstop for a touch whose release never arrives).
-    const QStringList holdNames{tr("ECHO"), tr("REVERB"), tr("FILTER"), tr("DUCK")};
-    for (int n = 0; n < 4; ++n) {
-        auto* hold = button(holdNames[n], [] {}, perform, QStringLiteral("decklab-hold-%1").arg(n));
-        hold->setAccessibleName(tr("Hold %1").arg(holdNames[n]));
-        hold->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-        connect(hold, &QPushButton::pressed, this, [this, n, hold] {
-            releaseEffects(); m_updating = true;
-            if (n < 2) { m_leverMode->setCurrentIndex(n); for (auto* pad : m_levers) pad->setChecked(true); }
-            else { m_isoMode->setCurrentIndex(n == 2 ? 3 : 4); for (auto* fader : m_isolates) fader->setValue(70); }
-            m_updating = false; applyEffects(); m_holdFx = true; m_holdStarted = m_clock.elapsed();
-            m_holdSource = hold; m_holdLimit = holdBackstopMs(value(channel(m_fxDeck), "bpm"));
-        });
-        connect(hold, &QPushButton::released, this, [this] { m_holdFx = false; releaseEffects(true); });
-        performLayout->addWidget(hold, 0, n);
-    }
-    const std::array<double, 4> fractions{.125, .25, .5, 1};
-    const QStringList rollNames{tr("ROLL 1/8"), tr("ROLL 1/4"), tr("ROLL 1/2"), tr("ROLL 1")};
-    for (int n = 0; n < 4; ++n) {
-        auto* hold = button(rollNames[n], [] {}, perform, QStringLiteral("decklab-roll-%1").arg(n));
-        hold->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-        connect(hold, &QPushButton::pressed, this, [this, hold, fraction = fractions[n]] {
-            if (!value(channel(m_fxDeck), "play")) return;
-            if (!m_heldRoll.isEmpty()) set(channel(m_fxDeck), m_heldRoll, 0);
-            m_heldRoll = QStringLiteral("beatlooproll_%1_activate").arg(fraction);
-            m_holdStarted = m_clock.elapsed(); set(channel(m_fxDeck), m_heldRoll, 1);
-            m_holdSource = hold; m_holdLimit = holdBackstopMs(value(channel(m_fxDeck), "bpm"));
-        });
-        connect(hold, &QPushButton::released, this, [this] {
-            if (!m_heldRoll.isEmpty()) set(channel(m_fxDeck), m_heldRoll, 0);
-            m_heldRoll.clear(); m_holdSource.clear();
-        });
-        performLayout->addWidget(hold, 1, n);
-    }
-    const QStringList starters{tr("ECHO ALL"), tr("BASS KILL"), tr("WASH"), tr("HPF")};
-    for (int n = 0; n < starters.size(); ++n) {
-        auto* starter = button(starters[n], [this, n] {
-            releaseEffects(); m_updating = true;
-            m_leverMode->setCurrentIndex(n == 2 ? 1 : 0);
-            m_isoMode->setCurrentIndex(n == 3 ? 3 : 0);
-            for (int band = 0; band < 3; ++band) {
-                m_levers[band]->setChecked(n == 0 || (n == 2 && band > 0));
-                m_isolates[band]->setValue(n == 1 && band == 0 ? -90 : n == 3 ? 70 : 0);
+    // r4-labfx: Lab FX is one instrument page (widget/decklablabfx.h). This
+    // surface only lends it the engine, the deck readout and navigation.
+    DeckLabLabFxHost host;
+    host.value = [this](const QString& group, const QString& item) { return value(group, item); };
+    host.set = [this](const QString& group, const QString& item, double v) { set(group, item, v); };
+    host.setParameter = [this](const QString& group, const QString& item, double v) {
+        control(group, item)->setParameter(v);
+    };
+    host.unitReady = [this, units = std::array<QString, 2>{QStringLiteral("[DeckLabEffectUnit1]"),
+                                    QStringLiteral("[DeckLabEffectUnit2]")}](int unit) {
+        auto chain = m_effects && unit >= 1 && unit <= 2 ? m_effects->getEffectChain(units[unit - 1]) : EffectChainPointer();
+        return chain && chain->getEffectSlot(3) && chain->getEffectSlot(3)->isLoaded();
+    };
+    host.now = [this] { return m_clock.elapsed(); };
+    host.deck = [this](int deck) {
+        // The footer readout: title and play state from the deck readout,
+        // the clock and beat lamp read fresh (Decks' clocks only tick there).
+        DeckLabLabFxDeck info;
+        if (deck < 1 || deck > 4) return info;
+        const auto& d = m_deck[deck - 1];
+        const auto& shown = m_stripStates[deck - 1];
+        info.loaded = shown.loaded && d.loaded->get() > 0;
+        if (!info.loaded) return info;
+        info.playing = d.play->get() > 0;
+        info.title = shown.title;
+        const double rawPosition = d.position->get();
+        const double position = std::clamp(util_isfinite(rawPosition) ? rawPosition : 0.0, 0.0, 1.0);
+        const double ratio = d.rateRatio->get();
+        const double speed = util_isfinite(ratio) && ratio > 0 ? ratio : 1;
+        const double duration = d.duration->get();
+        info.remaining = duration > 0 ? QStringLiteral("−") + timeText(duration * (1 - position) / speed) : QStringLiteral("—");
+        info.endWarning = shown.endWarning;
+        if (const auto beats = m_tracks[deck - 1] ? m_tracks[deck - 1]->getBeats() : mixxx::BeatsPointer()) {
+            const auto frame = mixxx::audio::FramePos::fromEngineSamplePos(position * d.samples->get());
+            mixxx::audio::FramePos previous, next;
+            if (frame.isValid() && beats->findPrevNextBeats(frame, &previous, &next, false) && next > previous) {
+                const long long index = beats->iteratorFrom(previous) - beats->cfirstmarker();
+                info.phase = deckLabBeatPhase(index, (frame - previous) / (next - previous)).segment;
             }
-            m_fxTime->setCurrentIndex(2); m_depth->setValue(70); m_updating = false;
-            findChild<QPushButton*>(QStringLiteral("decklab-fx-view-%1").arg(n == 1 || n == 3 ? 1 : 0))->click();
-            applyEffects();
-        }, perform, QStringLiteral("decklab-transition-%1").arg(n));
-        performLayout->addWidget(starter, 2, n);
-    }
-    auto* holdHint = new QLabel(tr("Hold = on while touched. Tap a preset to latch."), perform);
-    holdHint->setProperty("muted", true); performLayout->addWidget(holdHint, 3, 0, 1, 4);
-    views->addWidget(perform);
-    // The XY pad follows the finger until it lifts: no time limit. Lost
-    // touches still end it (next touch elsewhere, touch cancel, page change,
-    // hide), and the effect's own 1.5 s deadman covers a frozen screen.
-    auto xyPad = std::make_shared<QPointer<QWidget>>();
-    auto* xy = new DeckLabXY([this, xyPad](double x, double y, bool on) {
-        if (!on) { m_holdFx = false; releaseEffects(); return; }
-        m_updating = true; m_isoMode->setCurrentIndex(3);
-        for (auto* pad : m_levers) pad->setChecked(false);
-        for (auto* fader : m_isolates) fader->setValue(int((x * 2 - 1) * 100));
-        m_depth->setValue(int(y * 100)); m_updating = false;
-        applyEffects();
-        if (!m_holdFx || m_holdSource != *xyPad) { m_holdStarted = m_clock.elapsed(); m_holdLimit = 0; }
-        m_holdFx = true; m_holdSource = *xyPad;
-    }, views);
-    *xyPad = xy;
-    views->addWidget(xy);
-    auto* sampler = new QWidget(views); auto* sampleLayout = column(sampler);
-    auto* triggers = row(nullptr, 3);
-    for (int slot = 1; slot <= 4; ++slot) {
-        const QString group = QStringLiteral("[Sampler%1]").arg(slot);
-        // Sampler pads 1-4, numbered as on the Sampler page.
-        auto* pad = new DeckLabPad(QStringLiteral("%1\n").arg(slot), sampler);
-        pad->setFocusPolicy(Qt::NoFocus); pad->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
-        pad->setCheckable(true); pad->setObjectName(QStringLiteral("decklab-fx-sample-%1").arg(slot));
-        // Loaded: play on touch-down. Empty: open Browse on release.
-        auto press = std::make_shared<std::pair<bool, quint64>>(false, 0);
-        connect(pad, &QPushButton::pressed, this, [this, group, slot, press] {
-            m_fxSample = slot;
-            if (m_sampleRollHint) m_sampleRollHint->setText(tr("ROLL · PAD %1").arg(slot));
-            press->first = value(group, "track_loaded") > 0;
-            press->second = m_interactionEpoch;
-            if (press->first) pulse(group, "play_stutter");
-        });
-        connect(pad, &QPushButton::clicked, this, [this,group,slot,pad,press] {
-            if (!press->first && press->second == m_interactionEpoch && !value(group,"track_loaded")) {
-                m_sampleTarget=slot; m_sampleReturnPage=3; selectPage(1); refreshLoadButtons();
-            }
-            pad->setChecked(value(group,"play")>0);
-        });
-        auto refresh = [this,group,slot,pad](double) {
-            auto* player=m_players?m_players->getPlayer(group):nullptr;
-            const auto track=player?player->getLoadedTrack():TrackPointer();
-            QString title = track ? track->getTitle() : QString();
-            if (track && title.isEmpty()) title = QFileInfo(track->getLocation()).completeBaseName();
-            pad->setText(QStringLiteral("%1\n%2").arg(slot).arg(title));
-            pad->setAccessibleName(track ? tr("Pad %1, %2").arg(slot).arg(title) : tr("Pad %1, empty: tap to load").arg(slot));
-            refreshFx();
-            if(m_fxActive&&m_sampleRouting)applyEffects();
-        };
-        watch(group,"play",[this,pad](double v){pad->setChecked(v>0);refreshFx();}); watch(group,"track_loaded",refresh);
-        watch(group,"local_bpm",[this](double){refreshFx();});
-        if(m_players) if(auto* player=m_players->getPlayer(group)) connect(player,&BaseTrackPlayer::newTrackLoaded,this,[refresh](TrackPointer){refresh(1);});
-        QTimer::singleShot(0,pad,[refresh]{refresh(0);});
-        triggers->addWidget(pad,1);
-    }
-    sampleLayout->addLayout(triggers,1);
-    auto* sampleRolls=row(nullptr,3); m_sampleRollHint=new QLabel(tr("ROLL · PAD 1"),sampler); m_sampleRollHint->setProperty("caption",true); sampleRolls->addWidget(m_sampleRollHint);
-    for(int n=0;n<4;++n) {
-        auto* hold=button(rollNames[n],[]{},sampler,QStringLiteral("decklab-sample-roll-%1").arg(n));
-        connect(hold,&QPushButton::pressed,this,[this,hold,fraction=fractions[n]] {
-            const QString group=QStringLiteral("[Sampler%1]").arg(m_fxSample);
-            if(!value(group,"play")||value(group,"local_bpm")<=0) {m_sampleRollHint->setText(tr("Play pad %1 first (needs a BPM)").arg(m_fxSample));return;}
-            if(!m_heldSamplerRoll.isEmpty())set(m_heldSamplerGroup,m_heldSamplerRoll,0);
-            m_heldSamplerGroup=group; m_heldSamplerRoll=QStringLiteral("beatlooproll_%1_activate").arg(fraction); m_holdStarted=m_clock.elapsed(); set(group,m_heldSamplerRoll,1);
-            m_holdSource=hold; m_holdLimit=holdBackstopMs(value(group,"bpm"));
-        });
-        connect(hold,&QPushButton::released,this,[this]{if(!m_heldSamplerRoll.isEmpty())set(m_heldSamplerGroup,m_heldSamplerRoll,0);m_heldSamplerRoll.clear();m_holdSource.clear();});
-        sampleRolls->addWidget(hold,1);
-    }
-    sampleLayout->addLayout(sampleRolls); views->addWidget(sampler); body->addWidget(views, 1);
-    auto* timeDepth = row(nullptr, 9);
-    m_fxTime = new QComboBox(m_fxBody);
-    m_fxTime->setObjectName(QStringLiteral("decklab-fx-time"));
-    m_fxTime->addItems({tr("1/8 BEAT"), tr("1/4 BEAT"), tr("1/2 BEAT"), tr("1 BEAT")}); m_fxTime->setCurrentIndex(2);
-    timeDepth->addWidget(m_fxTime);
-    // The depth value reads beside its slider.
-    auto* depthLabel = new QLabel(m_fxBody);
-    depthLabel->setObjectName(QStringLiteral("decklab-fx-depth-label"));
-    depthLabel->setProperty("caption", true);
-    {
-        // Room for "DEPTH 100" in the 14 px SemiBold caption, so the slider
-        // never shifts as the value changes.
-        QFont caption;
-        caption.setFamilies({QStringLiteral("Barlow")});
-        caption.setPixelSize(14); caption.setWeight(QFont::DemiBold);
-        depthLabel->setMinimumWidth(QFontMetrics(caption).horizontalAdvance(tr("DEPTH %1").arg(100)) + 12);
-    }
-    timeDepth->addWidget(depthLabel);
-    m_depth = new QSlider(Qt::Horizontal, m_fxBody); m_depth->setRange(0, 100); m_depth->setValue(65); m_depth->setMinimumHeight(44);
-    m_depth->setAccessibleName(tr("Lab FX depth"));
-    const auto showDepth = [this, depthLabel] { depthLabel->setText(tr("DEPTH %1").arg(m_depth->value())); };
-    showDepth();
-    connect(m_depth, &QSlider::valueChanged, depthLabel, [showDepth](int) { showDepth(); });
-    timeDepth->addWidget(m_depth, 1);
-    auto* samples = button(tr("SAMPLER FX"), [this] { m_sampleRouting = !m_sampleRouting; refreshFx(); if (m_fxActive) applyEffects(); }, m_fxBody, QStringLiteral("decklab-fx-samples"));
-    samples->setAccessibleName(tr("Send sampler pads 1 to 4 through Lab FX"));
-    samples->setCheckable(true); timeDepth->addWidget(samples); body->addLayout(timeDepth);
-    for (auto* combo : {m_leverMode, m_isoMode, m_fxTime}) connect(combo, qOverload<int>(&QComboBox::currentIndexChanged), this,
-            [this](int) { if (!m_updating && m_fxActive) applyEffects(); });
-    connect(m_depth, &QSlider::valueChanged, this, [this](int) { if (!m_updating && m_fxActive) applyEffects(); });
-    layout->addWidget(m_fxBody, 1); return page;
+        }
+        return info;
+    };
+    host.showPage = [this](int page) { selectPage(page); };
+    m_labFx = new DeckLabLabFx(std::move(host), this);
+    return m_labFx;
 }
 
 QWidget* WDeckLab::buildSettings() {
@@ -2889,7 +2625,8 @@ void WDeckLab::bindBrowser(WSearchLineEdit* search, WLibrarySidebar* sidebar, WL
 
 void WDeckLab::selectPage(int page) {
     if (page < 0 || page > 4 || page == m_page) return;
-    if (m_page == 3) releaseEffects();
+    // r4-labfx: leaving Lab FX keeps a latched effect playing, and a held
+    // one until its finger lifts (PF-X24); the rail tab shows it.
     setSearchOpen(false);
     if (m_page == 1 && page != 1) m_sampleTarget = 0;
     releaseTouchCue(); ++m_interactionEpoch;
@@ -2921,7 +2658,9 @@ void WDeckLab::selectPage(int page) {
         m_waveforms->setFixedHeight(page == 1 ? 104 : 140);
         m_root->insertWidget(page == 1 ? 2 : 1, m_waveforms);
     }
-    m_waveforms->setVisible(page == 0 || page == 1 || page == 3);
+    // r4-labfx: Lab FX is one full-height instrument (its footer reads the
+    // target deck), so it hides the waveform lanes, as Sampler does.
+    m_waveforms->setVisible(page == 0 || page == 1);
     m_root->setStretchFactor(m_pages, page == 0 ? 0 : 1);
     if (page == 1) {
         if (!m_hasBrowsed) { m_hasBrowsed = true; showSources(); }
@@ -3927,8 +3666,9 @@ void WDeckLab::tickDecks() {
         }
     }
     connectControllerFx();
-    // Lab FX raises its tab while it is wet or tailing.
-    if (m_tabs[3]) setStylePropertyIf(m_tabs[3], "live", m_fxActive || m_fxReleasing);
+    // r4-labfx: the Lab FX tab is lit while an effect plays (on any page)
+    // and blinks with the beat while its tail rings out.
+    if (m_tabs[3]) setStylePropertyIf(m_tabs[3], "live", m_labFx && m_labFx->tabLit());
     if (m_overloadUntil && now >= m_overloadUntil) {
         m_overloadUntil = 0;
         updateStatus();
@@ -4042,121 +3782,19 @@ void WDeckLab::refreshTransport(int deck, const QString& prefix) {
     }
 }
 
-QString WDeckLab::fxGroup() const { return QStringLiteral("[DeckLabEffectUnit%1]").arg((m_fxDeck - 1) % 2 + 1); }
-QString WDeckLab::fxSlot() const { return QStringLiteral("[DeckLabEffectUnit%1_Effect4]").arg((m_fxDeck - 1) % 2 + 1); }
+// r4-labfx: the Lab FX state lives in DeckLabLabFx; these keep the surface's
+// entry points (deck and page changes, the 100 ms tick, release requests).
 void WDeckLab::refreshFx() {
-    auto* target = findChild<QComboBox*>("decklab-fx-target");
-    if (target && target->count() == 2 && (value(channel(3), "track_loaded") || value(channel(4), "track_loaded")))
-        target->addItems({tr("Deck 3"), tr("Deck 4")});
-    auto chain = m_effects ? m_effects->getEffectChain(fxGroup()) : EffectChainPointer();
-    const bool ready = chain && chain->getEffectSlot(3) && chain->getEffectSlot(3)->isLoaded();
-    const bool loaded = value(channel(m_fxDeck), "track_loaded") > 0;
-    bool samplesLoaded=false; for(int slot=1;slot<=4;++slot) samplesLoaded|=value(QStringLiteral("[Sampler%1]").arg(slot),"track_loaded")>0;
-    const bool source=loaded||(m_sampleRouting&&samplesLoaded);
-    m_fxBody->setEnabled(ready);
-    for(int n=0;n<3;++n) {m_levers[n]->setEnabled(source);m_isolates[n]->setEnabled(source);}
-    for(int n=0;n<4;++n) if(auto* hold=findChild<QPushButton*>(QStringLiteral("decklab-hold-%1").arg(n))) hold->setEnabled(source);
-    for(int n=0;n<4;++n) if(auto* starter=findChild<QPushButton*>(QStringLiteral("decklab-transition-%1").arg(n))) starter->setEnabled(source);
-    const QString sampleGroup = QStringLiteral("[Sampler%1]").arg(m_fxSample);
-    for (int n = 0; n < 4; ++n) {
-        if (auto* roll = findChild<QPushButton*>(QStringLiteral("decklab-roll-%1").arg(n)))
-            roll->setEnabled(loaded && value(channel(m_fxDeck), "play"));
-        if (auto* roll = findChild<QPushButton*>(QStringLiteral("decklab-sample-roll-%1").arg(n)))
-            roll->setEnabled(value(sampleGroup, "play") && value(sampleGroup, "local_bpm") > 0);
-    }
-    // The state is a lamp: DRY (outline), ON (filled), TAIL (white outline
-    // while the tail rings out). A plain line says why Lab FX cannot play.
-    const QString lamp = m_fxReleasing ? QStringLiteral("tail") : m_fxActive ? QStringLiteral("on") : QStringLiteral("dry");
-    setTextIf(m_fxStatus, m_fxReleasing ? tr("TAIL") : m_fxActive ? tr("ON") : tr("DRY"));
-    if (m_fxStatus->property("lamp").toString() != lamp) {
-        m_fxStatus->setProperty("lamp", lamp);
-        m_fxStatus->style()->unpolish(m_fxStatus);
-        m_fxStatus->style()->polish(m_fxStatus);
-    }
-    setAccessibleNameIf(m_fxStatus, m_fxReleasing ? tr("Lab FX tail ringing out") : m_fxActive ? tr("Lab FX on") : tr("Lab FX dry"));
-    if (m_fxMessage)
-        setTextIf(m_fxMessage, !ready ? tr("Lab FX effect didn't load. Restart Deck Lab.")
-                        : !source ? tr("Load a track on deck %1").arg(m_fxDeck) : QString());
-    if (m_fxActive && (!ready || !source)) releaseEffects();
-}
-void WDeckLab::applyEffects() {
-    if (m_updating || m_page != 3 || !m_fxBody->isEnabled()) return;
-    bool active = false;
-    for (int band = 0; band < 3; ++band) active |= m_levers[band]->isChecked() || m_isolates[band]->value() != 0;
-    if (!active) { releaseEffects(); return; }
-    m_fxReleasing = false; m_fxReturning = false;
-    const QString group = fxGroup(), slot = fxSlot();
-    // Arm before routing/enabling. A freeze immediately after the first press
-    // must not leave an unprotected effect running with the default heartbeat 0.
-    control(slot,"parameter15")->setParameter((++m_heartbeat % 65535 + 1) / 65535.0);
-    for (int sampler = 1; sampler <= 16; ++sampler) set(group, QStringLiteral("group_[Sampler%1]_enable").arg(sampler), m_sampleRouting && sampler<=4 && value(QStringLiteral("[Sampler%1]").arg(sampler),"track_loaded"));
-    for (int deck = 1; deck <= 4; ++deck) set(group, QStringLiteral("group_[Channel%1]_enable").arg(deck), deck == m_fxDeck);
-    for (int band = 0; band < 3; ++band) {
-        control(slot, QStringLiteral("parameter%1").arg(band + 1))->setParameter(m_levers[band]->isChecked() ? 1 : 0);
-        control(slot, QStringLiteral("parameter%1").arg(band + 6))->setParameter((m_isolates[band]->value() / 100.0 + 1) / 2);
-    }
-    const std::array<int, 3> leverModes{1, 2, 3};
-    const std::array<int, 5> isoModes{1, 2, 3, 4, 5};
-    control(slot, "parameter4")->setParameter(leverModes[m_leverMode->currentIndex()] / 3.0);
-    control(slot, "parameter9")->setParameter(isoModes[m_isoMode->currentIndex()] / 5.0);
-    control(slot, "parameter5")->setParameter(m_depth->value() / 100.0);
-    control(slot, "parameter10")->setParameter(m_depth->value() / 100.0);
-    const double rawBpm = value(channel(m_fxDeck), "bpm");
-    double bpm = rawBpm > 0 ? std::clamp(rawBpm, 40.0, 240.0) : 120;
-    control(slot, "parameter11")->setParameter((bpm - 40) / 200);
-    const std::array<double, 4> times{.125, .25, .5, 1};
-    control(slot, "parameter12")->setParameter((times[m_fxTime->currentIndex()] - .0625) / .9375);
-    control(slot, "parameter13")->setParameter(0);
-    set(slot, "enabled", 1);
-    control(group, "mix")->setParameter(1);
-    m_fxActive = true;
-    m_lastFxTick = m_clock.elapsed();
-    refreshFx();
+    if (m_labFx) m_labFx->refresh();
 }
 void WDeckLab::endHolds() {
-    // Rolls stop; a hold effect or the XY pad returns dry. Latched effects
-    // (bands, sweeps, presets) are not touch holds and keep playing.
-    if (!m_heldRoll.isEmpty()) { set(channel(m_fxDeck), m_heldRoll, 0); m_heldRoll.clear(); }
-    if (!m_heldSamplerRoll.isEmpty()) { set(m_heldSamplerGroup, m_heldSamplerRoll, 0); m_heldSamplerRoll.clear(); }
-    if (m_holdFx) { m_holdFx = false; releaseEffects(); }
-    m_holdSource.clear();
-    m_holdLimit = 0;
+    if (m_labFx) m_labFx->endHolds();
 }
 void WDeckLab::releaseEffects(bool musical, bool mute) {
-    m_holdSource.clear();
-    m_holdLimit = 0;
-    if(!m_heldSamplerRoll.isEmpty())set(m_heldSamplerGroup,m_heldSamplerRoll,0);
-    m_heldSamplerRoll.clear();
-    if (!m_heldRoll.isEmpty()) set(channel(m_fxDeck), m_heldRoll, 0);
-    m_heldRoll.clear();
-    if (!m_levers[0]) return;
-    m_holdFx = false;
-    m_updating = true;
-    for (int band = 0; band < 3; ++band) { m_levers[band]->setChecked(false); m_isolates[band]->setValue(0); }
-    m_updating = false;
-    if (musical && m_fxActive && m_page == 3) {
-        for (int band = 0; band < 3; ++band) {
-            control(fxSlot(), QStringLiteral("parameter%1").arg(band + 1))->setParameter(0);
-            control(fxSlot(), QStringLiteral("parameter%1").arg(band + 6))->setParameter(.5);
-        }
-        control(fxSlot(), "parameter4")->setParameter(0);
-        control(fxSlot(), "parameter9")->setParameter(0);
-        control(fxSlot(), "parameter13")->setParameter(mute ? 2.0 / 3 : 1.0 / 3);
-        m_fxReleasing = true; m_fxMute = mute; m_fxReturning = false;
-        double bpm = value(channel(m_fxDeck), "bpm");
-        m_releaseAt = m_clock.elapsed() + qint64(std::clamp(240000.0 / (bpm > 0 ? bpm : 120), 2000.0, 6000.0));
-    } else {
-        for (int unit = 1; unit <= 2; ++unit) {
-            QString group = QStringLiteral("[DeckLabEffectUnit%1]").arg(unit);
-            if (!m_effects || !m_effects->getEffectChain(group)) continue;
-            set(QStringLiteral("[DeckLabEffectUnit%1_Effect4]").arg(unit), "enabled", 0);
-            control(group, "mix")->setParameter(0);
-            for (int sampler = 1; sampler <= 16; ++sampler) set(group, QStringLiteral("group_[Sampler%1]_enable").arg(sampler), 0);
-            for (int deck = 1; deck <= 4; ++deck) set(group, QStringLiteral("group_[Channel%1]_enable").arg(deck), 0);
-        }
-        m_fxActive = false; m_fxReleasing = false; m_fxReturning = false;
-    }
-    refreshFx();
+    if (!m_labFx) return;
+    if (mute) m_labFx->echoOut();
+    else if (musical) m_labFx->release();
+    else m_labFx->cut();
 }
 void WDeckLab::tickEffects() {
     qint64 now = m_clock.elapsed();
@@ -4166,46 +3804,8 @@ void WDeckLab::tickEffects() {
     }
     tickDecks();
     if (m_page == 1) updateBreadcrumb();
-    // Touch holds end when the finger lifts. No wall clock cuts a hold that
-    // is still down: the XY pad has no limit at all, and hold effects and
-    // rolls only have an 8-bar backstop (holdBackstopMs) for a touch whose
-    // release never arrives anywhere. A release or new touch that reaches
-    // another control ends the hold at once (eventFilter).
-    if (m_holdLimit > 0 && now - m_holdStarted >= m_holdLimit &&
-            (m_holdFx || !m_heldRoll.isEmpty() || !m_heldSamplerRoll.isEmpty())) {
-        endHolds();
-    }
-    if (!m_fxActive) return;
-    // Matches the DSP deadman (1.5 s): a GUI stall during a track load must
-    // not snap Lab FX dry. Page change and hide still release at once.
-    if (m_page != 3 || now - m_lastFxTick > 1500 || !isVisible()) { releaseEffects(); return; }
-    m_lastFxTick = now;
-    control(fxSlot(), "parameter15")->setParameter((++m_heartbeat % 65535 + 1) / 65535.0);
-    // A latched delay follows pitch/Sync changes without needing another touch.
-    const double rawBpm = value(channel(m_fxDeck), "bpm");
-    const double bpm = rawBpm > 0 ? std::clamp(rawBpm, 40.0, 240.0) : 120;
-    control(fxSlot(), "parameter11")->setParameter((bpm - 40) / 200);
-    double phase = value(channel(m_fxDeck), "beat_distance");
-    control(fxSlot(), "parameter14")->setParameter(std::isfinite(phase) && phase >= 0 && phase <= 1 ? (phase + 1) / 2 : 0);
-    if (m_fxReleasing && now >= m_releaseAt) {
-        if (m_fxMute && !m_fxReturning) {
-            control(fxSlot(), "parameter13")->setParameter(1);
-            m_fxReturning = true;
-            double bpm = value(channel(m_fxDeck), "bpm");
-            m_releaseAt = now + qint64(60000 / (bpm > 0 ? bpm : 120)) + 100;
-        } else {
-            // The tail has rung out. A roll held meanwhile is its own touch
-            // and keeps going until its finger lifts.
-            const QString roll = std::exchange(m_heldRoll, QString());
-            const QString sampleRoll = std::exchange(m_heldSamplerRoll, QString());
-            const QPointer<QWidget> source = m_holdSource;
-            const qint64 limit = m_holdLimit;
-            releaseEffects();
-            m_heldRoll = roll;
-            m_heldSamplerRoll = sampleRoll;
-            if (!roll.isEmpty() || !sampleRoll.isEmpty()) { m_holdSource = source; m_holdLimit = limit; }
-        }
-    }
+    // Heartbeat, tempo and beat phase for a wet unit, on every page.
+    if (m_labFx) m_labFx->tick();
 }
 void WDeckLab::tool(int id) {
     // decklabd (apps.launch, usb.*, native System pages) first; the legacy
@@ -4286,7 +3886,12 @@ bool WDeckLab::eventFilter(QObject* watched, QEvent* event) {
         if (key->key() == Qt::Key_Left || key->key() == Qt::Key_Escape) { browseBack(); return true; }
     }
     if ((event->type() == QEvent::ApplicationDeactivate) ||
-            event->type() == QEvent::TouchCancel) { ++m_interactionEpoch; releaseTouchCue(); releaseEffects(); }
+            event->type() == QEvent::TouchCancel) {
+        ++m_interactionEpoch; releaseTouchCue();
+        // r4-labfx: a cancelled touch only ends a pad hold; leaving the
+        // application lets Lab FX ring out instead of cutting it (PF-X24).
+        if (event->type() == QEvent::TouchCancel) endHolds(); else releaseEffects(true);
+    }
     // qw-library (C-01): the kiosk has no window manager to re-activate Mixxx
     // after a menu, dialog or utility window closes. Do it here.
     if (event->type() == QEvent::Hide && watched != this && watched->isWidgetType()) {
@@ -4299,20 +3904,14 @@ bool WDeckLab::eventFilter(QObject* watched, QEvent* event) {
             QGuiApplication::applicationState() == Qt::ApplicationActive) {
         scheduleFocusReclaim();
     }
-    // Lost-touch safety for touch holds (hold effects, rolls, XY), instead
-    // of a time limit: only one contact drives the pointer, so a press or a
-    // release that reaches any other control means the holding contact has
-    // ended even though its own release never arrived.
-    if (m_holdSource && watched->isWidgetType() &&
-            (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonRelease) &&
-            static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton &&
-            (m_holdFx || !m_heldRoll.isEmpty() || !m_heldSamplerRoll.isEmpty())) {
-        auto* widget = static_cast<QWidget*>(watched);
-        if (widget != m_holdSource && !m_holdSource->isAncestorOf(widget)) endHolds();
-    }
+    // r4-labfx: lost-touch safety for a Lab FX pad hold, instead of a time
+    // limit (DeckLabLabFx::noteTouch).
+    if (m_labFx && (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonRelease ||
+            event->type() == QEvent::TouchEnd)) m_labFx->noteTouch(watched, event);
     return QWidget::eventFilter(watched, event);
 }
-void WDeckLab::hideEvent(QHideEvent* event) { ++m_interactionEpoch; releaseTouchCue(); releaseEffects(); QWidget::hideEvent(event); }
+// r4-labfx: a hidden surface lets Lab FX ring out (the tick keeps running).
+void WDeckLab::hideEvent(QHideEvent* event) { ++m_interactionEpoch; releaseTouchCue(); releaseEffects(true); QWidget::hideEvent(event); }
 
 void WDeckLab::releaseTouchCue() {
     if (!m_touchCue.isEmpty()) { set(m_touchCue, "cue_default", 0); m_touchCue.clear(); }

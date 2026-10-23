@@ -56,6 +56,7 @@
 #include "waveform/waveformwidgetfactory.h"
 #include "widget/decklabbrowse.h"
 #include "widget/decklabdeckwidgets.h"
+#include "widget/decklablabfx.h"
 #include "widget/decklabtempopresenter.h"
 #include "widget/wdecklab.h"
 #include "widget/wlibrary.h"
@@ -616,11 +617,16 @@ TEST_F(NativeDeckLabTest, ApplicationDeactivateReleasesRmxWithoutChangingControl
     m_pMixerDeck1->loadFakeTrack(false,128); ProcessBuffer(); QCoreApplication::processEvents();
     ControlObject::set(ConfigKey("[EffectRack1_EffectUnit3]","mix"),.63);
     panel->selectPage(3);
-    auto* low=panel->findChild<QPushButton*>("decklab-fx-band-0"); ASSERT_NE(nullptr,low); ASSERT_TRUE(low->isEnabled());
-    low->click(); EXPECT_DOUBLE_EQ(1,ControlObject::get(ConfigKey("[DeckLabEffectUnit1]","mix")));
+    // r4-labfx: ON latches the selected effect (ECHO) on deck 1.
+    auto* on=panel->findChild<QPushButton*>("decklab-fx-on"); ASSERT_NE(nullptr,on); ASSERT_TRUE(on->isEnabled());
+    on->click(); EXPECT_DOUBLE_EQ(1,ControlObject::get(ConfigKey("[DeckLabEffectUnit1]","mix")));
     EXPECT_GT(ControlObject::get(ConfigKey("[DeckLabEffectUnit1_Effect4]","parameter15")),0);
     QEvent cancel(QEvent::ApplicationDeactivate); QCoreApplication::sendEvent(panel.get(),&cancel);
-    EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[DeckLabEffectUnit1]","mix")));
+    // Leaving the application rings Lab FX out (PF-X24): dry at once with
+    // the tail ringing (release type 1), then the unit goes off.
+    EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[DeckLabEffectUnit1_Effect4]","parameter1")));
+    EXPECT_DOUBLE_EQ(1,ControlObject::get(ConfigKey("[DeckLabEffectUnit1_Effect4]","parameter13")));
+    EXPECT_TRUE(QTest::qWaitFor([] { return ControlObject::get(ConfigKey("[DeckLabEffectUnit1]","mix")) == 0; }, 4000));
     EXPECT_DOUBLE_EQ(.63,ControlObject::get(ConfigKey("[EffectRack1_EffectUnit3]","mix")));
     EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel1]","play")));
 }
@@ -638,9 +644,14 @@ TEST_F(NativeDeckLabTest, LongMetadataCannotHideTempoOrExpandSurface) {
     EXPECT_EQ(104, strip(1)->height());
     auto* mini=panel->findChild<DeckLabMiniStrip*>("decklab-mini-1"); ASSERT_NE(nullptr,mini);
     EXPECT_FALSE(mini->isVisible());
-    panel->selectPage(3); QTest::qWait(150);
+    panel->selectPage(1); QTest::qWait(150);
     EXPECT_TRUE(mini->isVisible()); EXPECT_EQ(30, mini->height());
     EXPECT_TRUE(mini->state().bpm.contains("128")); EXPECT_EQ(QSize(800,480),panel->size());
+    // r4-labfx: Lab FX is one full-height instrument; its footer reads the deck.
+    panel->selectPage(3); QTest::qWait(150);
+    EXPECT_FALSE(mini->isVisible());
+    auto* footer = panel->findChild<QPushButton*>("decklab-fx-deck"); ASSERT_NE(nullptr, footer);
+    EXPECT_TRUE(footer->isVisible()); EXPECT_EQ(QSize(800,480),panel->size());
 }
 
 TEST_F(NativeDeckLabTest, DeckTextFollowsTheOnDeviceScale) {
@@ -2280,28 +2291,55 @@ TEST_F(NativeDeckLabTest, LatchedRmxFollowsTempoChangesWithoutAnotherTouch) {
     m_pEffectsManager->setup(); m_pEffectsManager->ensureDeckLabEffects();
     m_pEngineMixer->prepareAudio(mixxx::audio::SampleRate(44100));
     m_pMixerDeck1->loadFakeTrack(false, 128); ProcessBuffer(); QCoreApplication::processEvents();
-    panel->selectPage(3); panel->findChild<QPushButton*>("decklab-fx-band-0")->click();
+    panel->selectPage(3); panel->findChild<QPushButton*>("decklab-fx-on")->click();
     ControlObject::set(ConfigKey("[Channel1]", "bpm"), 140);
     QTest::qWait(150);
     EXPECT_DOUBLE_EQ(140, ControlObject::get(ConfigKey("[DeckLabEffectUnit1_Effect4]", "parameter11")));
     EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "play")));
 }
 
-TEST_F(NativeDeckLabTest, TransitionStartersApplyOwnedRmxAndOpenItsEditor) {
+// r4-labfx: one page, six effects, all on the unchanged Lab FX engine (the
+// three-band performance LV2): no tabs, no dropdowns.
+TEST_F(NativeDeckLabTest, LabFxEffectTilesDriveTheExistingEngine) {
     m_pEffectsManager->setup(); m_pEffectsManager->ensureDeckLabEffects();
     m_pEngineMixer->prepareAudio(mixxx::audio::SampleRate(44100));
     m_pMixerDeck1->loadFakeTrack(false, 128); ProcessBuffer(); QCoreApplication::processEvents();
-    panel->selectPage(3);
-    panel->findChild<QPushButton*>("decklab-fx-view-2")->click();
-    panel->findChild<QPushButton*>("decklab-transition-0")->click();
-    EXPECT_EQ(0, panel->findChild<QStackedWidget*>("decklab-fx-pages")->currentIndex());
-    for (int band = 1; band <= 3; ++band)
-        EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[DeckLabEffectUnit1_Effect4]", QStringLiteral("parameter%1").arg(band))));
-    panel->findChild<QPushButton*>("decklab-fx-view-2")->click();
-    panel->findChild<QPushButton*>("decklab-transition-3")->click();
-    EXPECT_EQ(1, panel->findChild<QStackedWidget*>("decklab-fx-pages")->currentIndex());
-    EXPECT_DOUBLE_EQ(4, ControlObject::get(ConfigKey("[DeckLabEffectUnit1_Effect4]", "parameter9")));
-    EXPECT_NEAR(.7, ControlObject::get(ConfigKey("[DeckLabEffectUnit1_Effect4]", "parameter6")), 1e-6);
+    panel->selectPage(3); QCoreApplication::processEvents();
+    const auto param = [](int n) {
+        return ControlObject::get(ConfigKey("[DeckLabEffectUnit1_Effect4]", QStringLiteral("parameter%1").arg(n)));
+    };
+    const auto find = [this](const QString& name) { return panel->findChild<QPushButton*>(name); };
+    auto* on = find("decklab-fx-on"); ASSERT_NE(nullptr, on);
+    auto* page = panel->findChild<QWidget*>("decklab-labfx"); ASSERT_NE(nullptr, page);
+    EXPECT_EQ(nullptr, find("decklab-fx-view-0"));
+    EXPECT_TRUE(page->findChildren<QComboBox*>().isEmpty());
+    EXPECT_TRUE(page->findChildren<QSlider*>().isEmpty());
+    // ECHO and REVERB: the band levers in modes 1 and 2, at the beat cell.
+    for (int effect = 0; effect < 2; ++effect) {
+        find(QStringLiteral("decklab-fx-effect-%1").arg(effect))->click();
+        on->click();
+        EXPECT_DOUBLE_EQ(effect + 1, param(4));
+        for (int band = 1; band <= 3; ++band) EXPECT_DOUBLE_EQ(1, param(band));
+        EXPECT_DOUBLE_EQ(0.5, param(12)) << "1/2 beat";
+        find("decklab-fx-cut")->click();
+    }
+    // FILTER, DUCK, DRIVE: the isolator in modes 4, 5 and 3, never silent on ON.
+    const std::array<std::pair<int, int>, 3> sweeps{{{2, 4}, {4, 5}, {5, 3}}};
+    for (const auto& [tile, mode] : sweeps) {
+        find(QStringLiteral("decklab-fx-effect-%1").arg(tile))->click();
+        on->click();
+        EXPECT_DOUBLE_EQ(mode, param(9)) << tile;
+        EXPECT_NE(0, param(6)) << tile;
+        find("decklab-fx-cut")->click();
+    }
+    // The band lamps choose what gets the effect.
+    find("decklab-fx-effect-0")->click();
+    find("decklab-fx-band-0")->click();
+    on->click();
+    EXPECT_DOUBLE_EQ(0, param(1));
+    EXPECT_DOUBLE_EQ(1, param(2));
+    find("decklab-fx-cut")->click();
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[DeckLabEffectUnit1]", "mix")));
     EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel1]", "play")));
 }
 
@@ -2309,13 +2347,23 @@ TEST_F(NativeDeckLabTest, RollPadsRequireAPlayingDeck) {
     m_pEffectsManager->setup(); m_pEffectsManager->ensureDeckLabEffects();
     m_pEngineMixer->prepareAudio(mixxx::audio::SampleRate(44100));
     m_pMixerDeck1->loadFakeTrack(false, 128); ProcessBuffer(); QCoreApplication::processEvents();
-    panel->selectPage(3);
-    auto* roll = panel->findChild<QPushButton*>("decklab-roll-0"); ASSERT_NE(nullptr, roll);
-    EXPECT_FALSE(roll->isEnabled());
+    panel->selectPage(3); QCoreApplication::processEvents();
+    // r4-labfx: ROLL is an effect on the pad; its columns are the roll sizes.
+    panel->findChild<QPushButton*>("decklab-fx-effect-3")->click();
+    auto* pad = panel->findChild<QWidget*>("decklab-fx-xy"); ASSERT_NE(nullptr, pad);
+    auto* cell = panel->findChild<QPushButton*>("decklab-fx-beat-2"); ASSERT_NE(nullptr, cell);
+    EXPECT_EQ(QStringLiteral("1/4"), cell->text());
+    const QPoint quarterColumn(pad->mapFromGlobal(cell->mapToGlobal(cell->rect().center())).x(), pad->height() / 2);
+    const ConfigKey quarter("[Channel1]", "beatlooproll_0.25_activate");
+    QTest::mousePress(pad, Qt::LeftButton, Qt::NoModifier, quarterColumn);
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(quarter)) << "a paused deck has nothing to roll";
+    QTest::mouseRelease(pad, Qt::LeftButton, Qt::NoModifier, quarterColumn);
     ControlObject::set(ConfigKey("[Channel1]", "play"), 1); QCoreApplication::processEvents();
-    EXPECT_TRUE(roll->isEnabled());
+    QTest::mousePress(pad, Qt::LeftButton, Qt::NoModifier, quarterColumn);
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(quarter));
+    QTest::mouseRelease(pad, Qt::LeftButton, Qt::NoModifier, quarterColumn);
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(quarter));
     ControlObject::set(ConfigKey("[Channel1]", "play"), 0); QCoreApplication::processEvents();
-    EXPECT_FALSE(roll->isEnabled());
 }
 
 // qw-perf: one lamp language. Lit states are a #F2F4F7 fill with dark text
@@ -2451,52 +2499,61 @@ TEST_F(NativeDeckLabTest, XyPadAndHoldEffectsOutliveFourSecondsAndLostTouchesEnd
     panel->selectPage(3);
     const auto mix = [] { return ControlObject::get(ConfigKey("[DeckLabEffectUnit1]", "mix")); };
     const auto on = [] { return ControlObject::get(ConfigKey("[DeckLabEffectUnit1_Effect4]", "enabled")); };
-    auto* status = panel->findChild<QLabel*>("decklab-fx-status"); ASSERT_NE(nullptr, status);
-    panel->findChild<QPushButton*>("decklab-fx-view-3")->click(); QCoreApplication::processEvents();
+    const auto find = [this](const QString& name) { return panel->findChild<QPushButton*>(name); };
+    auto* fx = panel->findChild<DeckLabLabFx*>("decklab-labfx"); ASSERT_NE(nullptr, fx);
     auto* xy = panel->findChild<QWidget*>("decklab-fx-xy"); ASSERT_NE(nullptr, xy); ASSERT_TRUE(xy->isVisible());
-    // The finger stays down well past the old 4 s cut-out: the effect stays.
-    QTest::mousePress(xy, Qt::LeftButton, Qt::NoModifier, QPoint(xy->width() * 3 / 4, xy->height() / 4));
+    // r4-labfx: ECHO on the pad, held well past the old 4 s cut-out.
+    const QPoint point(xy->width() * 3 / 4, xy->height() / 4);
+    QTest::mousePress(xy, Qt::LeftButton, Qt::NoModifier, point);
     EXPECT_DOUBLE_EQ(1, mix()); EXPECT_DOUBLE_EQ(1, on());
     QTest::qWait(4600);
     EXPECT_DOUBLE_EQ(1, mix()) << "no time limit while the finger is down";
     EXPECT_DOUBLE_EQ(1, on());
-    EXPECT_EQ(QStringLiteral("ON"), status->text());
+    EXPECT_EQ(DeckLabLabFx::Lamp::On, fx->lamp());
     capture(QStringLiteral("labfx-xy-held.png"));
-    QTest::mouseRelease(xy, Qt::LeftButton, Qt::NoModifier, QPoint(xy->width() * 3 / 4, xy->height() / 4));
-    EXPECT_DOUBLE_EQ(0, mix()) << "lift = dry";
-    // Lost touch: the XY release never arrives, but the next touch lands on
-    // another control. That ends the hold; no wall clock is involved.
-    QTest::mousePress(xy, Qt::LeftButton, Qt::NoModifier, QPoint(xy->width() / 4, xy->height() / 2));
+    QTest::mouseRelease(xy, Qt::LeftButton, Qt::NoModifier, point);
+    EXPECT_EQ(DeckLabLabFx::Lamp::Tail, fx->lamp()) << "lift: the echo tail rings out";
+    find("decklab-fx-cut")->click();
+    EXPECT_DOUBLE_EQ(0, mix());
+    // FILTER: lift is straight back to dry.
+    find("decklab-fx-effect-2")->click();
+    QTest::mousePress(xy, Qt::LeftButton, Qt::NoModifier, point);
     EXPECT_DOUBLE_EQ(1, mix());
-    auto* elsewhere = panel->findChild<QLabel*>("decklab-fx-depth-label"); ASSERT_NE(nullptr, elsewhere);
+    QTest::mouseRelease(xy, Qt::LeftButton, Qt::NoModifier, point);
+    EXPECT_DOUBLE_EQ(0, mix()) << "lift = dry";
+    // Lost touch: the release never arrives, but the next touch lands
+    // elsewhere. That ends the hold; no wall clock is involved.
+    QTest::mousePress(xy, Qt::LeftButton, Qt::NoModifier, point);
+    EXPECT_DOUBLE_EQ(1, mix());
+    auto* elsewhere = panel->findChild<QWidget*>("decklab-fx-readout"); ASSERT_NE(nullptr, elsewhere);
     QTest::mousePress(elsewhere, Qt::LeftButton);
     EXPECT_DOUBLE_EQ(0, mix()) << "a touch elsewhere ends a hold whose release went astray";
     QTest::mouseRelease(elsewhere, Qt::LeftButton);
-    QTest::mouseRelease(xy, Qt::LeftButton);
+    QTest::mouseRelease(xy, Qt::LeftButton, Qt::NoModifier, point);
     EXPECT_DOUBLE_EQ(0, mix());
-    // Hold effects also outlive 4 s while held; the release lets the tail ring.
-    panel->findChild<QPushButton*>("decklab-fx-view-2")->click(); QCoreApplication::processEvents();
-    auto* hold = panel->findChild<QPushButton*>("decklab-hold-0"); ASSERT_NE(nullptr, hold); ASSERT_TRUE(hold->isEnabled());
-    EXPECT_EQ(QStringLiteral("ECHO"), hold->text());
-    QTest::mousePress(hold, Qt::LeftButton);
-    EXPECT_DOUBLE_EQ(1, mix());
-    QTest::qWait(4300);
-    EXPECT_DOUBLE_EQ(1, mix()) << "a hold effect is not cut at 4 s";
-    QTest::mouseRelease(hold, Qt::LeftButton);
-    EXPECT_EQ(QStringLiteral("TAIL"), status->text()) << "release lets the tail ring out";
-    // Rolls too.
+    // Rolls too: no time limit while held.
     ControlObject::set(ConfigKey("[Channel1]", "play"), 1); ProcessBuffer(); settle();
-    auto* roll = panel->findChild<QPushButton*>("decklab-roll-0"); ASSERT_NE(nullptr, roll); ASSERT_TRUE(roll->isEnabled());
+    find("decklab-fx-effect-3")->click();
+    auto* cell = find("decklab-fx-beat-1"); ASSERT_NE(nullptr, cell);
+    const QPoint eighth(xy->mapFromGlobal(cell->mapToGlobal(cell->rect().center())).x(), xy->height() / 2);
     const ConfigKey rolling("[Channel1]", "beatlooproll_0.125_activate");
-    QTest::mousePress(roll, Qt::LeftButton);
+    QTest::mousePress(xy, Qt::LeftButton, Qt::NoModifier, eighth);
     EXPECT_DOUBLE_EQ(1, ControlObject::get(rolling));
     QTest::qWait(4300);
     EXPECT_DOUBLE_EQ(1, ControlObject::get(rolling)) << "a roll is not cut at 4 s";
-    QTest::mouseRelease(roll, Qt::LeftButton);
+    QTest::mouseRelease(xy, Qt::LeftButton, Qt::NoModifier, eighth);
     EXPECT_DOUBLE_EQ(0, ControlObject::get(rolling));
     ControlObject::set(ConfigKey("[Channel1]", "play"), 0); ProcessBuffer();
-    // Leaving the page still ends everything at once.
-    panel->selectPage(0);
+    // Leaving the page keeps a latched effect playing (PF-X24); the rail's
+    // Lab FX tab is lit meanwhile. CUT stops it.
+    find("decklab-fx-effect-0")->click();
+    find("decklab-fx-on")->click();
+    EXPECT_TRUE(fx->isLatched());
+    panel->selectPage(0); QTest::qWait(250);
+    EXPECT_DOUBLE_EQ(1, mix()) << "a latched effect survives the page change";
+    EXPECT_TRUE(find("decklab-tab-3")->property("live").toBool());
+    panel->selectPage(3);
+    find("decklab-fx-cut")->click();
     EXPECT_DOUBLE_EQ(0, mix());
 }
 
@@ -2507,55 +2564,37 @@ TEST_F(NativeDeckLabTest, LabFxAndSamplerUseBarlowBrandColoursAndClearCopy) {
     panel->selectPage(3); QCoreApplication::processEvents();
     const QColor panelFill(0x16, 0x19, 0x1e), line(0x2c, 0x31, 0x3a), lit(0xf2, 0xf4, 0xf7);
     const auto find = [this](const char* name) { return panel->findChild<QPushButton*>(QString::fromLatin1(name)); };
-    // "Mute tail" muted the track, not the tail: the controls say what they do.
-    ASSERT_NE(nullptr, find("decklab-fx-release")); ASSERT_NE(nullptr, find("decklab-fx-mute"));
-    EXPECT_EQ(QStringLiteral("RELEASE"), find("decklab-fx-release")->text());
-    EXPECT_EQ(QStringLiteral("ECHO OUT"), find("decklab-fx-mute")->text());
-    EXPECT_EQ(QStringLiteral("Bands"), find("decklab-fx-view-0")->text());
-    EXPECT_EQ(QStringLiteral("BASS KILL"), find("decklab-transition-1")->text());
-    // Barlow 600 on every button, Barlow on labels: no fallback font.
-    for (const char* name : {"decklab-fx-release", "decklab-fx-mute", "decklab-fx-band-0", "decklab-fx-view-0",
-                 "decklab-fx-samples", "decklab-hold-0", "decklab-roll-0", "decklab-transition-0"}) {
-        auto* button = find(name); ASSERT_NE(nullptr, button) << name;
-        button->ensurePolished();
-        EXPECT_EQ(QStringLiteral("Barlow"), QFontInfo(button->font()).family()) << name;
-        EXPECT_EQ(QFont::DemiBold, button->font().weight()) << name;
-        EXPECT_EQ(16, button->font().pixelSize()) << name;
+    // r4-labfx: the controls say what they do ("Mute tail" muted the track).
+    for (const auto& [name, text] : std::vector<std::pair<const char*, const char*>>{{"decklab-fx-release", "RELEASE"},
+                 {"decklab-fx-echo-out", "ECHO OUT"}, {"decklab-fx-cut", "CUT"}, {"decklab-fx-on", "ON"},
+                 {"decklab-fx-effect-0", "ECHO"}, {"decklab-fx-effect-4", "DUCK"}, {"decklab-fx-target-5", "MASTER"},
+                 {"decklab-fx-target-6", "SMP"}, {"decklab-fx-beat-3", "1/2"}}) {
+        ASSERT_NE(nullptr, find(name)) << name;
+        EXPECT_EQ(QString::fromUtf8(text), find(name)->text()) << name;
     }
-    for (const char* name : {"decklab-fx-message", "decklab-fx-status", "decklab-fx-depth-label"}) {
-        auto* label = panel->findChild<QLabel*>(QString::fromLatin1(name)); ASSERT_NE(nullptr, label) << name;
-        label->ensurePolished();
-        EXPECT_EQ(QStringLiteral("Barlow"), QFontInfo(label->font()).family()) << name;
-    }
-    EXPECT_EQ(QStringLiteral("DEPTH 65"), panel->findChild<QLabel*>("decklab-fx-depth-label")->text());
-    // Brand panel for dropdowns (not #222), status lamp DRY, then ON filled.
-    auto* target = panel->findChild<QComboBox*>("decklab-fx-target"); ASSERT_NE(nullptr, target);
-    EXPECT_EQ(panelFill, target->grab().toImage().pixelColor(6, target->height() / 2));
-    auto* status = panel->findChild<QLabel*>("decklab-fx-status"); ASSERT_NE(nullptr, status);
-    EXPECT_EQ(QStringLiteral("DRY"), status->text());
-    auto* low = find("decklab-fx-band-0"); ASSERT_TRUE(low->isEnabled());
-    EXPECT_EQ(panelFill, low->grab().toImage().pixelColor(2, low->height() / 2));
-    low->click(); QCoreApplication::processEvents();
-    EXPECT_TRUE(low->isChecked());
-    EXPECT_EQ(lit, low->grab().toImage().pixelColor(2, low->height() / 2)) << "a lit band is a filled lamp";
-    EXPECT_EQ(QStringLiteral("ON"), status->text());
-    EXPECT_EQ(lit, status->grab().toImage().pixelColor(3, status->height() / 2)) << "ON is a filled lamp";
-    capture(QStringLiteral("labfx-band-lit.png"));
-    low->click(); QCoreApplication::processEvents();
-    EXPECT_EQ(QStringLiteral("DRY"), status->text());
-    // XY pad: brand panel and crisp line-colour grid; no red.
-    find("decklab-fx-view-3")->click(); QCoreApplication::processEvents();
+    // Painted in Barlow on the brand tokens: ON is an outline when dry and a
+    // filled lamp when on.
+    auto* labFx = panel->findChild<QWidget*>("decklab-labfx"); ASSERT_NE(nullptr, labFx);
+    EXPECT_EQ(QStringLiteral("Barlow"), QFontInfo(labFx->font()).family());
+    auto* on = find("decklab-fx-on");
+    EXPECT_EQ(panelFill, on->grab().toImage().pixelColor(4, on->height() / 2));
+    on->click(); QCoreApplication::processEvents();
+    EXPECT_EQ(lit, on->grab().toImage().pixelColor(4, on->height() / 2)) << "ON is a filled lamp";
+    capture(QStringLiteral("labfx-on.png"));
+    find("decklab-fx-cut")->click();
+    // The pad: brand panel, a line-colour centre for the FILTER sweep, no red.
+    find("decklab-fx-effect-2")->click(); QCoreApplication::processEvents();
     auto* xy = panel->findChild<QWidget*>("decklab-fx-xy"); ASSERT_NE(nullptr, xy);
     const QImage pad = xy->grab().toImage();
-    EXPECT_EQ(panelFill, pad.pixelColor(5, 5));
-    EXPECT_EQ(line, pad.pixelColor(xy->width() / 2, 5));
-    EXPECT_EQ(line, pad.pixelColor(5, xy->height() / 2));
+    EXPECT_EQ(panelFill, pad.pixelColor(5, xy->height() / 3));
+    EXPECT_EQ(line, pad.pixelColor(xy->width() / 2, xy->height() / 3));
     for (int y = 0; y < pad.height(); y += 3)
         for (int x = 0; x < pad.width(); x += 3) {
             const QColor c = pad.pixelColor(x, y);
             ASSERT_FALSE(c.red() > 150 && c.green() < 100 && c.blue() < 100) << "no red on the XY pad at " << x << "," << y;
         }
-    capture(QStringLiteral("labfx-xy.png"));
+    capture(QStringLiteral("labfx-filter.png"));
+    find("decklab-fx-effect-0")->click();
     // Sampler: Barlow pads on the brand panel, a "+" for empty pads, and
     // playing (checked) as a filled lamp.
     panel->selectPage(2); QCoreApplication::processEvents();
