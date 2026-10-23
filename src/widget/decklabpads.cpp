@@ -169,10 +169,12 @@ void DeckLabPadButton::paintEvent(QPaintEvent*) {
         return;
     }
     if (m_armed && enabled && !lamp) {
-        // The armed loop length: a white inner outline, not a fill.
-        painter.setPen(QPen(kMuted, 1.5));
+        // The armed loop length: an inner outline, not a fill. Two whole
+        // pixels (3 and 4 from the edge): a 1.5 px stroke on a whole-pixel
+        // rect smeared into the pad's fill and read as a grey lamp.
+        painter.setPen(QPen(kMuted, 2));
         painter.setBrush(Qt::NoBrush);
-        painter.drawRoundedRect(QRectF(rect()).adjusted(3, 3, -3, -3), 2, 2);
+        painter.drawRoundedRect(QRectF(rect()).adjusted(4, 4, -4, -4), 2, 2);
     }
     painter.setPen(!enabled ? kOffInk : lamp ? kGround : m_armed ? kText : kSoft);
     painter.drawText(rect(), Qt::AlignCenter, text());
