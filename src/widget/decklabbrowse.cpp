@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "decklab/decklaboverlay.h"
 #include "library/coverart.h"
 #include "library/coverartcache.h"
 #include "track/keyutils.h"
@@ -1161,6 +1162,10 @@ DeckLabToast::DeckLabToast(QWidget* parent)
     m_timer.setSingleShot(true);
     QObject::connect(&m_timer, &QTimer::timeout, this, &QWidget::hide);
     hide();
+    // It can cross the waveforms (Browse strip, or Decks for a controller
+    // load): a native window above the GL waveform windows. Touches pass
+    // through to the waveform beneath.
+    decklab::overlay::keepAboveWaveforms(this);
 }
 
 void DeckLabToast::showMessage(const QString& text, int milliseconds, bool live) {
@@ -1178,7 +1183,7 @@ void DeckLabToast::showMessage(const QString& text, int milliseconds, bool live)
         resize(width, height());
         move((surface->width() - width) / 2, 96);
     }
-    raise();
+    decklab::overlay::raiseAboveWaveforms(this);
     show();
     m_timer.start(milliseconds);
 }

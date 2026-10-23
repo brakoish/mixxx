@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "decklab/decklaboverlay.h"
 #include "decklab/decklabsystempages.h"
 #include "decklab/decklabui.h"
 #include "moc_decklabsetupwizard.cpp"
@@ -157,6 +158,9 @@ DeckLabSetupWizard::DeckLabSetupWizard(DeckLabSystem* system, QWidget* host)
     applyStyle(this);
     setGeometry(host->rect());
     host->installEventFilter(this);
+    // Drawn over the whole surface: the native GL waveform windows would
+    // otherwise cover its middle (they are hidden while it is visible).
+    decklab::overlay::suppressWaveformsWhileVisible(this);
     auto* root = vbox(this, 0, 0);
 
     auto* header = new QWidget(this);

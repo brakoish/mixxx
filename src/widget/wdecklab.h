@@ -65,6 +65,16 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void setAudioOutputConfigured(bool configured);
     /// Deck Lab system integration (decklabd, Deck Setup, System pages).
     void attachSystem(DeckLabSystem* system);
+    /// The GL waveforms are native child windows that cover any non-native
+    /// widget drawn over them. A full-surface overlay (Deck Setup, the first
+    /// run, a confirmation) hides them while it is visible: each owner counts
+    /// once, destroying an owner releases it, and the waveforms return with a
+    /// forced render when the last owner releases. The layout keeps their
+    /// space. See decklab/decklaboverlay.h.
+    void setWaveformsSuppressed(QObject* owner, bool suppressed);
+    bool waveformsSuppressed() const {
+        return !m_waveformSuppressors.isEmpty();
+    }
     Library* library() const { return m_library; }
 
   signals:
@@ -213,6 +223,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void fillDeckClock(int deck, DeckLabStripState& state);
     void refreshDeckClock(int deck);
     void applyDeck(int deck);
+    void applyWaveformSuppression();
     int referenceDeck(int deck) const;
     void noteDeckTouched(int deck);
 
@@ -292,6 +303,9 @@ class WDeckLab : public QWidget, public WBaseWidget {
     std::array<QPushButton*, 4> m_loadButtons{};
     std::array<QPushButton*, 16> m_samples{};
     std::array<QWidget*, 4> m_deckWaveforms{};
+    // The waveform viewers (native GL windows) and the overlays hiding them.
+    std::array<QPointer<QWidget>, 4> m_detailWaveforms{};
+    QHash<QObject*, QMetaObject::Connection> m_waveformSuppressors;
     std::array<QPushButton*, 3> m_levers{};
     std::array<QSlider*, 3> m_isolates{};
     QComboBox* m_leverMode;

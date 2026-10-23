@@ -28,9 +28,16 @@
 #include <QTest>
 #include <QTextDocument>
 #include <QTextBrowser>
+#include <QVBoxLayout>
+#include <QWindow>
 
 #include "control/controlobject.h"
 #include "control/controlproxy.h"
+#include "decklab/decklaboverlay.h"
+#include "decklab/decklabsetupwizard.h"
+#include "decklab/decklabsystem.h"
+#include "decklab/decklabsystemui.h"
+#include "decklab/decklabui.h"
 #include "effects/effectchain.h"
 #include "effects/effectslot.h"
 #include "library/libraryfeature.h"
@@ -2477,4 +2484,273 @@ TEST(DeckLabTempoTest, JitterIsSmoothedButPitchChangesImmediately) {
     EXPECT_DOUBLE_EQ(144.81, display.update(true, 141.97, 1.02, 144.8, 800));
     EXPECT_EQ(130, display.update(true, 130, 1, 130, 900));
     EXPECT_EQ(0, display.update(false, 130, 1, 130, 1000));
+}
+
+namespace {
+bool laidOut(QLayout* layout, const QWidget* widget) {
+    if (!layout) return false;
+    for (int index = 0; index < layout->count(); ++index) {
+        QLayoutItem* item = layout->itemAt(index);
+        if (item->widget() == widget || laidOut(item->layout(), widget)) return true;
+    }
+    return false;
+}
+
+// Counts the synthetic release that ends a touch scratch.
+class ReleaseCounter final : public QObject {
+  public:
+    int releases = 0;
+  protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (event->type() == QEvent::MouseButtonRelease) ++releases;
+        return QObject::eventFilter(watched, event);
+    }
+};
+} // namespace
+
+// The GL waveforms are native child windows: on a real display they cover
+// any non-native widget drawn over them. The offscreen platform used here
+// has no such stacking, so these tests check the structure that keeps every
+// overlay visible (decklab/decklaboverlay.h).
+class DeckLabOverlayTest : public NativeDeckLabTest {
+  protected:
+    void SetUp() override {
+        NativeDeckLabTest::SetUp();
+        panel->selectPage(0); settle();
+    }
+    QWidget* detail(int deck) const {
+        return panel->findChild<QWidget*>(QStringLiteral("decklab-detail-%1").arg(deck));
+    }
+    // A native window in a deck's lane, parented exactly like the
+    // QOpenGLWindow that WGLWidget embeds with createWindowContainer().
+    QWindow* addWaveformWindow(int deck) {
+        auto* window = new QWindow;
+        auto* layout = new QVBoxLayout(detail(deck));
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->addWidget(QWidget::createWindowContainer(window, detail(deck)));
+        settle();
+        return window;
+    }
+    // Every visible child of the surface that its layout does not place and
+    // that crosses the waveform zone is an overlay over the waveform
+    // windows. Each must hide them or be a native window stacked above them.
+    int checkOverlays(const QWindow* waveformWindow) {
+        auto* zone = panel->findChild<QWidget*>(QStringLiteral("decklab-wave-zone"));
+        EXPECT_NE(nullptr, zone);
+        if (!zone) return 0;
+        const QRect zoneArea(zone->mapTo(panel.get(), QPoint()), zone->size());
+        int overlays = 0;
+        for (auto* child : panel->findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly)) {
+            if (child->isWindow() || !child->isVisible() || laidOut(panel->layout(), child)) continue;
+            if (!QRect(child->mapTo(panel.get(), QPoint()), child->size()).intersects(zoneArea)) continue;
+            ++overlays;
+            const std::string name = child->objectName().toStdString() + " (" + child->metaObject()->className() + ")";
+            switch (decklab::overlay::kind(child)) {
+            case decklab::overlay::Kind::SuppressesWaveforms:
+                EXPECT_TRUE(panel->waveformsSuppressed()) << name;
+                EXPECT_FALSE(waveformWindow->isVisible()) << name;
+                break;
+            case decklab::overlay::Kind::AboveWaveforms:
+                EXPECT_NE(WId(0), child->internalWinId()) << name;
+                EXPECT_TRUE(child->testAttribute(Qt::WA_DontCreateNativeAncestors)) << name;
+                if (child->windowHandle()) {
+                    // X11 stacks siblings only: the same native parent as
+                    // the waveform windows.
+                    EXPECT_EQ(waveformWindow->parent(), child->windowHandle()->parent()) << name;
+                    EXPECT_EQ(child->testAttribute(Qt::WA_TransparentForMouseEvents),
+                            child->windowHandle()->flags().testFlag(Qt::WindowTransparentForInput))
+                            << name;
+                    EXPECT_TRUE(child->windowHandle()->flags().testFlag(Qt::WindowDoesNotAcceptFocus)) << name;
+                } else {
+                    ADD_FAILURE() << name << " has no native window";
+                }
+                EXPECT_GT(decklab::overlay::raiseCount(child), 0) << name;
+                break;
+            default:
+                ADD_FAILURE() << name << " crosses the waveforms but neither hides them nor stays above them";
+            }
+        }
+        return overlays;
+    }
+};
+
+TEST_F(DeckLabOverlayTest, WaveformSuppressionCountsOwnersAndAlwaysRestores) {
+    auto* first = detail(1);
+    auto* second = detail(2);
+    ASSERT_NE(nullptr, first); ASSERT_NE(nullptr, second);
+    ASSERT_TRUE(first->isVisible()); ASSERT_TRUE(second->isVisible());
+    auto* card = panel->findChild<QWidget*>(QStringLiteral("decklab-card-1"));
+    auto* edge = panel->findChild<QWidget*>(QStringLiteral("decklab-lane-edge-1"));
+    ASSERT_NE(nullptr, card); ASSERT_NE(nullptr, edge);
+    const QRect lane = first->geometry(), cardArea = card->geometry(), edgeArea = edge->geometry();
+    ReleaseCounter releases;
+    first->installEventFilter(&releases);
+
+    auto a = std::make_unique<QObject>();
+    auto b = std::make_unique<QObject>();
+    panel->setWaveformsSuppressed(a.get(), true);
+    panel->setWaveformsSuppressed(a.get(), true); // one owner counts once
+    EXPECT_TRUE(panel->waveformsSuppressed());
+    EXPECT_FALSE(first->isVisible()); EXPECT_FALSE(second->isVisible());
+    // A touch scratch held on a waveform that disappears is released.
+    EXPECT_EQ(1, releases.releases);
+    // The Decks page keeps its layout: nothing moves under the overlay.
+    settle();
+    EXPECT_EQ(lane, first->geometry());
+    EXPECT_EQ(cardArea, card->geometry());
+    EXPECT_EQ(edgeArea, edge->geometry());
+
+    panel->setWaveformsSuppressed(b.get(), true);
+    panel->setWaveformsSuppressed(a.get(), false);
+    EXPECT_TRUE(panel->waveformsSuppressed()); // b still holds them
+    EXPECT_FALSE(first->isVisible());
+    b.reset(); // a destroyed owner releases
+    EXPECT_FALSE(panel->waveformsSuppressed());
+    EXPECT_TRUE(first->isVisible()); EXPECT_TRUE(second->isVisible());
+    // Unknown, repeated and null owners change nothing.
+    panel->setWaveformsSuppressed(a.get(), false);
+    panel->setWaveformsSuppressed(nullptr, true);
+    EXPECT_FALSE(panel->waveformsSuppressed());
+    // Lanes outside this layout are never left hidden either.
+    for (int deck = 1; deck <= 4; ++deck) EXPECT_FALSE(detail(deck)->isHidden()) << deck;
+    settle();
+    EXPECT_EQ(lane, first->geometry());
+    // An owner destroyed without ever releasing.
+    panel->setWaveformsSuppressed(a.get(), true);
+    a.reset();
+    EXPECT_FALSE(panel->waveformsSuppressed());
+    EXPECT_TRUE(first->isVisible());
+}
+
+TEST_F(DeckLabOverlayTest, DeckSetupAndConfirmationsHideWaveformsOnlyWhileShown) {
+    QWindow* waveform = addWaveformWindow(1);
+    ASSERT_TRUE(waveform->isVisible());
+    config()->setValue(ConfigKey("[DeckLab]", "first_run_done"), 1);
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, QStringLiteral("/nonexistent/decklabd.sock"));
+    panel->attachSystem(&system);
+    auto* ui = panel->findChild<DeckLabSystemUi*>();
+    ASSERT_NE(nullptr, ui);
+
+    QPointer<DeckLabSetupWizard> wizard = ui->openFirstRun();
+    ASSERT_FALSE(wizard.isNull());
+    settle();
+    EXPECT_EQ(decklab::overlay::Kind::SuppressesWaveforms, decklab::overlay::kind(wizard));
+    EXPECT_TRUE(panel->waveformsSuppressed());
+    EXPECT_FALSE(waveform->isVisible());
+    EXPECT_FALSE(detail(1)->isVisible());
+    auto* later = wizard->findChild<QPushButton*>(QStringLiteral("decklab-setup-close"));
+    ASSERT_NE(nullptr, later);
+    later->click();
+    settle();
+    EXPECT_FALSE(panel->waveformsSuppressed());
+    EXPECT_TRUE(waveform->isVisible());
+    EXPECT_TRUE(detail(1)->isVisible());
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    EXPECT_TRUE(wizard.isNull());
+
+    // A confirmation over the whole window, answered.
+    QPointer<decklab::ui::Confirm> confirm = decklab::ui::Confirm::ask(panel->window(),
+            QStringLiteral("Generated question?"), QString(), QStringLiteral("Yes"), [] {});
+    settle();
+    EXPECT_EQ(decklab::overlay::Kind::SuppressesWaveforms, decklab::overlay::kind(confirm));
+    EXPECT_TRUE(panel->waveformsSuppressed());
+    auto* cancel = confirm->findChild<QPushButton*>(QStringLiteral("decklab-confirm-cancel"));
+    ASSERT_NE(nullptr, cancel);
+    cancel->click();
+    settle();
+    EXPECT_FALSE(panel->waveformsSuppressed());
+    EXPECT_TRUE(waveform->isVisible());
+
+    // Destroyed while shown, with Deck Setup open as well.
+    wizard = ui->openWizard(0);
+    ASSERT_FALSE(wizard.isNull());
+    auto* info = decklab::ui::Confirm::inform(panel.get(), QStringLiteral("Generated notice"), QString());
+    settle();
+    EXPECT_TRUE(panel->waveformsSuppressed());
+    delete info;
+    EXPECT_TRUE(panel->waveformsSuppressed()); // Deck Setup is still shown
+    wizard->hide();
+    EXPECT_FALSE(panel->waveformsSuppressed());
+    EXPECT_TRUE(detail(1)->isVisible());
+    wizard->show();
+    EXPECT_TRUE(panel->waveformsSuppressed());
+    // TearDown destroys the surface with Deck Setup still open.
+}
+
+TEST_F(DeckLabOverlayTest, EveryOverlayOverTheWaveformsHidesThemOrIsNativeAndRaised) {
+    QWindow* waveform = addWaveformWindow(1);
+    ASSERT_NE(nullptr, waveform->parent());
+    config()->setValue(ConfigKey("[DeckLab]", "first_run_done"), 1);
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, QStringLiteral("/nonexistent/decklabd.sock"));
+    panel->attachSystem(&system);
+    auto* ui = panel->findChild<DeckLabSystemUi*>();
+    ASSERT_NE(nullptr, ui);
+
+    // Every small overlay is classified, shown or not.
+    for (const char* name : {"decklab-banner-audio", "decklab-banner-offer", "decklab-banner-thermal",
+                 "decklab-banner-toast", "decklab-toast"}) {
+        auto* overlay = panel->findChild<QWidget*>(QString::fromLatin1(name));
+        ASSERT_NE(nullptr, overlay) << name;
+        EXPECT_EQ(decklab::overlay::Kind::AboveWaveforms, decklab::overlay::kind(overlay)) << name;
+    }
+    // Making them native must make nothing else native: new native windows
+    // are stacked above the waveform windows and would bury them.
+    for (const char* name : {"decklab-rail", "decklab-decks", "decklab-wave-zone", "decklab-deck-row", "decklab-pages"}) {
+        auto* widget = panel->findChild<QWidget*>(QString::fromLatin1(name));
+        ASSERT_NE(nullptr, widget) << name;
+        EXPECT_EQ(WId(0), widget->internalWinId()) << name;
+    }
+    EXPECT_EQ(WId(0), detail(1)->internalWinId());
+
+    // The no-audio banner (after its start-up debounce), the overlay probe's
+    // toast, warning banner and controller offer, and a load refusal.
+    auto* audio = panel->findChild<QWidget*>(QStringLiteral("decklab-banner-audio"));
+    EXPECT_TRUE(QTest::qWaitFor([&] { return audio->isVisible(); }, 3000));
+    ui->showOverlayProbe();
+    ControlObject::set(ConfigKey("[DeckLabNative]", "load_refused"), 2);
+    ControlObject::set(ConfigKey("[DeckLabNative]", "load_refused"), 0);
+    settle();
+    auto* thermal = panel->findChild<QWidget*>(QStringLiteral("decklab-banner-thermal"));
+    auto* toast = panel->findChild<QWidget*>(QStringLiteral("decklab-banner-toast"));
+    auto* offer = panel->findChild<QPushButton*>(QStringLiteral("decklab-banner-offer"));
+    auto* refusal = panel->findChild<QWidget*>(QStringLiteral("decklab-toast"));
+    ASSERT_TRUE(thermal->isVisible()); ASSERT_TRUE(toast->isVisible());
+    ASSERT_TRUE(offer->isVisible()); ASSERT_TRUE(refusal->isVisible());
+    EXPECT_TRUE(thermal->accessibleName().startsWith(QStringLiteral("Overlay check")));
+    EXPECT_FALSE(panel->waveformsSuppressed());
+    EXPECT_TRUE(waveform->isVisible());
+    EXPECT_GE(checkOverlays(waveform), 4);
+    capture(QStringLiteral("overlay-banners-over-decks.png"));
+
+    // A waveform window created later (another lane shown for the first
+    // time) is stacked above the banners, so they are raised again.
+    const int raised = decklab::overlay::raiseCount(thermal);
+    QWindow* laterWaveform = addWaveformWindow(2);
+    ASSERT_EQ(waveform->parent(), laterWaveform->parent());
+    EXPECT_GT(decklab::overlay::raiseCount(thermal), raised);
+
+    // The controller offer takes the tap and opens Deck Setup over Decks.
+    QTest::mouseClick(offer, Qt::LeftButton);
+    settle();
+    QPointer<DeckLabSetupWizard> wizard = ui->wizard();
+    ASSERT_FALSE(wizard.isNull());
+    EXPECT_TRUE(wizard->isVisible());
+    EXPECT_TRUE(panel->waveformsSuppressed());
+    EXPECT_FALSE(waveform->isVisible()); EXPECT_FALSE(laterWaveform->isVisible());
+    EXPECT_GE(checkOverlays(waveform), 2);
+    capture(QStringLiteral("overlay-deck-setup-over-decks.png"));
+    // A confirmation over Deck Setup.
+    auto* confirm = decklab::ui::Confirm::ask(panel.get(), QStringLiteral("Generated question?"), QString(),
+            QStringLiteral("Yes"), [] {});
+    settle();
+    EXPECT_GE(checkOverlays(waveform), 3);
+    confirm->close();
+    wizard->findChild<QPushButton*>(QStringLiteral("decklab-setup-close"))->click();
+    settle();
+    EXPECT_FALSE(panel->waveformsSuppressed());
+    EXPECT_TRUE(waveform->isVisible()); EXPECT_TRUE(laterWaveform->isVisible());
 }
