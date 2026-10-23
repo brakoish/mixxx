@@ -14,6 +14,8 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[2]
 LOCK = Path(__file__).with_name("pi-build-lock.json")
 MANIFEST = ROOT / "packaging/flatpak/org.mixxx.Mixxx.yaml"
+# qemu-user runs the app smoke and a gdb diagnostic far slower than an ARM64 runner.
+EMULATED_TIMEOUT_SCALE = 20
 
 
 def digest(path):
@@ -156,6 +158,26 @@ def diagnostic_arguments(prefix, tree, output):
             if str(arg).startswith("--gtest_output=xml:") else arg for arg in debug]
 
 
+def build_target(machine, emulate, binfmt=None):
+    """Flatpak --arch options for this host. CI builds natively and gets none.
+
+    --emulate-aarch64 is a local opt-in for an x86_64 Linux host whose kernel
+    hands AArch64 executables to qemu-user through binfmt_misc. The F flag
+    keeps that interpreter usable inside the bubblewrap sandboxes."""
+    machine = machine.lower()
+    if not emulate:
+        if machine not in ("aarch64", "arm64"):
+            raise RuntimeError("Use a native ARM64 Linux build host")
+        return []
+    if machine not in ("x86_64", "amd64"):
+        raise RuntimeError("--emulate-aarch64 is only for x86_64 hosts; build natively on ARM64")
+    lines = (binfmt or "").splitlines()
+    flags = [line.split(":", 1)[1].strip() for line in lines if line.startswith("flags:")]
+    if "enabled" not in lines or not flags or "F" not in flags[0]:
+        raise RuntimeError("Register qemu-aarch64 in binfmt_misc with the F flag first")
+    return ["--arch=aarch64"]
+
+
 def external_workdir(root, path):
     work = path.expanduser().resolve()
     if work == root.resolve() or work.is_relative_to(root.resolve()):
@@ -163,9 +185,12 @@ def external_workdir(root, path):
     return work
 
 
-def build(work, jobs, lock):
-    if sys.platform != "linux" or platform.machine().lower() not in ("aarch64", "arm64"):
+def build(work, jobs, lock, emulate=False, timeout_scale=1):
+    if sys.platform != "linux":
         raise RuntimeError("Use a native ARM64 Linux build host")
+    binfmt = Path("/proc/sys/fs/binfmt_misc/qemu-aarch64")
+    arch = build_target(platform.machine(), emulate,
+                        binfmt.read_text() if emulate and binfmt.is_file() else None)
     if command(["git", "status", "--porcelain", "--untracked-files=no"], capture=True):
         raise RuntimeError("Commit tracked changes before building")
     command(["git", "merge-base", "--is-ancestor", lock["upstream_source_revision"], "HEAD"])
@@ -190,10 +215,10 @@ def build(work, jobs, lock):
     actual = {}
     for name, expected in lock["flatpak_commits"].items():
         command(["flatpak", "install", "--user", "--noninteractive", "--no-related",
-                 "flathub", name], env=env)
+                 *arch, "flathub", name], env=env)
         command(["flatpak", "update", "--user", "--noninteractive", "--no-related",
-                 "--no-deps", "--commit=" + expected, name], env=env)
-        actual[name] = command(["flatpak", "info", "--user", "--show-commit", name], env=env, capture=True)
+                 "--no-deps", *arch, "--commit=" + expected, name], env=env)
+        actual[name] = command(["flatpak", "info", "--user", "--show-commit", *arch, name], env=env, capture=True)
         if actual[name] != expected:
             raise RuntimeError("Runtime/SDK pin mismatch: " + name)
     manifest = json.loads(command(["flatpak-builder", "--show-manifest", MANIFEST], env=env, capture=True))
@@ -209,7 +234,7 @@ def build(work, jobs, lock):
     tree = work / "build"
     repo = work / "repo"
     command(["flatpak-builder", "--user", "--disable-rofiles-fuse", "--force-clean",
-             "--keep-build-dirs", "--disable-tests", "--ccache", "--jobs=" + str(jobs),
+             "--keep-build-dirs", "--disable-tests", "--ccache", "--jobs=" + str(jobs), *arch,
              "--state-dir=" + str(state), "--repo=" + str(repo), "--default-branch=decklab",
              tree, generated], env=env)
     native = state / "build/mixxx"
@@ -239,7 +264,7 @@ def build(work, jobs, lock):
             with (out / "native-test-backtrace.log").open("w") as trace:
                 try:
                     subprocess.run(list(map(str, debug)), cwd=ROOT, env=env,
-                            stdout=trace, stderr=subprocess.STDOUT, timeout=90)
+                            stdout=trace, stderr=subprocess.STDOUT, timeout=90 * timeout_scale)
                 except (OSError, subprocess.TimeoutExpired) as error:
                     trace.write(str(error) + "\n")
             raise
@@ -261,7 +286,7 @@ def build(work, jobs, lock):
              repo, bundle, "org.mixxx.Mixxx", "decklab"], env=env)
     # Probe the packaged executable against the runtime, not just SDK libraries.
     command(["flatpak", "install", "--user", "--noninteractive", "--no-related", "--no-deps", bundle], env=env)
-    probe = ["flatpak", "run", "--nodevice=all", "--nosocket=pulseaudio", "--nosocket=x11", "--nosocket=fallback-x11",
+    probe = ["flatpak", "run", *arch, "--nodevice=all", "--nosocket=pulseaudio", "--nosocket=x11", "--nosocket=fallback-x11",
              "--nosocket=wayland", "--unshare=network", "--env=QT_QPA_PLATFORM=offscreen",
              "--env=HOME=" + str(scratch), "--env=XDG_CONFIG_HOME=" + str(scratch / "runtime-config"),
              "--filesystem=" + str(work), "--command=/app/bin/mixxx.bin", "org.mixxx.Mixxx//decklab",
@@ -280,7 +305,8 @@ def build(work, jobs, lock):
     smoke.insert(2, "--env=DECKLAB_SMOKE_DIR=" + str(out))
     smoke.extend(["--safe-mode", "--developer"])
     with (out / "native-smoke.log").open("w") as log:
-        subprocess.run(smoke, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=90)
+        subprocess.run(smoke, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, check=True,
+                       timeout=90 * timeout_scale)
     smoke_result = json.loads((out / "native-smoke.json").read_text())
     # 21 surface captures plus 25 Deck Lab system/first-run captures (two at 1024x600, three sheets).
     if smoke_result != {"audio_started": False, "failures": [], "screens": 48, "native_rmx_units_loaded": 2}:
@@ -293,6 +319,13 @@ def build(work, jobs, lock):
               "native_application_smoke": smoke_result,
               "tools": {name: command([name, "--version"], env=env, capture=True)
                         for name in ("flatpak", "flatpak-builder", "git")}}
+    if emulate:
+        interpreter = next(line.split(None, 1)[1] for line in binfmt.read_text().splitlines()
+                           if line.startswith("interpreter "))
+        # A "-binfmt-P" interpreter refuses direct calls; ask the binary it links to.
+        qemu = command([os.path.realpath(interpreter), "--version"], capture=True).splitlines()[0]
+        record["build_host"] = {"machine": platform.machine(), "aarch64": "qemu-user binfmt_misc emulation",
+                                "qemu": qemu, "timeout_scale": timeout_scale}
     (out / "provenance.json").write_text(json.dumps(record, indent=2) + "\n")
     shutil.copy2(generated, out / "resolved-manifest.json")
     shutil.copy2(LOCK, out / "pi-build-lock.json")
@@ -301,12 +334,33 @@ def build(work, jobs, lock):
     print(json.dumps(record, indent=2), flush=True)
 
 
-def main():
+def options(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work-dir", type=Path)
-    parser.add_argument("--jobs", type=int, default=3, choices=range(1, 9))
+    parser.add_argument("--jobs", type=int, default=3, choices=range(1, 33), metavar="N",
+                        help="parallel jobs, 1-8 (up to 32 with --emulate-aarch64)")
     parser.add_argument("--check-inputs", action="store_true")
-    args = parser.parse_args()
+    # Local opt-in only; CI builds natively on ARM64 and passes neither option.
+    parser.add_argument("--emulate-aarch64", action="store_true",
+                        help="build the aarch64 candidate on an x86_64 host through qemu-user binfmt "
+                             "emulation (allows --jobs up to 32)")
+    parser.add_argument("--timeout-scale", type=int, default=None, metavar="N",
+                        help="multiply the 90 s smoke and diagnostic timeouts "
+                             "(--emulate-aarch64 only; default %d)" % EMULATED_TIMEOUT_SCALE)
+    args = parser.parse_args(argv)
+    if args.jobs > 8 and not args.emulate_aarch64:
+        parser.error("--jobs above 8 is only for --emulate-aarch64")
+    if args.timeout_scale is not None and not args.emulate_aarch64:
+        parser.error("--timeout-scale is only for --emulate-aarch64")
+    if args.timeout_scale is not None and args.timeout_scale < 1:
+        parser.error("--timeout-scale must be at least 1")
+    if args.timeout_scale is None:
+        args.timeout_scale = EMULATED_TIMEOUT_SCALE if args.emulate_aarch64 else 1
+    return parser, args
+
+
+def main():
+    parser, args = options()
     lock = json.loads(LOCK.read_text())
     audit_inputs(ROOT, lock)
     if args.check_inputs:
@@ -314,7 +368,7 @@ def main():
         return
     if not args.work_dir:
         parser.error("--work-dir is required and must be outside the source checkout")
-    build(external_workdir(ROOT, args.work_dir), args.jobs, lock)
+    build(external_workdir(ROOT, args.work_dir), args.jobs, lock, args.emulate_aarch64, args.timeout_scale)
 
 
 if __name__ == "__main__":

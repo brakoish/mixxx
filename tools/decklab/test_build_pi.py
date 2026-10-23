@@ -1,4 +1,6 @@
 """Pure input/provenance guards; never invokes a build, device or network."""
+import contextlib
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -52,6 +54,35 @@ class BuildGuards(unittest.TestCase):
             build_pi.audit_sources(bad)
         with self.assertRaises(ValueError):
             build_pi.audit_sources({"modules": [{"name": "local", "sources": [{"type": "dir", "path": "."}]}]})
+
+    def test_emulated_aarch64_is_an_explicit_opt_in(self):
+        binfmt = "enabled\ninterpreter /usr/libexec/qemu-binfmt/aarch64-binfmt-P\nflags: POF\noffset 0\n"
+        # CI's native ARM64 runner gets no extra Flatpak options; other hosts are refused.
+        self.assertEqual(build_pi.build_target("aarch64", False), [])
+        for machine in ("x86_64", "armv7l"):
+            with self.assertRaises(RuntimeError):
+                build_pi.build_target(machine, False, binfmt)
+        self.assertEqual(build_pi.build_target("x86_64", True, binfmt), ["--arch=aarch64"])
+        # Emulation needs an enabled qemu-aarch64 handler whose F flag reaches the sandbox.
+        for broken in (None, binfmt.replace("POF", "PO"), binfmt.replace("enabled", "disabled")):
+            with self.assertRaises(RuntimeError):
+                build_pi.build_target("x86_64", True, broken)
+        with self.assertRaises(RuntimeError):
+            build_pi.build_target("aarch64", True, binfmt)
+
+    def test_emulation_options_leave_native_defaults_unchanged(self):
+        _, default = build_pi.options([])
+        self.assertEqual((default.jobs, default.emulate_aarch64, default.timeout_scale), (3, False, 1))
+        _, native = build_pi.options(["--work-dir", "/scratch", "--jobs", "4"])
+        self.assertEqual((native.jobs, native.emulate_aarch64, native.timeout_scale), (4, False, 1))
+        _, emulated = build_pi.options(["--work-dir", "/scratch", "--jobs", "24", "--emulate-aarch64"])
+        self.assertEqual((emulated.jobs, emulated.timeout_scale), (24, build_pi.EMULATED_TIMEOUT_SCALE))
+        _, scaled = build_pi.options(["--emulate-aarch64", "--timeout-scale", "40"])
+        self.assertEqual(scaled.timeout_scale, 40)
+        for argv in (["--jobs", "9"], ["--timeout-scale", "5"], ["--emulate-aarch64", "--timeout-scale", "0"],
+                     ["--emulate-aarch64", "--jobs", "33"]):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                build_pi.options(argv)
 
     def test_refuses_source_recursion(self):
         root = Path.cwd()
