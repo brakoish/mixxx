@@ -4,6 +4,7 @@
 #include <QCheckBox>
 #include <QKeyEvent>
 #include <QModelIndex>
+#include <QTimer>
 #include <QWindow>
 #include <QtDebug>
 #include <algorithm>
@@ -12,6 +13,7 @@
 #include "control/controlencoder.h"
 #include "control/controlobject.h"
 #include "control/controlpushbutton.h"
+#include "library/decklabknob.h"
 #include "library/library.h"
 #include "library/libraryview.h"
 #include "mixer/playermanager.h"
@@ -36,12 +38,15 @@ bool nativeBrowseAction(const char* action) {
     return true;
 }
 // Generic mappings (FLX4, Inpulse, ...) navigate with MoveVertical,
-// MoveFocus* and GoToItem. Deck Lab owns these while no popup menu or dialog
-// is open: it opens Browse first and never forwards arrow, Tab or Return keys
-// to whatever deck, tempo or settings control happens to hold focus.
-bool nativeNavigation(FocusWidget focus) {
-    return nativeBrowseActive() && focus != FocusWidget::ContextMenu &&
-            focus != FocusWidget::Dialog && focus != FocusWidget::SearchRelatedMenu;
+// MoveFocus* and GoToItem; the Numark overlay script sends SelectPlaylist /
+// SelectTrackKnob. Deck Lab owns these while no popup menu or modal dialog is
+// really open (decklab::knobOwner(), decided when the event arrives): it opens
+// Browse first and never forwards arrow, Tab or Return keys to whatever deck,
+// tempo or settings control happens to hold focus.
+bool nativeSidebarVisible() {
+    const auto* visible = ControlObject::getControl(
+            ConfigKey("[Sidebar]", "sidebar_visible"), ControlFlag::NoWarnIfMissing);
+    return !visible || visible->toBool();
 }
 bool nativeBrowseMove(const char* action, double steps) {
     if (!std::isfinite(steps) || steps == 0) return false;
@@ -118,6 +123,7 @@ LibraryControl::LibraryControl(Library* pLibrary)
         : QObject(pLibrary),
           m_pLibrary(pLibrary),
           m_focusedWidget(FocusWidget::None),
+          m_pNativeFocusPoll(nullptr),
           m_prevFocusedWidget(FocusWidget::None),
           m_pLibraryWidget(nullptr),
           m_pSidebarWidget(nullptr),
@@ -126,6 +132,12 @@ LibraryControl::LibraryControl(Library* pLibrary)
           m_numSamplers(kAppGroup, QStringLiteral("num_samplers"), this),
           m_numPreviewDecks(kAppGroup, QStringLiteral("num_preview_decks"), this) {
     qRegisterMetaType<FocusWidget>("FocusWidget");
+    m_pNativeFocusPoll = new QTimer(this);
+    m_pNativeFocusPoll->setInterval(250);
+    connect(m_pNativeFocusPoll,
+            &QTimer::timeout,
+            this,
+            &LibraryControl::updateFocusedWidgetControls);
 
     slotNumDecksChanged(m_numDecks.get());
     slotNumSamplersChanged(m_numSamplers.get());
@@ -772,7 +784,7 @@ void LibraryControl::slotSelectPrevTrack(double v) {
 }
 
 void LibraryControl::slotSelectTrack(double v) {
-    if (v != 0 && nativeNavigation(m_focusedWidget) && nativeBrowseMove("browse_move", v)) {
+    if (v != 0 && nativeKnob("[Playlist] SelectTrackKnob", decklab::KnobAction::Move, v, "browse_move")) {
         return;
     }
     if (!m_pLibraryWidget || v == 0) {
@@ -802,7 +814,7 @@ void LibraryControl::slotMoveVertical(double v) {
     if (v == 0) {
         return;
     }
-    if (nativeNavigation(m_focusedWidget) && nativeBrowseMove("browse_move", v)) {
+    if (nativeKnob("[Library] MoveVertical", decklab::KnobAction::Move, v, "browse_move")) {
         return;
     }
 
@@ -872,8 +884,11 @@ void LibraryControl::slotScrollDown(double v) {
 }
 
 void LibraryControl::slotScrollVertical(double v) {
-    if (nativeNavigation(m_focusedWidget) &&
-            nativeBrowseMove("browse_move", v * kNativeBrowsePageRows)) {
+    if (v != 0 &&
+            nativeKnob("[Library] ScrollVertical",
+                    decklab::KnobAction::Move,
+                    v * kNativeBrowsePageRows,
+                    "browse_move")) {
         return;
     }
     const auto key = (v < 0) ? Qt::Key_PageUp : Qt::Key_PageDown;
@@ -883,7 +898,7 @@ void LibraryControl::slotScrollVertical(double v) {
 
 void LibraryControl::slotMoveLeft(double v) {
     if (v > 0) {
-        if (nativeNavigation(m_focusedWidget) && nativeBrowseAction("browse_back")) return;
+        if (nativeKnob("[Library] MoveLeft", decklab::KnobAction::Back, -1, "browse_back")) return;
         slotMoveHorizontal(-1);
     }
 }
@@ -891,14 +906,17 @@ void LibraryControl::slotMoveLeft(double v) {
 void LibraryControl::slotMoveRight(double v) {
     if (v > 0) {
         // Right enters folders and categories; in a track list it does nothing.
-        if (nativeNavigation(m_focusedWidget) && nativeBrowseAction("browse_enter")) return;
+        if (nativeKnob("[Library] MoveRight", decklab::KnobAction::Enter, 1, "browse_enter")) return;
         slotMoveHorizontal(1);
     }
 }
 
 void LibraryControl::slotMoveHorizontal(double v) {
-    if (v != 0 && nativeNavigation(m_focusedWidget) &&
-            nativeBrowseAction(v < 0 ? "browse_back" : "browse_enter")) {
+    if (v != 0 &&
+            nativeKnob("[Library] MoveHorizontal",
+                    v < 0 ? decklab::KnobAction::Back : decklab::KnobAction::Enter,
+                    v,
+                    v < 0 ? "browse_back" : "browse_enter")) {
         return;
     }
     const auto key = (v < 0) ? Qt::Key_Left : Qt::Key_Right;
@@ -922,8 +940,11 @@ void LibraryControl::slotMoveFocus(double v) {
     // Deck Lab: the browse-knob press of generic mappings (MoveFocusForward)
     // opens Browse, enters the highlighted folder or previews the track;
     // MoveFocusBackward goes back.
-    if (v != 0 && nativeNavigation(m_focusedWidget) &&
-            nativeBrowseAction(v > 0 ? "browse_press" : "browse_back")) {
+    if (v != 0 &&
+            nativeKnob("[Library] MoveFocus",
+                    v > 0 ? decklab::KnobAction::Press : decklab::KnobAction::Back,
+                    v,
+                    v > 0 ? "browse_press" : "browse_back")) {
         return;
     }
     // Don't use Key_Tab + ShiftModifier for moving focus backwards!
@@ -968,6 +989,27 @@ void LibraryControl::slotMoveTrack(double v) {
     QApplication::sendEvent(pTrackTableview, &pEvent);
 }
 
+bool LibraryControl::nativeKnob(const char* control,
+        decklab::KnobAction action,
+        double steps,
+        const char* nativeAction) {
+    if (!nativeBrowseActive()) {
+        return false;
+    }
+    // Never act on a stale focus classification (audit C-01): refresh it,
+    // then decide from what is really open right now.
+    updateFocusedWidgetControls();
+    const decklab::KnobOwner owner = decklab::knobOwner();
+    if (!owner.browse()) {
+        decklab::logKnobRedirected(control, owner);
+        decklab::forwardKnob(owner, action, steps);
+        return true;
+    }
+    return action == decklab::KnobAction::Move
+            ? nativeBrowseMove(nativeAction, steps)
+            : nativeBrowseAction(nativeAction);
+}
+
 void LibraryControl::emitKeyEvent(QKeyEvent&& event) {
     if (!QApplication::focusWindow()) {
         qInfo() << "No Mixxx window, popup or menu has focus."
@@ -995,10 +1037,18 @@ FocusWidget LibraryControl::getFocusedWidget() {
         return FocusWidget::None;
     }
 
+    // Deck Lab: without a window manager nothing re-activates the main window
+    // when a menu or dialog closes, so a hidden one can stay focusWindow().
+    // It no longer owns anything.
+    const bool staleWindow = nativeBrowseActive() && !focusWindow->isVisible() &&
+            (focusWindow->type() == Qt::Popup || focusWindow->type() == Qt::Dialog);
+
     // Any QMenu is focusWindow() but NOT focusWidget() before any menu item
     // is highlighted, though it can already receive keypress events.
     // Thus, test for focus window type first to catch open popups.
-    if (focusWindow->type() == Qt::Popup) {
+    if (staleWindow) {
+        // Classified like the main window below.
+    } else if (focusWindow->type() == Qt::Popup) {
         // WMainMenuBar
         // WTrackMenuClassWindow = WTrackMenu + submenus
         // QMenuClassWindow      = e.g. sidebar context menu
@@ -1047,8 +1097,12 @@ FocusWidget LibraryControl::getFocusedWidget() {
 
 void LibraryControl::setLibraryFocus(FocusWidget newFocusWidget) {
     if (!QApplication::focusWindow()) {
-        qInfo() << "No Mixxx window, popup or menu has focus."
-                << "Don't attempt to focus a specific widget.";
+        // Deck Lab's controller scripts write focused_widget on every knob
+        // tick; Browse does not need keyboard focus, so stay quiet there.
+        if (!nativeBrowseActive()) {
+            qInfo() << "No Mixxx window, popup or menu has focus."
+                    << "Don't attempt to focus a specific widget.";
+        }
         return;
     }
 
@@ -1108,9 +1162,33 @@ void LibraryControl::slotFocusedWidgetChanged(QWidget* oldW, QWidget* newW) {
 
 void LibraryControl::updateFocusedWidgetControls() {
     m_focusedWidget = getFocusedWidget();
+    FocusWidget reported = m_focusedWidget;
+    if (nativeBrowseActive()) {
+        // Deck Lab: report who owns the browse knob now. Controller scripts
+        // gate their knob on this value (the Numark overlay ignores 4 and up),
+        // so a closed menu or a focused deck or settings control must never
+        // leave it there; only a menu or dialog that is really open does.
+        const decklab::KnobOwner owner = decklab::knobOwner();
+        if (owner.popup) {
+            reported = m_focusedWidget == FocusWidget::SearchRelatedMenu
+                    ? FocusWidget::SearchRelatedMenu
+                    : FocusWidget::ContextMenu;
+        } else if (owner.blocker) {
+            reported = FocusWidget::Dialog;
+        } else if (reported != FocusWidget::Searchbar && reported != FocusWidget::Sidebar &&
+                reported != FocusWidget::TracksTable) {
+            reported = nativeSidebarVisible() ? FocusWidget::Sidebar : FocusWidget::TracksTable;
+        }
+        if (owner.blocker) {
+            if (!m_pNativeFocusPoll->isActive()) {
+                m_pNativeFocusPoll->start();
+            }
+        } else {
+            m_pNativeFocusPoll->stop();
+        }
+    }
     // Update "[Library], focused_widget" control
-    double newVal = static_cast<double>(m_focusedWidget);
-    m_pFocusedWidgetCO->setAndConfirm(newVal);
+    m_pFocusedWidgetCO->setAndConfirm(static_cast<double>(reported));
 }
 
 void LibraryControl::refocusPrevLibraryWidget() {
@@ -1127,7 +1205,7 @@ void LibraryControl::slotSelectSidebarItem(double v) {
     if (nativeBrowseActive()) {
         // Selection must not activate/import each item passed by a fast knob.
         // Deck Lab moves its source or category list without replacing models.
-        if (nativeNavigation(m_focusedWidget)) nativeBrowseMove("browse_select", v);
+        nativeKnob("[Playlist] SelectPlaylist", decklab::KnobAction::Move, v, "browse_select");
         return;
     }
 
@@ -1151,7 +1229,13 @@ void LibraryControl::slotSelectPrevSidebarItem(double v) {
 }
 
 void LibraryControl::slotToggleSelectedSidebarItem(double v) {
-    if (v > 0 && nativeBrowseAction("browse_press")) return;
+    if (v > 0 &&
+            nativeKnob("[Playlist] ToggleSelectedSidebarItem",
+                    decklab::KnobAction::Press,
+                    1,
+                    "browse_press")) {
+        return;
+    }
     if (m_pSidebarWidget && v > 0) {
         m_pSidebarWidget->toggleSelectedItem();
     }
@@ -1184,7 +1268,7 @@ void LibraryControl::slotGoToItem(double v) {
     if (v <= 0) {
         return;
     }
-    if (nativeNavigation(m_focusedWidget) && nativeBrowseAction("browse_press")) return;
+    if (nativeKnob("[Library] GoToItem", decklab::KnobAction::Press, 1, "browse_press")) return;
 
     switch (m_focusedWidget) {
     case FocusWidget::Sidebar:

@@ -52,6 +52,32 @@ HarmonicMatch harmonicMatch(ChromaticKey track, ChromaticKey reference);
 bool tempoMatches(double trackBpm, double referenceBpm, double tolerance = 0.06);
 double tempoDifferencePercent(double trackBpm, double referenceBpm);
 
+// Which side of the reference tempo counts as a match (the Match bar's
+// slower / both / faster segments).
+enum class TempoDirection {
+    Slower,
+    Both,
+    Faster,
+};
+// The BPM window around the reference: 6% below and/or above it.
+struct TempoWindow {
+    double low = 0;
+    double high = 0;
+    bool isValid() const {
+        return low > 0 && high >= low;
+    }
+};
+TempoWindow tempoWindow(double referenceBpm, TempoDirection direction, double tolerance = 0.06);
+bool tempoInWindow(double trackBpm, const TempoWindow& window);
+// "115–129" (whole BPM, en dash).
+QString tempoWindowText(const TempoWindow& window);
+// Signed difference to the reference: "▲1.0" (faster), "▼2.0" (slower), "±0".
+QString bpmDeltaText(double trackBpm, double referenceBpm);
+// "Same key", "Relative 8A→8B", "Key +1 (up)", "Key −1 (down)"; empty otherwise.
+QString keyRelationText(ChromaticKey track, ChromaticKey reference);
+// Lancelot names that mix with the reference: same, relative, -1 and +1.
+QStringList compatibleLancelotKeys(ChromaticKey reference);
+
 // Parses any key notation shown by Mixxx or an export (8A, 1m, Am, A♭m...).
 // Cached, GUI thread only.
 ChromaticKey keyFromText(const QString& text);
@@ -62,15 +88,42 @@ QColor keyWheelColor(ChromaticKey key);
 struct MatchReference {
     bool enabled = true;
     int deck = 0;
+    bool automatic = true; // false when the DJ pinned the deck on the Match bar
     ChromaticKey key = mixxx::track::io::key::INVALID;
     double bpm = 0;
+    TempoDirection direction = TempoDirection::Both;
     bool active() const {
         return enabled && deck > 0;
+    }
+    TempoWindow window() const {
+        return tempoWindow(bpm, direction);
     }
     bool sameAs(const MatchReference& other) const;
 };
 const MatchReference& matchReference();
 void setMatchReference(const MatchReference& reference);
+// One matcher for highlight and filter: the native search query (an OR of
+// AND terms, Mixxx's "|" syntax) that keeps only tracks in a compatible key
+// and inside the BPM window. extra (a category filter or typed words) is
+// required in every alternative. Empty when there is no reference.
+QString matchFilterQuery(const MatchReference& reference, const QString& extra = QString());
+
+// USB sticks mounted for the appliance (/media/decklab/<FS-UUID>) or by a
+// desktop (/media/$USER/<label>, /run/media/$USER/<label>). Linux only.
+struct UsbStick {
+    QString path;  // mount folder, no trailing slash
+    QString label; // filesystem label, or "USB stick (3A1F)"
+    bool rekordbox = false; // holds a rekordbox USB export
+};
+QList<UsbStick> findUsbSticks();
+// Tests point the scan at generated folders (no mount-point check). Empty
+// restores the real mount roots.
+void setUsbStickRootsForTesting(const QStringList& roots);
+bool hasRekordboxExport(const QString& path);
+// Audio files directly inside folder (not recursive), and its subfolders
+// without system folders ("System Volume Information", "PIONEER", dot folders).
+QStringList stickAudioFiles(const QString& folder);
+QStringList stickSubfolders(const QString& folder);
 
 // Keeps the first and the deepest segments, dropping middle ones (shown as a
 // single "…") until the path fits. The last segment is never dropped.
@@ -124,6 +177,17 @@ enum class Glyph {
     Chevron,
     Search,
     More,
+    // qw-library: one glyph per concept on the source list and Match bar.
+    Mic,
+    Sources,
+    AutoDj,
+    Analyze,
+    ArrowDown,
+    ArrowUp,
+    ArrowBoth,
+    Close,
+    Warning,
+    Retry,
 };
 void paintGlyph(QPainter& painter, const QRectF& box, Glyph glyph, const QColor& color);
 
@@ -163,25 +227,84 @@ class DeckLabActionButton : public QPushButton {
         Ready,
         OnAir,
         Active,
+        Selected, // a chosen segment or toggle: raised fill, white outline
     };
     explicit DeckLabActionButton(const QString& text, QWidget* parent = nullptr);
     void setDetail(const QString& detail);
     void setTone(Tone tone);
     void setGlyph(decklab::Glyph glyph);
+    // Deck identity (LOAD targets): a 6 px bar and a numbered badge in the
+    // deck's colour, kept (dimmed) while the target is disabled. 0 = none.
+    void setDeck(int deck);
     QString detail() const {
         return m_detail;
     }
     Tone tone() const {
         return m_tone;
     }
+    int deck() const {
+        return m_deck;
+    }
 
   protected:
     void paintEvent(QPaintEvent* event) override;
 
   private:
+    void paintDeckTarget(QPainter& painter, const QColor& primary, const QColor& secondary);
+
     QString m_detail;
     Tone m_tone = Tone::Neutral;
     decklab::Glyph m_glyph = decklab::Glyph::None;
+    int m_deck = 0;
+};
+
+// The Match bar's reference: the deck colour, its number, AUTO when it follows
+// the playing deck, and its key and tempo. A tap cycles Auto / 1 / 2 / 3 / 4.
+class DeckLabDeckChip : public QPushButton {
+  public:
+    explicit DeckLabDeckChip(QWidget* parent = nullptr);
+    void setReference(int deck, bool automatic, const QString& detail);
+    int deck() const {
+        return m_deck;
+    }
+    bool automatic() const {
+        return m_automatic;
+    }
+    QString detail() const {
+        return m_detail;
+    }
+
+  protected:
+    void paintEvent(QPaintEvent* event) override;
+
+  private:
+    int m_deck = 0;
+    bool m_automatic = true;
+    QString m_detail;
+};
+
+// Painted two-line readout (Match bar summary): value line and label line.
+class DeckLabTwoLineLabel : public QWidget {
+  public:
+    explicit DeckLabTwoLineLabel(QWidget* parent = nullptr);
+    void setLines(const QString& primary, const QString& secondary, bool active);
+    QString primary() const {
+        return m_primary;
+    }
+    QString secondary() const {
+        return m_secondary;
+    }
+    bool active() const {
+        return m_active;
+    }
+
+  protected:
+    void paintEvent(QPaintEvent* event) override;
+
+  private:
+    QString m_primary;
+    QString m_secondary;
+    bool m_active = false;
 };
 
 // Path of the current Browse location. Painted, so changing it never
@@ -281,6 +404,9 @@ class DeckLabListDelegate : public QStyledItemDelegate {
         AccentRole,
         QueryRole,
         CategoryRole,
+        // qw-library: two-line source rows (what is inside) and row actions.
+        SubtitleRole,
+        KeyRole,
     };
     explicit DeckLabListDelegate(QObject* parent = nullptr);
     // Source lists (the native sidebar) supply a glyph per row; every row
