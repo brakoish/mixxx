@@ -26,6 +26,9 @@ class DeckLabLabFx; // r4-labfx: the Lab FX page (widget/decklablabfx.h)
 class DeckLabSampler;
 class DeckLabPadBlock;
 class DeckLabStemPads;
+class DeckLabRail;
+class DeckLabSettingsPage;
+class DeckLabStatusZone;
 class DeckLabSystem;
 class DeckLabSystemUi;
 class Library;
@@ -313,7 +316,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     QWidget* m_searchPanel = nullptr;
     QWidget* m_keyboard = nullptr;
     QLabel* m_breadcrumb;
-    DeckLabChipButton* m_status;
+    DeckLabStatusZone* m_status = nullptr; // r4-system: the rail status zone
     std::array<QPushButton*, 5> m_tabs{};
     std::array<DeckLabLevelMeter*, 4> m_meters{};
     std::array<QWidget*, 4> m_cardTransports{};
@@ -353,6 +356,13 @@ class WDeckLab : public QWidget, public WBaseWidget {
     bool m_outputConfigured = false;
     QList<QPushButton*> m_toolButtons;
     DeckLabSystemUi* m_systemUi = nullptr;
+    // r4-system: rail status (decklabrail.h) and Settings (decklabsettings.h).
+    DeckLabRail* m_railUi = nullptr;
+    DeckLabSettingsPage* m_settings = nullptr;
+    QTimer* m_recordTick = nullptr;
+    qint64 m_recordingSince = -1;
+    qint64 m_usbScannedAt = -1;
+    int m_usbSticksSeen = 0;
     std::array<DeckLabTempoPresenter, 4> m_tempos{};
     std::array<int, 2> m_layers{1, 2};
     int m_autoDeckLayout = 2;

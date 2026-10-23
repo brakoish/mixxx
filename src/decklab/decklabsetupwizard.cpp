@@ -20,7 +20,9 @@
 
 #include "decklab/decklaboverlay.h"
 #include "decklab/decklabsystempages.h"
+#include "decklab/decklabinstruments.h"
 #include "decklab/decklabui.h"
+#include "library/decklabknob.h"
 #include "moc_decklabsetupwizard.cpp"
 #include "widget/decklabdeckwidgets.h"
 
@@ -165,10 +167,11 @@ DeckLabSetupWizard::DeckLabSetupWizard(DeckLabSystem* system, QWidget* host)
     headerRow->addWidget(m_heading);
     headerRow->addStretch(1);
     m_stepRow = hbox(2);
-    headerRow->addLayout(m_stepRow);
-    headerRow->addStretch(1);
+    m_progress = new DeckLabProgressLine(header);
+    m_stepRow->addWidget(m_progress);
+    headerRow->addLayout(m_stepRow, 6);
     m_close = button(tr("Close"), header, QStringLiteral("decklab-setup-close"), 44);
-    m_close->setFixedWidth(96);
+    m_close->setFixedWidth(132);
     connect(m_close, &QPushButton::clicked, this, [this] { finish(false); });
     headerRow->addWidget(m_close);
     root->addWidget(header);
@@ -247,6 +250,24 @@ DeckLabSetupWizard::DeckLabSetupWizard(DeckLabSystem* system, QWidget* host)
         });
     }
     setSequence({Step::Controller, Step::Audio, Step::Layout, Step::Done});
+    // r4-system: the knob drives Deck Setup (turn, press; back = Back).
+    m_knob = new KnobNavigator(this, [this] {
+        if (m_back->isVisible() && m_back->isEnabled()) {
+            back();
+        }
+        return true;
+    });
+    m_toneMeter.setInterval(40);
+    connect(&m_toneMeter, &QTimer::timeout, this, [this] {
+        if (!m_playingPad) {
+            m_toneMeter.stop();
+            return;
+        }
+        // The pad's meter follows the tone: 50 ms fade in, 0.9 s, fade out.
+        const double t = m_toneSince.elapsed() / 1000.0;
+        const double envelope = std::clamp(std::min(t / 0.05, (0.9 - t) / 0.05), 0.0, 1.0);
+        m_playingPad->setLevel(envelope * (48 + m_toneDbfs) / 48.0);
+    });
 }
 
 bool DeckLabSetupWizard::eventFilter(QObject* watched, QEvent* event) {
@@ -298,9 +319,9 @@ QString DeckLabSetupWizard::stepName(Step step) const {
     case Step::Controller:
         return tr("Controller");
     case Step::Audio:
-        return tr("Audio");
+        return tr("Sound");
     case Step::Layout:
-        return tr("Layout");
+        return tr("Decks");
     case Step::Done:
         return tr("Play");
     }
@@ -309,22 +330,13 @@ QString DeckLabSetupWizard::stepName(Step step) const {
 
 void DeckLabSetupWizard::setSequence(const QList<Step>& sequence) {
     m_sequence = sequence;
-    for (auto* label : std::as_const(m_stepLabels)) {
-        label->hide();
-        label->deleteLater();
-    }
-    m_stepLabels.clear();
     // Seven steps need the room the title would take.
     m_heading->setVisible(sequence.size() <= 4);
-    for (int index = 0; index < sequence.size(); ++index) {
-        auto* label = new QLabel(m_heading->parentWidget());
-        label->setObjectName(QStringLiteral("decklab-setup-step-%1").arg(index));
-        label->setAlignment(Qt::AlignCenter);
-        label->setFixedHeight(44);
-        label->setMinimumWidth(sequence.size() <= 4 ? 104 : 78);
-        m_stepLabels.append(label);
-        m_stepRow->addWidget(label);
+    QStringList names;
+    for (const auto step : sequence) {
+        names.append(stepName(step));
     }
+    m_progress->setSteps(names);
 }
 
 void DeckLabSetupWizard::start(Step step, const QString& preferredKey) {
@@ -342,7 +354,7 @@ void DeckLabSetupWizard::startFirstRun() {
     m_preferredKey.clear();
     setSequence({Step::Welcome, Step::Wifi, Step::Time, Step::Controller, Step::Audio, Step::Layout, Step::Done});
     // Not finishing keeps the flag unset: the flow returns at next start.
-    m_close->setText(tr("Later"));
+    m_close->setText(tr("Set up later"));
     show();
     raise();
     goTo(Step::Welcome);
@@ -360,23 +372,10 @@ void DeckLabSetupWizard::goTo(Step step) {
     m_pages->setCurrentIndex(pageIndex(step));
     m_footer->show();
     const int current = std::max<int>(0, m_sequence.indexOf(step));
-    for (int index = 0; index < m_stepLabels.size(); ++index) {
-        // Current step in text with a white underline, done steps in text,
-        // the steps ahead muted. Brand tokens only.
-        QString style;
-        if (index == current) {
-            style = QStringLiteral("color:%1;font-size:15px;font-weight:600;border-bottom:2px solid %1;")
-                            .arg(QLatin1String(kText));
-        } else if (index < current) {
-            style = QStringLiteral("color:%1;font-size:15px;font-weight:500;").arg(QLatin1String(kText));
-        } else {
-            style = QStringLiteral("color:%1;font-size:15px;font-weight:500;").arg(QLatin1String(kMuted));
-        }
-        m_stepLabels[index]->setStyleSheet(style);
-        const QString name = stepName(m_sequence.at(index));
-        m_stepLabels[index]->setText(index < current ? tr("✓ %1").arg(name)
-                                                     : tr("%1 %2").arg(index + 1).arg(name));
-    }
+    m_progress->setCurrent(current);
+    // No Back on the first step (F-05); no "Set up later" on the last (F-03).
+    m_back->setVisible(current > 0);
+    m_close->setVisible(!(m_firstRun && step == Step::Done));
     m_back->setEnabled(current > 0);
     m_next->setText(step == Step::Done      ? tr("Play")
                     : step == Step::Welcome ? tr("Get started")
@@ -387,11 +386,11 @@ void DeckLabSetupWizard::goTo(Step step) {
         break;
     case Step::Wifi:
         m_embedded->showSection(DeckLabSystemPage::Section::Wifi);
-        setMessage(tr("Optional. Skip this if you don't need internet; DJing works offline."));
+        setMessage(tr("DJing works offline. Internet sets the clock and enables Get music."));
         break;
     case Step::Time:
         m_embedded->showSection(DeckLabSystemPage::Section::Time);
-        setMessage(tr("Used for file dates and the clock."));
+        setMessage(tr("Sets the clock and your recordings' dates."));
         break;
     case Step::Controller:
         m_skippedController = false;
@@ -901,56 +900,92 @@ void DeckLabSetupWizard::renderPicker() {
 }
 
 // ----------------------------------------------------------------- Audio --
+// r4-system (Signature 5): a sound check, not a form. Main and Headphones are
+// two panels, each with its output, big tone pads whose meter moves with the
+// tone and, after a tone, YES / NO. The first tone plays at -24 dBFS; a
+// second tap on the same pad adds 6 dB. The levels warning is always there.
 void DeckLabSetupWizard::buildAudio(QWidget* page) {
-    auto* layout = vbox(page, 0, 10);
-    layout->setContentsMargins(16, 14, 16, 8);
-    m_audioReason = body(QString(), page);
-    m_audioReason->setObjectName(QStringLiteral("decklab-setup-audio-reason"));
-    layout->addWidget(m_audioReason);
+    auto* layout = vbox(page, 0, 8);
+    layout->setContentsMargins(16, 10, 16, 6);
+    auto* top = hbox(12);
+    auto* heading = new QLabel(tr("SOUND CHECK"), page);
+    heading->setStyleSheet(QStringLiteral("font-size:14px;font-weight:600;color:#9AA3AF;"));
+    top->addWidget(heading);
     // Test tones may play on a club PA or straight into headphones. They start
     // quiet (decklab::kTestToneDbfs), and the levels warning is always shown.
     auto* levels = new QLabel(tr("Turn MASTER and PHONES down before you test."), page);
     levels->setObjectName(QStringLiteral("decklab-setup-level-warning"));
     levels->setProperty("role", QStringLiteral("caution"));
     levels->setWordWrap(true);
-    layout->addWidget(levels);
-    const auto addRoute = [this, page, layout](Icon icon, const QString& name, const QString& objectName, bool headphones) {
+    top->addWidget(levels, 1);
+    layout->addLayout(top);
+    auto* panels = hbox(8);
+    const auto addPanel = [this, page, panels](bool headphones) {
         auto* panel = card(page);
-        auto* row = hbox(10);
-        row->setContentsMargins(14, 10, 14, 10);
-        panel->setLayout(row);
-        auto* label = new Row(name, QString(), panel);
-        label->setRowIcon(icon);
-        label->setStatic(true);
-        label->setFixedWidth(214);
-        row->addWidget(label);
-        auto* combo = touchCombo(panel, objectName);
-        row->addWidget(combo, 1);
+        panel->setObjectName(headphones ? QStringLiteral("decklab-setup-phones-panel")
+                                        : QStringLiteral("decklab-setup-main-panel"));
+        auto* column = vbox(panel, 12, 6);
+        auto* name = new QLabel(headphones ? tr("HEADPHONES") : tr("MAIN"), panel);
+        name->setProperty("role", QStringLiteral("label"));
+        column->addWidget(name);
+        auto* combo = touchCombo(panel, headphones ? QStringLiteral("decklab-setup-phones") : QStringLiteral("decklab-setup-main"));
+        column->addWidget(combo);
+        auto* pads = hbox(8);
         if (headphones) {
-            auto* test = button(tr("Test"), panel, QStringLiteral("decklab-setup-test-phones"), 48);
-            test->setFixedWidth(110);
+            auto* test = new DeckLabTonePad(tr("Test"), panel, QStringLiteral("decklab-setup-test-phones"));
             connect(test, &QPushButton::clicked, this, [this] { testTone(true, -1); });
             m_testButtons.append(test);
-            row->addWidget(test);
+            m_pads.append(test);
+            pads->addWidget(test);
         } else {
-            auto* left = button(tr("Test L"), panel, QStringLiteral("decklab-setup-test-left"), 48);
-            left->setFixedWidth(84);
+            auto* left = new DeckLabTonePad(tr("Left"), panel, QStringLiteral("decklab-setup-test-left"));
             connect(left, &QPushButton::clicked, this, [this] { testTone(false, 0); });
-            auto* right = button(tr("Test R"), panel, QStringLiteral("decklab-setup-test-right"), 48);
-            right->setFixedWidth(84);
+            auto* right = new DeckLabTonePad(tr("Right"), panel, QStringLiteral("decklab-setup-test-right"));
             connect(right, &QPushButton::clicked, this, [this] { testTone(false, 1); });
-            m_testButtons.append(left);
-            m_testButtons.append(right);
-            row->addWidget(left);
-            row->addWidget(right);
+            for (auto* pad : {left, right}) {
+                m_testButtons.append(pad);
+                m_pads.append(pad);
+                pads->addWidget(pad);
+            }
         }
-        layout->addWidget(panel);
+        column->addLayout(pads);
+        auto* question = new QLabel(panel);
+        question->setObjectName(headphones ? QStringLiteral("decklab-setup-question-phones")
+                                           : QStringLiteral("decklab-setup-question-main"));
+        question->setProperty("role", QStringLiteral("body"));
+        question->setText(headphones ? tr("Tap Test. A second tap is 6 dB louder.")
+                                     : tr("Tap Left, then Right. A second tap is 6 dB louder."));
+        column->addWidget(question);
+        auto* answers = new QWidget(panel);
+        auto* answerRow = hbox(8);
+        answers->setLayout(answerRow);
+        auto* yes = primaryButton(tr("Yes"), answers,
+                headphones ? QStringLiteral("decklab-setup-heard-phones") : QStringLiteral("decklab-setup-heard-main"), 44);
+        auto* no = button(headphones ? tr("No, try next") : tr("No, try next"), answers,
+                headphones ? QStringLiteral("decklab-setup-not-heard-phones") : QStringLiteral("decklab-setup-not-heard-main"), 44);
+        connect(yes, &QPushButton::clicked, this, [this, headphones] { answerTone(headphones, true); });
+        connect(no, &QPushButton::clicked, this, [this, headphones] { answerTone(headphones, false); });
+        answerRow->addWidget(yes, 1);
+        answerRow->addWidget(no, 1);
+        QSizePolicy keep = answers->sizePolicy();
+        keep.setRetainSizeWhenHidden(true);
+        answers->setSizePolicy(keep);
+        answers->hide();
+        column->addWidget(answers);
+        (headphones ? m_phonesQuestion : m_mainQuestion) = question;
+        (headphones ? m_phonesAnswers : m_mainAnswers) = answers;
+        panels->addWidget(panel, 1);
         return combo;
     };
-    m_main = addRoute(Icon::Speaker, tr("Main"), QStringLiteral("decklab-setup-main"), false);
-    m_phones = addRoute(Icon::Headphones, tr("Headphones"), QStringLiteral("decklab-setup-phones"), true);
+    m_main = addPanel(false);
+    m_phones = addPanel(true);
+    layout->addLayout(panels);
     connect(m_main, qOverload<int>(&QComboBox::activated), this, [this](int) { audioChoiceChanged(); });
     connect(m_phones, qOverload<int>(&QComboBox::activated), this, [this](int) { audioChoiceChanged(); });
+    m_audioReason = muted(QString(), page);
+    m_audioReason->setObjectName(QStringLiteral("decklab-setup-audio-reason"));
+    m_audioReason->setWordWrap(false);
+    layout->addWidget(m_audioReason);
     m_audioWarning = new QLabel(page);
     m_audioWarning->setObjectName(QStringLiteral("decklab-setup-audio-warning"));
     // Advice (Bluetooth lag, shared outputs), not an error.
@@ -958,7 +993,31 @@ void DeckLabSetupWizard::buildAudio(QWidget* page) {
     m_audioWarning->setWordWrap(true);
     layout->addWidget(m_audioWarning);
     layout->addStretch(1);
-    layout->addWidget(muted(tr("Buffer size and latency stay as they are (Advanced settings)."), page));
+}
+
+void DeckLabSetupWizard::showQuestion(bool headphones, const QString& question, bool answers) {
+    (headphones ? m_phonesQuestion : m_mainQuestion)->setText(question);
+    (headphones ? m_phonesAnswers : m_mainAnswers)->setVisible(answers);
+}
+
+void DeckLabSetupWizard::answerTone(bool headphones, bool heard) {
+    if (heard) {
+        showQuestion(headphones, headphones ? tr("Headphones checked.") : tr("Main checked."), false);
+        return;
+    }
+    // "No" moves to the next output pair, ready for another tone.
+    QComboBox* combo = headphones ? m_phones : m_main;
+    const int first = headphones ? 1 : 0; // headphones: index 0 is Off
+    const int count = combo->count() - first;
+    if (count > 1) {
+        const int next = first + (std::max(0, combo->currentIndex() - first) + 1) % count;
+        combo->setCurrentIndex(next);
+        audioChoiceChanged();
+        m_lastTone.clear();
+        showQuestion(headphones, tr("Now on %1. Tap again.").arg(combo->currentText()), false);
+    } else {
+        showQuestion(headphones, tr("No other output. Check the cable and the volume."), false);
+    }
 }
 
 void DeckLabSetupWizard::enterAudio() {
@@ -1040,26 +1099,52 @@ void DeckLabSetupWizard::testTone(bool headphones, int side) {
         return;
     }
     const decklab::AudioRoute route = headphones ? m_audio.headphones : m_audio.main;
+    // A second tap on the same pad, same output, adds 6 dB (never more).
+    const QString key = QStringLiteral("%1/%2/%3:%4").arg(headphones).arg(side).arg(route.device).arg(route.channelBase);
+    m_toneDbfs = key == m_lastTone ? decklab::kTestToneBoostDbfs : decklab::kTestToneDbfs;
+    m_lastTone = key;
     for (auto* test : std::as_const(m_testButtons)) {
         test->setEnabled(false);
     }
-    setMessage(headphones ? tr("Playing a tone in the headphones…")
-                    : side == 0 ? tr("Playing a tone on Main left…")
-                                : tr("Playing a tone on Main right…"));
+    const QString padName = headphones ? QStringLiteral("decklab-setup-test-phones")
+            : side == 0                ? QStringLiteral("decklab-setup-test-left")
+                                       : QStringLiteral("decklab-setup-test-right");
+    for (auto* pad : std::as_const(m_pads)) {
+        if (pad->objectName() == padName) {
+            m_playingPad = pad;
+            pad->setPlaying(true);
+        }
+    }
+    m_toneSince.start();
+    m_toneMeter.start();
+    showQuestion(headphones, m_toneDbfs > decklab::kTestToneDbfs ? tr("Playing, 6 dB louder…") : tr("Playing…"), false);
+    setMessage(QString());
     QPointer<DeckLabSetupWizard> self(this);
-    m_system->playTestTone(route, side, [self, headphones, side](bool ok, const QString& error) {
-        if (!self) {
-            return;
-        }
-        self->audioChoiceChanged();
-        if (!ok) {
-            self->setMessage(error, true);
-            return;
-        }
-        self->setMessage(headphones ? tr("Heard it in your headphones? If not, choose another output.")
-                        : side == 0 ? tr("Heard it on the left speaker only? If not, swap cables or choose another output.")
-                                    : tr("Heard it on the right speaker only? If not, swap cables or choose another output."));
-    });
+    m_system->playTestTone(
+            route,
+            side,
+            [self, headphones, side](bool ok, const QString& error) {
+                if (!self) {
+                    return;
+                }
+                self->m_toneMeter.stop();
+                if (self->m_playingPad) {
+                    self->m_playingPad->setPlaying(false);
+                }
+                self->m_playingPad = nullptr;
+                self->audioChoiceChanged();
+                if (!ok) {
+                    self->m_lastTone.clear();
+                    self->showQuestion(headphones, error, false);
+                    return;
+                }
+                self->showQuestion(headphones,
+                        headphones ? tr("Heard it in the phones?")
+                                : side == 0 ? tr("Only the LEFT speaker?")
+                                            : tr("Only the RIGHT speaker?"),
+                        true);
+            },
+            m_toneDbfs);
 }
 
 // ---------------------------------------------------------------- Layout --

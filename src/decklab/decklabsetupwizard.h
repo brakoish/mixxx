@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
+#include <QElapsedTimer>
 #include <QList>
 #include <QPointer>
+#include <QTimer>
 #include <QWidget>
 
 #include "decklab/decklabsetupmodel.h"
@@ -19,8 +21,11 @@ class QVBoxLayout;
 
 namespace decklab::ui {
 class Keyboard;
+class KnobNavigator;
 class Row;
 } // namespace decklab::ui
+class DeckLabProgressLine;
+class DeckLabTonePad;
 
 /// Deck Setup: "plug in any Mixxx-supported controller and play".
 /// Controller (detect, suggest and enable a mapping in-process), Audio
@@ -100,6 +105,9 @@ class DeckLabSetupWizard : public QWidget {
     void fillAudioCombos();
     void audioChoiceChanged();
     void testTone(bool headphones, int side);
+    /// Sound check (Signature 5): after a tone, "did you hear it?".
+    void answerTone(bool headphones, bool heard);
+    void showQuestion(bool headphones, const QString& question, bool answers);
     void renderLayout();
     void renderDone();
     const DeckLabSystem::ControllerInfo* selected() const;
@@ -125,7 +133,9 @@ class DeckLabSetupWizard : public QWidget {
 
     QLabel* m_heading;
     QHBoxLayout* m_stepRow;
-    QList<QLabel*> m_stepLabels;
+    // r4-system: the progress line replaces the step labels (F-02).
+    DeckLabProgressLine* m_progress = nullptr;
+    decklab::ui::KnobNavigator* m_knob = nullptr;
     QStackedWidget* m_pages;
     QWidget* m_footer;
     QLabel* m_message;
@@ -157,6 +167,17 @@ class DeckLabSetupWizard : public QWidget {
     QComboBox* m_phones;
     QLabel* m_audioWarning;
     QList<QPushButton*> m_testButtons;
+    // Sound check: a pad per side, its meter moves with the tone.
+    QList<DeckLabTonePad*> m_pads;
+    QLabel* m_mainQuestion = nullptr;
+    QLabel* m_phonesQuestion = nullptr;
+    QWidget* m_mainAnswers = nullptr;
+    QWidget* m_phonesAnswers = nullptr;
+    QPointer<DeckLabTonePad> m_playingPad;
+    QString m_lastTone; // pad and route of the last tone: a second tap adds 6 dB
+    double m_toneDbfs = -24;
+    QTimer m_toneMeter;
+    QElapsedTimer m_toneSince;
     // Layout step
     QPushButton* m_two;
     QPushButton* m_four;

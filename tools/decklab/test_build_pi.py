@@ -98,7 +98,7 @@ class BuildGuards(unittest.TestCase):
                          "ControllerFxDetailsReadAllRealUnitsWithoutControlWrites",
                          "ControllerFxSummaryIncludesFourthSlotOnlyWithoutControlWrites",
                     "WaveformLayoutPreferenceRoundTripsBothDeckCountsWithoutEngineWrites",
-                         "SettingsTouchSwipeRevealsDeckFourWithoutTogglingQuantize",
+                         "SettingsTouchSwipeScrollsWithoutTogglingQuantize",
                          "SourcesTouchSwipeRevealsOffscreenRowsWithoutOpeningThem",
                          "LinkedZoomFollowsTheLastStableExternalChangeWithoutFeedback",
                          "MasterLockMissingBeatGridAndSavedLoopIndicatorsUseRealState",

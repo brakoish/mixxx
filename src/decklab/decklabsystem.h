@@ -134,7 +134,9 @@ class DeckLabSystem : public QObject {
     decklab::AudioPlan currentAudioPlan() const;
     bool applyAudio(const decklab::AudioPlan& plan, QString* error);
     /// side: 0 = left only, 1 = right only, -1 = both channels of the pair.
-    void playTestTone(const decklab::AudioRoute& route, int side, Done done);
+    /// dbfs: the peak level (sound check: -24, then -18 on a second tap).
+    void playTestTone(const decklab::AudioRoute& route, int side, Done done,
+            double dbfs = decklab::kTestToneDbfs);
     bool isTestingTone() const {
         return m_toneRunning;
     }

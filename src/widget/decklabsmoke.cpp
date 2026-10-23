@@ -26,11 +26,14 @@
 #include "control/controlobject.h"
 #include "decklab/decklabdclient.h"
 #include "decklab/decklabfakeservice.h"
+#include "decklab/decklabrail.h"
+#include "decklab/decklabsettings.h"
 #include "decklab/decklabsetupwizard.h"
 #include "decklab/decklabsystem.h"
 #include "decklab/decklabsystempages.h"
 #include "decklab/decklabsystemui.h"
 #include "decklab/decklabui.h"
+#include "library/decklabknob.h"
 #include "library/coverartutils.h"
 #include "library/library.h"
 #include "library/sidebarmodel.h"
@@ -53,10 +56,12 @@ namespace {
 // canned decklabd on a private socket so the pages show real content. The
 // host's own decklabd and devices are never touched.
 constexpr int kSystemFirst = 21;
-constexpr int kSystemSteps = 25;
+// r4-system: +2 (Settings driven by the knob, a rail notice over Decks).
+constexpr int kSystemSteps = 27;
 constexpr int kLargeFirst = kSystemFirst + 20; // two 1024x600 captures
 constexpr int kLargeCount = 2;
 constexpr int kSheetFirst = kLargeFirst + kLargeCount; // Deck Lab sheets
+constexpr int kSheetCount = 3;
 
 void clickVisible(QWidget* root, const QString& name, const QString& text = QString()) {
     for (auto* button : root->findChildren<QPushButton*>(name)) {
@@ -87,7 +92,8 @@ void labFxSmokeStep(QWidget* surface, int index) {
 void checkSystemTouchTargets(QWidget* surface, QJsonArray& failures) {
     QList<QWidget*> roots;
     for (const auto& name : {QStringLiteral("decklab-system-page"), QStringLiteral("decklab-setup-wizard"),
-                 QStringLiteral("decklab-confirm"), QStringLiteral("decklab-settings")}) {
+                 QStringLiteral("decklab-confirm"), QStringLiteral("decklab-settings"),
+                 QStringLiteral("decklab-status-sheet"), QStringLiteral("decklab-rail")}) {
         roots.append(surface->window()->findChildren<QWidget*>(name));
     }
     for (auto* root : std::as_const(roots)) {
@@ -147,6 +153,9 @@ void checkBarlow(QWidget* surface, QJsonArray& failures) {
 void closeSheets(QWidget* surface) {
     for (auto* sheet : surface->window()->findChildren<decklab::ui::Confirm*>()) {
         sheet->close();
+    }
+    for (auto* sheet : surface->window()->findChildren<DeckLabStatusSheet*>()) {
+        sheet->hide();
     }
 }
 
@@ -252,10 +261,13 @@ void systemSmokeStep(int index, WDeckLab* surface) {
         }
         break;
     case 22:
-        // The rail status sheet (no sound output here: Fix opens Deck Setup).
+        // r4-system: the rail status sheet, one line per subsystem (with no
+        // sound output the zone itself is the FIX button for Deck Setup).
         clickVisible(surface, QStringLiteral("decklab-setup-close"));
         surface->selectPage(0);
-        clickVisible(surface, QStringLiteral("decklab-status"));
+        if (auto* rail = surface->findChild<DeckLabRail*>()) {
+            rail->openSheet();
+        }
         break;
     case 23:
         // Making the read-only rekordbox stick writable asks first. The page
@@ -269,6 +281,30 @@ void systemSmokeStep(int index, WDeckLab* surface) {
         closeSheets(surface);
         settings(Section::Bluetooth);
         QTimer::singleShot(250, surface, [surface] { clickVisible(surface, QStringLiteral("decklab-bt-device")); });
+        break;
+    case 25:
+        // r4-system: Settings driven by the knob: two turns, a press (into
+        // Headphones), a turn (the focus ring on the first row).
+        closeSheets(surface);
+        surface->selectPage(4);
+        if (auto* page = surface->findChild<DeckLabSettingsPage*>()) {
+            page->showCategory(DeckLabSettingsPage::Decks);
+            QTimer::singleShot(150, surface, [] {
+                if (QWidget* knob = decklab::knobClaimant()) {
+                    for (int key : {Qt::Key_Down, Qt::Key_Down, Qt::Key_Return, Qt::Key_Down}) {
+                        QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier);
+                        QApplication::sendEvent(knob, &press);
+                    }
+                }
+            });
+        }
+        break;
+    case 26:
+        // r4-system: system news slides into the rail, never over the page.
+        surface->selectPage(0);
+        if (ui) {
+            ui->showOverlayProbe();
+        }
         break;
     default: break;
     }
@@ -667,10 +703,13 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                         failures->append("Empty collection offers Load without a track selection");
             }
             // Sheets hosted on the main window are captured over the surface.
-            const QPixmap screen = *step >= kSheetFirst
+            const bool sheet = *step >= kSheetFirst && *step < kSheetFirst + kSheetCount;
+            const QPixmap screen = sheet
                     ? surface->window()->grab(QRect(surface->mapTo(surface->window(), QPoint()), surface->size()))
                     : surface->grab();
-            if (*step >= kSheetFirst && !surface->window()->findChild<decklab::ui::Confirm*>())
+            bool statusSheet = false;
+            for (auto* status : surface->findChildren<DeckLabStatusSheet*>()) statusSheet |= status->isVisible();
+            if (sheet && !surface->window()->findChild<decklab::ui::Confirm*>() && !statusSheet)
                 failures->append(QStringLiteral("Deck Lab sheet missing on screen %1").arg(*step));
             if (!screen.save(QDir(output).filePath(QStringLiteral("app-screen-%1.png").arg(*step, 2, 10, QLatin1Char('0'))))) failures->append("Screenshot failed");
             if (*step == 18) {

@@ -1764,6 +1764,8 @@ add_library(
   src/decklab/decklabdclient.cpp
   src/decklab/decklabfakeservice.cpp
   src/decklab/decklaboverlay.cpp
+  src/decklab/decklabrail.cpp
+  src/decklab/decklabsettings.cpp
   src/decklab/decklabsetupmodel.cpp
   src/decklab/decklabsetupwizard.cpp
   src/decklab/decklabsignals.cpp
@@ -1772,6 +1774,7 @@ add_library(
   src/decklab/decklabsystemui.cpp
   src/decklab/decklabui.cpp
   src/decklab/decklabutilities.cpp
+  src/decklab/decklabutility.cpp
   src/widget/decklabdeckwidgets.cpp
   src/widget/decklabsampler.cpp
   src/widget/decklabsamplercontrols.cpp

@@ -1,23 +1,28 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
+#include <QJsonObject>
 #include <QObject>
 #include <QPointer>
 #include <QTimer>
 #include <functional>
 
+#include "decklab/decklabrail.h"
 #include "decklab/decklabsystempages.h"
 
-class ControlProxy;
 class DeckLabSetupWizard;
 class DeckLabSystem;
-class QLabel;
 class QPushButton;
 class QWidget;
 
+namespace decklab::ui {
+class ActionRow;
+}
+
 /// Glue between the native surface (WDeckLab) and Deck Lab system
-/// integration: the Settings → System and Setup pages, native tool routing,
-/// the Deck Setup wizard and the touch-through status banners.
+/// integration: the Settings → Unit and Controller & audio pages, native
+/// tool routing and the Deck Setup wizard. r4-system: system news goes to
+/// the rail (notices and lamps), never over the page: no banners.
 class DeckLabSystemUi : public QObject {
     Q_OBJECT
   public:
@@ -27,6 +32,11 @@ class DeckLabSystemUi : public QObject {
         std::function<void(int)> applyLayout;
         std::function<bool(int)> legacyTool;
         std::function<void()> beforeTool;
+        /// r4-system: a notice for the rail (slides in, collapses to its lamp).
+        std::function<void(const decklab::rail::Notice&)> notify;
+        /// r4-system: something the rail shows changed (service, USB, Wi-Fi,
+        /// controllers, heat, power).
+        std::function<void()> statusChanged;
     };
 
     DeckLabSystemUi(QWidget* surface, Hooks hooks);
@@ -45,45 +55,46 @@ class DeckLabSystemUi : public QObject {
     DeckLabSetupWizard* openFirstRun();
     DeckLabSetupWizard* wizard() const;
     void setAudioOutputConfigured(bool configured);
-    /// Overlay stacking check for a real display (DECKLAB_OVERLAY_PROBE=<s>
+    /// Overlay and rail check for a real display (DECKLAB_OVERLAY_PROBE=<s>
     /// runs it <s> seconds after attach, then opens the first-run flow 30 s
-    /// later): a toast, a warning banner and a tappable controller offer over
-    /// the surface for 30 s. Changes no setting.
+    /// later): a rail notice and a tappable controller offer. Changes no
+    /// setting.
     void showOverlayProbe();
+    /// r4-system: the system half of the rail's inputs (service, USB, Wi-Fi,
+    /// controller, heat, power, sound summary). Cached; cheap to call.
+    void fillRailInputs(decklab::rail::Inputs& inputs) const;
+    /// Controller & audio at a glance: READY, NO SOUND or SET UP.
+    void readiness(QString* value, decklab::ui::Lamp* lamp) const;
+    /// The unknown controller offered for Deck Setup, if any.
+    QString offeredController() const {
+        return m_offerKey;
+    }
 
   signals:
     void toolsConnectedChanged(bool connected);
 
-  protected:
-    bool eventFilter(QObject* watched, QEvent* event) override;
-
   private:
-    void layoutBanners();
-    void updateAudioBanner();
     void updateSetupPanel();
-    void showToast(const QString& text, int milliseconds = 5000);
+    void refreshRail();
+    void showToast(const QString& text, int milliseconds = 4000);
     void offerController(const QString& key, const QString& name);
     void launchApp(const QString& app, const QString& name);
+    void notify(const QString& text, decklab::ui::Lamp lamp, std::function<void()> action = {}, int milliseconds = 4000);
 
     QPointer<QWidget> m_surface;
     Hooks m_hooks;
     QPointer<DeckLabSystem> m_system;
     QPointer<DeckLabSystemPage> m_systemPage;
     QPointer<DeckLabSetupWizard> m_wizard;
-    QPointer<QPushButton> m_setupButton;
-    QPointer<QLabel> m_setupController;
-    QPointer<QLabel> m_setupAudio;
-    QPushButton* m_audioBanner;
-    QPushButton* m_offerBanner;
-    QPushButton* m_thermalBanner;
-    QPushButton* m_toast;
-    ControlProxy* m_tab;
-    ControlProxy* m_soundStatus;
-    QTimer m_toastTimer;
+    QPointer<decklab::ui::ActionRow> m_setupButton;
+    QPointer<decklab::ui::ActionRow> m_setupController;
+    QPointer<decklab::ui::ActionRow> m_setupAudio;
     QTimer m_offerTimer;
-    QTimer m_audioDebounce;
-    QTimer m_probeTimer;
-    QString m_probeWarning;
     QString m_offerKey;
+    QString m_offerName;
+    QJsonObject m_wifi;
+    // The system half of the rail, recomputed only when decklabd says so.
+    decklab::rail::Inputs m_rail;
+    QString m_lastHeat;
     bool m_outputConfigured = false;
 };
