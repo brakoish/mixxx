@@ -137,7 +137,7 @@ on the first (F-05). The knob drives Deck Setup.
 - Offscreen harness linking the **real** `decklabrail.cpp`, `decklabui.cpp`, `decklabutility.cpp`,
   `decklabinstruments.h`, `decklabdeckwidgets.cpp` and the real `kStyle`/`kRailStyle` (page layouts mirror
   `decklabsettings.cpp`/`decklabsystempages.cpp`; the Unit tiles, hold buttons, tone pads and progress line are the
-  real classes): 59 checks, all pass. Among them: tabs Barlow 16 px; gear at the right edge; the alert moves no tab
+  real classes): 57 checks, all pass. Among them: tabs Barlow 16 px; gear at the right edge; the alert moves no tab
   or the zone; REC `12:34` live red, OUT caution on dropouts; the notice stays in the rail (y 0-43) between FX and the
   zone; tapping it runs its action; CTRL says NEW; the sheet covers only the page and owns the knob, knob back
   closes it; Settings owns the knob; four turns reach Quantize, a press flips it; press-turn previews without
