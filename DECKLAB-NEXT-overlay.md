@@ -134,7 +134,7 @@ A real `WGLWidget` cannot run offscreen. In its place the tests use a `QWindow` 
   resync after an ancestor move, input flags, `grab()`, suppression and restore, and destruction
   orders.
 - The modified sources passed a Qt 6.4 syntax check.
-- CI: see below.
+- CI run 39873539758 passed (see CI below).
 
 ## On-Pi verification (coordinator)
 `DECKLAB_OVERLAY_PROBE=<s>` is a developer hook that does nothing unless set. `<s>` seconds after
@@ -182,4 +182,6 @@ That flow is only marked done if it is completed, so "Later" leaves it unset.
   `tools/decklab/pi-build-lock.json` (suite added, hashes refreshed).
 
 ## CI
-Pending.
+Run 39873539758 (commit fe6f50328e) passed: 360 native tests (357 on `round3`, plus the 3
+new `DeckLabOverlayTest` tests), 0 failures, the offscreen smoke run with 43 screens and no
+failures, and the input lock check.
