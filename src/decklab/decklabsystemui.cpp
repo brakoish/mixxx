@@ -46,10 +46,7 @@ class Banner : public TouchButton {
     void setMessage(const QString& text) {
         setText(text);
         setAccessibleName(text);
-        QFont bold = font();
-        bold.setPixelSize(16);
-        bold.setWeight(QFont::DemiBold);
-        const int textWidth = QFontMetrics(bold).horizontalAdvance(text);
+        const int textWidth = QFontMetrics(uiFont(font(), 16, QFont::DemiBold)).horizontalAdvance(text);
         m_width = 16 + 22 + 10 + textWidth + (m_actionable ? 30 : 16);
         update();
     }
@@ -61,36 +58,32 @@ class Banner : public TouchButton {
     void paintEvent(QPaintEvent*) override {
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
-        QColor background("#1c1c1c");
-        QColor border("#4a4a4a");
-        QColor accent("#e6e6e6");
+        // Opaque brand surfaces. Info: panel and line. Caution (heat, power):
+        // raised fill with a white edge, never amber (amber is deck 2).
+        // Alert (no sound output): live red, because the room hears nothing.
+        QColor background(isDown() ? kRaise : kPanel);
+        QColor border(kLine);
+        QColor accent(kText);
         if (m_kind == BannerKind::Alert) {
-            background = QColor(isDown() ? "#4a1a1d" : "#2d1416");
-            border = QColor(kAccent);
-            accent = QColor("#ff8f92");
+            border = QColor(kLive);
+            accent = QColor(kLive);
         } else if (m_kind == BannerKind::Warning) {
-            background = QColor("#2a2312");
-            border = QColor("#a07a22");
-            accent = QColor("#ffc84a");
+            background = QColor(kRaise);
+            border = QColor(kText);
         }
-        background.setAlpha(240);
         painter.setPen(QPen(border, 1.2));
         painter.setBrush(background);
         painter.drawRoundedRect(QRectF(rect()).adjusted(0.6, 0.6, -0.6, -0.6), 4, 4);
         paintIcon(painter, QRectF(14, (height() - 20) / 2.0, 20, 20), m_icon, accent);
-        QFont bold = font();
-        bold.setPixelSize(16);
-        bold.setWeight(QFont::DemiBold);
+        const QFont bold = uiFont(font(), 16, QFont::DemiBold);
         painter.setFont(bold);
-        painter.setPen(QColor("#f6f6f6"));
+        painter.setPen(QColor(kText));
         const int right = m_actionable ? 30 : 14;
         painter.drawText(QRect(44, 0, std::max(0, width() - 44 - right), height()),
                 Qt::AlignLeft | Qt::AlignVCenter,
                 QFontMetrics(bold).elidedText(text(), Qt::ElideRight, std::max(0, width() - 44 - right)));
         if (m_actionable) {
-            QFont chevron = font();
-            chevron.setPixelSize(20);
-            painter.setFont(chevron);
+            painter.setFont(uiFont(font(), 20, QFont::DemiBold));
             painter.setPen(accent);
             painter.drawText(QRect(width() - 26, 0, 16, height()), Qt::AlignCenter, QStringLiteral("›"));
         }

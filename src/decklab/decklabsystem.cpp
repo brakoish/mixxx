@@ -142,8 +142,10 @@ QString playToneOnDevice(int deviceIndex, int baseChannel, int side, double samp
     if (error == paNoError) {
         // Left low, right high, both in between: easy to tell apart by ear.
         const double frequency = side == 0 ? 523.25 : side == 1 ? 783.99 : 659.25;
+        // Quiet (-24 dBFS) with 50 ms fades: it may play on a club PA.
+        const double amplitude = decklab::testToneAmplitude();
         const int frames = static_cast<int>(sampleRate * 0.9);
-        const int fade = std::max(1, static_cast<int>(sampleRate * 0.02));
+        const int fade = std::max(1, static_cast<int>(sampleRate * 0.05));
         constexpr int kChunk = 512;
         std::vector<float> buffer(static_cast<size_t>(kChunk * channels));
         for (int written = 0; written < frames; written += kChunk) {
@@ -155,7 +157,7 @@ QString playToneOnDevice(int deviceIndex, int baseChannel, int side, double samp
                         n / static_cast<double>(fade),
                         (frames - n) / static_cast<double>(fade)});
                 const auto sample = static_cast<float>(
-                        0.25 * envelope * std::sin(6.283185307179586 * frequency * n / sampleRate));
+                        amplitude * envelope * std::sin(6.283185307179586 * frequency * n / sampleRate));
                 float* slot = &buffer[static_cast<size_t>(frame * channels)];
                 if (side != 1) {
                     slot[baseChannel] = sample;

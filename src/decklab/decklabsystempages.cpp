@@ -36,6 +36,10 @@ using Section = DeckLabSystemPage::Section;
 
 namespace {
 
+// Public source of this Mixxx fork, for the GPL source offer on About. A fork
+// that publishes its own builds points this at its own repository.
+const QString kSourceCodeUrl = QStringLiteral("https://github.com/brakoish/mixxx");
+
 QString sectionKey(Section section) {
     switch (section) {
     case Section::Home:
@@ -756,12 +760,23 @@ class BluetoothPage : public SectionPage {
                     : isConnected          ? QStringLiteral("bt.disconnect")
                                            : QStringLiteral("bt.connect");
             const QString label = !paired ? tr("Pair") : isConnected ? tr("Disconnect") : tr("Connect");
-            auto* action = button(m_busy.contains(address) ? tr("Working…") : label, line,
-                    QStringLiteral("decklab-bt-action"), 56);
+            const bool busy = m_busy.contains(address);
+            auto* action = button(busy ? tr("Working…") : label, line, QStringLiteral("decklab-bt-action"), 56);
             action->setFixedWidth(120);
-            action->setEnabled(!m_busy.contains(address));
+            action->setEnabled(!busy);
             connect(action, &QPushButton::clicked, this, [this, method, address] { run(method, address); });
-            connect(row, &QPushButton::clicked, action, &QPushButton::click);
+            // A row tap only shows details: tapping the connected speaker must
+            // never disconnect it. The explicit button is the only action.
+            connect(row, &QPushButton::clicked, this, [this, name, address, state, audio, busy, label, method] {
+                QStringList lines{state + (audio ? tr(" · Audio") : QString())};
+                if (audio) {
+                    lines.append(tr("Bluetooth sound arrives late. Fine for practice, not for mixing."));
+                }
+                lines.append(tr("Address: %1").arg(address));
+                Confirm::details(window(), name, lines.join(QLatin1Char('\n')), busy ? QString() : label,
+                        busy ? std::function<void()>()
+                             : std::function<void()>([this, method, address] { run(method, address); }));
+            });
             lineLayout->addWidget(action);
             if (paired) {
                 auto* forget = button(tr("Forget"), line, QStringLiteral("decklab-bt-forget"), 56);
@@ -890,7 +905,8 @@ class TimePage : public SectionPage {
         auto* clockLayout = vbox(clockCard, 16, 2);
         m_clock = new QLabel(clockCard);
         m_clock->setObjectName(QStringLiteral("decklab-time-clock"));
-        m_clock->setStyleSheet(QStringLiteral("font-size:40px;font-weight:500;color:#f2f4f7;"));
+        // Hero readout: 36 px Barlow Semi Condensed SemiBold.
+        m_clock->setProperty("role", QStringLiteral("hero"));
         clockLayout->addWidget(m_clock);
         m_date = muted(QString(), clockCard);
         clockLayout->addWidget(m_date);
@@ -1214,14 +1230,15 @@ class StoragePage : public SectionPage {
             auto* record = button(recordingHere ? tr("Used for recordings") : tr("Use for recordings"), panel,
                     QStringLiteral("decklab-drive-record"), 48);
             record->setEnabled(!recordingHere && mounted);
-            connect(record, &QPushButton::clicked, this, [this, drive] {
-                say(tr("Preparing the drive…"));
-                m_system->useDriveForRecordings(drive, [self = QPointer<StoragePage>(this)](bool ok, const QString& text) {
-                    if (self) {
-                        self->say(text, !ok);
-                        self->render();
-                    }
-                });
+            connect(record, &QPushButton::clicked, this, [this, drive, label, readOnly] {
+                if (!readOnly) {
+                    useForRecordings(drive);
+                    return;
+                }
+                // USB drives mount read-only. Never make one writable without
+                // saying so; a pulled stick mid-write can damage its export.
+                Confirm::ask(window(), tr("Make %1 writable?").arg(label), writableNotice(drive, label),
+                        tr("Make writable"), [this, drive] { useForRecordings(drive); }, false);
             });
             actions->addWidget(record, 1);
             auto* eject = button(tr("Eject"), panel, QStringLiteral("decklab-drive-eject"), 48);
@@ -1243,6 +1260,51 @@ class StoragePage : public SectionPage {
             m_driveLayout->addWidget(panel);
             Q_UNUSED(id);
         }
+    }
+
+    void useForRecordings(const QJsonObject& drive) {
+        if (!m_system) {
+            return;
+        }
+        say(tr("Preparing the drive…"));
+        m_system->useDriveForRecordings(drive, [self = QPointer<StoragePage>(this)](bool ok, const QString& text) {
+            if (self) {
+                self->say(text, !ok);
+                self->render();
+            }
+        });
+    }
+
+    // Plain explanation for the confirmation. A drive with a rekordbox
+    // export is allowed, but another drive is recommended first.
+    QString writableNotice(const QJsonObject& drive, const QString& label) const {
+        const bool rekordbox = drive.value(QStringLiteral("rekordbox")).toBool();
+        QStringList paragraphs{rekordbox
+                        ? tr("Deck Lab will write recordings to %1. Your rekordbox export isn't changed.").arg(label)
+                        : tr("Deck Lab will write recordings to %1. Nothing else on it is changed.").arg(label)};
+        if (rekordbox) {
+            QString other;
+            if (m_system) {
+                const QString id = drive.value(QStringLiteral("id")).toString();
+                for (const auto& value : m_system->usbDrives()) {
+                    const QJsonObject candidate = value.toObject();
+                    if (candidate.value(QStringLiteral("id")).toString() != id &&
+                            candidate.value(QStringLiteral("mounted")).toBool(true) &&
+                            !candidate.value(QStringLiteral("read_only")).toBool(true)) {
+                        other = candidate.value(QStringLiteral("label")).toString(tr("USB drive"));
+                        break;
+                    }
+                }
+            }
+            paragraphs.append(other.isEmpty()
+                            ? tr("This drive holds your rekordbox export, so another USB drive is safer "
+                                 "for recordings.")
+                            : tr("This drive holds your rekordbox export, so another drive is safer for "
+                                 "recordings: %1 is ready to use.")
+                                      .arg(other));
+        }
+        paragraphs.append(tr("Eject the drive before you unplug it."));
+        return paragraphs.join(QStringLiteral("\n\n"));
     }
 
     QLabel* m_recordingTarget;
@@ -1350,22 +1412,23 @@ class Wordmark : public QWidget {
     void paintEvent(QPaintEvent*) override {
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
+        // Bundled condensed face, never a synthesised system fallback.
         QFont mark = font();
+        mark.setFamilies({QStringLiteral("Barlow Semi Condensed"), QStringLiteral("Barlow")});
         mark.setPixelSize(36);
-        mark.setWeight(QFont::Black);
-        mark.setStretch(QFont::Condensed);
+        mark.setWeight(QFont::Bold);
         painter.setFont(mark);
         const QFontMetrics metrics(mark);
         const int cap = metrics.capHeight();
         const int baseline = (height() + cap) / 2;
         int x = 0;
-        painter.setPen(QColor("#f2f4f7"));
+        painter.setPen(QColor(kText));
         const QString deck = QStringLiteral("DECK");
         const QString lab = QStringLiteral("LAB");
         painter.drawText(x, baseline, deck);
         x += metrics.horizontalAdvance(deck) + 7;
         // The playhead is the only red in the mark.
-        painter.fillRect(QRect(x, baseline - cap - 5, 4, cap + 10), QColor("#ff3d2e"));
+        painter.fillRect(QRect(x, baseline - cap - 5, 4, cap + 10), QColor(kLive));
         x += 4 + 7;
         painter.drawText(x, baseline, lab);
     }
@@ -1385,10 +1448,31 @@ class AboutPage : public SectionPage {
         m_grid->setHorizontalSpacing(18);
         m_grid->setVerticalSpacing(9);
         m_grid->setColumnStretch(1, 1);
+        // The GPL source offer: static, so the 5 s refresh never touches it.
+        auto* source = card(m_content);
+        source->setObjectName(QStringLiteral("decklab-about-source-card"));
+        auto* sourceGrid = new QGridLayout(source);
+        sourceGrid->setContentsMargins(16, 12, 16, 12);
+        sourceGrid->setHorizontalSpacing(18);
+        sourceGrid->setVerticalSpacing(9);
+        sourceGrid->setColumnStretch(1, 1);
+        const auto addSource = [source, sourceGrid](int line, const QString& name, const QString& value,
+                                       const QString& objectName) {
+            auto* key = muted(name, source);
+            key->setWordWrap(false);
+            auto* text = new QLabel(value, source);
+            text->setObjectName(objectName);
+            text->setProperty("role", QStringLiteral("value"));
+            text->setWordWrap(true);
+            text->setTextFormat(Qt::PlainText);
+            text->setTextInteractionFlags(Qt::NoTextInteraction);
+            sourceGrid->addWidget(key, line, 0, Qt::AlignTop);
+            sourceGrid->addWidget(text, line, 1);
+        };
+        addSource(0, tr("Source code"), kSourceCodeUrl, QStringLiteral("decklab-about-source"));
+        addSource(1, tr("Licence"), tr("GNU GPL, version 2 or later"), QStringLiteral("decklab-about-licence"));
+        m_layout->addWidget(source);
         m_layout->addWidget(panel);
-        m_layout->addWidget(muted(tr("The source code and licences are available at %1.")
-                                          .arg(QStringLiteral("[REPO URL]")),
-                m_content));
         m_layout->addStretch(1);
         m_refresh.setInterval(5000);
         connect(&m_refresh, &QTimer::timeout, this, [this] { refresh(); });

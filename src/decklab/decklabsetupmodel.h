@@ -64,6 +64,12 @@ AudioPlan planAudio(const QList<AudioDevice>& devices, const QString& headphones
 /// "Outputs 1–2" style label for a channel pair.
 QString channelPairLabel(int channelBase);
 
+/// Deck Setup test tones start quiet: Main may be a club PA and the
+/// headphones may already be on someone's ears. Peak level in dBFS.
+constexpr double kTestToneDbfs = -24.0;
+/// Linear peak amplitude of a test tone (kTestToneDbfs, about 0.063).
+double testToneAmplitude();
+
 struct LoadedTrack {
     QString group; // "[Channel1]", "[Sampler3]", "[PreviewDeck1]"
     QString location;

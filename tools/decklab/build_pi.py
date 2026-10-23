@@ -278,8 +278,8 @@ def build(work, jobs, lock):
     with (out / "native-smoke.log").open("w") as log:
         subprocess.run(smoke, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=90)
     smoke_result = json.loads((out / "native-smoke.json").read_text())
-    # 21 surface captures plus 22 Deck Lab system/first-run captures (two at 1024x600).
-    if smoke_result != {"audio_started": False, "failures": [], "screens": 43, "native_rmx_units_loaded": 2}:
+    # 21 surface captures plus 25 Deck Lab system/first-run captures (two at 1024x600, three sheets).
+    if smoke_result != {"audio_started": False, "failures": [], "screens": 46, "native_rmx_units_loaded": 2}:
         raise RuntimeError("Native application smoke check failed")
     record = {"source_revision": revision, "upstream_source_revision": lock["upstream_source_revision"],
               "architecture": "aarch64", "flatpak_commits": actual, "tests": summary,

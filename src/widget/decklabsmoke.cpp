@@ -5,13 +5,17 @@
 #include <QDataStream>
 #include <QDir>
 #include <QFile>
+#include <QFontInfo>
 #include <QHelpEvent>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
+#include <QLineEdit>
 #include <QLinearGradient>
 #include <QListWidget>
 #include <QPainter>
+#include <QPixmap>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -26,6 +30,7 @@
 #include "decklab/decklabsystem.h"
 #include "decklab/decklabsystempages.h"
 #include "decklab/decklabsystemui.h"
+#include "decklab/decklabui.h"
 #include "library/coverartutils.h"
 #include "library/library.h"
 #include "library/sidebarmodel.h"
@@ -47,8 +52,10 @@ namespace {
 // canned decklabd on a private socket so the pages show real content. The
 // host's own decklabd and devices are never touched.
 constexpr int kSystemFirst = 21;
-constexpr int kSystemSteps = 22;
-constexpr int kLargeFirst = kSystemFirst + 20; // 1024x600 captures
+constexpr int kSystemSteps = 25;
+constexpr int kLargeFirst = kSystemFirst + 20; // two 1024x600 captures
+constexpr int kLargeCount = 2;
+constexpr int kSheetFirst = kLargeFirst + kLargeCount; // Deck Lab sheets
 
 void clickVisible(QWidget* root, const QString& name, const QString& text = QString()) {
     for (auto* button : root->findChildren<QPushButton*>(name)) {
@@ -59,22 +66,72 @@ void clickVisible(QWidget* root, const QString& name, const QString& text = QStr
     }
 }
 
-// Every control on the system pages and in Deck Setup is a 44 px+ target in
-// the real surface style, not just in unit tests.
+// Every control on the system pages, in Deck Setup, in Deck Lab sheets and in
+// Settings (decklab-settings-*: category buttons, toggles and combo boxes) is
+// a 44 px+ target in the real surface style, not just in unit tests.
 void checkSystemTouchTargets(QWidget* surface, QJsonArray& failures) {
-    for (const auto& name : {QStringLiteral("decklab-system-page"), QStringLiteral("decklab-setup-wizard")}) {
-        for (auto* root : surface->findChildren<QWidget*>(name)) {
+    QList<QWidget*> roots;
+    for (const auto& name : {QStringLiteral("decklab-system-page"), QStringLiteral("decklab-setup-wizard"),
+                 QStringLiteral("decklab-confirm"), QStringLiteral("decklab-settings")}) {
+        roots.append(surface->window()->findChildren<QWidget*>(name));
+    }
+    for (auto* root : std::as_const(roots)) {
+        if (!root->isVisible()) {
+            continue;
+        }
+        QList<QWidget*> controls;
+        for (auto* button : root->findChildren<QPushButton*>()) {
+            controls.append(button);
+        }
+        for (auto* combo : root->findChildren<QComboBox*>()) {
+            controls.append(combo);
+        }
+        for (auto* control : std::as_const(controls)) {
+            if (control->isVisible() && control->height() < 44) {
+                const auto* button = qobject_cast<QPushButton*>(control);
+                failures.append(QStringLiteral("Small touch target %1 (%2 px)")
+                                        .arg(!control->objectName().isEmpty() ? control->objectName()
+                                                        : button                      ? button->text()
+                                                                                      : root->objectName())
+                                        .arg(control->height()));
+            }
+        }
+    }
+}
+
+// Barlow everywhere: Settings, the System pages, Deck Setup and Deck Lab
+// sheets must resolve the brand face, never the system fallback (DejaVu).
+void checkBarlow(QWidget* surface, QJsonArray& failures) {
+    QStringList wrong;
+    for (const auto& name : {QStringLiteral("decklab-system-page"), QStringLiteral("decklab-setup-wizard"),
+                 QStringLiteral("decklab-confirm"), QStringLiteral("decklab-settings")}) {
+        for (auto* root : surface->window()->findChildren<QWidget*>(name)) {
             if (!root->isVisible()) {
                 continue;
             }
-            for (auto* button : root->findChildren<QPushButton*>()) {
-                if (button->isVisible() && button->height() < 44) {
-                    failures.append(QStringLiteral("Small touch target %1 (%2 px)")
-                                            .arg(button->objectName().isEmpty() ? button->text() : button->objectName())
-                                            .arg(button->height()));
+            for (auto* widget : root->findChildren<QWidget*>()) {
+                if (!widget->isVisible() || !(qobject_cast<QLabel*>(widget) || qobject_cast<QAbstractButton*>(widget) ||
+                                                    qobject_cast<QComboBox*>(widget) || qobject_cast<QLineEdit*>(widget))) {
+                    continue;
+                }
+                const QString family = QFontInfo(widget->font()).family();
+                if (!family.startsWith(QStringLiteral("Barlow")) && wrong.size() < 5) {
+                    wrong.append(QStringLiteral("%1 %2 uses %3")
+                                         .arg(QString::fromLatin1(widget->metaObject()->className()),
+                                                 widget->objectName(),
+                                                 family));
                 }
             }
         }
+    }
+    for (const auto& text : std::as_const(wrong)) {
+        failures.append(QStringLiteral("Not Barlow: ") + text);
+    }
+}
+
+void closeSheets(QWidget* surface) {
+    for (auto* sheet : surface->window()->findChildren<decklab::ui::Confirm*>()) {
+        sheet->close();
     }
 }
 
@@ -178,6 +235,24 @@ void systemSmokeStep(int index, WDeckLab* surface) {
         if (ui) {
             ui->openFirstRun();
         }
+        break;
+    case 22:
+        // The rail status sheet (no sound output here: Fix opens Deck Setup).
+        clickVisible(surface, QStringLiteral("decklab-setup-close"));
+        surface->selectPage(0);
+        clickVisible(surface, QStringLiteral("decklab-status"));
+        break;
+    case 23:
+        // Making the read-only rekordbox stick writable asks first.
+        closeSheets(surface);
+        settings(Section::Storage);
+        clickVisible(surface, QStringLiteral("decklab-drive-record"));
+        break;
+    case 24:
+        // A Bluetooth row tap opens details; it never connects or disconnects.
+        closeSheets(surface);
+        settings(Section::Bluetooth);
+        clickVisible(surface, QStringLiteral("decklab-bt-device"));
         break;
     default: break;
     }
@@ -399,7 +474,9 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
             // checks and do not change the reported screen count.
             timer->stop();
             surface->setFixedSize(800, 480);
-            // The system captures end on the first-run flow; close it so Browse is what gets captured.
+            // The system captures end on Deck Lab sheets and Settings; close
+            // them so Browse is what gets captured.
+            closeSheets(surface);
             clickVisible(surface, QStringLiteral("decklab-setup-close"));
             seedDemoLibrary(surface->library(), QDir(config->getSettingsPath()).filePath("decklab-demo-music"));
             const auto press = [surface] { surface->browsePress(); return true; };
@@ -492,17 +569,26 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                     {"audio_started", false}, {"native_rmx_units_loaded", processors}}).toJson());
             qApp->exit(opened && failures->isEmpty() ? 0 : 71); return;
         }
-        const bool large = *step >= kLargeFirst && *step < kSystemFirst + kSystemSteps;
+        const bool large = *step >= kLargeFirst && *step < kLargeFirst + kLargeCount;
         surface->setFixedSize(large ? QSize(1024, 600) : QSize(800, 480));
         QTimer::singleShot(*step >= kSystemFirst ? 600 : 100, surface, [=] {
             if (!large) check();
-            if (*step >= kSystemFirst) checkSystemTouchTargets(surface, *failures);
+            if ((*step >= 10 && *step < 15) || *step >= kSystemFirst) {
+                checkSystemTouchTargets(surface, *failures);
+                checkBarlow(surface, *failures);
+            }
             if (*step == 15 || *step == 16) {
                 for (int deck = 1; deck <= 2; ++deck)
                     if (surface->findChild<QPushButton*>(QStringLiteral("decklab-load-%1").arg(deck))->isEnabled())
                         failures->append("Empty collection offers Load without a track selection");
             }
-            if (!surface->grab().save(QDir(output).filePath(QStringLiteral("app-screen-%1.png").arg(*step, 2, 10, QLatin1Char('0'))))) failures->append("Screenshot failed");
+            // Sheets hosted on the main window are captured over the surface.
+            const QPixmap screen = *step >= kSheetFirst
+                    ? surface->window()->grab(QRect(surface->mapTo(surface->window(), QPoint()), surface->size()))
+                    : surface->grab();
+            if (*step >= kSheetFirst && !surface->window()->findChild<decklab::ui::Confirm*>())
+                failures->append(QStringLiteral("Deck Lab sheet missing on screen %1").arg(*step));
+            if (!screen.save(QDir(output).filePath(QStringLiteral("app-screen-%1.png").arg(*step, 2, 10, QLatin1Char('0'))))) failures->append("Screenshot failed");
             if (*step == 18) {
                 // Wider HDMI touch panels must scale cleanly, not break.
                 surface->setFixedSize(1024, 600);

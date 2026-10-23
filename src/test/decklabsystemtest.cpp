@@ -7,6 +7,8 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFontDatabase>
+#include <QFontInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -38,6 +40,7 @@
 #include "decklab/decklabsystempages.h"
 #include "decklab/decklabui.h"
 #include "test/mixxxtest.h"
+#include "widget/decklabdeckwidgets.h"
 
 namespace {
 
@@ -89,6 +92,24 @@ int visibleCount(QWidget* root, const QString& name) {
         count += button->isVisibleTo(root);
     }
     return count;
+}
+
+// The Deck Lab sheet currently shown over `host`, if any.
+decklab::ui::Confirm* openSheet(QWidget* host) {
+    for (auto* sheet : host->findChildren<decklab::ui::Confirm*>()) {
+        if (sheet->isVisibleTo(host)) {
+            return sheet;
+        }
+    }
+    return nullptr;
+}
+
+QString sheetText(QWidget* sheet) {
+    QStringList texts;
+    for (auto* label : sheet->findChildren<QLabel*>()) {
+        texts.append(label->text());
+    }
+    return texts.join(QLatin1Char('\n'));
 }
 
 } // namespace
@@ -654,6 +675,185 @@ TEST_F(DeckLabSystemTest, SystemPagesShowServiceStateAndRefuseUnsafeEject) {
             }
         }
     }
+}
+
+TEST_F(DeckLabSystemTest, SystemKitUsesBarlowAndAboutNamesTheRealSource) {
+    deckLabLoadFonts(config()->getResourcePath());
+    ASSERT_TRUE(QFontDatabase::families().contains(QStringLiteral("Barlow")));
+    DeckLabFakeService fake;
+    ASSERT_TRUE(fake.listen(socketPath()));
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, socketPath());
+    // A plain host: the kit's own sheet must carry the brand face and style
+    // without any Deck Lab surface around it (Confirm sheets on the window).
+    QWidget host;
+    host.resize(800, 480);
+    auto* page = new DeckLabSystemPage(&host);
+    page->resize(800, 480);
+    page->setSystem(&system);
+    host.show();
+    system.start();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.isReady(); }, 3000));
+    page->showSection(DeckLabSystemPage::Section::About);
+    QTest::qWait(50);
+    auto* source = page->findChild<QLabel*>(QStringLiteral("decklab-about-source"));
+    ASSERT_NE(nullptr, source);
+    EXPECT_EQ(QStringLiteral("https://github.com/brakoish/mixxx"), source->text());
+    EXPECT_TRUE(source->isVisibleTo(page));
+    for (auto* label : page->findChildren<QLabel*>()) {
+        EXPECT_FALSE(label->text().contains(QStringLiteral("REPO URL"))) << qPrintable(label->text());
+    }
+    for (auto section : {DeckLabSystemPage::Section::Home, DeckLabSystemPage::Section::About,
+                 DeckLabSystemPage::Section::Time, DeckLabSystemPage::Section::Storage}) {
+        page->showSection(section);
+        QTest::qWait(50);
+        for (auto* widget : page->findChildren<QWidget*>()) {
+            if (widget->isVisibleTo(page) && (qobject_cast<QLabel*>(widget) || qobject_cast<QAbstractButton*>(widget))) {
+                EXPECT_TRUE(QFontInfo(widget->font()).family().startsWith(QStringLiteral("Barlow")))
+                        << qPrintable(widget->objectName()) << " " << qPrintable(QFontInfo(widget->font()).family());
+            }
+        }
+    }
+    // The clock is the hero readout: 36 px Barlow Semi Condensed.
+    page->showSection(DeckLabSystemPage::Section::Time);
+    auto* clock = page->findChild<QLabel*>(QStringLiteral("decklab-time-clock"));
+    ASSERT_NE(nullptr, clock);
+    EXPECT_EQ(36, QFontInfo(clock->font()).pixelSize());
+    EXPECT_EQ(QStringLiteral("Barlow Semi Condensed"), QFontInfo(clock->font()).family());
+    // A sheet hosted outside the surface gets the kit's face and buttons.
+    auto* sheet = decklab::ui::Confirm::inform(&host, QStringLiteral("Status"), QStringLiteral("No sound output."));
+    QTest::qWait(20);
+    auto* ok = sheet->findChild<QPushButton*>(QStringLiteral("decklab-confirm-cancel"));
+    ASSERT_NE(nullptr, ok);
+    EXPECT_TRUE(QFontInfo(ok->font()).family().startsWith(QStringLiteral("Barlow")));
+    EXPECT_EQ(16, QFontInfo(ok->font()).pixelSize());
+    EXPECT_GE(ok->height(), 44);
+}
+
+TEST_F(DeckLabSystemTest, UseForRecordingsAsksBeforeMakingAReadOnlyDriveWritable) {
+    // Generated drives mounted under the test's own temporary folder.
+    const QString stick = m_dir.filePath(QStringLiteral("media/6A3F-1C2B"));
+    const QString sets = m_dir.filePath(QStringLiteral("media/MIX-SETS"));
+    ASSERT_TRUE(QDir().mkpath(stick));
+    ASSERT_TRUE(QDir().mkpath(sets));
+    DeckLabFakeService fake;
+    fake.drives = QJsonArray{QJsonObject{{"id", "6A3F-1C2B"}, {"label", "DJ USB"}, {"mount", stick},
+                                     {"size_mb", 30528}, {"free_mb", 12402}, {"fs", "exfat"}, {"read_only", true},
+                                     {"rekordbox", true}, {"busy", false}},
+            QJsonObject{{"id", "0e9c1d7a-test"}, {"label", "MIX SETS"}, {"mount", sets}, {"size_mb", 61056},
+                    {"free_mb", 40220}, {"fs", "ext4"}, {"read_only", false}, {"rekordbox", false}, {"busy", false}}};
+    ASSERT_TRUE(fake.listen(socketPath()));
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, socketPath());
+    QWidget host;
+    host.resize(800, 480);
+    auto* page = new DeckLabSystemPage(&host);
+    page->resize(800, 480);
+    page->setSystem(&system);
+    host.show();
+    system.start();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.isReady() && system.usbDrives().size() == 2; }, 3000));
+    page->showSection(DeckLabSystemPage::Section::Storage);
+    ASSERT_TRUE(QTest::qWaitFor([&] { return visibleCount(page, QStringLiteral("decklab-drive-record")) == 2; }, 3000));
+
+    // A read-only rekordbox stick: say what happens and suggest the other drive.
+    visibleButton(page, QStringLiteral("decklab-drive-record"), 0)->click();
+    auto* sheet = openSheet(&host);
+    ASSERT_NE(nullptr, sheet);
+    const QString text = sheetText(sheet);
+    EXPECT_TRUE(text.contains(QStringLiteral("Make DJ USB writable?"))) << qPrintable(text);
+    EXPECT_TRUE(text.contains(QStringLiteral("Deck Lab will write recordings to DJ USB. Your rekordbox export isn't changed.")))
+            << qPrintable(text);
+    EXPECT_TRUE(text.contains(QStringLiteral("MIX SETS is ready to use"))) << qPrintable(text);
+    QTest::qWait(100);
+    EXPECT_FALSE(fake.calls.contains(QStringLiteral("usb.set_writable")));
+    // Cancel leaves the drive alone.
+    visibleButton(sheet, QStringLiteral("decklab-confirm-cancel"))->click();
+    QTest::qWait(100);
+    EXPECT_EQ(nullptr, openSheet(&host));
+    EXPECT_FALSE(fake.calls.contains(QStringLiteral("usb.set_writable")));
+    // Confirming makes it writable and sets up the recordings folder.
+    visibleButton(page, QStringLiteral("decklab-drive-record"), 0)->click();
+    sheet = openSheet(&host);
+    ASSERT_NE(nullptr, sheet);
+    visibleButton(sheet, QStringLiteral("decklab-confirm-accept"))->click();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return fake.calls.contains(QStringLiteral("usb.set_writable")); }, 2000));
+    EXPECT_TRUE(QTest::qWaitFor([&] {
+        return QFileInfo(QDir(stick).filePath(QStringLiteral("Deck Lab Recordings"))).isDir();
+    }, 2000));
+}
+
+TEST_F(DeckLabSystemTest, BluetoothRowTapOpensDetailsAndOnlyTheButtonActs) {
+    DeckLabFakeService fake;
+    ASSERT_TRUE(fake.listen(socketPath()));
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, socketPath());
+    QWidget host;
+    host.resize(800, 480);
+    auto* page = new DeckLabSystemPage(&host);
+    page->resize(800, 480);
+    page->setSystem(&system);
+    host.show();
+    system.start();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.isReady(); }, 3000));
+    page->showSection(DeckLabSystemPage::Section::Bluetooth);
+    ASSERT_TRUE(QTest::qWaitFor([&] { return visibleCount(page, QStringLiteral("decklab-bt-device")) == 2; }, 3000));
+    const auto actions = [&fake] {
+        int count = 0;
+        for (const auto& call : std::as_const(fake.calls)) {
+            count += call == QStringLiteral("bt.pair") || call == QStringLiteral("bt.connect") ||
+                    call == QStringLiteral("bt.disconnect") || call == QStringLiteral("bt.forget");
+        }
+        return count;
+    };
+    // Tapping the paired speaker's row only opens its details.
+    visibleButton(page, QStringLiteral("decklab-bt-device"), 0)->click();
+    QTest::qWait(400);
+    EXPECT_EQ(0, actions());
+    auto* sheet = openSheet(&host);
+    ASSERT_NE(nullptr, sheet);
+    const QString text = sheetText(sheet);
+    EXPECT_TRUE(text.contains(QStringLiteral("Practice Speaker"))) << qPrintable(text);
+    EXPECT_TRUE(text.contains(QStringLiteral("02:00:00:00:00:01"))) << qPrintable(text);
+    auto* close = visibleButton(sheet, QStringLiteral("decklab-confirm-cancel"));
+    ASSERT_NE(nullptr, close);
+    EXPECT_EQ(QStringLiteral("Close"), close->text());
+    close->click();
+    QTest::qWait(100);
+    EXPECT_EQ(0, actions());
+    // Only the explicit action acts: here, from the details sheet.
+    visibleButton(page, QStringLiteral("decklab-bt-device"), 0)->click();
+    sheet = openSheet(&host);
+    ASSERT_NE(nullptr, sheet);
+    auto* connect = visibleButton(sheet, QStringLiteral("decklab-confirm-accept"));
+    ASSERT_NE(nullptr, connect);
+    EXPECT_EQ(QStringLiteral("Connect"), connect->text());
+    connect->click();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return fake.calls.contains(QStringLiteral("bt.connect")); }, 2000));
+    EXPECT_EQ(1, actions());
+}
+
+TEST_F(DeckLabSystemTest, TestTonesStartQuietBehindALevelsWarning) {
+    // -24 dBFS peak: about 6 % of full scale, a quarter of the old -12 dBFS.
+    EXPECT_DOUBLE_EQ(-24.0, decklab::kTestToneDbfs);
+    EXPECT_NEAR(0.0631, decklab::testToneAmplitude(), 0.0001);
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, socketPath());
+    QWidget host;
+    host.resize(800, 480);
+    host.show();
+    auto* wizard = new DeckLabSetupWizard(&system, &host);
+    wizard->start(DeckLabSetupWizard::Step::Audio);
+    QTest::qWait(20);
+    auto* levels = wizard->findChild<QLabel*>(QStringLiteral("decklab-setup-level-warning"));
+    ASSERT_NE(nullptr, levels);
+    EXPECT_TRUE(levels->isVisibleTo(wizard));
+    EXPECT_EQ(QStringLiteral("Turn MASTER and PHONES down before you test."), levels->text());
+    EXPECT_GE(QFontInfo(levels->font()).pixelSize(), 16);
 }
 
 TEST_F(DeckLabSystemTest, FirstRunFlowCompletesWithoutAControllerAndSetsTheFlag) {
