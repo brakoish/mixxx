@@ -227,6 +227,20 @@ class DeckLabStemsTest : public BaseSignalPathTest {
     QWidget* deckRow() const {
         return panel->findChild<QWidget*>(QStringLiteral("decklab-deck-row"));
     }
+    // r4-decks: stems are STEM mode on the deck's pad block (decklabpads.h).
+    QPushButton* stemKey(int deck, bool card = false) const {
+        return panel->findChild<QPushButton*>(card
+                        ? QStringLiteral("decklab-card-pads-%1-mode-stem").arg(deck)
+                        : QStringLiteral("decklab-pads-%1-mode-stem").arg((deck - 1) % 2 + 1));
+    }
+    void stemMode(int deck, bool card = false) {
+        auto* key = stemKey(deck, card);
+        ASSERT_NE(nullptr, key);
+        ASSERT_TRUE(key->isEnabled()) << "STEM is offered for a stem track";
+        QTest::mousePress(key, Qt::LeftButton);
+        QTest::mouseRelease(key, Qt::LeftButton);
+        settle();
+    }
     double mute(int deck, int stem) const {
         return ControlObject::get(ConfigKey(stemGroup(deck, stem), QStringLiteral("mute")));
     }
@@ -388,55 +402,59 @@ TEST_F(DeckLabStemsTest, PadsAppearOnlyForStemTracksAndOtherwiseKeepTheLayoutExa
     QTest::qWait(50);
     const auto today = layoutSnapshot();
     ASSERT_TRUE(today.contains(QStringLiteral("decklab-detail-1")));
-    EXPECT_EQ(104 + 44 + 48 + 48, deckRow()->height());
+    // Readout, overview and the pad block (4 px gap, two 44 px rows).
+    EXPECT_EQ(104 + 44 + 4 + 92, deckRow()->height());
     for (int deck = 1; deck <= 4; ++deck) {
         ASSERT_NE(nullptr, rowPads(deck));
         EXPECT_FALSE(rowPads(deck)->present()) << deck;
         EXPECT_FALSE(rowPads(deck)->isVisible()) << deck;
     }
+    // STEM appears only for a stem track.
+    EXPECT_FALSE(stemKey(1)->isEnabled());
+    EXPECT_TRUE(stemKey(1)->text().isEmpty());
     // Stems on a deck that is not shown change nothing.
     loadGenerated(3, 128);
     fakeStems(3);
     EXPECT_TRUE(rowPads(3)->present());
     EXPECT_EQ(today, layoutSnapshot());
 
-    // Deck 1 holds a stem track: a 48 px stem row under its overview. The
-    // waveforms give up the height; hot cues and deck tools stay put.
+    // r4-decks: deck 1 holds a stem track. STEM joins its pad modes; the
+    // layout and the waveforms do not move (round 3 took a 48 px row).
     fakeStems(1);
     QTest::qWait(50);
     ASSERT_TRUE(rowPads(1)->present());
-    EXPECT_EQ(104 + 44 + 48 + 48 + 48, deckRow()->height());
+    EXPECT_EQ(104 + 44 + 4 + 92, deckRow()->height());
+    EXPECT_TRUE(stemKey(1)->isEnabled());
+    EXPECT_EQ(QStringLiteral("STEM"), stemKey(1)->text());
+    EXPECT_FALSE(rowPads(1)->isVisible()) << "until STEM mode is chosen";
+    EXPECT_EQ(today, layoutSnapshot());
+    stemMode(1);
     EXPECT_TRUE(rowPads(1)->isVisible());
     expectTouchPads(1, panel.get());
     const auto withStems = layoutSnapshot();
-    for (const auto* fixed : {"decklab-hotcue-1-1", "decklab-hotcue-2-8", "decklab-1-more", "decklab-2-more"}) {
+    // The stems take the top pad row, where A-D were; ALL and SOLO the
+    // bottom one. Nothing else moves.
+    EXPECT_EQ(today.value(QStringLiteral("decklab-hotcue-1-1")).topLeft(), pad(1, 1)->mapTo(panel.get(), QPoint()));
+    EXPECT_FALSE(withStems.contains(QStringLiteral("decklab-hotcue-1-1")));
+    EXPECT_TRUE(withStems.contains(QStringLiteral("decklab-pads-1-stem-all")));
+    EXPECT_TRUE(withStems.contains(QStringLiteral("decklab-pads-1-stem-solo")));
+    for (const auto* fixed : {"decklab-lane-1", "decklab-lane-2", "decklab-overview-1", "decklab-overview-2",
+                 "decklab-hotcue-2-8", "decklab-1-more", "decklab-2-more", "decklab-card-1", "decklab-card-2"}) {
         EXPECT_EQ(today.value(QString::fromLatin1(fixed)), withStems.value(QString::fromLatin1(fixed))) << fixed;
     }
-    const QRect overview = withStems.value(QStringLiteral("decklab-overview-1"));
-    EXPECT_EQ(overview.bottom() + 1 + 4, pad(1, 1)->mapTo(panel.get(), QPoint()).y())
-            << "4 px below the overview, like the hot-cue row";
-    const int waves = today.value(QStringLiteral("decklab-lane-1")).height() +
-            today.value(QStringLiteral("decklab-lane-2")).height();
-    EXPECT_EQ(waves - 48,
-            withStems.value(QStringLiteral("decklab-lane-1")).height() +
-                    withStems.value(QStringLiteral("decklab-lane-2")).height());
     for (int stem = 1; stem <= 4; ++stem) {
         // No manifest on a generated track: generic names, colours from the controls.
         EXPECT_EQ(QStringLiteral("Stem %1").arg(stem), pad(1, stem)->state().name);
         EXPECT_EQ(QColor::fromRgb(QRgb(kFixtureColors[stem - 1])), pad(1, stem)->state().color);
         EXPECT_FALSE(pad(1, stem)->state().muted);
     }
-    // Deck 2 has no stems: its half of the row stays empty and inert.
-    EXPECT_TRUE(rowPads(2)->isVisible());
+    // Deck 2 has no stems: its cue pads as before.
+    EXPECT_FALSE(rowPads(2)->isVisible());
     for (int stem = 1; stem <= 4; ++stem) {
         EXPECT_FALSE(pad(2, stem)->isVisible());
     }
-    EXPECT_EQ(withStems.value(QStringLiteral("decklab-card-1")).height(),
-            withStems.value(QStringLiteral("decklab-card-2")).height());
-    EXPECT_EQ(withStems.value(QStringLiteral("decklab-overview-2")),
-            today.value(QStringLiteral("decklab-overview-2")).translated(0, -48));
 
-    // A normal track on deck 1 again: exactly today's layout.
+    // A normal track on deck 1 again: its CUE pads, exactly today's layout.
     loadGenerated(1, 130);
     QTest::qWait(50);
     EXPECT_FALSE(rowPads(1)->present());
@@ -448,6 +466,7 @@ TEST_F(DeckLabStemsTest, TapHoldAndDoubleTapDriveTheRealStemMutes) {
     loadGenerated(1, 124);
     loadGenerated(2, 126);
     fakeStems(1);
+    stemMode(1);
     ASSERT_TRUE(pad(1, 2)->isVisible());
     // A touch mutes on touch-down, so a drop lands on the beat; the release
     // adds nothing.
@@ -459,14 +478,15 @@ TEST_F(DeckLabStemsTest, TapHoldAndDoubleTapDriveTheRealStemMutes) {
     release(pad(1, 2));
     EXPECT_EQ((std::array<double, 4>{0, 1, 0, 0}), mutes(1));
     EXPECT_TRUE(pad(1, 2)->state().muted);
-    // Muted reads without colour: hollow bar (no stem colour inside it), dim
-    // fill and a strike line through the name.
+    // Muted reads without colour: a dimmed underline (the stem colour is only
+    // ever a 3 px underline, r4-decks), the darkest fill and a strike line.
     const QImage muted = pad(1, 2)->grab().toImage();
     const QImage live = pad(1, 1)->grab().toImage();
     const QColor bass = QColor::fromRgb(QRgb(kFixtureColors[1]));
     const QColor drums = QColor::fromRgb(QRgb(kFixtureColors[0]));
-    EXPECT_TRUE(closeTo(drums, live.pixelColor(8, live.height() / 2))) << "live: solid colour bar";
-    EXPECT_FALSE(closeTo(bass, muted.pixelColor(8, muted.height() / 2))) << "muted: hollow bar";
+    EXPECT_TRUE(closeTo(drums, live.pixelColor(live.width() / 2, live.height() - 7))) << "live: full underline";
+    EXPECT_FALSE(closeTo(bass, muted.pixelColor(muted.width() / 2, muted.height() - 7))) << "muted: dimmed underline";
+    EXPECT_FALSE(closeTo(drums, live.pixelColor(8, live.height() / 2))) << "no side bar or fill in the stem colour";
     EXPECT_LT(muted.pixelColor(muted.width() - 3, 4).lightness(),
             live.pixelColor(live.width() - 3, 4).lightness())
             << "muted: dimmer fill";
@@ -502,6 +522,7 @@ TEST_F(DeckLabStemsTest, StaleGesturesNeverLeaveAStemSoloedOrMuted) {
     loadGenerated(2, 126);
     loadGenerated(3, 128);
     fakeStems(1);
+    stemMode(1);
     // A page change mid-hold ends the solo at once; the late release is spent.
     hold(pad(1, 1));
     ASSERT_EQ((std::array<double, 4>{0, 1, 1, 1}), mutes(1));
@@ -602,6 +623,9 @@ TEST_F(DeckLabStemsTest, FourDeckViewOffersStemsInTheMoreMenu) {
     ASSERT_NE(nullptr, menu);
     ASSERT_TRUE(menu->isVisible());
     ASSERT_NE(nullptr, menuPads(2));
+    // r4-decks: the MORE sheet holds the same pad block: STEM mode there.
+    EXPECT_FALSE(menuPads(2)->isVisible());
+    stemMode(2, true);
     EXPECT_TRUE(menuPads(2)->isVisible());
     expectTouchPads(2, menu);
     EXPECT_GE(menu->width(), 352);
@@ -621,14 +645,16 @@ TEST_F(DeckLabStemsTest, FourDeckViewOffersStemsInTheMoreMenu) {
     auto* menu1 = panel->findChild<QMenu*>("decklab-card-1-more-menu");
     ASSERT_TRUE(menu1->isVisible());
     EXPECT_FALSE(menuPads(1)->isVisible());
+    EXPECT_FALSE(stemKey(1, true)->isEnabled());
     menu1->close();
     settle();
     capture(QStringLiteral("stems-four-deck.png"));
-    // Back to two decks: deck 2 shows its row, with the mute still shown.
+    // Back to two decks: deck 2 keeps STEM mode (one choice per deck), with
+    // the mute still shown, and the deck row keeps its height.
     selectLayout(1);
     EXPECT_TRUE(rowPads(2)->isVisible());
     EXPECT_TRUE(pad(2, 4)->state().muted);
-    EXPECT_EQ(104 + 44 + 48 + 48 + 48, deckRow()->height());
+    EXPECT_EQ(104 + 44 + 4 + 92, deckRow()->height());
 }
 
 TEST_F(DeckLabStemsTest, StemFileShowsManifestNamesAndColoursAndMutesTheEngine) {
@@ -638,6 +664,7 @@ TEST_F(DeckLabStemsTest, StemFileShowsManifestNamesAndColoursAndMutesTheEngine) 
     loadGenerated(2, 126);
     QTest::qWait(50);
     ASSERT_TRUE(rowPads(1)->present());
+    stemMode(1);
     expectTouchPads(1, panel.get());
     for (int stem = 1; stem <= 4; ++stem) {
         EXPECT_EQ(kFixtureNames[stem - 1], pad(1, stem)->state().name);
@@ -668,6 +695,7 @@ TEST_F(DeckLabStemsTest, StemFileShowsManifestNamesAndColoursAndMutesTheEngine) 
     capture(QStringLiteral("stems-two-deck.png"));
     loadStemFile(2);
     QTest::qWait(50);
+    stemMode(2);
     hold(pad(2, 1));
     EXPECT_TRUE(pad(2, 1)->state().solo);
     capture(QStringLiteral("stems-two-deck-solo.png"));
@@ -734,6 +762,7 @@ TEST_F(DeckLabStemsTest, StemTracksCanPlayAsANormalTrack) {
     QTest::qWait(50);
     EXPECT_EQ(mixxx::audio::ChannelCount::stem(), m_pChannel1->getEngineBuffer()->getChannelCount());
     EXPECT_TRUE(rowPads(1)->present());
+    stemMode(1);
     EXPECT_TRUE(rowPads(1)->isVisible());
 }
 

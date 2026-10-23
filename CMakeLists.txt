@@ -1775,6 +1775,7 @@ add_library(
   src/widget/decklabdeckwidgets.cpp
   src/widget/decklabsampler.cpp
   src/widget/decklabsamplercontrols.cpp
+  src/widget/decklabpads.cpp
   src/widget/decklabstempads.cpp
   src/widget/decklablabfx.cpp
   src/widget/wlibrarysidebar.cpp
@@ -2803,6 +2804,7 @@ if(BUILD_TESTING)
     src/test/decklabstemgesturestest.cpp
     src/test/decklabsamplertest.cpp
     src/test/decklabstemstest.cpp
+    src/test/decklabpadstest.cpp
     src/test/decklabvsynctest.cpp
     src/test/decklablabfxtest.cpp
     src/test/waveformmarklabeltest.cpp

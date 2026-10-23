@@ -54,6 +54,16 @@ inline DeckLabBeatPhase deckLabBeatPhase(long long beatIndex, double fraction) {
     return {static_cast<int>(((beatIndex % 4) + 4) % 4), fraction - whole};
 }
 
+// r4-decks: how far into the current beat, in eighths (0..7). The phase
+// meter fills the lit beat by this much, so two decks in phase fill their
+// cells to the same edge and a drift of an eighth of a beat shows.
+inline int deckLabBeatStep(const DeckLabBeatPhase& phase) {
+    if (phase.segment < 0 || !util_isfinite(phase.fraction)) {
+        return -1;
+    }
+    return std::clamp(static_cast<int>(phase.fraction * 8), 0, 7);
+}
+
 // Phrase readout from a rekordbox export's phrase analysis: the current
 // phrase and a "bars.beats" countdown to its end. Empty name: no readout.
 struct DeckLabPhraseReadout {
@@ -76,6 +86,9 @@ struct DeckLabStripState {
     QString tempo;
     QString range;
     bool tempoCentered = false;
+    // r4-decks: the tempo is beyond the fader range (Sync took it there), so
+    // the next touch of the tempo fader would jump. Shown as OVER ±8%.
+    bool overRange = false;
     QString key;
     QColor keyColor;
     int keyMatch = 0; // 1 compatible with the reference deck, -1 not, 0 none
@@ -93,7 +106,18 @@ struct DeckLabStripState {
     bool looping = false;
     QString loopSize;
     int phase = -1; // lit beat segment 0..3; -1 without a beat grid
-    DeckLabPhraseReadout phrase; // replaces the beat meter while shown
+    // r4-decks: the phase meter compares this deck with a reference deck
+    // (the tempo master, else another playing deck), as a CDJ's does: the
+    // reference's beat on the top row, this deck's below. Steps are eighths
+    // of the beat (deckLabBeatStep). referenceDeck 0: nothing to compare.
+    int phaseStep = -1;
+    int referenceDeck = 0;
+    int referencePhase = -1;
+    int referenceStep = -1;
+    bool referencePlaying = false;
+    // rekordbox phrase readout. r4-decks: shown beside the phase meter,
+    // never instead of it.
+    DeckLabPhraseReadout phrase;
     bool operator==(const DeckLabStripState&) const = default;
 };
 
@@ -137,6 +161,8 @@ class DeckLabStripRenderer {
     static int preferredHeight(Mode mode) {
         return mode == Mode::Mini ? 30 : mode == Mode::Compact ? 138 : 104;
     }
+    // Paints a headphone glyph (headphone cue lamp) in a box of this size.
+    static void paintHeadphones(QPainter& painter, const QRectF& box, const QColor& ink);
     void setMode(Mode mode) {
         m_mode = mode;
         layout();
@@ -185,6 +211,10 @@ class DeckLabStripRenderer {
     void paintTransport(QPainter& painter, const QRect& area) const;
     void paintTitle(QPainter& painter, const QRect& area) const;
     void paintPhase(QPainter& painter) const;
+    // r4-decks: one row of the phase meter (four beat cells).
+    void paintPhaseRow(QPainter& painter, const QRect& cells, int deck, int beat,
+            int step, bool playing) const;
+    int phaseMeterWidth() const;
     // left: first usable x (compact cards paint the lamps first).
     void paintPhrase(QPainter& painter, int left) const;
     int phraseWidth() const;
@@ -194,6 +224,27 @@ class DeckLabStripRenderer {
     int paintChip(QPainter& painter, int x, int y, const QString& text, bool on,
             const QColor& lit, bool outlined = false) const;
     int chipWidth(const QString& text) const;
+    // r4-decks: a flat lamp. Off is a dark dot and a muted label with no
+    // outline, so it never reads as a button; lit is a filled chip (or an
+    // outlined one, SYNC) in the same footprint, so nothing moves.
+    enum class Lamp {
+        Off,
+        Filled,
+        Outlined
+    };
+    int lampWidth(const QString& text, bool headphones = false) const;
+    int paintLamp(QPainter& painter, int x, int y, const QString& text, Lamp look,
+            const QColor& lit, bool headphones = false, int width = 0) const;
+    // Exceptions shown as lit lamps when the room allows: LOOP n, SLIP, KEY
+    // and QNT OFF, most important first.
+    struct Exception {
+        QString text;
+        bool outlined;
+    };
+    QList<Exception> exceptions() const;
+    // Full readouts paint them on the last row, leaving `reserve` px at the
+    // right for the phrase. Returns the x after the last one.
+    int paintExceptions(QPainter& painter, const QRect& area, int reserve) const;
     Mode m_mode = Mode::Full;
     QSize m_size;
     QString m_fallback;

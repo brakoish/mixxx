@@ -158,48 +158,56 @@ void DeckLabStripRenderer::layout() {
     };
     switch (m_mode) {
     case Mode::Full: {
-        // Title row; BPM, tempo, key and clock; lamps with the beat meter.
+        // r4-decks: four rows in the same 104 px (audit move 1), read in one
+        // glance as on a club player:
+        //  1. identity: badge, play state, title · artist;
+        //  2. BPM (one decimal), tempo, key and the clock at 36/24 px;
+        //  3. flat lamps (MASTER, SYNC, headphone cue), the tempo range or
+        //     OVER, and lit exceptions (LOOP, SLIP, KEY, QNT OFF);
+        //  4. the rekordbox phrase and countdown on the left, and a two-row
+        //     phase meter on the right: the reference deck's beat above this
+        //     deck's, so two decks in time light the same cells.
         const QFontMetrics hero(numeralFont(kHero));
         const QFontMetrics readout(numeralFont(kReadout));
         const int bpm = tabularWidth(hero, QStringLiteral("000")) +
-                tabularWidth(readout, QStringLiteral(".00")) + 4;
+                tabularWidth(readout, QStringLiteral(".0")) + 4;
         const int clock = tabularWidth(hero, QString::fromUtf8("−00:00")) + 4;
         const int key = std::max(readout.horizontalAdvance(QStringLiteral("12A")),
                                 readout.horizontalAdvance(QStringLiteral("F#m"))) +
                 20;
-        const QRect time(width - 10 - clock, 36, clock + 10, 40);
-        const QRect keyArea(time.left() - 6 - key, 36, key, 40);
-        const QRect bpmArea(12, 36, bpm, 40);
-        set(Part::Identity, QRect(12, 6, 72, 28));
-        set(Part::Title, QRect(86, 6, std::max(0, width - 96), 28));
+        constexpr int kValuesTop = 24;
+        constexpr int kValuesHeight = 32;
+        const QRect time(width - 10 - clock, kValuesTop, clock + 10, kValuesHeight);
+        const QRect keyArea(time.left() - 6 - key, kValuesTop, key, kValuesHeight);
+        const QRect bpmArea(12, kValuesTop, bpm, kValuesHeight);
+        set(Part::Identity, QRect(12, 1, 72, 26));
+        set(Part::Title, QRect(86, 1, std::max(0, width - 96), 24));
         set(Part::Bpm, bpmArea);
         set(Part::Time, time);
         set(Part::Key, keyArea);
-        set(Part::Tempo, QRect(bpmArea.right() + 7, 36,
-                                 std::max(0, keyArea.left() - 6 - bpmArea.right() - 7), 40));
-        const int phase = std::clamp(width * 30 / 100, 110, 200);
-        // A phrase readout (rekordbox exports only) takes the beat meter's
-        // place, and a little more room when the meter's is too small.
-        const int phrase = m_state.phrase.name.isEmpty() ? 0 : std::max(phase, phraseWidth());
-        if (phrase > 0) {
-            set(Part::Phrase, QRect(width - 10 - phrase, 80, phrase, 22));
-        } else {
-            set(Part::Phase, QRect(width - 10 - phase, 88, phase, 8));
-        }
-        set(Part::Chips, QRect(12, 80, std::max(0, width - 22 - std::max(phase, phrase) - 10), 22));
+        set(Part::Tempo, QRect(bpmArea.right() + 7, kValuesTop,
+                                 std::max(0, keyArea.left() - 6 - bpmArea.right() - 7), kValuesHeight));
+        set(Part::Chips, QRect(12, 58, std::max(0, width - 22), 21));
+        const int phase = phaseMeterWidth();
+        set(Part::Phase, QRect(width - 10 - phase, 81, phase, 22));
+        // Left of the phase meter: lit exceptions (LOOP, SLIP, KEY, QNT OFF)
+        // and the rekordbox phrase, right-aligned against the meter, so a
+        // USB track never loses its beat position.
+        set(Part::Phrase, QRect(12, 81, std::max(0, width - 22 - phase - 14), 22));
         break;
     }
     case Mode::Compact: {
         const QFontMetrics hero(numeralFont(kHero));
         const int clock = tabularWidth(hero, QString::fromUtf8("−00:00")) + 4;
-        const QRect time(width - 10 - clock, 46, clock + 10, 40);
-        set(Part::Identity, QRect(10, 6, 62, 28));
-        set(Part::Title, QRect(74, 6, std::max(0, width - 82), 28));
-        set(Part::Phase, QRect(12, 38, width - 20, 6));
-        set(Part::Bpm, QRect(10, 46, std::max(0, time.left() - 14), 40));
+        const QRect time(width - 10 - clock, 50, clock + 10, 38);
+        set(Part::Identity, QRect(10, 6, 64, 28));
+        set(Part::Title, QRect(76, 6, std::max(0, width - 84), 28));
+        // r4-decks: two thin rows, the reference deck's beat over this one's.
+        set(Part::Phase, QRect(12, 37, width - 20, 12));
+        set(Part::Bpm, QRect(10, 50, std::max(0, time.left() - 14), 38));
         set(Part::Time, time);
-        set(Part::Tempo, QRect(10, 88, std::max(0, width - 88), 28));
-        set(Part::Key, QRect(width - 76, 88, 76, 28));
+        set(Part::Tempo, QRect(10, 89, std::max(0, width - 88), 26));
+        set(Part::Key, QRect(width - 76, 89, 76, 26));
         set(Part::Chips, QRect(10, 116, width - 18, 22));
         // The phrase readout shares the lamp row: lit lamps keep their place
         // and the phrase takes the room that is left, right-aligned.
@@ -268,19 +276,21 @@ QRegion DeckLabStripRenderer::setState(const DeckLabStripState& next) {
     }
     if (previous.master != next.master || previous.sync != next.sync ||
             previous.matched != next.matched || previous.range != next.range ||
+            previous.overRange != next.overRange ||
             previous.pfl != next.pfl || previous.slip != next.slip || previous.keylock != next.keylock ||
             previous.quantize != next.quantize || previous.looping != next.looping ||
             previous.loopSize != next.loopSize) {
         add(Part::Chips);
+        if (m_mode == Mode::Full) {
+            add(Part::Phrase); // the exceptions share the phrase's row
+        }
     }
     if (previous.bpm != next.bpm) {
         add(Part::Bpm);
     }
-    if (previous.tempo != next.tempo || previous.tempoCentered != next.tempoCentered) {
+    if (previous.tempo != next.tempo || previous.tempoCentered != next.tempoCentered ||
+            previous.overRange != next.overRange) {
         add(Part::Tempo);
-        if (m_mode == Mode::Full) {
-            add(Part::Chips); // the tempo-center lamp
-        }
     }
     if (previous.key != next.key || previous.keyColor != next.keyColor || previous.keyMatch != next.keyMatch) {
         add(Part::Key);
@@ -293,7 +303,11 @@ QRegion DeckLabStripRenderer::setState(const DeckLabStripState& next) {
     if (previous.remaining != next.remaining || previous.endWarning != next.endWarning) {
         dirty += rect(Part::Time).adjusted(-clockExcess(), 0, 0, 0);
     }
-    if (previous.phase != next.phase) {
+    if (previous.phase != next.phase || previous.phaseStep != next.phaseStep ||
+            previous.referenceDeck != next.referenceDeck ||
+            previous.referencePhase != next.referencePhase ||
+            previous.referenceStep != next.referenceStep ||
+            previous.referencePlaying != next.referencePlaying) {
         add(Part::Phase);
     }
     if (previous.phrase != next.phrase) {
@@ -405,18 +419,126 @@ int DeckLabStripRenderer::paintChip(QPainter& painter, int x, int y, const QStri
     return width;
 }
 
+int DeckLabStripRenderer::lampWidth(const QString& text, bool headphones) const {
+    // 6 px pad, 6 px dot, 5 px gap, the label (or a 14 px glyph), 7 px pad.
+    const int label = headphones ? 14 : QFontMetrics(labelFont()).horizontalAdvance(text);
+    return 6 + 6 + 5 + label + 7;
+}
+
+int DeckLabStripRenderer::paintLamp(QPainter& painter, int x, int y, const QString& text,
+        Lamp look, const QColor& lit, bool headphones, int width) const {
+    width = std::max(width, lampWidth(text, headphones));
+    const QRectF chip(x, y, width, 20);
+    QColor ink = kMuted;
+    QColor dot = kLampOff;
+    if (look != Lamp::Off) {
+        QPainterPath path;
+        path.addRoundedRect(chip.adjusted(0.75, 0.75, -0.75, -0.75), 3, 3);
+        if (look == Lamp::Filled) {
+            painter.fillPath(path, lit);
+            ink = inkOn(lit);
+        } else {
+            painter.setPen(QPen(lit, 1.5));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawPath(path);
+            ink = lit;
+        }
+        dot = ink;
+    }
+    // The dot is the lamp's LED: dark when off, lit with the label when on.
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(dot);
+    painter.drawEllipse(QRectF(x + 6, y + 7, 6, 6));
+    painter.setBrush(Qt::NoBrush);
+    const QRectF label(x + 17, y, width - 17 - 7, 20);
+    if (headphones) {
+        paintHeadphones(painter, QRectF(label.left(), y + 3, 14, 14), ink);
+    } else {
+        painter.setFont(labelFont());
+        painter.setPen(ink);
+        painter.drawText(label, Qt::AlignVCenter | Qt::AlignLeft, text);
+    }
+    return width;
+}
+
+void DeckLabStripRenderer::paintHeadphones(QPainter& painter, const QRectF& box, const QColor& ink) {
+    // Headband arc and two ear cups: the club symbol for headphone cue.
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    const qreal w = box.width();
+    const qreal h = box.height();
+    QPainterPath band;
+    band.moveTo(box.left() + w * 0.14, box.top() + h * 0.62);
+    band.cubicTo(box.left() + w * 0.14, box.top() - h * 0.06, box.right() - w * 0.14,
+            box.top() - h * 0.06, box.right() - w * 0.14, box.top() + h * 0.62);
+    painter.setPen(QPen(ink, std::max<qreal>(1.6, w * 0.13), Qt::SolidLine, Qt::RoundCap));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawPath(band);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(ink);
+    painter.drawRoundedRect(QRectF(box.left(), box.top() + h * 0.52, w * 0.3, h * 0.48), 1.5, 1.5);
+    painter.drawRoundedRect(QRectF(box.right() - w * 0.3, box.top() + h * 0.52, w * 0.3, h * 0.48), 1.5, 1.5);
+    painter.restore();
+}
+
+QList<DeckLabStripRenderer::Exception> DeckLabStripRenderer::exceptions() const {
+    // Club DJs leave quantize on: only its absence is worth a lamp.
+    QList<Exception> lit;
+    if (m_state.looping) {
+        lit.append({tr("LOOP %1").arg(m_state.loopSize), false});
+    }
+    if (m_state.slip) {
+        lit.append({tr("SLIP"), false});
+    }
+    if (m_state.keylock) {
+        lit.append({tr("KEY"), false});
+    }
+    if (!m_state.quantize) {
+        lit.append({tr("QNT OFF"), true});
+    }
+    return lit;
+}
+
+int DeckLabStripRenderer::phaseMeterWidth() const {
+    // A 12 px row label, then four beat cells (about 30 px each at 800 px).
+    return std::clamp(m_size.width() * 36 / 100, 120, 200);
+}
+
+int DeckLabStripRenderer::paintExceptions(QPainter& painter, const QRect& area, int reserve) const {
+    // Lit exceptions, most important first, as many as fit before the room
+    // the phrase needs.
+    int x = area.left() + 2;
+    const int right = area.left() + area.width() - reserve;
+    const int top = area.top() + (area.height() - 20) / 2;
+    for (const auto& lamp : exceptions()) {
+        if (x + chipWidth(lamp.text) > right) {
+            break;
+        }
+        x += paintChip(painter, x, top, lamp.text, true, kLampLit, lamp.outlined) + 4;
+    }
+    return x;
+}
+
 void DeckLabStripRenderer::paintBadge(QPainter& painter) const {
     const QRect badge = m_mode == Mode::Mini ? QRect(6, (m_size.height() - 22) / 2, 26, 22)
             : m_mode == Mode::Compact        ? QRect(12, 8, 26, 24)
-                                             : QRect(14, 8, 30, 26);
-    QColor color = deckLabDeckColor(m_state.deck);
-    if (!m_state.loaded) {
-        color = color.darker(170);
-    }
+                                             : QRect(14, 3, 30, 23);
+    const QColor color = deckLabDeckColor(m_state.deck);
     QPainterPath path;
+    painter.setFont(numeralFont(m_mode == Mode::Mini ? kBody : kTitle));
+    if (!m_state.loaded) {
+        // An empty deck keeps its identity: the badge outlined in the full
+        // deck color (a darkened fill turned amber brown and lime olive).
+        path.addRoundedRect(QRectF(badge).adjusted(0.75, 0.75, -0.75, -0.75), 3, 3);
+        painter.setPen(QPen(color, 1.5));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPath(path);
+        painter.setPen(color);
+        painter.drawText(badge, Qt::AlignCenter, QString::number(m_state.deck));
+        return;
+    }
     path.addRoundedRect(QRectF(badge), 3, 3);
     painter.fillPath(path, color);
-    painter.setFont(numeralFont(m_mode == Mode::Mini ? kBody : kTitle));
     painter.setPen(inkOn(color));
     painter.drawText(badge, Qt::AlignCenter, QString::number(m_state.deck));
 }
@@ -424,10 +546,7 @@ void DeckLabStripRenderer::paintBadge(QPainter& painter) const {
 void DeckLabStripRenderer::paintTransport(QPainter& painter, const QRect& area) const {
     const QPoint center = area.center();
     if (!m_state.loaded) {
-        // Empty deck: a dim stop square.
-        painter.setPen(QPen(kDim, 1.5));
-        painter.setBrush(Qt::NoBrush);
-        painter.drawRect(QRectF(area.left() + 3, center.y() - 5, 10, 10));
+        // Empty deck: no glyph; the outlined badge already says so.
         return;
     }
     if (m_state.playing) {
@@ -441,10 +560,19 @@ void DeckLabStripRenderer::paintTransport(QPainter& painter, const QRect& area) 
         triangle.closeSubpath();
         painter.fillPath(triangle, kPlay);
     } else if (m_state.cue) {
-        // CUE: orange, as on club players, when paused on the main cue.
-        painter.setFont(labelFont());
+        // CUE: orange, as on club players, when paused on the main cue. An
+        // outlined chip, so it never reads as part of the amber deck 2 badge.
+        const QFont label = labelFont();
+        const int width = QFontMetrics(label).horizontalAdvance(tr("CUE")) + 8;
+        const QRectF chip(area.left(), center.y() - 9.5, width, 19);
+        QPainterPath path;
+        path.addRoundedRect(chip.adjusted(0.75, 0.75, -0.75, -0.75), 3, 3);
+        painter.setPen(QPen(kCue, 1.5));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPath(path);
+        painter.setFont(label);
         painter.setPen(kCue);
-        painter.drawText(area, Qt::AlignVCenter | Qt::AlignLeft, tr("CUE"));
+        painter.drawText(chip, Qt::AlignCenter, tr("CUE"));
     } else {
         // PAUSE: two bars.
         const int size = m_mode == Mode::Mini ? 12 : 16;
@@ -496,19 +624,71 @@ void DeckLabStripRenderer::paintPhase(QPainter& painter) const {
     if (area.isEmpty() || !m_state.loaded) {
         return;
     }
-    const int gap = 4;
-    const int segment = (area.width() - 3 * gap) / 4;
+    // r4-decks: a phase meter compared with the reference deck, as on a CDJ.
+    // The reference's beat (the tempo master, else another playing deck) is
+    // the top row in its deck color, this deck's beat the row below; in
+    // phase the lit cells line up and fill to the same edge. Without a
+    // reference (this deck is the master, or nothing else plays) the top row
+    // stays dark.
+    const bool compact = m_mode == Mode::Compact;
+    const int rowHeight = compact ? 5 : 10;
+    const int rowGap = 2;
+    int left = area.left();
+    if (!compact) {
+        // Each row carries the number of the deck it shows, in its color.
+        const QFont label = labelFont();
+        const QFontMetrics metrics(label);
+        const int labelWidth = 12;
+        painter.setFont(label);
+        const auto number = [&](int deck, int top) {
+            if (deck <= 0) {
+                return;
+            }
+            painter.setPen(deckLabDeckColor(deck));
+            const QRect row(left, top, labelWidth, rowHeight);
+            painter.drawText(QPoint(row.left() + (labelWidth - metrics.horizontalAdvance(QString::number(deck))) / 2,
+                                     baselineFor(row, metrics)),
+                    QString::number(deck));
+        };
+        number(m_state.referenceDeck, area.top());
+        number(m_state.deck, area.top() + rowHeight + rowGap);
+        left += labelWidth + 4;
+    }
+    const int width = area.left() + area.width() - left;
+    paintPhaseRow(painter, QRect(left, area.top(), width, rowHeight), m_state.referenceDeck,
+            m_state.referencePhase, m_state.referenceStep, m_state.referencePlaying);
+    paintPhaseRow(painter, QRect(left, area.top() + rowHeight + rowGap, width, rowHeight),
+            m_state.deck, m_state.phase, m_state.phaseStep, m_state.playing);
+}
+
+void DeckLabStripRenderer::paintPhaseRow(QPainter& painter, const QRect& cells, int deck,
+        int beat, int step, bool playing) const {
+    const int gap = 3;
+    const int segment = (cells.width() - 3 * gap) / 4;
+    const bool shown = deck > 0 && beat >= 0;
+    QColor color = shown ? deckLabDeckColor(deck) : kMiniPanel;
+    if (shown && !playing) {
+        color = color.darker(170);
+    }
     for (int index = 0; index < 4; ++index) {
-        const QRect cell(area.left() + index * (segment + gap), area.top(), segment, area.height());
-        // The current beat lights in the deck's color, dimmer while paused.
-        QColor color = kLampOff;
-        if (m_state.phase < 0) {
-            color = kMiniPanel;
-        } else if (index == m_state.phase) {
-            color = m_state.playing ? deckLabDeckColor(m_state.deck)
-                                    : deckLabDeckColor(m_state.deck).darker(170);
+        const QRect cell(cells.left() + index * (segment + gap), cells.top(), segment, cells.height());
+        if (!shown) {
+            painter.fillRect(cell, kMiniPanel);
+            continue;
         }
-        painter.fillRect(cell, color);
+        if (index != beat) {
+            painter.fillRect(cell, kLampOff);
+            continue;
+        }
+        // The current beat: the part already played is full color, the rest
+        // of the beat dimmer, so the edge moves through the beat.
+        if (step < 0) {
+            painter.fillRect(cell, color);
+            continue;
+        }
+        const int lit = std::max(1, cell.width() * (step + 1) / 8);
+        painter.fillRect(cell, color.darker(260));
+        painter.fillRect(QRect(cell.left(), cell.top(), lit, cell.height()), color);
     }
 }
 
@@ -559,13 +739,18 @@ void DeckLabStripRenderer::paintPhrase(QPainter& painter, int left) const {
             m_state.phrase.name.toUpper(), Qt::ElideRight, std::max(0, room - 14));
     const int top = area.top() + (area.height() - 20) / 2;
     if (room >= 40 && !text.isEmpty() && text != QStringLiteral("…")) {
+        // r4-decks: an outline in the phrase color with white text. Filled
+        // color stays for deck identity and MASTER (a gold DOWN chip on deck
+        // 2 read as the deck itself); the overview bands keep the fills.
         const int width = std::min(room, labelMetrics.horizontalAdvance(text) + 14);
         const QRectF chip(area.left() + room - width, top, width, 20);
         QPainterPath path;
-        path.addRoundedRect(chip.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3);
-        painter.fillPath(path, color);
+        path.addRoundedRect(chip.adjusted(0.75, 0.75, -0.75, -0.75), 3, 3);
+        painter.setPen(QPen(color, 1.5));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPath(path);
         painter.setFont(label);
-        painter.setPen(inkOn(color));
+        painter.setPen(kText);
         painter.drawText(chip, Qt::AlignCenter, text);
     } else if (room >= 8) {
         // No room for the name: the phrase color still shows which it is.
@@ -583,58 +768,70 @@ int DeckLabStripRenderer::paintLamps(QPainter& painter) const {
     const QColor deckColor = deckLabDeckColor(m_state.deck);
     const int top = area.top() + (area.height() - 20) / 2;
     int x = area.left() + 2;
+    const int right = area.left() + area.width();
+    const QString over = tr("OVER %1").arg(m_state.range);
     if (m_mode == Mode::Full) {
-        // MASTER fills and SYNC outlines in the deck's color; HP and SLIP
-        // light white; the tempo range follows as secondary text. A one-shot
-        // match briefly turns the SYNC lamp into MATCHED.
-        x += paintChip(painter, x, top, tr("MASTER"), m_state.master, deckColor) + 4;
-        x += paintChip(painter, x, top, m_state.matched ? tr("MATCHED") : tr("SYNC"),
-                     m_state.sync || m_state.matched, deckColor, true) +
+        // r4-decks: flat lamps that look like lamps, not buttons. MASTER
+        // fills and SYNC outlines in the deck's color; headphone cue fills
+        // white. A one-shot match turns SYNC into MATCHED for a second, in a
+        // slot wide enough for both, so nothing beside it moves.
+        x += paintLamp(painter, x, top, tr("MASTER"), m_state.master ? Lamp::Filled : Lamp::Off, deckColor) + 4;
+        const int syncWidth = std::max(lampWidth(tr("SYNC")), lampWidth(tr("MATCHED")));
+        x += paintLamp(painter, x, top, m_state.matched ? tr("MATCHED") : tr("SYNC"),
+                     m_state.sync || m_state.matched ? Lamp::Outlined : Lamp::Off, deckColor, false, syncWidth) +
                 4;
-        x += paintChip(painter, x, top, tr("HP"), m_state.pfl, kLampLit) + 4;
-        if (m_state.slip && x + chipWidth(tr("SLIP")) <= area.right()) {
-            x += paintChip(painter, x, top, tr("SLIP"), true, kLampLit) + 4;
-        }
-        // Tempo range, then the tempo-center lamp (lit at 0.00%), sit under
-        // the tempo readout so the value row keeps its full size.
-        const QFont rangeFont = uiFont(kSecondary, QFont::Medium);
-        const QFontMetrics metrics(rangeFont);
-        x += 4;
-        if (!m_state.range.isEmpty() && x + metrics.horizontalAdvance(m_state.range) <= area.right()) {
-            painter.setFont(rangeFont);
-            painter.setPen(kMuted);
-            painter.drawText(QPoint(x, baselineFor(area, metrics)), m_state.range);
-            x += metrics.horizontalAdvance(m_state.range) + 6;
-        }
-        if (x + 8 <= area.right()) {
-            painter.setPen(Qt::NoPen);
-            painter.setBrush(m_state.tempoCentered ? kPlay : kLampOff);
-            painter.drawEllipse(QRectF(x, area.center().y() - 3.5, 8, 8));
-            painter.setBrush(Qt::NoBrush);
-            x += 8;
+        x += paintLamp(painter, x, top, QString(), m_state.pfl ? Lamp::Filled : Lamp::Off, kLampLit, true) + 8;
+        // The tempo range as secondary text, or OVER when Sync took the
+        // tempo beyond it: the next touch of the tempo fader would jump.
+        if (m_state.overRange && !m_state.range.isEmpty()) {
+            if (x + chipWidth(over) <= right) {
+                x += paintChip(painter, x, top, over, true, kText, true) + 6;
+            }
+        } else if (!m_state.range.isEmpty()) {
+            const QFont rangeFont = uiFont(kSecondary, QFont::Medium);
+            const QFontMetrics metrics(rangeFont);
+            if (x + metrics.horizontalAdvance(m_state.range) <= right) {
+                painter.setFont(rangeFont);
+                painter.setPen(kMuted);
+                painter.drawText(QPoint(x, baselineFor(area, metrics)), m_state.range);
+                x += metrics.horizontalAdvance(m_state.range) + 8;
+            }
         }
         return x;
     }
-    // Compact: only lit lamps, in order of importance, as many as fit.
-    struct Lamp {
+    // Compact: only lit lamps, in order of importance, as many as fit. QNT
+    // shows only when it is off (it is on all set long otherwise).
+    struct Lit {
         QString text;
         bool on;
         QColor color;
         bool outlined;
+        bool headphones;
     };
-    const std::array<Lamp, 7> lamps{{
-            {tr("MASTER"), m_state.master, deckColor, false},
-            {m_state.matched ? tr("MATCHED") : tr("SYNC"), m_state.sync || m_state.matched, deckColor, true},
-            {tr("HP"), m_state.pfl, kLampLit, false},
-            {tr("LOOP %1").arg(m_state.loopSize), m_state.looping, kLampLit, false},
-            {tr("KEY"), m_state.keylock, kLampLit, false},
-            {tr("QNT"), m_state.quantize, kLampLit, false},
-            {tr("SLIP"), m_state.slip, kLampLit, false}}};
-    for (const auto& lamp : lamps) {
+    QList<Lit> lamps{
+            {over, m_state.overRange && !m_state.range.isEmpty(), kText, true, false},
+            {tr("MASTER"), m_state.master, deckColor, false, false},
+            {m_state.matched ? tr("MATCHED") : tr("SYNC"), m_state.sync || m_state.matched, deckColor, true, false},
+            {QString(), m_state.pfl, kLampLit, false, true}};
+    for (const auto& lamp : exceptions()) {
+        lamps.append({lamp.text, true, kLampLit, lamp.outlined, false});
+    }
+    for (const auto& lamp : std::as_const(lamps)) {
         if (!lamp.on) {
             continue;
         }
-        if (x + chipWidth(lamp.text) > area.right()) {
+        if (lamp.headphones) {
+            if (x + 30 > right) {
+                break;
+            }
+            QPainterPath path;
+            path.addRoundedRect(QRectF(x, top, 30, 20).adjusted(0.5, 0.5, -0.5, -0.5), 3, 3);
+            painter.fillPath(path, lamp.color);
+            paintHeadphones(painter, QRectF(x + 8, top + 3, 14, 14), inkOn(lamp.color));
+            x += 34;
+            continue;
+        }
+        if (x + chipWidth(lamp.text) > right) {
             break;
         }
         x += paintChip(painter, x, top, lamp.text, true, lamp.color, lamp.outlined) + 4;
@@ -723,9 +920,10 @@ void DeckLabStripRenderer::paintValues(QPainter& painter, const QRect& dirty) co
     if (mini) {
         return;
     }
-    // Tempo: readout size. Compact readouts put the tempo-center lamp after
-    // it; full readouts show it in the lamp row. The value is dropped, never
-    // shrunk, if a very long clock takes its room.
+    // Tempo: readout size, muted at 0.00%. The value is dropped, never
+    // shrunk, if a very long clock takes its room. r4-decks: no unlabelled
+    // centre dot (the muted 0.00% says it); beyond the fader range the value
+    // is outlined in white, with OVER in the lamp row.
     QRect tempoArea = rect(Part::Tempo);
     if (!compact) {
         tempoArea.setRight(tempoArea.right() - excess);
@@ -734,16 +932,21 @@ void DeckLabStripRenderer::paintValues(QPainter& painter, const QRect& dirty) co
         const int width = tabularWidth(readoutMetrics, m_state.tempo);
         if (width <= tempoArea.width()) {
             const int baseline = compact ? baselineFor(tempoArea, readoutMetrics) : heroBaseline;
-            painter.setFont(readout);
-            painter.setPen(m_state.tempoCentered ? kMuted : kDecimals);
-            drawTabular(painter, tempoArea.left() + 2, baseline, m_state.tempo);
-            const int x = tempoArea.left() + 2 + width + 6;
-            if (compact && x + 8 <= tempoArea.right()) {
-                painter.setPen(Qt::NoPen);
-                painter.setBrush(m_state.tempoCentered ? kPlay : kLampOff);
-                painter.drawEllipse(QRectF(x, baseline - 9, 8, 8));
+            const int left = tempoArea.left() + (m_state.overRange ? 5 : 2);
+            if (m_state.overRange && width + 8 <= tempoArea.width()) {
+                const int capTop = baseline - readoutMetrics.capHeight();
+                QPainterPath box;
+                box.addRoundedRect(QRectF(left - 4, capTop - 4, width + 8, readoutMetrics.capHeight() + 8)
+                                           .adjusted(0.75, 0.75, -0.75, -0.75),
+                        3,
+                        3);
+                painter.setPen(QPen(kText, 1.5));
                 painter.setBrush(Qt::NoBrush);
+                painter.drawPath(box);
             }
+            painter.setFont(readout);
+            painter.setPen(m_state.overRange ? kText : m_state.tempoCentered ? kMuted : kDecimals);
+            drawTabular(painter, left, baseline, m_state.tempo);
         }
     }
 }
@@ -763,8 +966,8 @@ void DeckLabStripRenderer::paint(QPainter& painter, const QRect& dirty, bool pre
     if (needs(Part::Identity)) {
         paintBadge(painter);
         const QRect transport = mini ? QRect(36, 0, 28, m_size.height())
-                : m_mode == Mode::Compact ? QRect(42, 6, 30, 28)
-                                          : QRect(50, 6, 34, 28);
+                : m_mode == Mode::Compact ? QRect(40, 6, 34, 28)
+                                          : QRect(48, 1, 36, 26);
         paintTransport(painter, transport);
     }
     if (needs(Part::Title)) {
@@ -783,12 +986,18 @@ void DeckLabStripRenderer::paint(QPainter& painter, const QRect& dirty, bool pre
             paintPhase(painter);
         }
         // Compact cards share the lamp row: lamps first, the phrase after.
+        // Full readouts: exceptions, then the phrase, beside the phase meter.
         int lampsEnd = 0;
         if (needs(Part::Chips)) {
             lampsEnd = paintLamps(painter);
         }
         if (needs(Part::Phrase)) {
-            paintPhrase(painter, m_mode == Mode::Compact ? lampsEnd + 4 : 0);
+            if (m_mode == Mode::Full) {
+                const int reserve = m_state.phrase.name.isEmpty() ? 0 : phraseWidth() + 6;
+                paintPhrase(painter, paintExceptions(painter, rect(Part::Phrase), reserve) + 4);
+            } else {
+                paintPhrase(painter, lampsEnd + 4);
+            }
         }
         paintValues(painter, dirty);
     }

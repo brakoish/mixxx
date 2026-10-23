@@ -71,6 +71,7 @@
 #include "widget/decklablabfx.h"
 #include "widget/decklabsampler.h"         // r4-sampler
 #include "widget/decklabsamplercontrols.h" // r4-sampler
+#include "widget/decklabpads.h" // r4-decks: pad modes
 #include "widget/decklabstempads.h"
 #include "widget/wlibrary.h"
 #include "widget/wlibrarysidebar.h"
@@ -223,12 +224,6 @@ const QString kPerformStyle = QStringLiteral(R"(
  QLabel#decklab-fx-status[lamp="dry"] {color:#9AA3AF;border:1px solid #2C313A;}
  QLabel#decklab-fx-status[lamp="on"] {color:#0D0F12;background:#F2F4F7;border:1px solid #F2F4F7;}
  QLabel#decklab-fx-status[lamp="tail"] {color:#F2F4F7;border:1px solid #F2F4F7;}
- )");
-const QString kPadStyle = QStringLiteral(R"(
- QPushButton {background:#16191E;color:#9AA3AF;border:1px solid #2C313A;border-radius:3px;
-     min-height:42px;max-height:42px;padding:0px;font-family:"Barlow";font-size:16px;font-weight:600;}
- QPushButton:pressed {background:#20242B;}
- QPushButton:disabled {background:#111418;color:#4B525C;border-color:#1E2228;}
  )");
 // Deck dialogs (track information, beatgrid, controller FX details): body
 // 16 px, headings 18 px SemiBold, 44 px buttons.
@@ -482,42 +477,7 @@ QString beatLoopSizeText(double size) {
             : QString::number(size, 'g', 3);
 }
 
-// Keep the full touch target dark; the cue's saved color belongs to its letter
-// badge and waveform marker, not to the whole instrument panel.
-class DeckLabHotcuePad final : public QPushButton {
-  public:
-    using QPushButton::QPushButton;
-  protected:
-    void paintEvent(QPaintEvent*) override {
-        QStyleOptionButton option; initStyleOption(&option); option.text.clear();
-        QPainter painter(this); style()->drawControl(QStyle::CE_PushButton, &option, &painter, this);
-        if (!property("cueSet").toBool()) {
-            // Empty and ready: a dim letter in a dashed outline, live while
-            // the deck plays (a touch sets the cue there). Disabled only
-            // without a track.
-            if (isEnabled()) {
-                painter.setRenderHint(QPainter::Antialiasing, true);
-                painter.setPen(QPen(QColor(0x6b, 0x73, 0x80), 1, Qt::DashLine));
-                painter.setBrush(Qt::NoBrush);
-                painter.drawRoundedRect(QRectF(rect()).adjusted(3.5, 3.5, -3.5, -3.5), 2, 2);
-            }
-            painter.setPen(QColor(isEnabled() ? "#9aa3af" : "#4b525c"));
-            painter.drawText(rect(), Qt::AlignCenter, text());
-            return;
-        }
-        const QColor color(property("cueColor").toString());
-        const int badgeWidth = text().size() > 1 ? 36 : 26;
-        const QRect badge((width() - badgeWidth) / 2, (height() - 26) / 2, badgeWidth, 26);
-        painter.fillRect(badge, color);
-        // A neutral rim also makes deliberately black/white imported cues visible.
-        painter.setPen(QColor("#888888")); painter.drawRect(badge.adjusted(0, 0, -1, -1));
-        const auto linear = [](double c) { return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4); };
-        const double luminance = 0.2126 * linear(color.redF()) +
-                0.7152 * linear(color.greenF()) + 0.0722 * linear(color.blueF());
-        painter.setPen(luminance > 0.179 ? Qt::black : Qt::white);
-        painter.drawText(badge, Qt::AlignCenter, text());
-    }
-};
+// r4-decks: the hot cue pad look moved to DeckLabPadButton (decklabpads.cpp).
 
 // Sampler pad: the pad number top left and the sample title (up to two
 // lines) in Barlow; an empty pad shows a "+". Playing (checked) is the
@@ -725,12 +685,10 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
             d.cueColor[cue - 1] = control(group, base + QStringLiteral("color"));
         }
         m_cardPrefixes[deck - 1] = QStringLiteral("decklab-card-%1-").arg(deck);
-        m_cardHotcuePrefixes[deck - 1] = QStringLiteral("decklab-card-hotcue-%1-").arg(deck);
         m_shownPosition[deck - 1] = -1;
     }
     for (int side = 0; side < 2; ++side) {
         m_sidePrefixes[side] = QStringLiteral("decklab-%1-").arg(side + 1);
-        m_sideHotcuePrefixes[side] = QStringLiteral("decklab-hotcue-%1-").arg(side + 1);
     }
     m_mainVu = {control(QStringLiteral("[Main]"), QStringLiteral("vu_meter_left")),
             control(QStringLiteral("[Main]"), QStringLiteral("vu_meter_right"))};
@@ -1052,9 +1010,7 @@ void WDeckLab::watch(const QString& group, const QString& item, std::function<vo
 QPushButton* WDeckLab::button(const QString& text, std::function<void()> action,
         QWidget* parent, const QString& name) {
     QPushButton* b;
-    if (name.startsWith("decklab-hotcue-") || name.startsWith("decklab-card-hotcue-"))
-        b = new DeckLabHotcuePad(text, parent ? parent : this);
-    else if (name.startsWith("decklab-sample-") && !name.startsWith("decklab-sample-roll-"))
+    if (name.startsWith("decklab-sample-") && !name.startsWith("decklab-sample-roll-"))
         b = new DeckLabPad(text, parent ? parent : this);
     else if (name.startsWith("decklab-") && name.endsWith("-play")) b = new DeckLabPlayButton(text, parent ? parent : this);
     else b = new QPushButton(text, parent ? parent : this);
@@ -1080,7 +1036,7 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
         // must not also match once.
         auto heldSync = std::make_shared<bool>(false);
         const auto perform = [this, prefix, item](int actual) {
-            if (item == "play" || item == "quantize" || item == "keylock")
+            if (item == "play" || item == "quantize" || item == "keylock" || item == "slip_enabled")
                 set(channel(actual), item, !value(channel(actual), item));
             else if (item == "loop_halve" || item == "loop_double" || item == "beatloop_activate")
                 pulse(channel(actual), item);
@@ -1162,11 +1118,28 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
         else if (item == "loop_double") buttons.twice = b;
         else if (item == "quantize") buttons.quantize = b;
         else if (item == "keylock") buttons.keylock = b;
+        else if (item == "slip_enabled") buttons.slip = b;
         return b;
     };
+    // r4-decks: MORE is one sheet of labelled groups (audit PF-D44), the
+    // same in both layouts: PLAY or PADS, DECK (QNT, KEY LOCK, SLIP), TRACK
+    // (info, grid) and VIEW (zoom). Every key is a 44 px target.
+    const auto addGroup = [](QWidget* owner, QBoxLayout* rows, const QString& title,
+                                  const QList<QWidget*>& keys) {
+        auto* caption = new QLabel(title, owner);
+        caption->setObjectName(QStringLiteral("decklab-more-caption"));
+        caption->setStyleSheet(QStringLiteral(
+                "QLabel{color:#9AA3AF;font-family:\"Barlow\";font-size:14px;font-weight:600;padding:0px 2px;}"));
+        caption->setFixedHeight(20);
+        rows->addWidget(caption);
+        if (keys.isEmpty()) return;
+        auto* line = row(nullptr, 4);
+        for (auto* key : keys) line->addWidget(key, 1);
+        rows->addLayout(line);
+    };
     // Linked waveform zoom lives with the other occasional deck tools.
-    const auto addZoom = [this, prefix](QWidget* owner, QBoxLayout* rows) {
-        auto* zooms = row(nullptr, 4);
+    const auto zoomKeys = [this, prefix](QWidget* owner) {
+        QList<QWidget*> keys;
         for (const auto& zoom : {qMakePair(tr("ZOOM −"), QStringLiteral("waveform_zoom_up")),
                      qMakePair(tr("ZOOM +"), QStringLiteral("waveform_zoom_down"))}) {
             auto* b = button(zoom.first, [this, item = zoom.second] {
@@ -1174,48 +1147,49 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
             }, owner, prefix + (zoom.second.endsWith(QStringLiteral("up")) ? QStringLiteral("zoom_out") : QStringLiteral("zoom_in")));
             b->setStyleSheet(kActionStyle); b->setFixedHeight(44); b->setMinimumWidth(86);
             b->setAccessibleName(zoom.second.endsWith(QStringLiteral("up")) ? tr("Zoom all waveforms out") : tr("Zoom all waveforms in"));
-            zooms->addWidget(b, 1);
+            keys << b;
         }
-        rows->addLayout(zooms);
+        return keys;
     };
     // Track information from MORE: the readout tap is ignored while a deck
-    // plays, so this is the way in mid-mix.
-    const auto addInfo = [this, target, prefix](QWidget* owner, QBoxLayout* rows, QMenu* menu) {
+    // plays, so this is the way in mid-mix. Edit grid sits beside it.
+    const auto trackKeys = [this, target, prefix, deck, followsLayer](QWidget* owner, QMenu* menu) {
         auto* info = button(tr("Track info"), [this, target, menu] {
             menu->close();
             showTrackInfo(target());
         }, owner, prefix + QStringLiteral("track-info"));
-        info->setStyleSheet(kActionStyle);
-        info->setFixedHeight(44); rows->addWidget(info);
+        info->setStyleSheet(kActionStyle); info->setFixedHeight(44);
+        auto* grid = button(tr("Edit grid"), [this, deck, menu, followsLayer] { menu->close(); showBeatgrid(deck, followsLayer); },
+                owner, prefix + QStringLiteral("grid"));
+        grid->setStyleSheet(kActionStyle); grid->setFixedHeight(44);
+        return QList<QWidget*>{info, grid};
+    };
+    // QNT, KEY LOCK and SLIP: set once and left, so they live in MORE; the
+    // readout lights KEY and SLIP, and QNT OFF only when quantize is off.
+    const auto deckKeys = [&makeAction] {
+        return QList<QWidget*>{makeAction(tr("QNT"), QStringLiteral("quantize"), true),
+                makeAction(tr("KEY LOCK"), QStringLiteral("keylock"), true),
+                makeAction(tr("SLIP"), QStringLiteral("slip_enabled"), true)};
     };
     if (followsLayer) {
-        // One row per side: loop size, loop, quantize, key lock, SYNC and
-        // More. 4 px gaps; stretch keeps proportions on wider screens.
-        auto* actions = row(strip, 4);
-        actions->setContentsMargins(4, 4, 4, 0);
-        auto append = [actions](QPushButton* button, int stretch) {
-            actions->addWidget(button, stretch);
-        };
-        append(makeAction(QString::fromUtf8("½"), QStringLiteral("loop_halve")), 44);
-        append(makeAction(tr("LOOP\n4"), QStringLiteral("beatloop_activate"), true), 56);
-        append(makeAction(QString::fromUtf8("×2"), QStringLiteral("loop_double")), 44);
-        append(makeAction(tr("QNT"), QStringLiteral("quantize"), true), 52);
-        append(makeAction(tr("KEY\nLOCK"), QStringLiteral("keylock"), true), 60);
-        append(makeAction(tr("SYNC"), QStringLiteral("beatsync")), 64);
+        // r4-decks: SYNC over MORE, the right-hand column of the side's pad
+        // block. The loop row became LOOP mode on the pads (any length in
+        // one touch; the lit one ends the loop).
+        auto* actions = column(strip);
+        actions->setSpacing(4);
+        actions->addWidget(makeAction(tr("SYNC"), QStringLiteral("beatsync")));
         auto* menu = new QMenu(strip); menu->setObjectName(prefix + QStringLiteral("more-menu"));
         menu->setStyleSheet(kMenuStyle);
-        auto* fallback = new QWidget(menu); auto* fallbackRows = column(fallback);
-        fallbackRows->setSpacing(4);
+        auto* sheet = new QWidget(menu); auto* rows = column(sheet, 4);
+        rows->setSpacing(4);
         auto* play = makeAction(tr("PLAY"), QStringLiteral("play"), true);
         auto* cue = makeAction(tr("CUE (hold)"), QStringLiteral("cue_default"));
-        play->setMinimumWidth(176); cue->setMinimumWidth(176);
-        fallbackRows->addWidget(play); fallbackRows->addWidget(cue);
-        addInfo(fallback, fallbackRows, menu);
-        auto* grid = button(tr("Edit grid"), [this, deck, menu] { menu->close(); showBeatgrid(deck, true); }, fallback, prefix + QStringLiteral("grid"));
-        grid->setStyleSheet(kActionStyle);
-        grid->setFixedHeight(44); fallbackRows->addWidget(grid);
-        addZoom(fallback, fallbackRows);
-        auto* widgetAction = new QWidgetAction(menu); widgetAction->setDefaultWidget(fallback); menu->addAction(widgetAction);
+        addGroup(sheet, rows, tr("PLAY"), {play, cue});
+        addGroup(sheet, rows, tr("DECK"), deckKeys());
+        addGroup(sheet, rows, tr("TRACK"), trackKeys(sheet, menu));
+        addGroup(sheet, rows, tr("VIEW"), zoomKeys(sheet));
+        sheet->setMinimumWidth(320);
+        auto* widgetAction = new QWidgetAction(menu); widgetAction->setDefaultWidget(sheet); menu->addAction(widgetAction);
         connect(menu, &QMenu::aboutToShow, this, [this, target, prefix] { refreshTransport(target(), prefix); });
         connect(menu, &QMenu::aboutToHide, this, [this, play, cue] {
             releaseTouchCue(); play->setDown(false); cue->setDown(false);
@@ -1224,10 +1198,14 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
         watch(kNative, "layout_decks", [menu](double) { menu->close(); });
         watch(kTab, "current", [menu](double) { menu->close(); });
         for (int actual : {deck, deck + 2}) watch(channel(actual), "track_loaded", [menu](double) { menu->close(); });
-        auto* more = button(tr("MORE"), [menu, strip] { menu->popup(strip->mapToGlobal(QPoint(0, strip->height()))); }, strip, prefix + QStringLiteral("more"));
+        // The sheet opens above its own column, right-aligned with it.
+        auto* more = button(tr("MORE"), [menu, strip] {
+            const QSize size = menu->sizeHint();
+            menu->popup(strip->mapToGlobal(QPoint(strip->width() - size.width(), -size.height())));
+        }, strip, prefix + QStringLiteral("more"));
         more->setFixedHeight(44); more->setMinimumWidth(44); more->setStyleSheet(kActionStyle);
-        append(more, 52); m_transport[prefix].more = more;
-        strip->setFixedHeight(48);
+        actions->addWidget(more); m_transport[prefix].more = more;
+        strip->setFixedHeight(DeckLabPadBlock::kBlockHeight);
     } else {
         auto* actions = row(strip, 4);
         actions->setContentsMargins(4, 4, 4, 0);
@@ -1236,19 +1214,19 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
         actions->addWidget(makeAction(tr("SYNC"), QStringLiteral("beatsync")), 1);
         auto* menu = new QMenu(strip); menu->setObjectName(prefix + QStringLiteral("more-menu"));
         menu->setStyleSheet(kMenuStyle);
-        auto* content = new QWidget(menu); auto* rows = column(content);
+        auto* content = new QWidget(menu); auto* rows = column(content, 4);
         rows->setSpacing(4);
-        rows->addWidget(buildHotcues(deck, false, content));
-        // Stem pads for a stem track (stems workstream); hidden otherwise.
-        rows->addWidget(new DeckLabStemPads(deck, DeckLabStemPads::Presentation::Menu, m_players,
-                [this] { return m_interactionEpoch; }, content));
-        addInfo(content, rows, menu);
-        auto* grid = button(tr("Edit grid"), [this, deck, menu] { menu->close(); showBeatgrid(deck, false); }, content);
-        grid->setStyleSheet(kActionStyle);
-        grid->setFixedHeight(44); rows->addWidget(grid);
-        addZoom(content, rows);
+        // r4-decks: the same pad block as the two-deck rows (CUE / LOOP /
+        // ROLL / STEM), for this card's deck. Stems are no longer second
+        // class in four-deck view.
+        addGroup(content, rows, tr("PADS"), {});
+        rows->addWidget(buildPads(deck, false, content));
+        addGroup(content, rows, tr("DECK"), deckKeys());
+        addGroup(content, rows, tr("TRACK"), trackKeys(content, menu));
+        addGroup(content, rows, tr("VIEW"), zoomKeys(content));
+        content->setMinimumWidth(392);
         auto* widgetAction = new QWidgetAction(menu); widgetAction->setDefaultWidget(content); menu->addAction(widgetAction);
-        connect(menu, &QMenu::aboutToShow, this, [this, deck] { refreshHotcues(deck, m_cardHotcuePrefixes[deck - 1]); });
+        connect(menu, &QMenu::aboutToShow, this, [this, deck] { refreshTransport(deck, m_cardPrefixes[deck - 1]); });
         watch(kTab, "current", [menu](double) { menu->close(); });
         watch(kNative, "layout_decks", [menu](double) { menu->close(); });
         watch(channel(deck), "track_loaded", [menu](double) { menu->close(); });
@@ -1333,60 +1311,76 @@ void WDeckLab::showControllerFxInfo() {
     dialog->setWindowModality(Qt::WindowModal); dialog->open();
 }
 
-QWidget* WDeckLab::buildHotcues(int deck, bool followsLayer, QWidget* parent) {
-    auto* strip = new QWidget(parent); auto* pads = row(strip, 4);
-    strip->setAttribute(Qt::WA_StyledBackground);
-    strip->setProperty("deckSideRow", true);
-    // Side rows sit 4 px below the overview; popup pads need no margin.
-    if (followsLayer) pads->setContentsMargins(4, 4, 4, 0);
-    const auto target = [this, deck, followsLayer] { return followsLayer ? displayedDeck(deck - 1) : deck; };
-    const QString prefix = followsLayer ? QStringLiteral("decklab-hotcue-%1-").arg(deck) : QStringLiteral("decklab-card-hotcue-%1-").arg(deck);
-    std::array<QPushButton*, 8> buttons{};
-    for (int cue = 1; cue <= 8; ++cue) {
-        // The release only drops the cached look; the pad acted on touch-down.
-        auto* pad = button(QString(QChar('A' + cue - 1)), [this, target, prefix] {
-            m_hotcueButtons[prefix].shown = HotcueState();
-            refreshHotcues(target(), prefix);
-        }, strip, prefix + QString::number(cue));
-        pad->setFixedHeight(44); pad->setMinimumWidth(44); pad->setFocusPolicy(Qt::NoFocus);
-        pad->setStyleSheet(kPadStyle);
-        // Fire on touch-down, so a jump lands on the beat: jump to a set cue,
-        // or set an empty one here, paused or playing (Mixxx snaps it to the
-        // beat while QNT is on). Stale-tap guards at touch-down: the pads
-        // must show this deck and its current track, and this cue as it is
-        // in the engine now; otherwise they refresh and the touch is ignored.
-        connect(pad, &QPushButton::pressed, this, [this, target, prefix, cue] {
-            const int actual = target();
-            if (actual < 1 || actual > 4) return;
-            const QString group = channel(actual);
-            const auto& d = m_deck[actual - 1];
-            auto* player = m_players ? m_players->getPlayer(group) : nullptr;
-            const double position = d.cuePosition[cue - 1]->get();
-            const auto found = m_hotcueButtons.constFind(prefix);
-            const bool current = found != m_hotcueButtons.cend() && found->shown.deck == actual &&
-                    found->shown.loaded && d.loaded->get() > 0 && player &&
-                    player->getLoadedTrack() == m_tracks[actual - 1] &&
-                    (found->shown.cues[cue - 1] >= 0) == (position >= 0);
-            if (current) {
-                const QString base = QStringLiteral("hotcue_%1_").arg(cue);
-                pulse(group, base + (position >= 0 ? QStringLiteral("goto") : QStringLiteral("set")));
-            }
-            m_hotcueButtons[prefix].shown = HotcueState();
-            refreshHotcues(actual, prefix);
-        });
-        pads->addWidget(pad, 1); buttons[cue - 1] = pad;
+namespace {
+// r4-decks: a deck's stem pads as the pad block's STEM row.
+DeckLabPadBlock::Stems stemHooks(DeckLabStemPads* pads) {
+    DeckLabPadBlock::Stems hooks;
+    hooks.deck = pads->deck();
+    hooks.pads = pads;
+    hooks.present = [pads] { return pads->present(); };
+    hooks.anyMuted = [pads] { return pads->anyMuted(); };
+    hooks.restoreAll = [pads] { pads->restoreAll(); };
+    hooks.setSoloLatch = [pads](bool on) { pads->setSoloLatch(on); };
+    hooks.setShown = [pads](bool on) { pads->setRowShown(on); };
+    return hooks;
+}
+} // namespace
+
+// r4-decks (audit move 2): one 2x4 pad block with CUE / LOOP / ROLL / STEM
+// modes (decklabpads.h). It replaces the hot cue row and the 48 px stem
+// row. Side blocks follow the layer (decks 1/3 left, 2/4 right) and keep the
+// round-3 pad names (decklab-hotcue-N-1..8); a card's block (four-deck MORE)
+// is its own deck. Touch-down firing and the stale-touch guards are the
+// block's; the surface supplies the context and the control writes.
+DeckLabPadBlock* WDeckLab::buildPads(int deck, bool followsLayer, QWidget* parent) {
+    const QString prefix = followsLayer ? m_sidePrefixes[deck - 1] : m_cardPrefixes[deck - 1];
+    DeckLabPadBlock::Host host;
+    host.deck = [this, deck, followsLayer] { return followsLayer ? displayedDeck(deck - 1) : deck; };
+    host.epoch = [this] { return m_interactionEpoch; };
+    host.current = [this](int actual) {
+        if (actual < 1 || actual > 4) return false;
+        auto* player = m_players ? m_players->getPlayer(channel(actual)) : nullptr;
+        return m_deck[actual - 1].loaded->get() > 0 && player && player->getLoadedTrack() == m_tracks[actual - 1];
+    };
+    host.read = [this](int actual, const QString& item) { return value(channel(actual), item); };
+    host.write = [this](int actual, const QString& item, double v) { set(channel(actual), item, v); };
+    host.acted = [this, prefix](int actual) {
+        if (actual < 1 || actual > 4) return;
+        m_transport[prefix].shown = TransportState();
+        refreshTransport(actual, prefix);
+    };
+    auto* block = new DeckLabPadBlock(
+            followsLayer ? QStringLiteral("decklab-pads-%1").arg(deck) : QStringLiteral("decklab-card-pads-%1").arg(deck),
+            followsLayer ? QStringLiteral("decklab-hotcue-%1-").arg(deck) : QStringLiteral("decklab-card-hotcue-%1-").arg(deck),
+            host, parent);
+    const QList<int> decks = followsLayer ? QList<int>{deck, deck + 2} : QList<int>{deck};
+    for (int actual : decks) {
+        auto* stems = new DeckLabStemPads(actual,
+                followsLayer ? DeckLabStemPads::Presentation::Row : DeckLabStemPads::Presentation::Menu,
+                m_players, [this] { return m_interactionEpoch; }, block);
+        if (followsLayer) m_stemPads[actual - 1] = stems;
+        block->addStems(stemHooks(stems));
+        connect(stems, &DeckLabStemPads::presenceChanged, block, [block](bool) { block->stemsChanged(); });
+        connect(stems, &DeckLabStemPads::mutesChanged, block, &DeckLabPadBlock::stemsChanged);
     }
-    HotcuePads registered;
-    registered.pads = buttons;
-    m_hotcueButtons.insert(prefix, registered);
-    strip->setFixedHeight(followsLayer ? 48 : 44); return strip;
+    if (followsLayer) m_sidePads[deck - 1] = block;
+    else m_cardPads[deck - 1] = block;
+    // One mode choice per deck, whichever layout shows it.
+    connect(block, &DeckLabPadBlock::modeChanged, this, [this](int actual, DeckLabPadBlock::Mode mode) {
+        for (auto* other : m_sidePads) if (other) other->setChosenMode(actual, mode);
+        for (auto* other : m_cardPads) if (other) other->setChosenMode(actual, mode);
+    });
+    return block;
 }
 
-void WDeckLab::refreshHotcues(int deck, const QString& prefix) {
-    const auto found = m_hotcueButtons.find(prefix);
-    if (found == m_hotcueButtons.end() || deck < 1 || deck > 4) return;
+// r4-decks: pushes one deck's pad state to its block. Change-driven (deck
+// refresh, MORE opening, a touch); an unchanged state costs one comparison.
+void WDeckLab::refreshPads(int deck, bool card) {
+    if (deck < 1 || deck > 4) return;
+    auto* block = card ? m_cardPads[deck - 1] : m_sidePads[deck % 2 ? 0 : 1];
+    if (!block) return;
     const auto& d = m_deck[deck - 1];
-    HotcueState state;
+    DeckLabPadDeckState state;
     state.deck = deck;
     state.loaded = d.loaded->get() > 0;
     state.playing = d.play->get() > 0;
@@ -1396,31 +1390,9 @@ void WDeckLab::refreshHotcues(int deck, const QString& prefix) {
         const int color = int(d.cueColor[cue]->get());
         state.cues[cue] = !set ? -1 : (qint64(loop) << 32) | (color >= 0 && color <= 0xffffff ? color : 0x555555);
     }
-    // Unchanged cue state: no text, property, tooltip or accessibility writes.
-    if (state == found.value().shown) return;
-    found.value().shown = state;
-    for (int cue = 1; cue <= 8; ++cue) {
-        auto* pad = found.value().pads[cue - 1]; if (!pad) continue;
-        const qint64 cueState = state.cues[cue - 1];
-        const bool set = cueState >= 0;
-        const bool loop = set && (cueState >> 32) != 0;
-        const QString letter(QChar('A' + cue - 1));
-        // Every pad is live while a track is loaded: empty pads set a cue
-        // even while the deck plays, as on a club player.
-        const bool enabled = state.loaded;
-        const QString label = letter + (loop ? QString(QChar(0x21bb)) : QString());
-        setEnabledIf(pad, enabled);
-        setTextIf(pad, label);
-        const QString ink = set ? QColor::fromRgb(int(cueState & 0xffffff)).name() : QStringLiteral("#555555");
-        if (pad->property("cueSet").toBool() != set || pad->property("cueColor").toString() != ink) {
-            pad->setProperty("cueSet", set); pad->setProperty("cueColor", ink); pad->update();
-        }
-        setAccessibleNameIf(pad, tr("Deck %1 cue %2, %3").arg(deck).arg(letter, loop ? tr("saved loop") : set ? tr("set") : tr("empty")));
-        const QString help = loop ? tr("Jump to saved loop %1 start; preserves playback and does not enable looping").arg(letter) :
-                set ? tr("Jump to cue %1; preserves playback").arg(letter) : tr("Set cue %1 here").arg(letter);
-        setToolTipIf(pad, help);
-        setAccessibleDescriptionIf(pad, help);
-    }
+    state.looping = state.loaded && d.loop->get() > 0;
+    state.loopSize = d.loopSize->get();
+    block->setDeckState(state);
 }
 
 void WDeckLab::showBeatgrid(int deck, bool followsLayer) {
@@ -1522,12 +1494,16 @@ void WDeckLab::showBeatgrid(int deck, bool followsLayer) {
 QWidget* WDeckLab::buildDecks() {
     auto* page = new QWidget(this);
     // Physical-side rows live in the deck row for good; a layer change only
-    // retargets them, it never reparents or relayouts them.
+    // retargets them, it never reparents or relayouts them. r4-decks: one
+    // pad block per side, with SYNC and MORE as its right-hand column, in
+    // the 96 px the hot cue and transport rows took (waveforms keep their
+    // height, and a stem track no longer takes a row from them).
     for (int deck = 1; deck <= 2; ++deck) {
-        m_sideHotcues[deck - 1] = buildHotcues(deck, true, m_deckRow);
-        m_sideHotcues[deck - 1]->hide();
-        m_sideUtilities[deck - 1] = buildTransport(deck, true, m_deckRow);
-        m_sideUtilities[deck - 1]->hide();
+        auto* pads = buildPads(deck, true, m_deckRow);
+        pads->setOuterMargins(4, 4, 4, 0);
+        m_sideUtilities[deck - 1] = buildTransport(deck, true, pads);
+        pads->setSideColumn(m_sideUtilities[deck - 1]);
+        pads->hide();
     }
     page->hide(); return page;
 }
@@ -2432,12 +2408,8 @@ void WDeckLab::ensureDeckSurfaces(int deck) {
     m_cardTransports[deck - 1] = buildTransport(deck, false, card);
     cardRows->addWidget(m_cardTransports[deck - 1]);
     m_cardTransports[deck - 1]->hide();
-    // Stem pads (stems workstream): a row under the overview in two-deck
-    // view while this deck plays a stem file; see updateLayers().
-    m_stemPads[deck - 1] = new DeckLabStemPads(deck, DeckLabStemPads::Presentation::Row, m_players,
-            [this] { return m_interactionEpoch; }, card);
-    cardRows->addWidget(m_stemPads[deck - 1]);
-    connect(m_stemPads[deck - 1], &DeckLabStemPads::presenceChanged, this, [this](bool) { updateLayers(); });
+    // r4-decks: stem pads are STEM mode in the side pad blocks (buildPads),
+    // not a row of their own: no layout change when a stem track loads.
     card->hide();
     m_cards[deck - 1] = card;
 }
@@ -3501,11 +3473,17 @@ void WDeckLab::fillDeckClock(int deck, DeckLabStripState& state) {
             std::abs(position * samples - cuePoint) < 2048;
     const double bpm = m_tempos[deck - 1].update(state.loaded, d.localBpm->get(),
             d.rateRatio->get(), d.bpm->get(), m_clock.elapsed());
-    state.bpm = state.loaded && bpm > 0 ? QString::number(bpm, 'f', 2) : QStringLiteral("—");
+    // r4-decks: one decimal, as a CDJ shows (the second one flickered).
+    state.bpm = state.loaded && bpm > 0 ? QString::number(bpm, 'f', 1) : QStringLiteral("—");
     const double ratio = d.rateRatio->get();
     double pitch = (ratio - 1) * 100;
     if (!util_isfinite(pitch) || std::abs(pitch) < .005) pitch = 0;
     state.tempoCentered = state.loaded && pitch == 0;
+    // r4-decks: Sync can take the tempo beyond the fader range; then the
+    // next touch of the tempo fader would jump. The readout says OVER.
+    const double rangeValue = d.rateRange->get();
+    state.overRange = state.loaded && util_isfinite(ratio) && util_isfinite(rangeValue) && rangeValue > 0 &&
+            std::abs(ratio - 1) > rangeValue + 5e-5;
     state.tempo = !state.loaded ? QStringLiteral("—")
             : (pitch > 0 ? QStringLiteral("+") : pitch < 0 ? QStringLiteral("−") : QString()) +
                     QString::number(std::abs(pitch), 'f', 2) + QLatin1Char('%');
@@ -3517,15 +3495,41 @@ void WDeckLab::fillDeckClock(int deck, DeckLabStripState& state) {
     auto* factory = WaveformWidgetFactory::instance();
     const int warning = factory ? factory->getEndOfTrackWarningTime() : m_endWarningSeconds;
     state.endWarning = state.playing && d.loop->get() <= 0 && duration / speed > warning && remaining <= warning;
-    state.phase = -1;
-    if (state.loaded && m_tracks[deck - 1]) {
-        if (const auto beats = m_tracks[deck - 1]->getBeats()) {
-            const auto frame = mixxx::audio::FramePos::fromEngineSamplePos(position * samples);
+    // Beat position from the stored grid: beats counted in fours from the
+    // first marker, and how far into the beat.
+    const auto beatAt = [this](int which, double where) {
+        DeckLabBeatPhase phase;
+        const auto& track = m_tracks[which - 1];
+        if (!track) return phase;
+        if (const auto beats = track->getBeats()) {
+            const auto frame = mixxx::audio::FramePos::fromEngineSamplePos(where * m_deck[which - 1].samples->get());
             mixxx::audio::FramePos previous, next;
             if (frame.isValid() && beats->findPrevNextBeats(frame, &previous, &next, false) && next > previous) {
                 const long long index = beats->iteratorFrom(previous) - beats->cfirstmarker();
-                state.phase = deckLabBeatPhase(index, (frame - previous) / (next - previous)).segment;
+                phase = deckLabBeatPhase(index, (frame - previous) / (next - previous));
             }
+        }
+        return phase;
+    };
+    state.phase = -1;
+    state.phaseStep = -1;
+    state.referenceDeck = 0;
+    state.referencePhase = -1;
+    state.referenceStep = -1;
+    state.referencePlaying = false;
+    if (state.loaded && samples > 0) {
+        const auto own = beatAt(deck, position);
+        state.phase = own.segment;
+        state.phaseStep = deckLabBeatStep(own);
+        // r4-decks: the phase meter compares with the tempo master (else
+        // another playing deck), read at this same moment, never a tick old.
+        if (const int reference = referenceDeck(deck); reference > 0 && m_deck[reference - 1].loaded->get() > 0) {
+            const double raw = m_deck[reference - 1].position->get();
+            const auto other = beatAt(reference, util_isfinite(raw) ? raw : 0);
+            state.referenceDeck = reference;
+            state.referencePhase = other.segment;
+            state.referenceStep = deckLabBeatStep(other);
+            state.referencePlaying = m_deck[reference - 1].play->get() > 0;
         }
     }
     // usb-first: current rekordbox phrase and its countdown, and the overview
@@ -3678,15 +3682,19 @@ void WDeckLab::tickDecks() {
     if (m_sampler && m_page == 2 && isVisible()) tickSampler(); // r4-sampler
     if (!isVisible() || !m_waveforms->isVisible()) return;
     // Only clocks advance on the tick: playing decks, or a paused deck whose
-    // position was moved (cue, needle search or scratch).
+    // position was moved (cue, needle search or scratch). r4-decks: while
+    // any deck plays, a paused deck's phase meter follows the reference's
+    // beat (cueing a drop on the one); unchanged parts never repaint.
     const bool flash = (now / 400) % 2 == 0;
+    bool anyPlaying = false;
+    for (const auto& d : m_deck) anyPlaying |= d.play->get() > 0 && d.loaded->get() > 0;
     for (int deck = 1; deck <= 4; ++deck) {
         if (!deckShown(deck)) continue;
         const auto& d = m_deck[deck - 1];
         if (d.loaded->get() <= 0) continue;
         const double rawPosition = d.position->get();
         const double position = util_isfinite(rawPosition) ? rawPosition : 0;
-        if (d.play->get() > 0 || position != m_shownPosition[deck - 1]) refreshDeckClock(deck);
+        if (d.play->get() > 0 || position != m_shownPosition[deck - 1] || anyPlaying) refreshDeckClock(deck);
         if (m_stripStates[deck - 1].endWarning) {
             if (m_strips[deck - 1]) m_strips[deck - 1]->setFlash(flash);
             if (m_minis[deck - 1]) m_minis[deck - 1]->setFlash(flash);
@@ -3731,7 +3739,7 @@ void WDeckLab::noteDeckTouched(int deck) {
 void WDeckLab::refreshTransport(int deck, const QString& prefix) {
     if (deck < 1 || deck > 4) return;
     const bool card = prefix.startsWith(QStringLiteral("decklab-card-"));
-    refreshHotcues(deck, card ? m_cardHotcuePrefixes[deck - 1] : m_sideHotcuePrefixes[deck % 2 ? 0 : 1]);
+    refreshPads(deck, card); // r4-decks: the pad block of this side or card
     const auto found = m_transport.find(prefix);
     if (found == m_transport.end()) return;
     auto& t = found.value();
@@ -3743,6 +3751,7 @@ void WDeckLab::refreshTransport(int deck, const QString& prefix) {
     state.looping = d.loop->get() > 0;
     state.quantize = d.quantize->get() > 0;
     state.keylock = d.keylock->get() > 0;
+    state.slip = d.slip->get() > 0;
     state.synced = state.loaded && d.sync->get() > 0;
     state.feedback = m_clock.elapsed() < m_syncFeedbackUntil[deck - 1];
     state.size = d.loopSize->get();
@@ -3750,9 +3759,9 @@ void WDeckLab::refreshTransport(int deck, const QString& prefix) {
     if (state == t.shown) return;
     t.shown = state;
     if (t.more)
-        setAccessibleNameIf(t.more, (card ? tr("Deck %1 more: hot cues and beatgrid")
-                                          : tr("Deck %1 more: transport, track information and beatgrid")).arg(deck));
-    for (auto* b : {t.play, t.cue, t.sync, t.halve, t.loop, t.twice, t.quantize, t.keylock}) setEnabledIf(b, state.loaded);
+        setAccessibleNameIf(t.more, (card ? tr("Deck %1 more: pads, quantize, key lock, slip, track information, grid and zoom")
+                                          : tr("Deck %1 more: play, cue, quantize, key lock, slip, track information, grid and zoom")).arg(deck));
+    for (auto* b : {t.play, t.cue, t.sync, t.halve, t.loop, t.twice, t.quantize, t.keylock, t.slip}) setEnabledIf(b, state.loaded);
     if (t.play) {
         // A fixed play/pause glyph; the green lamp says it is playing.
         setCheckedIf(t.play, state.playing);
@@ -3774,6 +3783,10 @@ void WDeckLab::refreshTransport(int deck, const QString& prefix) {
     if (t.keylock) {
         setCheckedIf(t.keylock, state.keylock);
         setAccessibleNameIf(t.keylock, tr("Deck %1 key lock %2").arg(deck).arg(state.keylock ? tr("on") : tr("off")));
+    }
+    if (t.slip) {
+        setCheckedIf(t.slip, state.slip);
+        setAccessibleNameIf(t.slip, tr("Deck %1 slip %2").arg(deck).arg(state.slip ? tr("on") : tr("off")));
     }
     if (t.sync) {
         // Tap: match once (outlined acknowledgment, MATCHED on the readout).
@@ -4480,11 +4493,8 @@ void WDeckLab::updateLayers() {
         if (m_deckWaveforms[index]) signature |= quint64(1) << (11 + index);
         if (m_overviews[index]) signature |= quint64(1) << (15 + index);
     }
-    // Stems workstream: two-deck view adds a 48 px stem row (taken from the
-    // waveforms) while a shown deck plays a stem file. Four-deck view keeps
-    // its layout and offers stems in each deck's More menu.
-    const bool stemRow = m_page == 0 && !four && DeckLabStemPads::rowWanted(m_stemPads, m_layers);
-    signature |= quint64(stemRow) << 19;
+    // r4-decks: stems are a pad mode (decklabpads.h), so a stem track no
+    // longer changes the layout (round 3 took a 48 px row from the waveforms).
     if (signature == m_layoutSignature) {
         for (int deck = 1; deck <= 4; ++deck) markDeckDirty(deck);
         refreshLoadButtons();
@@ -4526,8 +4536,7 @@ void WDeckLab::updateLayers() {
     // or four compact cards with direct transport.
     for (auto* card : m_cards) if (card) m_deckGrid->removeWidget(card);
     for (int side = 0; side < 2; ++side) {
-        if (m_sideHotcues[side]) m_deckGrid->removeWidget(m_sideHotcues[side]);
-        if (m_sideUtilities[side]) m_deckGrid->removeWidget(m_sideUtilities[side]);
+        if (m_sidePads[side]) m_deckGrid->removeWidget(m_sidePads[side]);
     }
     for (int index = 0; index < 4; ++index) m_deckGrid->setColumnStretch(index, 0);
     for (int deck = 1; deck <= 4; ++deck) {
@@ -4556,19 +4565,17 @@ void WDeckLab::updateLayers() {
         // Engine feedback during a held Cue must not hide its open menu's
         // ancestor: these rows only hide when the presentation drops them.
         const bool shown = decks && !four;
-        if (shown) {
-            if (m_sideHotcues[side]) m_deckGrid->addWidget(m_sideHotcues[side], 1, side);
-            if (m_sideUtilities[side]) m_deckGrid->addWidget(m_sideUtilities[side], 2, side);
-        }
-        setVisibleIf(m_sideHotcues[side], shown);
+        if (shown && m_sidePads[side]) m_deckGrid->addWidget(m_sidePads[side], 1, side);
+        setVisibleIf(m_sidePads[side], shown);
         setVisibleIf(m_sideUtilities[side], shown);
     }
-    // Readout + overview + transport (four decks) or + hotcues + utilities.
-    for (auto* pads : m_stemPads) if (pads) pads->setRowShown(stemRow);
-    setFixedHeightIf(m_deckRow, (four
+    // Readout + overview + transport (four decks), or + the side's pad block
+    // (r4-decks: 4 px gap and two 44 px rows, the height the hot cue and
+    // transport rows had).
+    setFixedHeightIf(m_deckRow, four
                     ? DeckLabStripRenderer::preferredHeight(DeckLabStripRenderer::Mode::Compact) + kOverviewHeight + 48
-                    : DeckLabStripRenderer::preferredHeight(DeckLabStripRenderer::Mode::Full) + kOverviewHeight + 48 + 48) +
-                    (stemRow ? DeckLabStemPads::kRowHeight : 0));
+                    : DeckLabStripRenderer::preferredHeight(DeckLabStripRenderer::Mode::Full) + kOverviewHeight +
+                            4 + DeckLabPadBlock::kBlockHeight);
     setVisibleIf(m_deckRow, decks);
     for (int deck = 1; deck <= 4; ++deck) refreshDeck(deck);
     refreshLoadButtons();

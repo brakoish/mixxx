@@ -34,8 +34,9 @@ const QColor kOff(0x11, 0x14, 0x18);
 const QColor kOffLine(0x1e, 0x22, 0x28);
 const QColor kText(0xf2, 0xf4, 0xf7);
 const QColor kMuted(0x9a, 0xa3, 0xaf);
-constexpr int kNameSize = 16; // buttons: 16 px SemiBold Barlow
-constexpr int kBarWidth = 6;
+constexpr int kNameSize = 16;      // buttons: 16 px SemiBold Barlow
+constexpr int kSmallNameSize = 14; // the label size, for long names in narrow pads
+constexpr int kBarHeight = 3;
 
 void setVisibleIf(QWidget* widget, bool visible) {
     if (!widget || (widget->testAttribute(Qt::WA_WState_ExplicitShowHide) &&
@@ -71,7 +72,7 @@ DeckLabStemPad::DeckLabStemPad(DeckLabStemPads* owner, int stem, QWidget* parent
     setMinimumWidth(DeckLabStemPads::kPadHeight);
     setAttribute(Qt::WA_OpaquePaintEvent, false);
     setAccessibleDescription(tr("Touch to mute or unmute at once. Hold to hear only this stem while held. "
-                                "Double-tap to bring back all stems."));
+                                "Double-tap or ALL to bring back all stems. With SOLO lit, a touch plays only this stem."));
 }
 
 void DeckLabStemPad::setState(const DeckLabStemPadState& state) {
@@ -104,40 +105,47 @@ void DeckLabStemPad::paintEvent(QPaintEvent*) {
     painter.setRenderHint(QPainter::Antialiasing, true);
     const bool live = !m_state.muted;
     const QColor accent = visibleAccent(m_state.color);
-    // Body: live pads are raised; muted pads drop to the dim fill.
+    // Body: playing pads are raised; muted pads drop to the darkest fill.
     const qreal border = m_state.solo ? 2.0 : 1.0;
     const QRectF body = QRectF(rect()).adjusted(border / 2, border / 2, -border / 2, -border / 2);
     painter.setPen(QPen(m_state.solo ? kText : live ? kLine : kOffLine, border));
     painter.setBrush(m_state.pressed ? kPressed : live ? kRaise : kOff);
     painter.drawRoundedRect(body, 3, 3);
-    // Colour bar: solid while the stem plays, hollow and dim when muted.
-    const QRectF bar(5, 7, kBarWidth, height() - 14);
-    if (live) {
-        painter.fillRect(bar, accent);
-    } else {
-        QColor dim = accent;
-        dim.setAlphaF(0.5f);
-        painter.setPen(QPen(dim, 1.5));
-        painter.setBrush(Qt::NoBrush);
-        painter.drawRect(bar.adjusted(0.75, 0.75, -0.75, -0.75));
+    // r4-decks: the file's colour is a 3 px underline only, full while the
+    // stem plays and dimmed when muted (audit PF-D58/59).
+    const QRectF bar(7, height() - 8, std::max(0, width() - 14), kBarHeight);
+    QColor underline = accent;
+    if (!live) {
+        underline.setAlphaF(0.35f);
     }
+    painter.fillRect(bar, underline);
+    // The name centred above it: Barlow 16 px; in a narrow pad (the
+    // two-deck block's 52 px) the semi-condensed face at 16, then at 14 px
+    // (the label size), and only then elided.
     QFont font;
     font.setFamilies({QStringLiteral("Barlow")});
     font.setPixelSize(kNameSize);
     font.setWeight(QFont::DemiBold);
+    const QRect text = rect().adjusted(3, 0, -3, -6);
+    const QString upper = m_state.name.toUpper();
+    if (QFontMetrics(font).horizontalAdvance(upper) > text.width()) {
+        font.setFamilies({QStringLiteral("Barlow Semi Condensed"), QStringLiteral("Barlow")});
+        if (QFontMetrics(font).horizontalAdvance(upper) > text.width()) {
+            font.setPixelSize(kSmallNameSize);
+        }
+    }
     painter.setFont(font);
     const QFontMetrics metrics(font);
-    const QRect text = rect().adjusted(5 + kBarWidth + 7, 0, -6, 0);
-    const QString label = metrics.elidedText(
-            m_state.name.toUpper(), Qt::ElideRight, std::max(0, text.width()));
+    const QString label = metrics.elidedText(upper, Qt::ElideRight, std::max(0, text.width()));
     painter.setPen(live ? kText : kMuted);
-    painter.drawText(text, Qt::AlignVCenter | Qt::AlignLeft, label);
+    painter.drawText(text, Qt::AlignCenter, label);
     if (!live && !label.isEmpty()) {
         // Muted reads without colour: a strike line through the name.
         const int width = std::min(text.width(), metrics.horizontalAdvance(label));
+        const int left = text.left() + (text.width() - width) / 2;
         const qreal y = text.center().y() + 0.5;
         painter.setPen(QPen(kMuted, 2));
-        painter.drawLine(QPointF(text.left() - 1, y), QPointF(text.left() + width + 1, y));
+        painter.drawLine(QPointF(left - 1, y), QPointF(left + width + 1, y));
     }
 }
 
@@ -186,12 +194,8 @@ DeckLabStemPads::DeckLabStemPads(int deck,
                       : QStringLiteral("decklab-card-stems-%1").arg(deck));
     m_clock.start();
     auto* layout = new QHBoxLayout(this);
-    // Like the hot-cue row: 4 px gap above, 4 px margins and gaps.
-    if (row) {
-        layout->setContentsMargins(4, 4, 4, 0);
-    } else {
-        layout->setContentsMargins(0, 0, 0, 0);
-    }
+    // r4-decks: the top row of a pad block, on the block's 4 px grid.
+    layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(4);
     for (int stem = 0; stem < DeckLabStemGestures::kStems; ++stem) {
         m_stemGroups[stem] = QStringLiteral("[Channel%1_Stem%2]").arg(deck).arg(stem + 1);
@@ -200,7 +204,7 @@ DeckLabStemPads::DeckLabStemPads(int deck,
         layout->addWidget(pad, 1);
         m_pads[stem] = pad;
     }
-    setFixedHeight(row ? kRowHeight : kPadHeight);
+    setFixedHeight(kPadHeight);
     m_count = new ControlProxy(m_group, QStringLiteral("stem_count"), this, ControlFlag::NoWarnIfMissing);
     m_loaded = new ControlProxy(m_group, QStringLiteral("track_loaded"), this, ControlFlag::NoWarnIfMissing);
     for (int stem = 0; stem < DeckLabStemGestures::kStems; ++stem) {
@@ -263,9 +267,42 @@ DeckLabStemPads::~DeckLabStemPads() {
 
 void DeckLabStemPads::setRowShown(bool shown) {
     m_rowShown = shown;
-    if (m_presentation == Presentation::Row) {
-        setVisibleIf(this, shown);
+    setVisibleIf(this, m_rowShown && m_present);
+}
+
+void DeckLabStemPads::restoreAll() {
+    if (!m_present) {
+        return;
     }
+    // A held solo ends first (it restores what was there before the hold);
+    // then every stem plays.
+    cancelGesture(false);
+    for (int stem = 0; stem < m_gestures.count(); ++stem) {
+        if (muted(stem)) {
+            setMuted(stem, false);
+        }
+    }
+    refreshPads();
+}
+
+void DeckLabStemPads::setSoloLatch(bool on) {
+    if (on == m_soloLatch) {
+        return;
+    }
+    m_soloLatch = on;
+    if (on) {
+        // Entering SOLO ends a gesture in progress instead of mixing the two.
+        cancelGesture(false);
+    }
+}
+
+bool DeckLabStemPads::anyMuted() const {
+    for (int stem = 0; stem < m_gestures.count(); ++stem) {
+        if (muted(stem)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool DeckLabStemPads::rowWanted(const std::array<DeckLabStemPads*, 4>& pads,
@@ -346,6 +383,21 @@ void DeckLabStemPads::hideEvent(QHideEvent* event) {
 }
 
 void DeckLabStemPads::padPressed(int stem) {
+    if (m_soloLatch) {
+        // r4-decks: SOLO is lit: this stem alone plays, on touch-down, and
+        // stays so (no hold, no toggle). ALL or another stem changes it.
+        if (m_gestures.active() || stem < 0 || stem >= m_gestures.count()) {
+            return;
+        }
+        for (int other = 0; other < m_gestures.count(); ++other) {
+            const bool mute = other != stem;
+            if (muted(other) != mute) {
+                setMuted(other, mute);
+            }
+        }
+        refreshPads();
+        return;
+    }
     // The mute flips on touch-down; holding on turns the touch into a solo.
     if (m_gestures.press(stem, context(), m_clock.elapsed()) == DeckLabStemGestures::Result::Ignored) {
         return;
@@ -477,7 +529,10 @@ void DeckLabStemPads::refresh() {
     m_gestures.setCount(count);
     const bool changed = present != m_present;
     m_present = present;
-    setVisibleIf(this, m_presentation == Presentation::Row ? m_rowShown : present);
+    if (!present) {
+        m_soloLatch = false;
+    }
+    setVisibleIf(this, m_rowShown && present);
     for (int stem = 0; stem < DeckLabStemGestures::kStems; ++stem) {
         setVisibleIf(m_pads[stem], stem < count);
     }
@@ -488,6 +543,7 @@ void DeckLabStemPads::refresh() {
 }
 
 void DeckLabStemPads::refreshPads() {
+    std::array<bool, DeckLabStemGestures::kStems> mutes{};
     for (int stem = 0; stem < DeckLabStemGestures::kStems; ++stem) {
         DeckLabStemPadState state;
         state.name = m_names[stem];
@@ -500,5 +556,11 @@ void DeckLabStemPads::refreshPads() {
         state.solo = m_gestures.soloStem() == stem;
         state.pressed = m_gestures.pressedStem() == stem && !state.solo;
         m_pads[stem]->setState(state);
+        mutes[stem] = stem < m_gestures.count() && state.muted;
+    }
+    // The pad block's STEM key lights while a stem is muted.
+    if (mutes != m_shownMutes) {
+        m_shownMutes = mutes;
+        emit mutesChanged();
     }
 }
