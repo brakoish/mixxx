@@ -1261,7 +1261,7 @@ TEST_F(NativeDeckLabTest, AutoLayoutShowsFourRealDecksAndRetainsLoadedUpperDecks
     QMetaObject::invokeMethod(choice,"activated",Q_ARG(int,1)); QTest::qWait(150);
     for(int side=1;side<=2;++side) {
         const QString pads=QStringLiteral("decklab-pads-%1-mode-").arg(side);
-        for(const auto& name:{QStringLiteral("decklab-%1-more").arg(side),QStringLiteral("decklab-%1-beatsync").arg(side),
+        for(const QString& name:QStringList{QStringLiteral("decklab-%1-more").arg(side),QStringLiteral("decklab-%1-beatsync").arg(side),
                     pads+QStringLiteral("cue"),pads+QStringLiteral("loop"),pads+QStringLiteral("roll")}) {
             auto* action=panel->findChild<QPushButton*>(name);
             ASSERT_NE(nullptr,action) << name.toStdString(); EXPECT_TRUE(action->isVisible());
