@@ -490,9 +490,10 @@ TEST_F(DeckLabStemsTest, TapHoldAndDoubleTapDriveTheRealStemMutes) {
     EXPECT_LT(muted.pixelColor(muted.width() - 3, 4).lightness(),
             live.pixelColor(live.width() - 3, 4).lightness())
             << "muted: dimmer fill";
-    EXPECT_GE(longestRun(muted, muted.height() / 2 - 3, muted.height() / 2 + 2, QColor(0x9a, 0xa3, 0xaf)), 20)
-            << "muted: strike line";
-    EXPECT_LT(longestRun(live, live.height() / 2 - 3, live.height() / 2 + 2, QColor(0x9a, 0xa3, 0xaf)), 20);
+    // The name (and its strike) is centred above the 6 px underline zone.
+    const int name = (muted.height() - 7) / 2;
+    EXPECT_GE(longestRun(muted, name - 3, name + 2, QColor(0x9a, 0xa3, 0xaf)), 20) << "muted: strike line";
+    EXPECT_LT(longestRun(live, name - 3, name + 2, QColor(0x9a, 0xa3, 0xaf)), 20);
     pause();
     tap(pad(1, 2));
     EXPECT_EQ((std::array<double, 4>{0, 0, 0, 0}), mutes(1));
