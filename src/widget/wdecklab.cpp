@@ -4421,7 +4421,7 @@ void WDeckLab::rebuildHome(const QString& highlight) {
             item->setData(DeckLabListDelegate::SubtitleRole, rows[n].subtitle);
             item->setData(DeckLabListDelegate::GlyphRole, static_cast<int>(rows[n].glyph));
             item->setData(DeckLabListDelegate::ChevronRole, true);
-            item->setData(Qt::AccessibleTextRole, rows[n].name + QStringLiteral(", ") + rows[n].subtitle);
+            item->setData(Qt::AccessibleTextRole, QString(rows[n].name + QStringLiteral(", ") + rows[n].subtitle));
             if (rows[n].key == keep) current = n;
         }
         b.items->setCurrentRow(rows.isEmpty() ? -1 : current);
@@ -4584,7 +4584,7 @@ void WDeckLab::showFolder(const QString& path) {
         }
         for (const QString& folder : folders) {
             auto* item = new QListWidgetItem(folder, b.items);
-            item->setData(DeckLabListDelegate::KeyRole, QStringLiteral("folder:") + folder);
+            item->setData(DeckLabListDelegate::KeyRole, QString(QStringLiteral("folder:") + folder));
             item->setData(DeckLabListDelegate::GlyphRole, static_cast<int>(decklab::Glyph::Folder));
             item->setData(DeckLabListDelegate::ChevronRole, true);
         }

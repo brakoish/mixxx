@@ -1314,6 +1314,8 @@ TEST_F(NativeDeckLabTest, MoreAndDialogsKeepTouchGeometryAfterShownStylePolish) 
         auto* close=dialog->findChild<QPushButton*>("decklab-track-info-close"); ASSERT_NE(nullptr,close);
         close->click(); QCoreApplication::processEvents();
     }
+    // Edit grid follows the side's layer; the loop above left it on deck 3.
+    ControlObject::set(ConfigKey("[DeckLabLeft]","current"),0); QTest::qWait(150);
     more->click(); QCoreApplication::processEvents();
     auto* grid=panel->findChild<QPushButton*>("decklab-1-grid"); ASSERT_NE(nullptr,grid);
     grid->click(); QCoreApplication::processEvents(); QTest::qWait(20);

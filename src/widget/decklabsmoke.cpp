@@ -125,7 +125,7 @@ void checkBarlow(QWidget* surface, QJsonArray& failures) {
         }
     }
     for (const auto& text : std::as_const(wrong)) {
-        failures.append(QStringLiteral("Not Barlow: ") + text);
+        failures.append(QString(QStringLiteral("Not Barlow: ") + text));
     }
 }
 
