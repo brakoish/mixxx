@@ -936,6 +936,11 @@ TEST_F(NativeDeckLabTest, LongMetadataCannotHideTempoOrExpandSurface) {
     // r4-browse: Browse has the deck dock, no lanes and no one-line readouts.
     panel->selectPage(1); QTest::qWait(150);
     EXPECT_FALSE(mini->isVisible()); EXPECT_EQ(QSize(800,480),panel->size());
+    // round4: there the dock tile carries the tempo, and the long title stays literal.
+    auto* tile = static_cast<DeckLabDockTile*>(panel->findChild<QPushButton*>("decklab-load-1")); ASSERT_NE(nullptr, tile);
+    EXPECT_TRUE(tile->isVisible());
+    EXPECT_TRUE(tile->deckState().bpm.contains("128"));
+    EXPECT_TRUE(tile->deckState().title.endsWith("<b>Title</b>"));
     // r4-waveforms: Lab FX has compact lanes over the 32 px DECKS row (the
     // one-line readouts are gone); its footer names the target.
     panel->selectPage(3); QTest::qWait(150);
