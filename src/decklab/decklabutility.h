@@ -121,6 +121,7 @@ class ChoiceRow : public UtilityRow {
 
   private:
     int optionCount() const;
+    int segmentsWidth() const;
     QRect segmentRect(int index, const QRect& area) const;
 
     QComboBox* m_model;

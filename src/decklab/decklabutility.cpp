@@ -261,7 +261,19 @@ int ChoiceRow::shownIndex() const {
 }
 
 bool ChoiceRow::segmented() const {
-    return optionCount() <= 4;
+    // round4: four long names (the waveform styles) clipped as segments; past
+    // this width the row shows the value and opens the picker instead.
+    constexpr int kMaxSegmentsWidth = 360;
+    return optionCount() <= 4 && segmentsWidth() <= kMaxSegmentsWidth;
+}
+
+int ChoiceRow::segmentsWidth() const {
+    const QFontMetrics metrics(capsFont(font(), 14));
+    int width = 0;
+    for (int index = 0; index < optionCount(); ++index) {
+        width += std::max(64, metrics.horizontalAdvance(segmentText(index)) + 28) + (index ? 4 : 0);
+    }
+    return width;
 }
 
 void ChoiceRow::choose(int index) {
@@ -315,12 +327,7 @@ int ChoiceRow::valueWidth() const {
         }
         return widest + 36;
     }
-    const QFontMetrics metrics(capsFont(font(), 14));
-    int width = 0;
-    for (int index = 0; index < optionCount(); ++index) {
-        width += std::max(64, metrics.horizontalAdvance(segmentText(index)) + 28) + (index ? 4 : 0);
-    }
-    return width;
+    return segmentsWidth();
 }
 
 QRect ChoiceRow::segmentRect(int index, const QRect& area) const {
@@ -486,7 +493,14 @@ void StepperRow::knobCancel() {
 }
 
 int StepperRow::valueWidth() const {
-    return 204;
+    // round4: room for the longest readout between - and + ("CUE 100 · MAIN 0"
+    // was elided in the fixed 108 px).
+    const QFontMetrics metrics(numberFont(font(), 24));
+    int widest = 0;
+    for (int value : {m_minimum, m_maximum, m_default}) {
+        widest = std::max(widest, metrics.horizontalAdvance(m_format ? m_format(value) : QString::number(value)));
+    }
+    return std::max(204, widest + 96 + 16);
 }
 
 int StepperRow::hit(const QPoint& point) const {
