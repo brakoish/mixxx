@@ -12,14 +12,16 @@
 // cached here except what a held solo must restore.
 //
 // Per pad:
-//  - tap toggles that stem's mute (on release, like the hot-cue pads);
+//  - a touch toggles that stem's mute at once, on touch-down, so a drop on
+//    the one lands on the one;
 //  - hold (kHoldMs) solos it while held: the other stems mute, and release
-//    restores what was there before;
-//  - a second tap on the same pad within kDoubleTapMs unmutes every stem.
+//    restores what was there before the touch (the touch-down toggle too);
+//  - a second touch on the same pad within kDoubleTapMs of the first
+//    unmutes every stem instead of toggling again.
 //
 // Every press is tied to a context: the surface's interaction epoch (page,
-// layer and layout changes) and the deck's load serial. A release in another
-// context is stale and does nothing, except that a solo is always undone.
+// layer and layout changes) and the deck's load serial. A hold in another
+// context does nothing; a solo is always undone on release or cancel.
 class DeckLabStemGestures {
   public:
     static constexpr int kStems = 4;
@@ -32,11 +34,11 @@ class DeckLabStemGestures {
     };
     enum class Result {
         None,
-        Ignored,     // stale, cancelled or out of range: no control writes
-        Toggled,     // a tap flipped one mute
+        Ignored,     // refused, stale, cancelled or out of range: no control writes
+        Toggled,     // a touch flipped one mute
         RestoredAll, // a double tap unmuted every stem
         Soloed,      // a hold muted the other stems
-        SoloEnded,   // release or cancel restored the pre-solo state
+        SoloEnded,   // release or cancel restored the pre-touch state
     };
     using Read = std::function<bool(int stem)>;
     using Write = std::function<void(int stem, bool muted)>;
@@ -63,20 +65,38 @@ class DeckLabStemGestures {
         return m_solo ? m_stem : -1;
     }
 
-    // A pointer went down on a pad. One gesture at a time.
-    bool press(int stem, const Context& context) {
+    // A pointer went down on a pad: the mute flips now. One gesture at a
+    // time. now: milliseconds, for the double tap.
+    Result press(int stem, const Context& context, qint64 now) {
         if (active() || stem < 0 || stem >= m_count) {
-            return false;
+            return Result::Ignored;
         }
         m_stem = stem;
         m_context = context;
         m_solo = false;
-        return true;
+        m_pressMuted = m_muted(stem);
+        if (m_tapStem == stem && m_tapContext == context && now - m_tapAt <= kDoubleTapMs) {
+            for (int other = 0; other < m_count; ++other) {
+                if (m_muted(other)) {
+                    m_setMuted(other, false);
+                }
+            }
+            m_tapStem = -1;
+            // A restore is complete in itself: holding on does not solo.
+            m_restored = true;
+            return Result::RestoredAll;
+        }
+        m_restored = false;
+        m_setMuted(stem, !m_pressMuted);
+        m_tapStem = stem;
+        m_tapContext = context;
+        m_tapAt = now;
+        return Result::Toggled;
     }
 
     // The hold time elapsed with the pointer still down.
     Result hold(const Context& current) {
-        if (!active() || m_solo) {
+        if (!active() || m_solo || m_restored) {
             return Result::None;
         }
         // A page, layer, layout or track change since the press: no solo.
@@ -86,9 +106,10 @@ class DeckLabStemGestures {
         m_solo = true;
         m_soloCount = m_count;
         for (int stem = 0; stem < m_soloCount; ++stem) {
-            m_before[stem] = m_muted(stem);
+            // The held stem returns to how it was before the touch-down.
+            m_before[stem] = stem == m_stem ? m_pressMuted : m_muted(stem);
             m_written[stem] = stem != m_stem;
-            if (m_before[stem] != m_written[stem]) {
+            if (m_muted(stem) != m_written[stem]) {
                 m_setMuted(stem, m_written[stem]);
             }
         }
@@ -97,40 +118,19 @@ class DeckLabStemGestures {
         return Result::Soloed;
     }
 
-    // The pointer came up; inside: over the pressed pad. now: milliseconds.
-    Result release(bool inside, const Context& current, qint64 now) {
+    // The pointer came up. A tap already acted on touch-down; a solo ends
+    // here, even after a page or layer change.
+    Result release(const Context& current) {
         if (!active()) {
             return Result::None;
         }
         if (m_solo) {
-            // A solo always ends on release, even after a page or layer change.
             endSolo(current.load != m_context.load);
             finish();
             return Result::SoloEnded;
         }
-        const int stem = m_stem;
-        const Context pressed = m_context;
         finish();
-        // Stale-release protection, as for the hot-cue pads: the release must
-        // land on the pressed pad, in the same epoch, on the same track.
-        if (!inside || current != pressed || stem >= m_count) {
-            m_tapStem = -1;
-            return Result::Ignored;
-        }
-        if (m_tapStem == stem && m_tapContext == current && now - m_tapAt <= kDoubleTapMs) {
-            for (int other = 0; other < m_count; ++other) {
-                if (m_muted(other)) {
-                    m_setMuted(other, false);
-                }
-            }
-            m_tapStem = -1;
-            return Result::RestoredAll;
-        }
-        m_setMuted(stem, !m_muted(stem));
-        m_tapStem = stem;
-        m_tapContext = current;
-        m_tapAt = now;
-        return Result::Toggled;
+        return Result::None;
     }
 
     // The surface went away mid-gesture (hidden, touch cancel, application
@@ -170,6 +170,7 @@ class DeckLabStemGestures {
     void finish() {
         m_stem = -1;
         m_solo = false;
+        m_restored = false;
         m_soloCount = 0;
     }
 
@@ -179,6 +180,8 @@ class DeckLabStemGestures {
     int m_stem = -1;
     Context m_context;
     bool m_solo = false;
+    bool m_restored = false;
+    bool m_pressMuted = false;
     int m_soloCount = 0;
     std::array<bool, kStems> m_before{};
     std::array<bool, kStems> m_written{};

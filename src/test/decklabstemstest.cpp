@@ -449,11 +449,13 @@ TEST_F(DeckLabStemsTest, TapHoldAndDoubleTapDriveTheRealStemMutes) {
     loadGenerated(2, 126);
     fakeStems(1);
     ASSERT_TRUE(pad(1, 2)->isVisible());
-    // Tap mutes on release.
+    // A touch mutes on touch-down, so a drop lands on the beat; the release
+    // adds nothing.
     press(pad(1, 2));
     settle();
-    EXPECT_EQ(0, mute(1, 2)) << "nothing happens on press";
+    EXPECT_EQ(1, mute(1, 2)) << "the mute lands on touch-down";
     EXPECT_TRUE(pad(1, 2)->state().pressed);
+    EXPECT_TRUE(pad(1, 2)->state().muted);
     release(pad(1, 2));
     EXPECT_EQ((std::array<double, 4>{0, 1, 0, 0}), mutes(1));
     EXPECT_TRUE(pad(1, 2)->state().muted);
@@ -511,14 +513,17 @@ TEST_F(DeckLabStemsTest, StaleGesturesNeverLeaveAStemSoloedOrMuted) {
     EXPECT_EQ((std::array<double, 4>{0, 0, 0, 0}), mutes(1));
     panel->selectPage(0);
     settle();
-    // A layout change before the hold time: no solo and no toggle.
+    // A layout change before the hold time: the touch-down mute stands (it
+    // already happened), but no solo follows and the release adds nothing.
     press(pad(1, 2));
     selectLayout(2);
     QTest::qWait(450);
     release(pad(1, 2));
-    EXPECT_EQ((std::array<double, 4>{0, 0, 0, 0}), mutes(1));
+    EXPECT_EQ((std::array<double, 4>{0, 1, 0, 0}), mutes(1));
     selectLayout(1);
     ASSERT_TRUE(pad(1, 2)->isVisible());
+    setMute(1, 2, 0);
+    settle();
     // The layer on the left changes to deck 3 mid-hold.
     hold(pad(1, 3));
     ASSERT_EQ((std::array<double, 4>{1, 1, 0, 1}), mutes(1));
@@ -816,7 +821,7 @@ TEST_F(DeckLabStemsTest, StemDecodeAndMixCostProbe) {
     };
     const auto engineTiming = [this, &timeBuffers](bool keylock) {
         ControlObject::set(ConfigKey("[Channel1]", "keylock"), keylock ? 1 : 0);
-        ControlObject::set(ConfigKey("[Channel1]", "rate"), 0.5); // +4 % at ±8 %
+        ControlObject::set(ConfigKey("[Channel1]", "rate"), 0.5); // +4 % at ï¿½8 %
         ControlObject::set(ConfigKey("[Channel1]", "play"), 1);
         EXPECT_GT(rmsWhenFlowing(), 1e-3);
         const Timing timing = timeBuffers(true);

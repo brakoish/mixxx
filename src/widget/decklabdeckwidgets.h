@@ -83,6 +83,9 @@ struct DeckLabStripState {
     bool endWarning = false;
     bool master = false;
     bool sync = false;
+    // A one-shot SYNC tap just matched tempo and beat: the SYNC lamp reads
+    // MATCHED for a moment. Sync lock itself is `sync`.
+    bool matched = false;
     bool pfl = false;
     bool slip = false;
     bool keylock = false;
@@ -165,6 +168,9 @@ class DeckLabStripRenderer {
     void paint(QPainter& painter, const QRect& dirty, bool pressed, bool focused) const;
     // Lit deck modes as words, for accessibility and verification.
     QString modesText() const;
+    // The whole BPM a compact card shows when its decimals do not fit:
+    // rounded to the nearest beat per minute, never cut off.
+    static QString roundedBpm(const QString& bpm);
     // Parts that cannot be shown at their binding size in this geometry.
     QStringList overflowingParts() const;
     QFont uiFont(int pixels, QFont::Weight weight) const;

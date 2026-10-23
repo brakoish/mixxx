@@ -70,7 +70,7 @@ DeckLabStemPad::DeckLabStemPad(DeckLabStemPads* owner, int stem, QWidget* parent
     setFixedHeight(DeckLabStemPads::kPadHeight);
     setMinimumWidth(DeckLabStemPads::kPadHeight);
     setAttribute(Qt::WA_OpaquePaintEvent, false);
-    setAccessibleDescription(tr("Tap to mute or unmute. Hold to hear only this stem while held. "
+    setAccessibleDescription(tr("Touch to mute or unmute at once. Hold to hear only this stem while held. "
                                 "Double-tap to bring back all stems."));
 }
 
@@ -150,7 +150,7 @@ void DeckLabStemPad::mousePressEvent(QMouseEvent* event) {
 
 void DeckLabStemPad::mouseReleaseEvent(QMouseEvent* event) {
     if (m_owner && event->button() == Qt::LeftButton) {
-        m_owner->padReleased(m_stem, rect().contains(event->position().toPoint()));
+        m_owner->padReleased(m_stem);
     }
     event->accept();
 }
@@ -346,7 +346,8 @@ void DeckLabStemPads::hideEvent(QHideEvent* event) {
 }
 
 void DeckLabStemPads::padPressed(int stem) {
-    if (!m_gestures.press(stem, context())) {
+    // The mute flips on touch-down; holding on turns the touch into a solo.
+    if (m_gestures.press(stem, context(), m_clock.elapsed()) == DeckLabStemGestures::Result::Ignored) {
         return;
     }
     m_holdTimer.start();
@@ -354,12 +355,12 @@ void DeckLabStemPads::padPressed(int stem) {
     refreshPads();
 }
 
-void DeckLabStemPads::padReleased(int stem, bool inside) {
+void DeckLabStemPads::padReleased(int stem) {
     if (m_gestures.pressedStem() != stem) {
         return;
     }
     m_holdTimer.stop();
-    m_gestures.release(inside, context(), m_clock.elapsed());
+    m_gestures.release(context());
     watchGestureEnd();
     refreshPads();
 }
