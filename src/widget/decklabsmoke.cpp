@@ -243,16 +243,17 @@ void systemSmokeStep(int index, WDeckLab* surface) {
         clickVisible(surface, QStringLiteral("decklab-status"));
         break;
     case 23:
-        // Making the read-only rekordbox stick writable asks first.
+        // Making the read-only rekordbox stick writable asks first. The page
+        // rebuilds its drive cards when shown, and new children show queued.
         closeSheets(surface);
         settings(Section::Storage);
-        clickVisible(surface, QStringLiteral("decklab-drive-record"));
+        QTimer::singleShot(250, surface, [surface] { clickVisible(surface, QStringLiteral("decklab-drive-record")); });
         break;
     case 24:
         // A Bluetooth row tap opens details; it never connects or disconnects.
         closeSheets(surface);
         settings(Section::Bluetooth);
-        clickVisible(surface, QStringLiteral("decklab-bt-device"));
+        QTimer::singleShot(250, surface, [surface] { clickVisible(surface, QStringLiteral("decklab-bt-device")); });
         break;
     default: break;
     }
