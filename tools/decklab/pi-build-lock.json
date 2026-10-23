@@ -125,8 +125,8 @@
     "src/widget/wtracktableview.cpp": "6082a5247c8d5d726367c9552d327e7a6c5bab3834577e4744aca85f7163c208",
     "src/widget/wtracktableview.h": "0e80941690d881c8318588120e0300a788c716dc2eaa43688e8e8e7c977becec",
     "src/widget/wtracktableviewheader.cpp": "46920006e0909ba2ccabf69a68640976b1ee3bced6a4e644cc1ff951f04c87cb",
-    "tools/decklab/build_pi.py": "4cd057a645f7444790db1fd3e5c469a3b54e489bbd037c35e642da666f86100e",
-    "tools/decklab/test_build_pi.py": "82521fb3f3f5aea4465643437cfb9f53a50a40dede90dbe8e9778df07692f042",
+    "tools/decklab/build_pi.py": "ae068a3a124329b225387c08640e37f718de35a135741671828d68d55889aee1",
+    "tools/decklab/test_build_pi.py": "4ca5aed03c6462044eec9cfad6332aaa5eacf9f70770165386705af48fb1c4d4",
     "tools/decklab/test_dsp.py": "b496a2f0310cf8c3d1350cb651830a9d11c1978e66c98b74b4308f17744bb1e4"
   },
   "input_hash_format": "sha256 of UTF-8 source bytes with CRLF normalized to LF"

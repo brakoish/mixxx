@@ -70,12 +70,15 @@ class BuildGuards(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             build_pi.build_target("aarch64", True, binfmt)
 
-    def test_emulated_cpu_is_set_by_bubblewrap_inside_every_sandbox(self):
+    def test_qemu_settings_are_set_by_bubblewrap_inside_every_sandbox(self):
         self.assertEqual(build_pi.EMULATED_CPU, "cortex-a72")  # the Pi 4's core
-        script = build_pi.qemu_cpu_bwrap("/usr/bin/bwrap", build_pi.EMULATED_CPU)
+        self.assertEqual(build_pi.qemu_settings({"HOME": "/home/x"}), {"QEMU_CPU": "cortex-a72"})
+        settings = build_pi.qemu_settings({"QEMU_UNAME": "6.6-generic", "QEMU_CPU": "max", "PATH": "/bin"})
+        self.assertEqual(settings, {"QEMU_CPU": "max", "QEMU_UNAME": "6.6-generic"})
+        script = build_pi.qemu_bwrap("/usr/bin/bwrap", build_pi.qemu_settings({}))
         self.assertEqual(script, '#!/bin/sh\nexec /usr/bin/bwrap --setenv QEMU_CPU cortex-a72 "$@"\n')
-        self.assertIn("exec '/opt/my tools/bwrap' --setenv QEMU_CPU 'a b' \"$@\"",
-                      build_pi.qemu_cpu_bwrap("/opt/my tools/bwrap", "a b"))
+        self.assertIn("exec '/opt/my tools/bwrap' --setenv QEMU_CPU 'a b' --setenv QEMU_UNAME 6.6 \"$@\"",
+                      build_pi.qemu_bwrap("/opt/my tools/bwrap", {"QEMU_CPU": "a b", "QEMU_UNAME": "6.6"}))
 
     def test_emulation_options_leave_native_defaults_unchanged(self):
         _, default = build_pi.options([])
