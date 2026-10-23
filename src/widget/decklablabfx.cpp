@@ -1643,6 +1643,9 @@ void DeckLabLabFx::padPressed(QPointF position) {
     engage(doubleTap);
     if (!m_on) {
         m_held = false;
+        // round4: a refused touch (a paused deck has nothing to roll) did
+        // nothing, so it is not the first tap of a latching double-tap.
+        m_lastPadPress = -100000;
         changed();
     }
 }
