@@ -846,6 +846,11 @@ void paintGlyph(QPainter& painter, const QRectF& box, Glyph glyph, const QColor&
         painter.drawArc(QRectF(at(0.14, 0.14), at(0.86, 0.86)), 60 * 16, 290 * 16);
         painter.drawPolyline(QPolygonF{at(0.5, 0.04), at(0.7, 0.16), at(0.52, 0.32)});
         break;
+    case Glyph::Mixes:
+        // Two keys that overlap: what mixes with the playing deck.
+        painter.drawEllipse(QRectF(at(0.06, 0.22), at(0.62, 0.78)));
+        painter.drawEllipse(QRectF(at(0.38, 0.22), at(0.94, 0.78)));
+        break;
     case Glyph::Folder: {
         QPainterPath path;
         path.moveTo(at(0.08, 0.84));
@@ -1651,7 +1656,7 @@ DeckLabToast::DeckLabToast(QWidget* parent)
     decklab::overlay::keepAboveWaveforms(this);
 }
 
-void DeckLabToast::showMessage(const QString& text, int milliseconds, bool live) {
+void DeckLabToast::showMessage(const QString& text, int milliseconds, bool live, const QRect& anchor) {
     setFont(strongFont(font()));
     setStyleSheet(QStringLiteral(
             "QLabel#decklab-toast{background:#20242B;color:#F2F4F7;border:2px solid %1;"
@@ -1664,7 +1669,14 @@ void DeckLabToast::showMessage(const QString& text, int milliseconds, bool live)
     if (surface) {
         const int width = std::min(this->width(), surface->width() - 32);
         resize(width, height());
-        move((surface->width() - width) / 2, 96);
+        if (anchor.isValid()) {
+            // r4-browse (B-33): next to what refused, 8 px above it.
+            const int x = std::clamp(anchor.center().x() - width / 2, 16, std::max(16, surface->width() - 16 - width));
+            const int y = std::clamp(anchor.top() - 8 - height(), 8, std::max(8, surface->height() - 8 - height()));
+            move(x, y);
+        } else {
+            move((surface->width() - width) / 2, 96);
+        }
     }
     decklab::overlay::raiseAboveWaveforms(this);
     show();

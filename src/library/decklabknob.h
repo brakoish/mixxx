@@ -24,6 +24,7 @@
 #include <QtDebug>
 #include <algorithm>
 #include <cmath>
+#include <functional>
 
 namespace decklab {
 
@@ -116,11 +117,21 @@ inline int& knobEventsRedirected() {
     return count;
 }
 
+// r4-browse: called for every redirected knob event (the Browse knob legend
+// says MENU and flashes). GUI thread only; empty when no surface listens.
+inline std::function<void()>& knobRedirectedListener() {
+    static std::function<void()> listener;
+    return listener;
+}
+
 // "DeckLab knob: [Library] MoveVertical ignored by Browse because a menu is
 // open (QMenu "x"); the menu gets it". Debug level (always in mixxx.log),
 // at most twice a second for the same reason.
 inline void logKnobRedirected(const char* control, const KnobOwner& owner) {
     ++knobEventsRedirected();
+    if (knobRedirectedListener()) {
+        knobRedirectedListener()();
+    }
     static QElapsedTimer last;
     static QString lastReason;
     const QString reason = QString::fromLatin1(control) + describeKnobOwner(owner);
