@@ -429,6 +429,7 @@ QList<UsbStick> findUsbSticks() {
         }
     }
     QSet<QString> seen;
+    QSet<QByteArray> devices;
     for (const QString& root : std::as_const(roots)) {
         const bool applianceRoot = QDir(root).dirName() == QStringLiteral("decklab");
         const QFileInfoList entries = QDir(root).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
@@ -437,10 +438,16 @@ QList<UsbStick> findUsbSticks() {
             if (seen.contains(path)) {
                 continue;
             }
-            // Only real mounts: the appliance helper removes stale folders,
-            // but a desktop may leave empty ones behind.
-            if (!testing && QStorageInfo(path).rootPath() != path) {
-                continue;
+            if (!testing) {
+                // Only real mounts: the appliance helper removes stale
+                // folders, but a desktop may leave empty ones behind. A stick
+                // also automounted by a desktop is listed once (the appliance
+                // mount is scanned first).
+                const QStorageInfo mount(path);
+                if (mount.rootPath() != path || devices.contains(mount.device())) {
+                    continue;
+                }
+                devices.insert(mount.device());
             }
             seen.insert(path);
             UsbStick stick;

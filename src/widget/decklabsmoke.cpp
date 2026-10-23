@@ -447,7 +447,9 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                          clickVisible(surface, QStringLiteral("decklab-match-faster"));
                          clickVisible(surface, QStringLiteral("decklab-match-only"));
                          QCoreApplication::processEvents();
-                         return selectTrack(surface, "Signal Fire");
+                         // The capture shows whatever the filter kept.
+                         selectTrack(surface, "Signal Fire");
+                         return surface->findChild<QWidget*>(QStringLiteral("decklab-match-bar"))->isVisible();
                      }},
                     {"four-decks", 700, [surface] {
                          clickVisible(surface, QStringLiteral("decklab-match-only"));
