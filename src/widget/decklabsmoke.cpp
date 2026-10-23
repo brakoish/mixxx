@@ -505,6 +505,9 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
     auto failures = std::make_shared<QJsonArray>();
     auto browseDone = std::make_shared<bool>(false);
     auto samplerDone = std::make_shared<bool>(false); // r4-sampler
+    // A step whose action outlasts the timer interval (seen under qemu) must not
+    // be run again, or the next step's action is skipped: wait for its capture.
+    auto capturing = std::make_shared<bool>(false);
     const auto check = [surface, failures] {
         if (surface->size() != QSize(800, 480)) failures->append("Surface is not 800x480");
         for (int deck = 1; deck <= 4; ++deck) {
@@ -546,6 +549,7 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                 failures->append("Bundled native RMX processor is unavailable");
     };
     QObject::connect(timer, &QTimer::timeout, surface, [=] {
+        if (*capturing) return;
         // Capture the real parser/Library/PlayerManager surface, including the
         // empty native waveform viewers. These are not moving-audio evidence.
         if (*step < 5) surface->findChild<QPushButton*>(QStringLiteral("decklab-tab-%1").arg(*step))->click();
@@ -715,6 +719,7 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
         }
         const bool large = *step >= kLargeFirst && *step < kLargeFirst + kLargeCount;
         surface->setFixedSize(large ? QSize(1024, 600) : QSize(800, 480));
+        *capturing = true;
         QTimer::singleShot(*step >= kSystemFirst ? 600 : 100, surface, [=] {
             if (!large) check();
             if ((*step >= 10 && *step < 15) || *step >= kSystemFirst) {
@@ -745,6 +750,7 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                 for (int pass = 0; pass < 3; ++pass) QCoreApplication::processEvents();
             }
             ++*step;
+            *capturing = false;
         });
     });
     timer->start(350);
