@@ -1845,6 +1845,13 @@ QWidget* WDeckLab::buildBrowse() {
     });
     new DeckLabEventHook(b.items->viewport(), [this](QObject*, QEvent* event) {
         if (event->type() == QEvent::MouseButtonPress) m_browseState->pressPos = static_cast<QMouseEvent*>(event)->pos();
+        // round4: the home's tile height follows the viewport height, but the
+        // flow layout re-flows only when the width changes. Without this a
+        // taller list left the tiles of one row overlapping the next.
+        if (event->type() == QEvent::Resize && m_browseState->items->flow() == QListView::LeftToRight) {
+            const auto* resize = static_cast<QResizeEvent*>(event);
+            if (resize->oldSize().height() != resize->size().height()) m_browseState->items->doItemsLayout();
+        }
         return false;
     });
     new DeckLabEventHook(b.items, [this](QObject*, QEvent* event) {
