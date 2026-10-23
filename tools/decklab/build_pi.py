@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,9 @@ LOCK = Path(__file__).with_name("pi-build-lock.json")
 MANIFEST = ROOT / "packaging/flatpak/org.mixxx.Mixxx.yaml"
 # qemu-user runs the app smoke and a gdb diagnostic far slower than an ARM64 runner.
 EMULATED_TIMEOUT_SCALE = 20
+# qemu's default "max" CPU computes pointer authentication in software, which made
+# emulated compiles about 7x slower; emulate the Pi 4's own Cortex-A72 instead.
+EMULATED_CPU = "cortex-a72"
 
 
 def digest(path):
@@ -178,6 +182,12 @@ def build_target(machine, emulate, binfmt=None):
     return ["--arch=aarch64"]
 
 
+def qemu_cpu_bwrap(bwrap, cpu):
+    """A bwrap wrapper for FLATPAK_BWRAP: Flatpak sandboxes get a minimal
+    environment, so QEMU_CPU has to be set by bubblewrap itself."""
+    return "#!/bin/sh\nexec %s --setenv QEMU_CPU %s \"$@\"\n" % (shlex.quote(bwrap), shlex.quote(cpu))
+
+
 def external_workdir(root, path):
     work = path.expanduser().resolve()
     if work == root.resolve() or work.is_relative_to(root.resolve()):
@@ -207,9 +217,15 @@ def build(work, jobs, lock, emulate=False, timeout_scale=1):
                XDG_CACHE_HOME=str(work / "cache"), LC_ALL="C.UTF-8", TZ="UTC",
                CCACHE_DIR=str(work / "compiler-cache"),
                SOURCE_DATE_EPOCH=command(["git", "show", "-s", "--format=%ct", "HEAD"], capture=True))
-    for tool in ("flatpak", "flatpak-builder", "git"):
+    for tool in ("flatpak", "flatpak-builder", "git") + (("bwrap",) if emulate else ()):
         if not shutil.which(tool):
             raise RuntimeError("Missing build tool: " + tool)
+    if emulate:
+        cpu = os.environ.get("QEMU_CPU", EMULATED_CPU)
+        wrapper = work / "bwrap-qemu-cpu"
+        wrapper.write_text(qemu_cpu_bwrap(shutil.which("bwrap"), cpu))
+        wrapper.chmod(0o755)
+        env.update(FLATPAK_BWRAP=str(wrapper), QEMU_CPU=cpu)
     command(["flatpak", "remote-add", "--user", "--if-not-exists", "flathub",
              "https://dl.flathub.org/repo/flathub.flatpakrepo"], env=env)
     actual = {}
@@ -325,7 +341,7 @@ def build(work, jobs, lock, emulate=False, timeout_scale=1):
         # A "-binfmt-P" interpreter refuses direct calls; ask the binary it links to.
         qemu = command([os.path.realpath(interpreter), "--version"], capture=True).splitlines()[0]
         record["build_host"] = {"machine": platform.machine(), "aarch64": "qemu-user binfmt_misc emulation",
-                                "qemu": qemu, "timeout_scale": timeout_scale}
+                                "qemu": qemu, "qemu_cpu": cpu, "timeout_scale": timeout_scale}
     (out / "provenance.json").write_text(json.dumps(record, indent=2) + "\n")
     shutil.copy2(generated, out / "resolved-manifest.json")
     shutil.copy2(LOCK, out / "pi-build-lock.json")

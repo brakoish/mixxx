@@ -70,6 +70,13 @@ class BuildGuards(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             build_pi.build_target("aarch64", True, binfmt)
 
+    def test_emulated_cpu_is_set_by_bubblewrap_inside_every_sandbox(self):
+        self.assertEqual(build_pi.EMULATED_CPU, "cortex-a72")  # the Pi 4's core
+        script = build_pi.qemu_cpu_bwrap("/usr/bin/bwrap", build_pi.EMULATED_CPU)
+        self.assertEqual(script, '#!/bin/sh\nexec /usr/bin/bwrap --setenv QEMU_CPU cortex-a72 "$@"\n')
+        self.assertIn("exec '/opt/my tools/bwrap' --setenv QEMU_CPU 'a b' \"$@\"",
+                      build_pi.qemu_cpu_bwrap("/opt/my tools/bwrap", "a b"))
+
     def test_emulation_options_leave_native_defaults_unchanged(self):
         _, default = build_pi.options([])
         self.assertEqual((default.jobs, default.emulate_aarch64, default.timeout_scale), (3, False, 1))
