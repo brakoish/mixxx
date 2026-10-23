@@ -1307,7 +1307,10 @@ bool KnobNavigator::eventFilter(QObject* watched, QEvent* event) {
             break;
         }
     } else if (watched == m_current.data()) {
-        if (event->type() == QEvent::Move || event->type() == QEvent::Resize || event->type() == QEvent::Show) {
+        // Follow the control while the ring is up. A Show never brings back a
+        // cleared ring: the page opens without one, so the first turn shows
+        // where it is instead of moving past the current row.
+        if ((event->type() == QEvent::Move || event->type() == QEvent::Resize) && m_ring && !m_ring->isHidden()) {
             placeRing();
         } else if (event->type() == QEvent::Hide) {
             clear();
