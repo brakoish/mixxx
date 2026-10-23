@@ -9,6 +9,7 @@
 #include <QDir>
 #include <QDialog>
 #include <QFileInfo>
+#include <QFontDatabase>
 #include <QEvent>
 #include <QGridLayout>
 #include <QHeaderView>
@@ -35,12 +36,14 @@
 #include <QTextBrowser>
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <tuple>
 
 #include "control/controlobject.h"
 #include "control/controlproxy.h"
 #include "decklab/decklabsystempages.h"
 #include "decklab/decklabsystemui.h"
+#include "decklab/decklabui.h"
 #include "effects/effectsmanager.h"
 #include "effects/effectchain.h"
 #include "effects/effectslot.h"
@@ -68,9 +71,20 @@
 namespace {
 const QString kNative = QStringLiteral("[DeckLabNative]");
 const QString kTab = QStringLiteral("[Tab]");
+// Barlow is the application font while a Deck Lab surface exists.
+int s_surfaces = 0;
+std::optional<QFont> s_fontBefore;
+// Surface sheet. Every child rule names Barlow itself: children with their
+// own sheets (System pages, Deck Setup) and painted widgets otherwise fell
+// back to the system face. QApplication's font is Barlow too (constructor).
+// Settings (#decklab-settings): every control is a 44 px+ touch target
+// (32 px min-height + 5 px padding + 1 px borders for buttons, 42 + 2 for
+// combo boxes) and toggles that are on print as a white fill with ink text.
+// Its category list is a list, not a second tab rail: 52 px rows, a raised
+// fill and a white left edge on the selected one.
 const QString kStyle = QStringLiteral(R"(
- WDeckLab {background:#0D0F12;color:#F2F4F7;font-family:"Barlow","Open Sans",sans-serif;font-size:16px;font-weight:500;}
- WDeckLab QWidget {color:#F2F4F7;font-size:16px;}
+ WDeckLab {background:#0D0F12;color:#F2F4F7;font-family:"Barlow";font-size:16px;font-weight:500;}
+ WDeckLab QWidget {color:#F2F4F7;font-family:"Barlow";font-size:16px;font-weight:500;}
  WDeckLab QPushButton {background:#16191E;border:1px solid #2C313A;border-radius:2px;padding:5px 9px;min-height:28px;font-weight:600;}
  WDeckLab QPushButton:pressed {background:#20242B;}
  WDeckLab QPushButton:checked {background:#20242B;border-color:#F2F4F7;}
@@ -84,24 +98,36 @@ const QString kStyle = QStringLiteral(R"(
  WDeckLab QLabel[deck="true"] {font-size:18px;font-weight:600;}
  WDeckLab QLabel[numbers="true"] {font-size:24px;font-weight:600;}
  WDeckLab QLabel[deckIdentity="true"] {font-size:24px;font-weight:600;border-right:1px solid #2C313A;}
- WDeckLab QComboBox {background:#222;border:1px solid #484848;border-radius:2px;min-height:38px;padding-left:10px;}
- WDeckLab QComboBox QAbstractItemView {background:#181818;selection-background-color:#333;min-height:40px;}
- WDeckLab QComboBox QAbstractItemView::item {min-height:40px;}
- WDeckLab QSlider::groove:horizontal {height:8px;background:#444;border-radius:2px;}
- WDeckLab QSlider::handle:horizontal {background:#eee;border:1px solid #777;width:24px;margin:-12px 0;border-radius:2px;}
- WDeckLab QProgressBar {border:0;background:#303030;}
- WDeckLab QProgressBar::chunk {background:#ddd;}
- WDeckLab QProgressBar[clipping="true"] {border:1px solid #d74448;}
- WDeckLab QLabel[clipping="true"] {color:#fff;border:1px solid #d74448;}
- WDeckLab QTreeView,WDeckLab QTableView {background:#111;alternate-background-color:#191919;border:0;selection-background-color:#333;selection-color:white;}
- WDeckLab QTreeView::item {min-height:44px;padding-left:8px;border-bottom:1px solid #282828;}
- WDeckLab QHeaderView::section {background:#222;color:#aaa;border:0;border-right:1px solid #444;padding:5px;}
- WDeckLab QScrollBar:vertical {width:10px;background:#111;}
- WDeckLab QScrollBar::handle:vertical {background:#666;min-height:24px;}
- WDeckLab QScrollArea, WDeckLab QScrollArea > QWidget, WDeckLab QScrollArea > QWidget > QWidget {background:#101010;border:0;}
- WDeckLab QMenu {background:#191919;border:1px solid #666;}
+ WDeckLab QComboBox {background:#20242B;border:1px solid #2C313A;border-radius:2px;min-height:38px;padding-left:10px;}
+ WDeckLab QComboBox QAbstractItemView {background:#16191E;color:#F2F4F7;selection-background-color:#20242B;
+     selection-color:#F2F4F7;min-height:40px;font-family:"Barlow";font-size:16px;font-weight:500;}
+ WDeckLab QComboBox QAbstractItemView::item {min-height:44px;}
+ WDeckLab QSlider::groove:horizontal {height:8px;background:#2C313A;border-radius:2px;}
+ WDeckLab QSlider::handle:horizontal {background:#F2F4F7;border:1px solid #2C313A;width:24px;margin:-12px 0;border-radius:2px;}
+ WDeckLab QProgressBar {border:0;background:#2C313A;}
+ WDeckLab QProgressBar::chunk {background:#F2F4F7;}
+ WDeckLab QProgressBar[clipping="true"] {border:1px solid #FF3D2E;}
+ WDeckLab QLabel[clipping="true"] {color:#F2F4F7;border:1px solid #FF3D2E;}
+ WDeckLab QTreeView,WDeckLab QTableView {background:#0D0F12;alternate-background-color:#16191E;border:0;selection-background-color:#20242B;selection-color:#F2F4F7;}
+ WDeckLab QTreeView::item {min-height:44px;padding-left:8px;border-bottom:1px solid #2C313A;}
+ WDeckLab QHeaderView::section {background:#16191E;color:#9AA3AF;border:0;border-right:1px solid #2C313A;padding:5px;}
+ WDeckLab QScrollBar:vertical {width:8px;background:#0D0F12;}
+ WDeckLab QScrollBar::handle:vertical {background:#6B7380;min-height:24px;border-radius:2px;}
+ WDeckLab QScrollArea, WDeckLab QScrollArea > QWidget, WDeckLab QScrollArea > QWidget > QWidget {background:#0D0F12;border:0;}
+ WDeckLab QMenu {background:#16191E;border:1px solid #2C313A;font-family:"Barlow";font-size:16px;font-weight:500;}
  WDeckLab QMenu::item {padding:13px 20px;}
- WDeckLab QMenu::item:selected {background:#333;}
+ WDeckLab QMenu::item:selected {background:#20242B;}
+ WDeckLab QWidget#decklab-settings QPushButton {min-height:32px;}
+ WDeckLab QWidget#decklab-settings QPushButton:checked {background:#F2F4F7;color:#0D0F12;border-color:#F2F4F7;}
+ WDeckLab QWidget#decklab-settings QComboBox {min-height:42px;}
+ WDeckLab QWidget#decklab-settings QLabel[label="true"] {font-size:14px;font-weight:600;color:#9AA3AF;}
+ WDeckLab QWidget#decklab-settings-categories {background:#0D0F12;border-right:1px solid #2C313A;}
+ WDeckLab QWidget#decklab-settings-categories QPushButton {background:#0D0F12;color:#9AA3AF;border:0px;
+     border-left:3px solid #0D0F12;border-bottom:1px solid #2C313A;border-radius:0px;min-height:51px;max-height:51px;
+     padding:0px 13px;text-align:left;font-weight:600;}
+ WDeckLab QWidget#decklab-settings-categories QPushButton:pressed {background:#20242B;}
+ WDeckLab QWidget#decklab-settings-categories QPushButton:checked {background:#20242B;color:#F2F4F7;
+     border-color:#2C313A;border-left:3px solid #F2F4F7;}
  )");
 // Brand tokens: ground #0D0F12, panel #16191E, raise #20242B, line #2C313A,
 // muted #9AA3AF, text #F2F4F7. Selection is white or a raised fill; live red
@@ -391,6 +417,24 @@ QString timeText(double seconds) {
     seconds = std::max(0.0, seconds);
     return QStringLiteral("%1:%2").arg(int(seconds) / 60).arg(int(seconds) % 60, 2, 10, QLatin1Char('0'));
 }
+// Rail status lamps. They read as status, never as decks: white inverted
+// chips (amber is deck 2), and live red only while recording.
+QList<DeckLabChipButton::Chip> statusChips(int recording, bool audioDown, bool recentOverload, bool toolsOffline) {
+    const QColor live(0xff, 0x3d, 0x2e);
+    const QColor lamp(0xf2, 0xf4, 0xf7);
+    const auto text = [](const char* source) { return QCoreApplication::translate("WDeckLab", source); };
+    QList<DeckLabChipButton::Chip> chips;
+    if (recording == 2 || recording == 3)
+        chips.append(DeckLabChipButton::Chip{recording == 2 ? text(QT_TRANSLATE_NOOP("WDeckLab", "REC"))
+                                                            : text(QT_TRANSLATE_NOOP("WDeckLab", "REC II")),
+                live, true});
+    if (audioDown) chips.append(DeckLabChipButton::Chip{text(QT_TRANSLATE_NOOP("WDeckLab", "NO AUDIO")), lamp, true});
+    else if (recentOverload)
+        chips.append(DeckLabChipButton::Chip{text(QT_TRANSLATE_NOOP("WDeckLab", "DROPOUTS")), lamp, true});
+    if (toolsOffline && chips.isEmpty())
+        chips.append(DeckLabChipButton::Chip{text(QT_TRANSLATE_NOOP("WDeckLab", "SYSTEM OFF")), lamp, true});
+    return chips;
+}
 QString beatLoopSizeText(double size) {
     if (!util_isfinite(size) || size <= 0) return QStringLiteral("—");
     const double reciprocal = 1.0 / size;
@@ -478,8 +522,18 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
         : QWidget(parent), WBaseWidget(this), m_config(config), m_library(library),
           m_players(players), m_effects(effects) {
     setObjectName(QStringLiteral("DeckLabNative"));
-    // Barlow and Barlow Semi Condensed ship with the skin (OFL).
+    // Barlow and Barlow Semi Condensed ship with the skin (OFL). Barlow
+    // Medium 16 px becomes the application font, so menus, dialogs, combo
+    // popups, keyboards and painted widgets never fall back to the system face.
     deckLabLoadFonts(m_config->getResourcePath());
+    if (s_surfaces++ == 0) s_fontBefore = QApplication::font();
+    if (QFontDatabase::families().contains(QStringLiteral("Barlow"))) {
+        QFont face(QStringLiteral("Barlow"));
+        face.setFamilies({QStringLiteral("Barlow")});
+        face.setPixelSize(16);
+        face.setWeight(QFont::Medium);
+        QApplication::setFont(face);
+    }
     setStyleSheet(kStyle);
     setAttribute(Qt::WA_StyledBackground);
     setMinimumSize(800, 480);
@@ -636,14 +690,37 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     m_root->addWidget(m_waveforms, 1);
     m_root->addWidget(m_pages);
     m_deckControls->hide();
-    // Unambiguous lamps: AUDIO OFF, OVERLOAD (recent dropouts), REC, SYSTEM.
+    // Unambiguous lamps: NO AUDIO, DROPOUTS (recent), REC, SYSTEM OFF.
     m_status = new DeckLabChipButton(m_rail);
     m_status->setObjectName(QStringLiteral("decklab-status"));
     m_status->setProperty("rail", true);
     m_status->setFocusPolicy(Qt::NoFocus);
     m_status->setFixedHeight(44);
+    // A fixed status zone, reserved even when nothing is lit: a lamp lighting
+    // mid-mix must never move the tabs. Sized for the widest combination.
+    int statusWidth = 0;
+    for (const auto& lit : {std::tuple{3, false, true, false}, std::tuple{3, true, false, false},
+                 std::tuple{2, true, false, false}, std::tuple{0, false, false, true}}) {
+        m_status->setChips(std::apply(statusChips, lit));
+        statusWidth = std::max(statusWidth, m_status->sizeHint().width());
+    }
+    m_status->setChips({});
+    m_status->setFixedWidth(statusWidth);
     connect(m_status, &QPushButton::clicked, this, [this] {
-        QMessageBox::information(this, tr("Deck Lab status"), m_status->toolTip());
+        // Deck Lab's own sheet, not a desktop message box. With no sound
+        // output, Fix goes straight to Deck Setup's Audio step.
+        const QString text = m_status->toolTip();
+        const bool audioDown = !m_outputConfigured || value("[SoundManager]", "status") != 2;
+        if (!audioDown) {
+            decklab::ui::Confirm::inform(this, tr("Status"), text);
+            return;
+        }
+        decklab::ui::Confirm::ask(this, tr("Status"), text, tr("Fix"), [this] {
+            if (m_systemUi && m_systemUi->openWizard(1)) return;
+            // No Deck Setup service: Settings → Setup has the same action.
+            selectPage(4);
+            if (auto* setup = findChild<QPushButton*>(QStringLiteral("decklab-settings-category-4"))) setup->click();
+        }, false);
     });
     rail->addWidget(m_status);
     auto* mainLevel = new QWidget(m_rail);
@@ -773,6 +850,12 @@ WDeckLab::~WDeckLab() {
     m_fxTimer.stop();
     m_meterTimer.stop();
     qApp->removeEventFilter(this);
+    // The last Deck Lab surface hands the application its own font back
+    // (another skin, or the next test).
+    if (--s_surfaces == 0 && s_fontBefore) {
+        QApplication::setFont(*s_fontBefore);
+        s_fontBefore.reset();
+    }
     // QWidget closes focus after derived members have been destroyed. Search
     // emits on focus-out, so detach its callback and hide while our controls
     // and page state are still alive (including during a skin replacement).
@@ -1827,8 +1910,12 @@ QWidget* WDeckLab::buildEffects() {
 
 QWidget* WDeckLab::buildSettings() {
     auto* page = new QWidget(this);
+    // Named so the surface sheet can give every Settings control 44 px+.
+    page->setObjectName(QStringLiteral("decklab-settings"));
     auto* layout = row(page);
     auto* categories = new QWidget(page);
+    categories->setObjectName(QStringLiteral("decklab-settings-categories"));
+    categories->setAttribute(Qt::WA_StyledBackground);
     categories->setFixedWidth(150);
     auto* links = column(categories);
     auto* pages = new QStackedWidget(page);
@@ -1911,8 +1998,9 @@ QWidget* WDeckLab::buildSettings() {
             // Stems workstream: play stem files as stems or as a normal track.
             if (auto* stems = DeckLabStemPads::createPlaybackSetting(m_config, content)) rows->addWidget(stems);
             for (int deck = 1; deck <= 4; ++deck) {
+                // Section label: 14 px SemiBold caps.
                 auto* title = new QLabel(tr("DECK %1").arg(deck), content);
-                title->setProperty("muted", true); rows->addWidget(title);
+                title->setProperty("label", true); rows->addWidget(title);
                 auto* switches = row(nullptr, 4);
                 switches->addWidget(toggle(tr("Quantize"), channel(deck), "quantize"));
                 switches->addWidget(toggle(tr("Slip"), channel(deck), "slip_enabled"));
@@ -2040,7 +2128,8 @@ QWidget* WDeckLab::buildSettings() {
             auto* advanced = button(tr("Advanced settings"), [this] {
                 releaseEffects(); emit advancedPreferencesRequested();
             }, content, QStringLiteral("decklab-advanced-settings"));
-            advanced->setStyleSheet(QStringLiteral("font-size:16px;font-weight:500;min-height:34px;"));
+            // Same 44 px button as the rest of Settings (32 + 5 + 5 + 1 + 1).
+            advanced->setStyleSheet(QStringLiteral("font-size:16px;font-weight:600;min-height:32px;"));
             rows->addWidget(advanced);
         }
         rows->addStretch(); scroll->setWidget(content);
@@ -3397,24 +3486,23 @@ void WDeckLab::updateStatus() {
     if (overloads > m_lastOverloads) m_overloadUntil = m_clock.elapsed() + 10000;
     m_lastOverloads = overloads;
     const bool recentOverload = m_overloadUntil != 0 && m_clock.elapsed() < m_overloadUntil;
-    QString text = recording == 2 ? tr("REC · Recording") : recording == 3 ? tr("Recording paused") : QString();
-    if (audioDown) text += tr("   Audio disconnected · Settings → Device");
-    if (!m_toolsOnline) text += tr("   System tools offline");
-    if (overloads) text += tr("   Audio overloads: %1").arg(overloads);
-    const QColor alarm(0xe5, 0x48, 0x4d);
-    const QColor caution(0xf5, 0xa6, 0x23);
-    QList<DeckLabChipButton::Chip> chips;
-    if (recording == 2 || recording == 3)
-        chips.append(DeckLabChipButton::Chip{recording == 2 ? tr("REC") : tr("REC II"), alarm, true});
-    if (audioDown) chips.append(DeckLabChipButton::Chip{tr("AUDIO OFF"), alarm, true});
-    else if (recentOverload) chips.append(DeckLabChipButton::Chip{tr("OVERLOAD"), caution, true});
-    if (!m_toolsOnline && chips.isEmpty()) chips.append(DeckLabChipButton::Chip{tr("SYSTEM"), caution, true});
+    // One plain line per state; the status sheet shows them, and with no
+    // sound output its Fix button opens Deck Setup at the Audio step.
+    QStringList lines;
+    if (recording == 2) lines.append(tr("Recording your mix."));
+    else if (recording == 3) lines.append(tr("Recording paused."));
+    if (audioDown) lines.append(tr("No sound output. Tap Fix to choose one in Deck Setup."));
+    if (!m_toolsOnline) lines.append(tr("System service offline. DJing is unaffected."));
+    if (overloads) lines.append(tr("Audio dropouts: %1").arg(overloads));
+    const QString text = lines.join(QLatin1Char('\n'));
+    const auto chips = statusChips(recording, audioDown, recentOverload, !m_toolsOnline);
     // Called for every waveform measurement too: unchanged status must not
-    // relayout the rail.
+    // repaint or relayout. The zone keeps its width when nothing is lit.
     m_status->setChips(chips);
-    setToolTipIf(m_status, text.trimmed()); setAccessibleNameIf(m_status, text.trimmed());
-    setVisibleIf(m_status, !chips.isEmpty());
-    if (m_performanceStatus) setTextIf(m_performanceStatus, tr("Waveforms: %1 FPS · %2 dropped\nAudio overload count: %3")
+    setToolTipIf(m_status, text);
+    setAccessibleNameIf(m_status, text.isEmpty() ? tr("Status: all good") : text);
+    setEnabledIf(m_status, !chips.isEmpty());
+    if (m_performanceStatus) setTextIf(m_performanceStatus, tr("Waveforms: %1 FPS · %2 dropped\nAudio dropouts: %3")
             .arg(m_measuredFps, 0, 'f', 1).arg(m_droppedFrames).arg(overloads));
 }
 bool WDeckLab::eventFilter(QObject* watched, QEvent* event) {

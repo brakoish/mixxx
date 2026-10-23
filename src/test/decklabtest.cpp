@@ -450,12 +450,26 @@ TEST_F(NativeDeckLabTest, SourcesTouchSwipeRevealsOffscreenRowsWithoutOpeningThe
 }
 
 TEST_F(NativeDeckLabTest, InternalClockCannotClaimAConfiguredAudioOutput) {
-    auto* status = panel->findChild<QPushButton*>("decklab-status"); ASSERT_NE(nullptr, status);
+    auto* status = panel->findChild<DeckLabChipButton*>("decklab-status"); ASSERT_NE(nullptr, status);
+    auto* settingsTab = panel->findChild<QPushButton*>("decklab-tab-4"); ASSERT_NE(nullptr, settingsTab);
     ControlObject::set(ConfigKey("[SoundManager]", "status"), 2); QCoreApplication::processEvents();
-    EXPECT_TRUE(status->toolTip().contains("Audio disconnected"));
-    panel->setAudioOutputConfigured(true); EXPECT_FALSE(status->toolTip().contains("Audio disconnected"));
+    EXPECT_TRUE(status->toolTip().contains("No sound output"));
+    // The status never points at a page that doesn't exist; Fix opens Deck Setup.
+    EXPECT_FALSE(status->toolTip().contains(QString::fromUtf8("Settings →")));
+    ASSERT_FALSE(status->chips().isEmpty());
+    EXPECT_EQ(QStringLiteral("NO AUDIO"), status->chips().last().text);
+    // Status lamps are white inverted chips, never deck 2's amber.
+    EXPECT_EQ(QColor(0xf2, 0xf4, 0xf7), status->chips().last().lit);
+    const QRect zone = status->geometry();
+    const QRect tab = settingsTab->geometry();
+    panel->setAudioOutputConfigured(true); QCoreApplication::processEvents();
+    EXPECT_FALSE(status->toolTip().contains("No sound output"));
+    // A fixed status zone: lamps lighting or going out never move the tabs.
+    EXPECT_FALSE(status->isHidden());
+    EXPECT_EQ(zone, status->geometry());
+    EXPECT_EQ(tab, settingsTab->geometry());
     ControlObject::set(ConfigKey("[SoundManager]", "status"), 0); QCoreApplication::processEvents();
-    EXPECT_TRUE(status->toolTip().contains("Audio disconnected"));
+    EXPECT_TRUE(status->toolTip().contains("No sound output"));
 }
 
 TEST_F(NativeDeckLabTest, PagesFit800By480) {

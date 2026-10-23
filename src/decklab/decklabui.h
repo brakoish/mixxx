@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
+#include <QFont>
 #include <QLineEdit>
 #include <QPointer>
 #include <QPushButton>
@@ -16,8 +17,8 @@ class QScrollArea;
 class QVBoxLayout;
 class QHBoxLayout;
 
-// Touch-sized building blocks matching the Deck Lab surface: matte black and
-// graphite panels, white type, red selection and 44 px+ targets.
+// Touch-sized building blocks matching the Deck Lab surface: blue-black
+// panels, Barlow type, white selection and 44 px+ targets.
 namespace decklab::ui {
 
 enum class Icon {
@@ -39,8 +40,20 @@ enum class Icon {
     Restart,
 };
 
-extern const char* const kAccent; // "#d74448": alerts and errors only
+// Brand tokens. Every colour the system kit paints comes from this list.
+extern const char* const kGround; // "#0d0f12": page background
+extern const char* const kPanel;  // "#16191e": rows, cards, keys
+extern const char* const kRaise;  // "#20242b": pressed and selected fills
+extern const char* const kLine;   // "#2c313a": borders and separators
+extern const char* const kDim;    // "#6b7380": disabled text (16 px and up)
+extern const char* const kMuted;  // "#9aa3af": secondary text (15 px and up)
+extern const char* const kText;   // "#f2f4f7": text, focus, primary fill
+extern const char* const kLive;   // "#ff3d2e": recording, clip, no output only
 extern const char* const kSelect; // "#f2f4f7": selection and focus (white, per brand)
+
+/// The UI face (Barlow) at an on-device size. Painted widgets use this so
+/// they never fall back to the system font.
+QFont uiFont(const QFont& base, int pixels, QFont::Weight weight);
 
 /// Draws a simple line icon in `rect`.
 void paintIcon(QPainter& painter, const QRectF& rect, Icon icon, const QColor& color);
@@ -48,7 +61,7 @@ void paintIcon(QPainter& painter, const QRectF& rect, Icon icon, const QColor& c
 void paintSignalBars(QPainter& painter, const QRectF& rect, int percent, const QColor& on, const QColor& off);
 
 QPushButton* button(const QString& text, QWidget* parent, const QString& objectName = QString(), int height = 48);
-/// Red-bordered call to action.
+/// White-filled call to action.
 QPushButton* primaryButton(const QString& text, QWidget* parent, const QString& objectName = QString(), int height = 52);
 QLabel* title(const QString& text, QWidget* parent);
 QLabel* muted(const QString& text, QWidget* parent);
@@ -60,7 +73,7 @@ QHBoxLayout* hbox(int spacing = 8);
 /// A scrolling page body with kinetic touch scrolling that cannot turn a
 /// swipe's release into a tap.
 QScrollArea* scrollArea(QWidget* content, QWidget* parent, const QString& objectName);
-/// Card-like frame (#181818 with a subtle border).
+/// Card-like frame (panel fill with a line border).
 QFrame* card(QWidget* parent);
 /// Applies the shared extra stylesheet to a top-level Deck Lab widget.
 void applyStyle(QWidget* widget);
@@ -178,6 +191,13 @@ class Confirm : public QWidget {
             bool destructive = true);
     /// Information only (single OK button).
     static Confirm* inform(QWidget* host, const QString& title, const QString& text);
+    /// Details sheet: "Close" plus one optional explicit action. Nothing
+    /// happens unless the action button itself is tapped.
+    static Confirm* details(QWidget* host,
+            const QString& title,
+            const QString& text,
+            const QString& actionText,
+            std::function<void()> onAction);
 
   protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -185,6 +205,13 @@ class Confirm : public QWidget {
 
   private:
     explicit Confirm(QWidget* host);
+    static Confirm* build(QWidget* host,
+            const QString& title,
+            const QString& text,
+            const QString& dismissText,
+            const QString& confirmText,
+            std::function<void()> onConfirm,
+            bool destructive);
 };
 
 } // namespace decklab::ui

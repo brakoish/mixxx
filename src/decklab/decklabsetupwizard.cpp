@@ -22,6 +22,7 @@
 #include "decklab/decklabsystempages.h"
 #include "decklab/decklabui.h"
 #include "moc_decklabsetupwizard.cpp"
+#include "widget/decklabdeckwidgets.h"
 
 using namespace decklab::ui;
 using Step = DeckLabSetupWizard::Step;
@@ -90,8 +91,8 @@ class LayoutChoice : public QPushButton {
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
         const QRectF frame = QRectF(rect()).adjusted(1, 1, -1, -1);
-        painter.setPen(QPen(QColor(isChecked() ? kSelect : (isDown() ? "#5a5a5a" : "#303030")), isChecked() ? 2 : 1));
-        painter.setBrush(QColor(isChecked() ? "#1f1f1f" : isDown() ? "#262626" : "#171717"));
+        painter.setPen(QPen(QColor(isChecked() || isDown() ? kSelect : kLine), isChecked() ? 2 : 1));
+        painter.setBrush(QColor(isChecked() || isDown() ? kRaise : kPanel));
         painter.drawRoundedRect(frame, 4, 4);
         const int columns = m_decks;
         const double areaWidth = std::min(width() - 60.0, 70.0 * columns + 12.0 * (columns - 1));
@@ -101,43 +102,34 @@ class LayoutChoice : public QPushButton {
         const double top = 26;
         for (int deck = 0; deck < columns; ++deck) {
             const QRectF outline(left + deck * (deckWidth + 12), top, deckWidth, deckHeight);
-            painter.setPen(QPen(QColor(isChecked() ? "#f2f2f2" : "#9a9a9a"), 1.6));
+            // Deck colours are deck identity, so the chosen layout's preview uses them.
+            painter.setPen(QPen(isChecked() ? deckLabDeckColor(deck + 1) : QColor(kMuted), 1.6));
             painter.setBrush(Qt::NoBrush);
             painter.drawRoundedRect(outline, 3, 3);
             const double radius = std::min(deckWidth, deckHeight) * 0.28;
             painter.drawEllipse(QPointF(outline.center().x(), outline.top() + deckHeight * 0.45), radius, radius);
-            QFont number = font();
-            number.setPixelSize(14);
-            number.setWeight(QFont::DemiBold);
-            painter.setFont(number);
+            painter.setFont(uiFont(font(), 14, QFont::DemiBold));
             painter.drawText(QRectF(outline.left(), outline.bottom() - 22, outline.width(), 18), Qt::AlignCenter,
                     QString::number(deck + 1));
         }
-        QFont headingFont = font();
-        headingFont.setPixelSize(18);
-        headingFont.setWeight(QFont::DemiBold);
-        painter.setFont(headingFont);
-        painter.setPen(QColor("#f4f4f4"));
+        painter.setFont(uiFont(font(), 18, QFont::DemiBold));
+        painter.setPen(QColor(kText));
         const double textTop = top + deckHeight + 18;
         painter.drawText(QRectF(10, textTop, width() - 20, 24), Qt::AlignCenter, m_heading);
-        QFont detailFont = font();
-        detailFont.setPixelSize(15);
-        detailFont.setWeight(QFont::Medium);
-        painter.setFont(detailFont);
-        painter.setPen(QColor("#9aa3af"));
+        painter.setFont(uiFont(font(), 15, QFont::Medium));
+        painter.setPen(QColor(kMuted));
         painter.drawText(QRectF(10, textTop + 28, width() - 20, 22), Qt::AlignCenter, m_detail);
         if (m_suggested) {
-            QFont tagFont = font();
-            tagFont.setPixelSize(14);
-            tagFont.setWeight(QFont::DemiBold);
+            QFont tagFont = uiFont(font(), 14, QFont::DemiBold);
+            tagFont.setCapitalization(QFont::AllUppercase);
             painter.setFont(tagFont);
             const QString tag = DeckLabSetupWizard::tr("Suggested");
             const double tagWidth = QFontMetrics(tagFont).horizontalAdvance(tag) + 16;
             const QRectF pill(width() - tagWidth - 10, 8, tagWidth, 24);
             painter.setPen(QColor(kSelect));
-            painter.setBrush(QColor("#20242b"));
+            painter.setBrush(QColor(kRaise));
             painter.drawRoundedRect(pill, 3, 3);
-            painter.setPen(Qt::white);
+            painter.setPen(QColor(kText));
             painter.drawText(pill, Qt::AlignCenter, tag);
         }
     }
@@ -269,10 +261,10 @@ bool DeckLabSetupWizard::eventFilter(QObject* watched, QEvent* event) {
 
 void DeckLabSetupWizard::paintEvent(QPaintEvent*) {
     QPainter painter(this);
-    painter.fillRect(rect(), QColor("#0e0e0e"));
-    painter.fillRect(QRect(0, 56, width(), 1), QColor("#2a2a2a"));
+    painter.fillRect(rect(), QColor(kGround));
+    painter.fillRect(QRect(0, 56, width(), 1), QColor(kLine));
     if (m_footer->isVisible()) {
-        painter.fillRect(QRect(0, height() - m_footer->height(), width(), 1), QColor("#2a2a2a"));
+        painter.fillRect(QRect(0, height() - m_footer->height(), width(), 1), QColor(kLine));
     }
 }
 
@@ -369,14 +361,16 @@ void DeckLabSetupWizard::goTo(Step step) {
     m_footer->show();
     const int current = std::max<int>(0, m_sequence.indexOf(step));
     for (int index = 0; index < m_stepLabels.size(); ++index) {
+        // Current step in text with a white underline, done steps in text,
+        // the steps ahead muted. Brand tokens only.
         QString style;
         if (index == current) {
-            style = QStringLiteral("color:#ffffff;font-size:15px;font-weight:600;border-bottom:2px solid %1;")
-                            .arg(QLatin1String(kSelect));
+            style = QStringLiteral("color:%1;font-size:15px;font-weight:600;border-bottom:2px solid %1;")
+                            .arg(QLatin1String(kText));
         } else if (index < current) {
-            style = QStringLiteral("color:#c9ced6;font-size:15px;font-weight:500;");
+            style = QStringLiteral("color:%1;font-size:15px;font-weight:500;").arg(QLatin1String(kText));
         } else {
-            style = QStringLiteral("color:#7d8590;font-size:15px;font-weight:500;");
+            style = QStringLiteral("color:%1;font-size:15px;font-weight:500;").arg(QLatin1String(kMuted));
         }
         m_stepLabels[index]->setStyleSheet(style);
         const QString name = stepName(m_sequence.at(index));
@@ -559,7 +553,8 @@ void DeckLabSetupWizard::buildWelcome(QWidget* page) {
     layout->addStretch(1);
     auto* heading = new QLabel(tr("Welcome to Deck Lab"), page);
     heading->setObjectName(QStringLiteral("decklab-welcome-title"));
-    heading->setStyleSheet(QStringLiteral("font-size:28px;font-weight:600;color:#ffffff;"));
+    // Hero type (36 px Barlow Semi Condensed SemiBold), not an off-scale 28.
+    heading->setProperty("role", QStringLiteral("hero"));
     layout->addWidget(heading);
     layout->addWidget(body(tr("Let's get you playing. This takes about two minutes."), page));
     const QList<QPair<Icon, QString>> steps{
@@ -912,6 +907,13 @@ void DeckLabSetupWizard::buildAudio(QWidget* page) {
     m_audioReason = body(QString(), page);
     m_audioReason->setObjectName(QStringLiteral("decklab-setup-audio-reason"));
     layout->addWidget(m_audioReason);
+    // Test tones may play on a club PA or straight into headphones. They start
+    // quiet (decklab::kTestToneDbfs), and the levels warning is always shown.
+    auto* levels = new QLabel(tr("Turn MASTER and PHONES down before you test."), page);
+    levels->setObjectName(QStringLiteral("decklab-setup-level-warning"));
+    levels->setProperty("role", QStringLiteral("caution"));
+    levels->setWordWrap(true);
+    layout->addWidget(levels);
     const auto addRoute = [this, page, layout](Icon icon, const QString& name, const QString& objectName, bool headphones) {
         auto* panel = card(page);
         auto* row = hbox(10);
@@ -951,7 +953,8 @@ void DeckLabSetupWizard::buildAudio(QWidget* page) {
     connect(m_phones, qOverload<int>(&QComboBox::activated), this, [this](int) { audioChoiceChanged(); });
     m_audioWarning = new QLabel(page);
     m_audioWarning->setObjectName(QStringLiteral("decklab-setup-audio-warning"));
-    m_audioWarning->setProperty("role", QStringLiteral("error"));
+    // Advice (Bluetooth lag, shared outputs), not an error.
+    m_audioWarning->setProperty("role", QStringLiteral("caution"));
     m_audioWarning->setWordWrap(true);
     layout->addWidget(m_audioWarning);
     layout->addStretch(1);

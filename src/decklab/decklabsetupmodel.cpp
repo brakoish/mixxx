@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QJsonDocument>
 #include <QRegularExpression>
+#include <cmath>
 
 namespace decklab {
 
@@ -138,6 +139,10 @@ QString channelPairLabel(int channelBase) {
         return tr("Off");
     }
     return QStringLiteral("%1–%2").arg(channelBase + 1).arg(channelBase + 2);
+}
+
+double testToneAmplitude() {
+    return std::pow(10.0, kTestToneDbfs / 20.0);
 }
 
 bool isPathOnMount(const QString& path, const QString& mountPath) {

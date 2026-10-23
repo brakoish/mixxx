@@ -17,6 +17,7 @@
 #include <QTimer>
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 #include "decklab/decklaboverlay.h"
 #include "moc_decklabui.cpp"
@@ -24,37 +25,64 @@
 
 namespace decklab::ui {
 
-const char* const kAccent = "#d74448";
+const char* const kGround = "#0d0f12";
+const char* const kPanel = "#16191e";
+const char* const kRaise = "#20242b";
+const char* const kLine = "#2c313a";
+const char* const kDim = "#6b7380";
+const char* const kMuted = "#9aa3af";
+const char* const kText = "#f2f4f7";
+const char* const kLive = "#ff3d2e";
 const char* const kSelect = "#f2f4f7";
 
 namespace {
+// The system kit's own sheet (System pages, Deck Setup, the Setup panel and
+// Confirm sheets). Its rules carry no WDeckLab ancestor, so a sheet hosted on
+// the main window looks the same as one inside the surface, and they repeat
+// every state they override: a widget's own sheet beats its parents' sheets
+// whatever the specificity. Brand tokens only; Barlow everywhere.
 const QString kExtraStyle = QStringLiteral(R"(
- WDeckLab QPushButton[touch="true"] {font-size:16px;font-weight:500;}
- WDeckLab QComboBox[touch="true"] {font-size:16px;font-weight:500;}
- WDeckLab QPushButton[primary="true"] {background:#f2f4f7;border:1px solid #f2f4f7;color:#0d0f12;font-weight:600;}
- WDeckLab QPushButton[primary="true"]:pressed {background:#c9ced6;}
- WDeckLab QPushButton[primary="true"]:disabled {background:#1c1f24;border-color:#2c313a;color:#6f6f6f;}
- WDeckLab QPushButton[quiet="true"] {background:transparent;border:0;color:#c9ced6;font-weight:600;}
- WDeckLab QPushButton[quiet="true"]:pressed {color:#ffffff;}
- WDeckLab QPushButton[key="true"] {min-height:0;padding:0;border-radius:0;font-size:18px;font-weight:500;}
- WDeckLab QPushButton[key="true"]:checked {background:#20242b;border-color:#f2f4f7;}
- WDeckLab QLabel[role="title"] {font-size:18px;font-weight:600;color:#f2f4f7;}
- WDeckLab QLabel[role="muted"] {font-size:15px;font-weight:500;color:#9aa3af;}
- WDeckLab QLabel[role="label"] {font-size:14px;font-weight:600;color:#f2f4f7;}
- WDeckLab QLabel[role="body"] {font-size:16px;font-weight:500;color:#e6e9ee;}
- WDeckLab QLabel[role="error"] {font-size:15px;font-weight:600;color:#ffb4ae;}
- WDeckLab QLabel[role="value"] {font-size:16px;font-weight:600;color:#f2f4f7;}
- WDeckLab QFrame[card="true"] {background:#171717;border:1px solid #2c2c2c;border-radius:3px;}
- WDeckLab QFrame[card="true"] QLabel {background:transparent;border:0;}
- WDeckLab QFrame[warning="true"] {background:#2a2312;border:1px solid #a07a22;border-radius:3px;}
- WDeckLab QFrame[warning="true"] QLabel {background:transparent;border:0;color:#ffe2a8;font-size:15px;font-weight:500;}
- WDeckLab QScrollBar::add-line:vertical, WDeckLab QScrollBar::sub-line:vertical {height:0px;border:0;}
- WDeckLab QScrollBar::add-line:horizontal, WDeckLab QScrollBar::sub-line:horizontal {width:0px;border:0;}
- WDeckLab QLineEdit {background:#141414;border:1px solid #555555;border-radius:2px;min-height:42px;padding:0 10px;font-size:16px;color:#ffffff;selection-background-color:#4a5160;}
- WDeckLab QLineEdit:focus {border-color:#f2f4f7;}
- WDeckLab QSlider::groove:horizontal {height:10px;background:#333333;border-radius:3px;}
- WDeckLab QSlider::sub-page:horizontal {background:#f2f4f7;border-radius:3px;}
- WDeckLab QSlider::handle:horizontal {background:#eeeeee;border:1px solid #777777;width:34px;margin:-16px 0;border-radius:3px;}
+ QWidget {font-family:"Barlow";}
+ QPushButton[touch="true"] {background:#16191E;color:#F2F4F7;border:1px solid #2C313A;border-radius:3px;
+     padding:0px 12px;font-size:16px;font-weight:600;}
+ QPushButton[touch="true"]:pressed {background:#20242B;border-color:#F2F4F7;}
+ QPushButton[touch="true"]:checked {background:#20242B;border-color:#F2F4F7;}
+ QPushButton[touch="true"]:disabled {background:#16191E;border-color:#20242B;color:#6B7380;}
+ QComboBox[touch="true"] {background:#16191E;color:#F2F4F7;border:1px solid #2C313A;border-radius:3px;
+     padding-left:12px;font-size:16px;font-weight:500;}
+ QComboBox[touch="true"]:disabled {color:#6B7380;border-color:#20242B;}
+ QComboBox QAbstractItemView {background:#16191E;color:#F2F4F7;border:1px solid #2C313A;
+     selection-background-color:#20242B;selection-color:#F2F4F7;font-size:16px;font-weight:500;}
+ QPushButton[primary="true"] {background:#F2F4F7;border:1px solid #F2F4F7;color:#0D0F12;font-weight:600;}
+ QPushButton[primary="true"]:pressed {background:#20242B;border-color:#F2F4F7;color:#F2F4F7;}
+ QPushButton[primary="true"]:disabled {background:#16191E;border-color:#2C313A;color:#6B7380;}
+ QPushButton[quiet="true"] {background:transparent;border:0;color:#F2F4F7;font-weight:600;}
+ QPushButton[quiet="true"]:pressed {background:#20242B;}
+ QPushButton[quiet="true"]:disabled {background:transparent;color:#6B7380;}
+ QPushButton[key="true"] {min-height:0;padding:0;border-radius:0;font-size:18px;font-weight:500;}
+ QPushButton[key="true"]:checked {background:#20242B;border-color:#F2F4F7;}
+ QLabel[role="title"] {font-size:18px;font-weight:600;color:#F2F4F7;}
+ QLabel[role="hero"] {font-family:"Barlow Semi Condensed";font-size:36px;font-weight:600;color:#F2F4F7;}
+ QLabel[role="muted"] {font-size:15px;font-weight:500;color:#9AA3AF;}
+ QLabel[role="label"] {font-size:14px;font-weight:600;color:#F2F4F7;}
+ QLabel[role="body"] {font-size:16px;font-weight:500;color:#F2F4F7;}
+ QLabel[role="error"] {font-size:15px;font-weight:600;color:#F2F4F7;border:0;border-left:3px solid #F2F4F7;
+     padding-left:8px;}
+ QLabel[role="caution"] {font-size:16px;font-weight:600;color:#F2F4F7;background:#20242B;border:1px solid #2C313A;
+     border-left:3px solid #F2F4F7;border-radius:3px;padding:6px 10px;}
+ QLabel[role="value"] {font-size:16px;font-weight:600;color:#F2F4F7;}
+ QFrame[card="true"] {background:#16191E;border:1px solid #2C313A;border-radius:4px;}
+ QFrame[card="true"] QLabel {background:transparent;border:0;}
+ QFrame[warning="true"] {background:#20242B;border:1px solid #2C313A;border-left:3px solid #F2F4F7;border-radius:4px;}
+ QFrame[warning="true"] QLabel {background:transparent;border:0;color:#F2F4F7;font-size:15px;font-weight:500;}
+ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {height:0px;border:0;}
+ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {width:0px;border:0;}
+ QLineEdit {background:#16191E;border:1px solid #2C313A;border-radius:3px;min-height:42px;padding:0 10px;
+     font-size:16px;font-weight:500;color:#F2F4F7;selection-background-color:#F2F4F7;selection-color:#0D0F12;}
+ QLineEdit:focus {border-color:#F2F4F7;}
+ QSlider::groove:horizontal {height:10px;background:#2C313A;border-radius:3px;}
+ QSlider::sub-page:horizontal {background:#F2F4F7;border-radius:3px;}
+ QSlider::handle:horizontal {background:#F2F4F7;border:1px solid #2C313A;width:34px;margin:-16px 0;border-radius:3px;}
  )");
 
 // Same anti-mis-tap rule as the Settings pages: Qt can synthesize a release
@@ -133,6 +161,14 @@ void strokePath(QPainter& painter, const QPainterPath& path, const QColor& color
 
 void applyStyle(QWidget* widget) {
     widget->setStyleSheet(kExtraStyle);
+}
+
+QFont uiFont(const QFont& base, int pixels, QFont::Weight weight) {
+    QFont font = base;
+    font.setFamilies({QStringLiteral("Barlow"), base.family()});
+    font.setPixelSize(std::max(14, pixels));
+    font.setWeight(weight);
+    return font;
 }
 
 void paintIcon(QPainter& painter, const QRectF& area, Icon icon, const QColor& color) {
@@ -490,35 +526,31 @@ void Tile::paintEvent(QPaintEvent*) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
     const QRectF frame = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
-    painter.setPen(QColor(isDown() ? "#5a5a5a" : "#303030"));
-    painter.setBrush(QColor(isDown() ? "#262626" : "#191919"));
-    painter.drawRoundedRect(frame, 3, 3);
+    // Pressed: raised fill and a text-coloured edge, visible in a dark booth.
+    painter.setPen(QColor(isDown() ? kText : kLine));
+    painter.setBrush(QColor(isDown() ? kRaise : kPanel));
+    painter.drawRoundedRect(frame, 4, 4);
     if (m_alert) {
-        painter.fillRect(QRectF(0, 0, 3, height()), QColor(kAccent));
+        // Caution, not live: a white edge (live red means the room hears it).
+        painter.fillRect(QRectF(0, 0, 3, height()), QColor(kText));
     }
     const QRectF iconBox(16, (height() - 30) / 2.0, 30, 30);
-    paintIcon(painter, iconBox, m_icon, isEnabled() ? QColor("#f0f0f0") : QColor("#666666"));
-    QFont titleFont = font();
-    titleFont.setPixelSize(16);
-    titleFont.setWeight(QFont::DemiBold);
+    paintIcon(painter, iconBox, m_icon, QColor(isEnabled() ? kText : kDim));
+    const QFont titleFont = uiFont(font(), 16, QFont::DemiBold);
     painter.setFont(titleFont);
-    painter.setPen(isEnabled() ? QColor("#f2f4f7") : QColor("#777777"));
+    painter.setPen(QColor(isEnabled() ? kText : kDim));
     const int textLeft = 62;
     const int textWidth = std::max(0, width() - textLeft - 30);
     painter.drawText(QRect(textLeft, 12, textWidth, 26), Qt::AlignLeft | Qt::AlignVCenter,
             QFontMetrics(titleFont).elidedText(m_title, Qt::ElideRight, textWidth));
-    QFont subtitleFont = font();
-    subtitleFont.setPixelSize(15);
-    subtitleFont.setWeight(QFont::Medium);
+    const QFont subtitleFont = uiFont(font(), 15, QFont::Medium);
     painter.setFont(subtitleFont);
-    painter.setPen(m_alert ? QColor("#ffb4ae") : QColor("#9aa3af"));
+    painter.setPen(QColor(m_alert ? kText : kMuted));
     painter.drawText(QRect(textLeft, 40, textWidth, 22),
             Qt::AlignLeft | Qt::AlignVCenter,
             QFontMetrics(subtitleFont).elidedText(m_subtitle, Qt::ElideRight, textWidth));
-    painter.setPen(QColor("#6a6a6a"));
-    QFont chevron = font();
-    chevron.setPixelSize(22);
-    painter.setFont(chevron);
+    painter.setPen(QColor(kMuted));
+    painter.setFont(uiFont(font(), 22, QFont::Medium));
     painter.drawText(QRect(width() - 30, 0, 20, height()), Qt::AlignCenter, QStringLiteral("›"));
 }
 
@@ -572,37 +604,39 @@ void Row::setTexts(const QString& title, const QString& subtitle) {
 void Row::paintEvent(QPaintEvent*) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-    painter.fillRect(rect(), QColor(isDown() ? "#272727" : m_selected ? "#20242b" : "#171717"));
-    painter.fillRect(QRect(0, height() - 1, width(), 1), QColor("#2a2a2a"));
+    painter.fillRect(rect(), QColor(isDown() || m_selected ? kRaise : kPanel));
+    painter.fillRect(QRect(0, height() - 1, width(), 1), QColor(kLine));
+    if (isDown()) {
+        // Pressed: a text-coloured inner edge, visible in a dark booth.
+        painter.setPen(QColor(kText));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5));
+    }
     if (m_selected) {
         painter.fillRect(QRect(0, 0, 3, height()), QColor(kSelect));
     }
     int left = 14;
     if (m_hasIcon) {
-        paintIcon(painter, QRectF(left, (height() - 24) / 2.0, 24, 24), m_icon, QColor("#e6e6e6"));
+        paintIcon(painter, QRectF(left, (height() - 24) / 2.0, 24, 24), m_icon, QColor(isEnabled() ? kText : kDim));
         left += 36;
     }
     int right = width() - 12;
     if (m_chevron) {
-        QFont chevron = font();
-        chevron.setPixelSize(22);
-        painter.setFont(chevron);
-        painter.setPen(QColor("#6a6a6a"));
+        painter.setFont(uiFont(font(), 22, QFont::Medium));
+        painter.setPen(QColor(kMuted));
         painter.drawText(QRect(right - 16, 0, 16, height()), Qt::AlignCenter, QStringLiteral("›"));
         right -= 26;
     }
     if (m_signal >= 0) {
         paintSignalBars(painter, QRectF(right - 22, (height() - 16) / 2.0, 22, 16), m_signal,
-                QColor("#f0f0f0"), QColor("#3d3d3d"));
+                QColor(kText), QColor(kLine));
         right -= 32;
     }
     if (m_locked) {
-        paintIcon(painter, QRectF(right - 16, (height() - 16) / 2.0, 16, 16), Icon::Lock, QColor("#9c9c9c"));
+        paintIcon(painter, QRectF(right - 16, (height() - 16) / 2.0, 16, 16), Icon::Lock, QColor(kMuted));
         right -= 26;
     }
-    QFont tagFont = font();
-    tagFont.setPixelSize(14);
-    tagFont.setWeight(QFont::DemiBold);
+    const QFont tagFont = uiFont(font(), 14, QFont::DemiBold);
     const QFontMetrics tagMetrics(tagFont);
     painter.setFont(tagFont);
     for (int index = m_tags.size() - 1; index >= 0; --index) {
@@ -613,19 +647,17 @@ void Row::paintEvent(QPaintEvent*) {
         }
         const QRectF pill(right - tagWidth, (height() - 24) / 2.0, tagWidth, 24);
         const bool strong = index == 0;
-        painter.setPen(QColor(strong ? kSelect : "#3f3f3f"));
-        painter.setBrush(QColor(strong ? "#20242b" : "#222222"));
+        painter.setPen(QColor(strong ? kSelect : kLine));
+        painter.setBrush(QColor(kRaise));
         painter.drawRoundedRect(pill, 3, 3);
-        painter.setPen(QColor(strong ? "#ffffff" : "#c8c8c8"));
+        painter.setPen(QColor(kText));
         painter.drawText(pill, Qt::AlignCenter, tag);
         right -= tagWidth + 6;
     }
     const int textWidth = std::max(0, right - left - 6);
-    QFont titleFont = font();
-    titleFont.setPixelSize(16);
-    titleFont.setWeight(QFont::DemiBold);
+    const QFont titleFont = uiFont(font(), 16, QFont::DemiBold);
     painter.setFont(titleFont);
-    painter.setPen(isEnabled() ? QColor("#f2f4f7") : QColor("#777777"));
+    painter.setPen(QColor(isEnabled() ? kText : kDim));
     const QFontMetrics titleMetrics(titleFont);
     if (m_subtitle.isEmpty()) {
         painter.drawText(QRect(left, 0, textWidth, height()), Qt::AlignLeft | Qt::AlignVCenter,
@@ -634,11 +666,9 @@ void Row::paintEvent(QPaintEvent*) {
     }
     painter.drawText(QRect(left, 6, textWidth, 24), Qt::AlignLeft | Qt::AlignVCenter,
             titleMetrics.elidedText(m_title, Qt::ElideRight, textWidth));
-    QFont subtitleFont = font();
-    subtitleFont.setPixelSize(15);
-    subtitleFont.setWeight(QFont::Medium);
+    const QFont subtitleFont = uiFont(font(), 15, QFont::Medium);
     painter.setFont(subtitleFont);
-    painter.setPen(QColor("#9aa3af"));
+    painter.setPen(QColor(kMuted));
     painter.drawText(QRect(left, 30, textWidth, 22), Qt::AlignLeft | Qt::AlignVCenter,
             QFontMetrics(subtitleFont).elidedText(m_subtitle, Qt::ElideRight, textWidth));
 }
@@ -663,14 +693,15 @@ void Keyboard::type(const QString& text) {
 }
 
 void Keyboard::rebuild() {
-    // Rebuilding on Shift/symbols keeps every key a plain 40 px button.
+    // Rebuilding on Shift/symbols keeps every key a plain 44 px button.
     const auto oldKeys = m_keys->findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly);
     for (auto* child : oldKeys) {
         child->hide();
         child->deleteLater();
     }
     delete m_keys->layout();
-    auto* rows = vbox(m_keys, 0, 2);
+    // 4 px gaps between keys (the touch rule), so neighbours aren't hit.
+    auto* rows = vbox(m_keys, 0, 4);
     QStringList letters;
     if (m_symbols) {
         letters = {QStringLiteral("1234567890"),
@@ -684,7 +715,7 @@ void Keyboard::rebuild() {
                 QStringLiteral("zxcvbnm")};
     }
     for (const QString& line : std::as_const(letters)) {
-        auto* row = hbox(2);
+        auto* row = hbox(4);
         for (QChar letter : line) {
             const QString text = m_shift && !m_symbols ? QString(letter).toUpper() : QString(letter);
             auto* key = button(text, m_keys, QString(), 44);
@@ -695,7 +726,7 @@ void Keyboard::rebuild() {
         }
         rows->addLayout(row);
     }
-    auto* actions = hbox(2);
+    auto* actions = hbox(4);
     auto* shift = button(QStringLiteral("⇧"), m_keys, QStringLiteral("decklab-key-shift"), 44);
     shift->setProperty("key", true);
     shift->setAccessibleName(tr("Shift"));
@@ -759,12 +790,36 @@ bool Confirm::eventFilter(QObject* watched, QEvent* event) {
 
 void Confirm::paintEvent(QPaintEvent*) {
     QPainter painter(this);
-    painter.fillRect(rect(), QColor(0, 0, 0, 175));
+    // Scrim: ground at about 70 %.
+    QColor scrim(kGround);
+    scrim.setAlpha(175);
+    painter.fillRect(rect(), scrim);
 }
 
 Confirm* Confirm::ask(QWidget* host,
         const QString& heading,
         const QString& text,
+        const QString& confirmText,
+        std::function<void()> onConfirm,
+        bool destructive) {
+    // Decided before the call: argument evaluation order is unspecified, and
+    // the moved-from function would read as empty.
+    const QString dismissText = onConfirm ? tr("Cancel") : tr("OK");
+    return build(host, heading, text, dismissText, confirmText, std::move(onConfirm), destructive);
+}
+
+Confirm* Confirm::details(QWidget* host,
+        const QString& heading,
+        const QString& text,
+        const QString& actionText,
+        std::function<void()> onAction) {
+    return build(host, heading, text, tr("Close"), actionText, std::move(onAction), false);
+}
+
+Confirm* Confirm::build(QWidget* host,
+        const QString& heading,
+        const QString& text,
+        const QString& dismissText,
         const QString& confirmText,
         std::function<void()> onConfirm,
         bool destructive) {
@@ -782,7 +837,7 @@ Confirm* Confirm::ask(QWidget* host,
         layout->addWidget(body(text, panel));
     }
     auto* buttons = hbox(10);
-    auto* cancel = button(onConfirm ? tr("Cancel") : tr("OK"), panel, QStringLiteral("decklab-confirm-cancel"), 48);
+    auto* cancel = button(dismissText, panel, QStringLiteral("decklab-confirm-cancel"), 48);
     buttons->addWidget(cancel, 1);
     connect(cancel, &QPushButton::clicked, overlay, &QWidget::close);
     if (onConfirm) {
