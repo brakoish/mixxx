@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "decklab/decklabkeys.h" // r6-keys
 #include "decklab/decklabsystemui.h"
 #include "decklab/decklabui.h"
 #include "decklab/decklabutility.h"
@@ -452,22 +453,10 @@ void DeckLabSettingsPage::buildHeadphones(QWidget* content) {
 
 void DeckLabSettingsPage::buildDisplay(QWidget* content) {
     auto* rows = static_cast<QVBoxLayout*>(content->layout());
-    m_keys = new ChoiceRow(tr("Key format"), content, QStringLiteral("decklab-settings-keys"),
-            QStringLiteral("decklab-key-format"));
-    m_keys->addOption(QStringLiteral("8A"), tr("Lancelot · 8A / 8B"), 0);
-    m_keys->addOption(QStringLiteral("8m"), tr("Open Key · 8m / 8d"), 1);
-    m_keys->addOption(QStringLiteral("Am"), tr("Musical · Am / C"), 2);
-    const QString notation = m_config->getValueString(ConfigKey("[Key]", "KeyNotation"));
-    m_keys->model()->setCurrentIndex(notation == "OpenKey" ? 1 : notation == "Traditional" ? 2 : 0);
-    connect(m_keys->model(), qOverload<int>(&QComboBox::activated), this, [this](int index) {
-        if (m_hooks.keyNotationChosen) {
-            m_hooks.keyNotationChosen(index);
-        }
-        refreshValues();
-    });
-    rows->addWidget(m_keys);
+    // r6-keys: Key format moved to Library, the first row there.
     auto* waves = new ChoiceRow(tr("Waveforms"), content, QStringLiteral("decklab-settings-waveforms"),
             QStringLiteral("decklab-waveform-layout"));
+    m_waves = waves;
     waves->addOption(tr("STACKED"), tr("Stacked"), 0);
     waves->addOption(tr("SIDE BY SIDE"), tr("Side by side"), 1);
     waves->model()->setCurrentIndex(m_hooks.sideBySide && m_hooks.sideBySide() ? 1 : 0);
@@ -475,6 +464,7 @@ void DeckLabSettingsPage::buildDisplay(QWidget* content) {
         if (m_hooks.waveformLayoutChosen) {
             m_hooks.waveformLayoutChosen(waves->model()->itemData(index).toInt() == 1);
         }
+        refreshValues();
     });
     rows->addWidget(waves);
     auto* factory = WaveformWidgetFactory::instance();
@@ -549,6 +539,26 @@ void DeckLabSettingsPage::buildDisplay(QWidget* content) {
 
 void DeckLabSettingsPage::buildLibrary(QWidget* content) {
     auto* rows = static_cast<QVBoxLayout*>(content->layout());
+    // r6-keys: how every key reads (Browse rows of every source, the card,
+    // Match, the decks), each option shown with A minor as its example.
+    // [Key] KeyNotation keeps Mixxx's values: Lancelot, OpenKey, Traditional.
+    m_keys = new ChoiceRow(tr("Key format"), content, QStringLiteral("decklab-settings-keys"),
+            QStringLiteral("decklab-key-format"));
+    for (const auto format : {decklab::KeyFormat::Lancelot, decklab::KeyFormat::OpenKey, decklab::KeyFormat::Musical}) {
+        // The full name as the row's value too: segments would print it in
+        // capitals, and "AM" is not a key.
+        m_keys->addOption(decklab::keyFormatName(format), decklab::keyFormatName(format), static_cast<int>(format));
+    }
+    m_keys->setHint(tr("How keys read in Browse, on the decks and in Match"));
+    m_keys->model()->setCurrentIndex(static_cast<int>(
+            decklab::keyFormatFromConfig(m_config->getValueString(ConfigKey("[Key]", "KeyNotation")))));
+    connect(m_keys->model(), qOverload<int>(&QComboBox::activated), this, [this](int index) {
+        if (m_hooks.keyNotationChosen) {
+            m_hooks.keyNotationChosen(m_keys->model()->itemData(index).toInt());
+        }
+        refreshValues();
+    });
+    rows->addWidget(m_keys);
     auto* played = new SwitchRow(tr("Dim played tracks"), content, QStringLiteral("decklab-dim-played"));
     played->setChecked(m_config->getValue(ConfigKey("[Library]", "ApplyPlayedTrackColor"), true));
     connect(played, &QPushButton::clicked, this, [this](bool checked) {
@@ -703,8 +713,13 @@ void DeckLabSettingsPage::refreshValues() {
         m_links.at(Decks)->setValue(chosen == 0 ? tr("Auto · %1 decks").arg(automatic) : tr("%1 decks").arg(chosen));
     }
     m_links.at(Headphones)->setValue(m_split && m_split->isChecked() ? tr("Split cue") : QString());
+    if (m_waves) {
+        m_links.at(Display)->setValue(m_waves->model()->currentText());
+    }
     if (m_keys) {
-        m_links.at(Display)->setValue(tr("Key %1").arg(m_keys->segmentText(m_keys->currentIndex())));
+        // r6-keys: "Keys · Lancelot" (set in capitals, so no "AM" example).
+        m_links.at(Library)->setValue(tr("Keys · %1").arg(decklab::keyFormatShortName(
+                static_cast<decklab::KeyFormat>(m_keys->model()->currentData().toInt()))));
     }
     const bool online = m_systemUi && m_systemUi->toolsConnected();
     m_links.at(Unit)->setValue(online ? QTime::currentTime().toString(QStringLiteral("HH:mm")) : tr("Offline"),

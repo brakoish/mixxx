@@ -12,6 +12,7 @@
 #include "audio/frame.h"
 #include "moc_decklabdecktools.cpp"
 #include "track/beats.h"
+#include "decklab/decklabkeys.h" // r6-keys
 #include "track/keyutils.h"
 #include "track/track.h"
 #include "util/fpclassify.h"
@@ -600,7 +601,7 @@ DeckLabKeySheetState DeckLabDeckTools::keyState(int deck) const {
     }
     const auto keyText = [this](int which) {
         const auto key = chromatic(m_host.read(which, QStringLiteral("key")));
-        return validKey(key) ? KeyUtils::keyToString(key) : QString();
+        return validKey(key) ? decklab::formatKey(key) : QString(); // r6-keys
     };
     state.hasKey = validKey(chromatic(m_host.read(deck, QStringLiteral("file_key"))));
     state.keylock = m_host.read(deck, QStringLiteral("keylock")) > 0;

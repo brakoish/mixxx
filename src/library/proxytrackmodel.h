@@ -61,6 +61,10 @@ class ProxyTrackModel : public QSortFilterProxyModel, public TrackModel {
     void sort(int column, Qt::SortOrder order = Qt::AscendingOrder) final;
     QString modelKey(bool noSearch) const override;
 
+  protected:
+    // r6-keys: keys sort round the wheel, as Mixxx's own tables do.
+    bool lessThan(const QModelIndex& left, const QModelIndex& right) const override;
+
   private:
     TrackModel* m_pTrackModel;
     QString m_currentSearch;

@@ -17,6 +17,7 @@
 #include <QtDebug>
 #include <exception>
 
+#include "decklab/decklabkeys.h" // r6-keys
 #include "decklab/decklabphrase.h"
 #include "decklab/decklabusbname.h"
 #include "engine/engine.h"
@@ -153,6 +154,9 @@ bool createLibraryTable(QSqlDatabase& database, const QString& tableName) {
             "    bitrate TEXT,"
             "    bpm FLOAT,"
             "    key TEXT,"
+            // r6-keys: the key read from the export's text ("Am" or "8A"),
+            // so rows show, sort and filter keys in the chosen key format.
+            "    key_id INTEGER,"
             "    rating INTEGER,"
             "    analyze_path TEXT UNIQUE,"
             "    device TEXT,"
@@ -450,6 +454,7 @@ void insertTrack(
     float bpm = static_cast<float>(track->tempo() / 100.0);
     int bitrate = static_cast<int>(track->bitrate());
     QString key = keysMap[track->key_id()];
+    const int keyId = static_cast<int>(decklab::parseKeyText(key)); // r6-keys: 0 when unsure
     int playtime = static_cast<int>(track->duration());
     int rating = static_cast<int>(track->rating());
     QString comment = getText(track->comment());
@@ -468,6 +473,7 @@ void insertTrack(
     query.bindValue(":comment", comment);
     query.bindValue(":tracknumber", tracknumber);
     query.bindValue(":key", key);
+    query.bindValue(":key_id", keyId);
     query.bindValue(":bpm", bpm);
     query.bindValue(":bitrate", bitrate);
     query.bindValue(":analyze_path", anlzPath);
@@ -555,10 +561,10 @@ std::shared_ptr<TreeItem> parseDeviceDB(mixxx::DbConnectionPoolPtr dbConnectionP
     query.prepare("INSERT INTO " + kRekordboxLibraryTable +
             " (rb_id, artist, title, album, year,"
             "genre,comment,tracknumber,bpm, bitrate,duration, location,"
-            "rating,key,analyze_path,device,color) VALUES (:rb_id, :artist, "
+            "rating,key,key_id,analyze_path,device,color) VALUES (:rb_id, :artist, "
             ":title, :album, :year,:genre,"
             ":comment, :tracknumber,:bpm, :bitrate,:duration, :location,"
-            ":rating,:key,:analyze_path,:device,:color)");
+            ":rating,:key,:key_id,:analyze_path,:device,:color)");
 
     int audioFilesCount = 0;
 
@@ -1492,6 +1498,7 @@ bool RekordboxPlaylistModel::isColumnHiddenByDefault(int column) {
 
 bool RekordboxPlaylistModel::isColumnInternal(int column) {
     return column == fieldIndex(ColumnCache::COLUMN_REKORDBOX_ANALYZE_PATH) ||
+            column == fieldIndex(ColumnCache::COLUMN_LIBRARYTABLE_KEY_ID) || // r6-keys
             BaseExternalPlaylistModel::isColumnInternal(column);
 }
 
@@ -1517,6 +1524,7 @@ RekordboxFeature::RekordboxFeature(
             LIBRARYTABLE_BITRATE,
             LIBRARYTABLE_BPM,
             LIBRARYTABLE_KEY,
+            LIBRARYTABLE_KEY_ID, // r6-keys: key text read once, formatted and sorted as a key
             LIBRARYTABLE_COLOR,
             REKORDBOX_ANALYZE_PATH};
 

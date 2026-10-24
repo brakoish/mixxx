@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 
+#include "decklab/decklabkeys.h" // r6-keys
 #include "library/trackmodel.h"
 #include "track/keyutils.h"
 #include "widget/decklabdeckwidgets.h"
@@ -139,7 +140,11 @@ void paintTrack(QPainter& painter, const QStyleOptionViewItem& option, const QMo
     const QFont numbers = numberFont(base, 16);
     painter.setFont(numbers);
     painter.setPen(colors::muted);
-    const QString key = index.data(KeyRole).toString();
+    // r6-keys: in the chosen key format at paint time (a format change is a
+    // repaint), the stored text when it is not a key.
+    // Stored text that is too long is cut with an ellipsis, never clipped
+    // ("Unknown" read "known").
+    const QString key = QFontMetrics(numbers).elidedText(displayKey(index.data(KeyRole).toString()), Qt::ElideRight, 42);
     painter.drawText(QRect(right - 42, r.top(), 42, r.height()), Qt::AlignRight | Qt::AlignVCenter,
             key.isEmpty() ? QStringLiteral("—") : key);
     right -= 52;
@@ -303,13 +308,8 @@ void styleTrackCell(QStyleOptionViewItem* option,
 }
 
 QString entryKeyText(const Entry& entry) {
-    if (entry.key != mixxx::track::io::key::INVALID) {
-        const QString text = KeyUtils::keyToString(entry.key);
-        if (!text.isEmpty()) {
-            return text;
-        }
-    }
-    return entry.keyText;
+    // r6-keys: the key id first, else the stored text read as a key.
+    return displayKey(entry.key, entry.keyText);
 }
 
 QString entryTimeText(const QVector<Entry>& entries, int index, bool clockTrusted) {

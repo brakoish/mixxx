@@ -1,9 +1,18 @@
 #include "library/proxytrackmodel.h"
 
+#include "control/controlobject.h"
+#include "decklab/decklabkeys.h" // r6-keys
 #include "library/browse/browsetablemodel.h"
+#include "library/library_prefs.h"
 #include "library/searchqueryparser.h"
 #include "moc_proxytrackmodel.cpp"
 #include "util/assert.h"
+
+namespace {
+// r6-keys: the wheel the library's key column sorts round, taken from
+// [Library],key_notation when a sort starts (GUI thread).
+decklab::KeyFormat s_keySortWheel = decklab::KeyFormat::Lancelot;
+} // namespace
 
 ProxyTrackModel::ProxyTrackModel(QAbstractItemModel* pTrackModel,
         bool bHandleSearches)
@@ -233,6 +242,32 @@ bool ProxyTrackModel::setModelSetting(const QString& name, const QVariant& value
 
 void ProxyTrackModel::sort(int column, Qt::SortOrder order) {
     if (m_pTrackModel && m_pTrackModel->isColumnSortable(column)) {
+        // r6-keys: Lancelot order for Lancelot, Open Key order otherwise
+        // (ColumnCache's rule for the library's own tables).
+        if (const ControlObject* notation = ControlObject::getControl(
+                    mixxx::library::prefs::kKeyNotationConfigKey, ControlFlag::NoWarnIfMissing)) {
+            const int value = static_cast<int>(notation->get());
+            s_keySortWheel = value == decklab::keyFormatNotation(decklab::KeyFormat::Lancelot) ||
+                            value == 6 // KeyUtils::KeyNotation::LancelotAndTraditional
+                    ? decklab::KeyFormat::Lancelot
+                    : decklab::KeyFormat::OpenKey;
+        }
         QSortFilterProxyModel::sort(column, order);
     }
+}
+
+bool ProxyTrackModel::lessThan(const QModelIndex& left, const QModelIndex& right) const {
+    // r6-keys: a folder's key tags ("Am", "8A", "1m") sort round the wheel,
+    // not as text; keys that cannot be read come first, as in the library.
+    if (m_pTrackModel &&
+            left.column() == m_pTrackModel->columnIndexFromSortColumnId(TrackModel::SortColumnId::Key)) {
+        const int a = decklab::keyWheelOrder(
+                decklab::parseKey(left.data(sortRole()).toString()), s_keySortWheel);
+        const int b = decklab::keyWheelOrder(
+                decklab::parseKey(right.data(sortRole()).toString()), s_keySortWheel);
+        if (a != b) {
+            return a < b;
+        }
+    }
+    return QSortFilterProxyModel::lessThan(left, right);
 }

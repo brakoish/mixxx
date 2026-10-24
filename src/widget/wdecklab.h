@@ -147,6 +147,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void tickEffects();
     void tool(int id);
     void setKeyNotation(int notation);
+    void refreshKeyText(); // r6-keys: a key format change, on every surface
     void updateStatus();
     void updateBreadcrumb();
     void updateLayers();
