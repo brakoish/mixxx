@@ -4985,9 +4985,11 @@ class GeneratedSets final : public decklab::history::Backend {
     QVector<int> setStarts() override {
         return starts;
     }
-    void saveSetStarts(const QVector<int>& value) override {
+    bool saveSetStarts(const QVector<int>& value) override {
         starts = value;
+        return true;
     }
+    TestSource* source = nullptr; // r5-fix3-history: the History source on the sidebar
     decklab::history::Entry add(int playlistId, int deck, double bpm, const QDateTime& when) {
         decklab::history::Entry entry;
         entry.playlistId = playlistId;
@@ -5015,8 +5017,10 @@ class GeneratedSets final : public decklab::history::Backend {
 // sidebar (Mixxx's setlog feature stand-in).
 GeneratedSets* installGeneratedSets(SidebarModel* sidebar, UserSettingsPointer config, QObject* owner) {
     // Generated stand-in, kept for the process (the per-test sidebar model holds it).
-    sidebar->addLibraryFeature(new TestSource(config, QStringLiteral("history"), QStringLiteral("History"), false));
+    auto* source = new TestSource(config, QStringLiteral("history"), QStringLiteral("History"), false);
+    sidebar->addLibraryFeature(source);
     auto sets = std::make_unique<GeneratedSets>();
+    sets->source = source;
     decklab::history::Playlist lastNight;
     lastNight.id = 4;
     lastNight.created = QDateTime(QDate::currentDate().addDays(-1), QTime(21, 0));
@@ -5110,9 +5114,10 @@ TEST_F(NativeDeckLabTest, HistoryIsAFirstClassBrowseViewInPlayOrder) {
     EXPECT_EQ(QStringLiteral("Generated Tone 122"), card->title());
     pulseControl("[Library]", "MoveVertical", 1);
     capture(QStringLiteral("browse-history-set.png"));
-    // No set table in this fixture: nothing is offered to LOAD, and a tap on
-    // a deck tile loads nothing (never another track); nor does a
-    // controller's LOAD (track_level stays 0).
+    // No set table in this fixture. r5-fix3-history: the highlighted track
+    // is offered to LOAD (a tap settles the row first); with no table to
+    // settle into, a tap loads nothing (never another track) and says so,
+    // never "Pick a track first"; track_level stays 0.
     EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[DeckLabNative]", "track_level")));
     std::unique_ptr<ControlObject> missing2;
     if (!ControlObject::getControl(ConfigKey("[Channel2]", "LoadSelectedTrack"))) {
@@ -5122,9 +5127,11 @@ TEST_F(NativeDeckLabTest, HistoryIsAFirstClassBrowseViewInPlayOrder) {
     int requests = 0;
     ASSERT_TRUE(second.connectValueChanged(panel.get(), [&requests](double v) { if (v > 0) ++requests; }, Qt::DirectConnection));
     auto* load2 = static_cast<DeckLabDockTile*>(panel->findChild<QPushButton*>("decklab-load-2")); ASSERT_NE(nullptr, load2);
-    EXPECT_FALSE(load2->loadReady());
+    EXPECT_TRUE(load2->loadReady());
     QTest::mouseClick(load2, Qt::LeftButton); QCoreApplication::processEvents();
     EXPECT_EQ(0, requests);
+    auto* unavailable = panel->findChild<QLabel*>("decklab-toast"); ASSERT_NE(nullptr, unavailable);
+    EXPECT_EQ(QStringLiteral("This track can't be loaded right now"), unavailable->text());
     // Deck 3 becomes audible while the list is open: the set grows in place,
     // the highlight (on the latest) follows, the track is marked.
     QListWidgetItem* before = list->item(0);
@@ -5245,6 +5252,71 @@ TEST_F(NativeDeckLabTest, NewSetHoldStartsAnotherHistorySetAndKeepsTheLastOne) {
     // Only on the History levels.
     panel->browseBack(); QCoreApplication::processEvents();
     EXPECT_FALSE(newSet->isVisible());
+}
+
+// r5-fix3-history: the overlay forwards LOAD, empty-deck PLAY and empty pads
+// as they are ([ChannelN] LoadSelectedTrack, LoadSelectedTrackAndPlay,
+// [SamplerN] LoadSelectedTrack): LibraryControl's load-time check decides. On
+// a highlighted History track still waiting for its table it settles the row
+// at the press, on any page (Browse, Decks, Lab FX), then loads exactly that
+// row; on the sets list it settles nothing and loads nothing.
+TEST_F(NativeDeckLabTest, OverlayLoadsSettleTheHighlightedRowOnEveryPage) {
+    // LibraryControl's own load controls, as PlayerManager's counts make them
+    // (the fixture's decks are counted already; one sampler here).
+    ASSERT_FALSE(ControlObject::exists(ConfigKey("[Sampler1]", "LoadSelectedTrack")));
+    ControlObject::set(ConfigKey("[App]", "num_samplers"), 1);
+    QCoreApplication::processEvents();
+    for (const char* group : {"[Channel1]", "[Channel2]", "[Sampler1]"}) {
+        ASSERT_TRUE(ControlObject::exists(ConfigKey(group, "LoadSelectedTrack"))) << group;
+    }
+    GeneratedSets* sets = installGeneratedSets(model.get(), config(), panel.get());
+    // The History source lists this run's playlist: settling a row of it
+    // shows up as the source activating that playlist.
+    sets->source->model.getRootItem()->appendChild(QStringLiteral("Tonight"), 5);
+    panel->selectPage(1); QCoreApplication::processEvents(); settle();
+    ASSERT_TRUE(selectRow(QStringLiteral("Library")));
+    panel->browsePress(); panel->browseBack(); QCoreApplication::processEvents();
+    ASSERT_TRUE(selectRow(QStringLiteral("History")));
+    panel->browsePress(); QCoreApplication::processEvents();
+    ASSERT_EQ(QStringList{QStringLiteral("History")}, crumbs());
+    const auto real = decklab::nativeLoadGuard();
+    ASSERT_TRUE(real);
+    int asked = 0;
+    decklab::nativeLoadGuard() = [&asked, real] {
+        ++asked;
+        return real();
+    };
+    const auto press = [](const char* group, const char* item) {
+        ControlObject::set(ConfigKey(group, item), 1);
+        ControlObject::set(ConfigKey(group, item), 0);
+    };
+    // The sets list: asked, refused, nothing settled.
+    int activations = sets->source->activations;
+    press("[Channel1]", "LoadSelectedTrack");
+    EXPECT_EQ(1, asked);
+    EXPECT_EQ(activations, sets->source->activations);
+    // This set, on its latest track (waiting for its table here).
+    panel->browsePress(); QCoreApplication::processEvents();
+    ASSERT_EQ(2u, static_cast<unsigned>(crumbs().size()));
+    auto* load1 = static_cast<DeckLabDockTile*>(panel->findChild<QPushButton*>("decklab-load-1")); ASSERT_NE(nullptr, load1);
+    EXPECT_TRUE(load1->loadReady());
+    activations = sets->source->activations;
+    press("[Channel1]", "LoadSelectedTrack");
+    press("[Channel2]", "LoadSelectedTrackAndPlay");
+    press("[Sampler1]", "LoadSelectedTrack");
+    EXPECT_EQ(4, asked);
+    EXPECT_EQ(activations + 3, sets->source->activations); // each press settles the row first
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel2]", "play"))); // no table: nothing loads or plays
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[DeckLabNative]", "track_level")));
+    // Off Browse: Decks, then Lab FX. The row is settled there too.
+    panel->selectPage(0); QCoreApplication::processEvents();
+    activations = sets->source->activations;
+    press("[Channel1]", "LoadSelectedTrack");
+    panel->selectPage(3); QCoreApplication::processEvents();
+    press("[Sampler1]", "LoadSelectedTrack");
+    EXPECT_EQ(6, asked);
+    EXPECT_EQ(activations + 2, sets->source->activations);
+    decklab::nativeLoadGuard() = real;
 }
 
 // r5-fix-history: the controllers' real sequences on History's "New set" row.
