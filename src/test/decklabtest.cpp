@@ -4860,7 +4860,9 @@ TEST_F(NativeDeckLabTest, HistoryIsAFirstClassBrowseViewInPlayOrder) {
     pulseControl("[Library]", "MoveVertical", 1);
     capture(QStringLiteral("browse-history-set.png"));
     // No set table in this fixture: nothing is offered to LOAD, and a tap on
-    // a deck tile loads nothing (never another track).
+    // a deck tile loads nothing (never another track); nor does a
+    // controller's LOAD (track_level stays 0).
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[DeckLabNative]", "track_level")));
     std::unique_ptr<ControlObject> missing2;
     if (!ControlObject::getControl(ConfigKey("[Channel2]", "LoadSelectedTrack"))) {
         missing2 = std::make_unique<ControlObject>(ConfigKey("[Channel2]", "LoadSelectedTrack"));
@@ -4977,7 +4979,10 @@ TEST_F(NativeDeckLabTest, NewSetHoldStartsAnotherHistorySetAndKeepsTheLastOne) {
     list->setCurrentRow(1); QCoreApplication::processEvents();
     ControlObject::set(ConfigKey("[DeckLabNative]", "browse_hold"), 1); QCoreApplication::processEvents();
     QTest::qWait(decklab::ui::HoldButton::kHoldMs + 250);
-    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_hold"), 0); QCoreApplication::processEvents(); settle();
+    EXPECT_EQ(2, sets->newSets); // r5-fix-history: the release press starts it
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_hold"), 0); QCoreApplication::processEvents();
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_press"), 1);
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_press"), 0); QCoreApplication::processEvents(); settle();
     EXPECT_EQ(3, sets->newSets);
     // An empty set does not start another: the hold is refused and says why.
     auto* toast = panel->findChild<QLabel*>("decklab-toast"); ASSERT_NE(nullptr, toast);
@@ -4989,6 +4994,117 @@ TEST_F(NativeDeckLabTest, NewSetHoldStartsAnotherHistorySetAndKeepsTheLastOne) {
     // Only on the History levels.
     panel->browseBack(); QCoreApplication::processEvents();
     EXPECT_FALSE(newSet->isVisible());
+}
+
+// r5-fix-history: the controllers' real sequences on History's "New set" row.
+// The Numark and SB2 overlays send browse_hold 1 on press and 0 on release,
+// then a release press unless the knob turned; a held turn arrives eight
+// times over; Shift+press sends Back (Numark on release, SB2 at once).
+TEST_F(NativeDeckLabTest, NewSetKnobFollowsTheControllersRealSequences) {
+    GeneratedSets* sets = installGeneratedSets(model.get(), config(), panel.get());
+    panel->selectPage(1); QCoreApplication::processEvents(); settle();
+    auto* list = browseList(); ASSERT_NE(nullptr, list);
+    ASSERT_TRUE(selectRow(QStringLiteral("Library")));
+    panel->browsePress(); panel->browseBack(); QCoreApplication::processEvents();
+    const auto openHistory = [this] {
+        ASSERT_TRUE(selectRow(QStringLiteral("History")));
+        panel->browsePress(); QCoreApplication::processEvents();
+        ASSERT_EQ(QStringList{QStringLiteral("History")}, crumbs());
+    };
+    openHistory();
+    auto* newSet = panel->findChild<decklab::ui::HoldButton*>("decklab-history-new-set");
+    ASSERT_NE(nullptr, newSet);
+    const auto toNewSet = [list] {
+        list->setCurrentRow(1); QCoreApplication::processEvents();
+        ASSERT_EQ(static_cast<int>(decklab::history::RowKind::NewSet),
+                list->item(1)->data(decklab::history::RowRole).toInt());
+    };
+    const auto hold = [](double v) {
+        ControlObject::set(ConfigKey("[DeckLabNative]", "browse_hold"), v);
+        QCoreApplication::processEvents(); QCoreApplication::processEvents();
+    };
+    const auto knob = [](const char* item) {
+        ControlObject::set(ConfigKey("[DeckLabNative]", item), 1);
+        ControlObject::set(ConfigKey("[DeckLabNative]", item), 0);
+        QCoreApplication::processEvents(); settle();
+    };
+    const int full = decklab::ui::HoldButton::kHoldMs + 250;
+    // The sets list is not a track: a controller's LOAD stays blocked.
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[DeckLabNative]", "track_level")));
+    // A push-turn from "New set": held, turned (x8), let go with no press.
+    toNewSet();
+    hold(1);
+    pulseControl("[Playlist]", "SelectPlaylist", 8);
+    hold(0);
+    QTest::qWait(full + 100); QCoreApplication::processEvents();
+    EXPECT_EQ(0, sets->newSets);
+    EXPECT_NE(1, list->currentRow());
+    EXPECT_FALSE(newSet->holding());
+    // Numark Shift+press held past the hold: Back on release, never New set.
+    toNewSet();
+    hold(1);
+    QTest::qWait(full);
+    hold(0);
+    knob("browse_back");
+    EXPECT_EQ(0, sets->newSets);
+    EXPECT_EQ(QStringList{QStringLiteral("Sources")}, crumbs());
+    // SB2 Shift+press: Back at once while held.
+    openHistory();
+    toNewSet();
+    hold(1);
+    knob("browse_back");
+    QTest::qWait(full);
+    hold(0);
+    EXPECT_EQ(0, sets->newSets);
+    // A hold that a menu over History owns never confirms New set behind it.
+    openHistory();
+    toNewSet();
+    QTest::qWait(200);
+    panel->findChild<QPushButton*>("decklab-browse-tools")->click(); QCoreApplication::processEvents();
+    QPointer<QMenu> menu = panel->findChild<QMenu*>("decklab-browse-tools-menu");
+    ASSERT_TRUE(menu); ASSERT_TRUE(menu->isVisible());
+    hold(1);
+    QTest::qWait(full);
+    hold(0);
+    menu->close(); QCoreApplication::processEvents(); QCoreApplication::processEvents();
+    QTest::qWait(600);
+    EXPECT_EQ(0, sets->newSets);
+    EXPECT_FALSE(newSet->holding());
+    // The Numark's "press twice": (hold 1, hold 0, press) twice.
+    toNewSet();
+    for (int press = 0; press < 2; ++press) {
+        hold(1);
+        hold(0);
+        knob("browse_press");
+    }
+    EXPECT_EQ(1, sets->newSets);
+    EXPECT_EQ(QStringList{QStringLiteral("History")}, crumbs()); // the new set is not opened
+    EXPECT_EQ(0, list->currentRow());
+    // A full hold, let go: the release press starts the set and stays on the sets.
+    sets->play(1, 140);
+    QCoreApplication::processEvents(); settle();
+    toNewSet();
+    hold(1);
+    QTest::qWait(full);
+    QCoreApplication::processEvents();
+    EXPECT_EQ(1, sets->newSets); // not before letting go
+    EXPECT_EQ(QStringLiteral("Let go to start"), newSet->result());
+    hold(0);
+    knob("browse_press");
+    EXPECT_EQ(2, sets->newSets);
+    EXPECT_EQ(QStringList{QStringLiteral("History")}, crumbs());
+    EXPECT_EQ(0, list->currentRow());
+    // A full hold, then a turn before letting go: nothing.
+    sets->play(2, 141);
+    QCoreApplication::processEvents(); settle();
+    toNewSet();
+    hold(1);
+    QTest::qWait(full);
+    pulseControl("[Library]", "MoveVertical", 1);
+    hold(0);
+    QTest::qWait(600); QCoreApplication::processEvents();
+    EXPECT_EQ(2, sets->newSets);
+    EXPECT_TRUE(newSet->result().isEmpty());
 }
 
 // r4-browse: the pure parts of the round-4 Browse moves.

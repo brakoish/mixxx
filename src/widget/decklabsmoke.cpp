@@ -876,11 +876,13 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                                  surface->browsePress();
                                  if (!list || list->count() < 3 || list->item(0)->text() != QStringLiteral("This set"))
                                      failures->append(QStringLiteral("History does not list this set first"));
+                                 if (ControlObject::get(ConfigKey(QStringLiteral("[DeckLabNative]"), QStringLiteral("track_level"))) != 0)
+                                     failures->append(QStringLiteral("History sets report track_level"));
                              });
                          });
                          return true;
                      }},
-                    {"history-set", 1200, [surface, failures] {
+                    {"history-set", 1800, [surface, failures] {
                          // This set in play order (time, deck, BPM, key), on its
                          // latest track; the paused decks offer LOAD from history.
                          surface->browsePress();
@@ -901,6 +903,20 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                                  failures->append(QStringLiteral("History selection is not the highlighted track"));
                              auto* tile = static_cast<DeckLabDockTile*>(surface->findChild<QPushButton*>(QStringLiteral("decklab-load-3")));
                              if (!tile || !tile->loadReady()) failures->append(QStringLiteral("History track not loadable from the dock"));
+                             // r5-fix-history: a controller's LOAD on this list level
+                             // ([DeckLabNative] track_level) loads exactly this row
+                             // (into empty deck 3; nothing plays).
+                             if (ControlObject::get(ConfigKey(QStringLiteral("[DeckLabNative]"), QStringLiteral("track_level"))) != 1)
+                                 failures->append(QStringLiteral("History track row does not report track_level"));
+                             const int wanted = item ? item->data(decklab::history::TrackIdRole).toInt() : -1;
+                             ControlObject::set(ConfigKey(QStringLiteral("[Channel3]"), QStringLiteral("LoadSelectedTrack")), 1);
+                             ControlObject::set(ConfigKey(QStringLiteral("[Channel3]"), QStringLiteral("LoadSelectedTrack")), 0);
+                             QTimer::singleShot(700, surface, [surface, failures, wanted] {
+                                 const TrackPointer loaded = PlayerInfo::instance().getTrackInfo(QStringLiteral("[Channel3]"));
+                                 if (!loaded || loaded->getId().toVariant().toInt() != wanted)
+                                     failures->append(QStringLiteral("Controller LOAD from History loaded another track"));
+                                 surface->selectPage(1); // a load returns to Decks
+                             });
                          });
                          return true;
                      }},

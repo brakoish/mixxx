@@ -243,6 +243,17 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void refreshNewSetRow();
     void showHistoryPlaylist(int playlistId);
     void updateHomeHistoryTile();
+    // r5-fix-history: the knob on New set, exactly-the-row LOAD, track_level.
+    int selectHistoryRow();
+    bool browseRowLoadable();
+    bool listRowStale();
+    void resyncBrowseRow();
+    void setTrackLevel(bool loadable);
+    void historyTableChanged();
+    bool onNewSetRow() const;
+    void historyKnobHold(bool down);
+    bool consumeNewSetRelease();
+    void cancelNewSetKnob();
     int displayedDeck(int side) const;
     void setDisplayedDeck(int side, int deck);
     QString channel(int deck) const;
