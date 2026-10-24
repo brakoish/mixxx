@@ -3932,7 +3932,6 @@ TEST_F(NativeDeckLabTest, MasterInMoreTakesAndHandsOnTheTempoMaster) {
     EXPECT_TRUE(master2->accessibleName().contains("while it plays"));
     EXPECT_EQ(44, master2->height());
     menu->close(); settle();
-    put(1, "quantize", 0); put(2, "quantize", 0);
     put(1, "play", 1); put(2, "play", 1); ProcessBuffer(); ProcessBuffer();
     // SYNC on deck 1: deck 2, on air, is the master.
     panel->findChild<QPushButton*>("decklab-1-beatsync")->click();
@@ -3978,6 +3977,10 @@ TEST_F(NativeDeckLabTest, MasterInMoreTakesAndHandsOnTheTempoMaster) {
     QMetaObject::invokeMethod(panel->findChild<QComboBox*>("decklab-deck-layout"), "activated", Q_ARG(int, 2)); QTest::qWait(150);
     EXPECT_NE(nullptr, panel->findChild<QPushButton*>("decklab-card-1-master"));
     EXPECT_NE(nullptr, panel->findChild<QPushButton*>("decklab-card-1-doubles"));
+    settle(); QTest::qWait(150); settle();
+    EXPECT_TRUE(strip(1)->modesText().contains("MASTER")); EXPECT_TRUE(strip(2)->modesText().contains("SYNC"));
+    EXPECT_TRUE(panel->findChild<QPushButton*>("decklab-card-1-beatsync")->property("lit").toBool());
+    capture(QStringLiteral("decks-four-sync-master.png"));
     for (int deck = 1; deck <= 2; ++deck) { put(deck, "play", 0); put(deck, "sync_enabled", 0); }
     ProcessBuffer();
 }
