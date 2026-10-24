@@ -327,9 +327,11 @@ class EngineBuffer : public EngineObject {
     bool alignsPlayStart() const;
     /// Deck Lab: whether the SYNC tap a PLAY start took lines this deck up.
     bool syncTapLinesUp(int syncTap) const;
-    /// Deck Lab: this deck syncs and another synced deck plays, so a start
-    /// has a sync group to line up with. A synced deck with none (a paused
-    /// tempo master beside an unsynced deck) starts like any other.
+    /// Deck Lab: this deck syncs and the deck a phase seek would line it up
+    /// with is a synced one that plays, so a start has a sync group to line
+    /// up with. A synced deck with none (a paused tempo master beside an
+    /// unsynced deck, or beside nothing but a synced sampler) starts like any
+    /// other.
     bool startsWithSyncGroup() const;
     /// Deck Lab: whether a start of a deck that starts with its sync group
     /// lines up whatever Quantize is set to: a CDJ BEAT SYNC follower, or a

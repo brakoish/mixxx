@@ -474,8 +474,16 @@ bool EngineBuffer::startsWithSyncGroup() const {
     // A synced deck follows only synced decks. A paused tempo master is still
     // synced, but with no synced deck playing it has nobody to follow: as on
     // a CDJ it starts exactly at its playhead, cue or hot cue, never on the
-    // phase of an unsynced deck (one in the headphones, say).
-    return m_pSyncControl->isSynchronized() && m_pEngineSync->otherSyncedPlaying(getGroup());
+    // phase of an unsynced deck (one in the headphones, say). Asked of the
+    // deck a phase seek lines up with (BpmControl::getBeatMatchPosition): a
+    // synced sampler that plays is no deck to follow, and that seek would
+    // pass it over for an unsynced deck.
+    if (!m_pSyncControl->isSynchronized()) {
+        return false;
+    }
+    const Syncable* pTarget = m_pEngineSync->pickNonSyncSyncTarget(m_pSyncControl->getChannel());
+    return pTarget && pTarget->isSynchronized() &&
+            pTarget->getChannel()->getEngineBuffer()->getSpeed() != 0.0;
 }
 
 bool EngineBuffer::syncedStartLinesUp(int syncTap) const {
@@ -905,6 +913,13 @@ void EngineBuffer::slotControlPlayRequest(double v) {
                 // whatever Quantize is set to when it follows the master
                 // under the CDJ BEAT SYNC rules (decklabcdjsync.h).
                 if (m_quantize.toBool() || syncedStartLinesUp(syncTap)) {
+                    if (!m_quantize.toBool() && m_pSyncControl->phaseFollowsMaster()) {
+                        // With Quantize off, the beat offset that a jump
+                        // left holds only while the deck plays
+                        // (BpmControl::keepsJumpOffsets): PLAY lines the
+                        // deck up on the master's beat again.
+                        m_pBpmControl->resetSyncAdjustment();
+                    }
                     requestSyncPhase();
                 }
             } else if (!m_pSyncControl->isSynchronized() && syncTapLinesUp(syncTap)) {

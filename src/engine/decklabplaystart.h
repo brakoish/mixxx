@@ -21,8 +21,9 @@
 // SYNC rules (engine/sync/decklabcdjsync.h). A synced deck with no synced
 // deck playing, such as a paused tempo master beside an unsynced deck in the
 // headphones, starts exactly: it has nobody to follow, and it is never lined
-// up with an unsynced deck. Quantized seeks while a deck plays (hot cues,
-// loops, beat jumps) are unchanged.
+// up with an unsynced deck. A synced sampler that plays does not count.
+// Quantized seeks while a deck plays (hot cues, loops, beat jumps) are
+// unchanged.
 //
 // A one-shot SYNC tap made while an unsynced deck is paused, with another
 // deck to sync to, lines up its next start with the playing deck: Mixxx's

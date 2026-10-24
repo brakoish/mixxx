@@ -3747,6 +3747,18 @@ double phaseOffset(const QString& reference, const QString& group) {
     return phaseError(beatDistance(group) - beatDistance(reference));
 }
 
+// Where a deck's audio is in its beat, from its play position (the fake
+// tracks run at 44.1 kHz with a beat on 0:00). Unlike beat_distance it leaves
+// out the beat offset the sync lock keeps for the deck.
+double audioBeatFraction(EngineBuffer* pBuffer, double fileBpm) {
+    const double beats = pBuffer->getExactPlayPos().value() * fileBpm / (44100.0 * 60.0);
+    return beats - std::floor(beats);
+}
+
+// Deck 1 (130 BPM) and deck 2 (100 BPM) frames per beat.
+constexpr double kBeatFrames130 = 44100.0 * 60.0 / 130.0;
+constexpr double kBeatFrames100 = 44100.0 * 60.0 / 100.0;
+
 } // namespace
 
 TEST_F(EngineSyncTest, PlayStartSyncLockOnlyPausedTempoMasterStartsExactlyOnItsCue) {
@@ -3901,12 +3913,15 @@ TEST_F(EngineSyncTest, CdjSyncLinesUpAPlayingDeckWithoutQuantizeAndKeepsItThere)
     EXPECT_LT(phaseOffset(m_sGroup1, m_sGroup2), 0.001);
     EXPECT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup2, "quantize")));
 
-    // Knocked off the beat (a twentieth of a beat, with no phase seek): the
-    // lock pulls it back within Mixxx's sync tolerance of 0.01 beat.
+    // Drift: the master slips a fortieth of a beat. The lock pulls the
+    // follower back onto its beat within Mixxx's sync tolerance of 0.01 beat.
+    // (A jump of the follower itself stays where it lands: see
+    // CdjSyncWithoutQuantizeKeepsAFreeJumpWhereItLands.)
+    EngineBuffer* pBuffer1 = m_pChannel1->getEngineBuffer();
     EngineBuffer* pBuffer2 = m_pChannel2->getEngineBuffer();
-    pBuffer2->seekExact(pBuffer2->getExactPlayPos() + 26460 / 20);
+    pBuffer1->seekExact(pBuffer1->getExactPlayPos() + kBeatFrames130 / 40);
     ProcessBuffer();
-    ASSERT_GT(phaseOffset(m_sGroup1, m_sGroup2), 0.04);
+    ASSERT_GT(phaseOffset(m_sGroup1, m_sGroup2), 0.02);
     for (int i = 0; i < 150; ++i) {
         ProcessBuffer();
     }
@@ -3922,14 +3937,311 @@ TEST_F(EngineSyncTest, CdjSyncLinesUpAPlayingDeckWithoutQuantizeAndKeepsItThere)
     EXPECT_LT(phaseOffset(m_sGroup1, m_sGroup2), 0.001);
 
     // Without the CDJ rules Mixxx's sync lock keeps only the tempo when
-    // Quantize is off: the same knock stays.
+    // Quantize is off: the same slip stays.
     ControlObject::set(kCdjSync, 0.0);
-    pBuffer2->seekExact(pBuffer2->getExactPlayPos() + 26460 / 20);
+    pBuffer1->seekExact(pBuffer1->getExactPlayPos() + kBeatFrames130 / 40);
     ProcessBuffer();
-    const double knocked = phaseOffset(m_sGroup1, m_sGroup2);
-    ASSERT_GT(knocked, 0.04);
+    const double slipped = phaseOffset(m_sGroup1, m_sGroup2);
+    ASSERT_GT(slipped, 0.02);
     for (int i = 0; i < 60; ++i) {
         ProcessBuffer();
     }
-    EXPECT_NEAR(knocked, phaseOffset(m_sGroup1, m_sGroup2), 1e-6);
+    EXPECT_NEAR(slipped, phaseOffset(m_sGroup1, m_sGroup2), 1e-6);
+    EXPECT_NEAR(1.3, pBuffer2->getSpeed(), 1e-9);
+}
+
+TEST_F(EngineSyncTest, CdjSyncWithoutQuantizeKeepsAFreeJumpWhereItLands) {
+    // Quantize off: a needle drop or a hot cue on a playing follower lands
+    // where the DJ puts it, and the lock keeps the beat offset it leaves, as
+    // it keeps a jog nudge. Mixxx's lock with Quantize on would bend the deck
+    // back onto the master's beat for seconds, at 5 % speed for an offset
+    // past 0.2 beat. The next PLAY lines it up again.
+    ControlObject::set(kCdjSync, 1.0);
+    ControlObject::set(kPlayStartAlign, 1.0);
+    auto pHotCue2Activate = std::make_unique<ControlProxy>(m_sGroup2, "hotcue_2_activate");
+    EngineBuffer* pBuffer1 = m_pChannel1->getEngineBuffer();
+    EngineBuffer* pBuffer2 = m_pChannel2->getEngineBuffer();
+    // How far deck 2's beat is ahead of the master's (negative: behind).
+    const auto audibleOffset = [&]() {
+        const double offset =
+                audioBeatFraction(pBuffer2, 100.0) - audioBeatFraction(pBuffer1, 130.0);
+        return offset - std::round(offset);
+    };
+    playDeckOneOverPausedDeckTwo();
+    ControlObject::set(ConfigKey(m_sGroup1, "quantize"), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "quantize"), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    pulse(m_sGroup2, "beatsync");
+    for (int i = 0; i < 8; ++i) {
+        ProcessBuffer();
+    }
+    ASSERT_TRUE(isSoftLeader(m_sGroup1));
+    ASSERT_TRUE(isFollower(m_sGroup2));
+    ASSERT_LT(std::abs(audibleOffset()), 0.001);
+
+    // A needle drop 1.3 beats on: 0.3 beat off the master's beat, and it
+    // stays there at the master's tempo.
+    pBuffer2->queueNewPlaypos(
+            pBuffer2->getExactPlayPos() + 1.3 * kBeatFrames100, EngineBuffer::SEEK_STANDARD);
+    ProcessBuffer();
+    const double dropped = audibleOffset();
+    ASSERT_NEAR(0.3, dropped, 0.01);
+    double maxSpeedError = 0.0;
+    for (int i = 0; i < 100; ++i) {
+        ProcessBuffer();
+        maxSpeedError = std::max(maxSpeedError, std::abs(pBuffer2->getSpeed() - 1.3));
+    }
+    EXPECT_LT(maxSpeedError, 1e-9);
+    EXPECT_NEAR(dropped, audibleOffset(), 1e-6);
+
+    // A hot cue set here and fired 26 buffers (0.65 beat) later lands about
+    // 0.35 beat off the master's beat, the other way: it stays there too.
+    pHotCue2Activate->set(1.0);
+    ProcessBuffer();
+    pHotCue2Activate->set(0.0);
+    for (int i = 0; i < 25; ++i) {
+        ProcessBuffer();
+    }
+    pHotCue2Activate->set(1.0);
+    ProcessBuffer();
+    pHotCue2Activate->set(0.0);
+    const double cued = audibleOffset();
+    ASSERT_LT(cued, -0.25);
+    ASSERT_GT(phaseError(cued - dropped), 0.3);
+    maxSpeedError = 0.0;
+    for (int i = 0; i < 100; ++i) {
+        ProcessBuffer();
+        maxSpeedError = std::max(maxSpeedError, std::abs(pBuffer2->getSpeed() - 1.3));
+    }
+    EXPECT_LT(maxSpeedError, 1e-9);
+    EXPECT_NEAR(cued, audibleOffset(), 1e-6);
+    EXPECT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup2, "quantize")));
+
+    // Paused and started again: PLAY lines it up on the master's beat.
+    parkDeckTwo();
+    ASSERT_TRUE(isFollower(m_sGroup2));
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_LT(std::abs(audibleOffset()), 1e-6);
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+}
+
+TEST_F(EngineSyncTest, CdjSyncWithoutQuantizeKeepsTheTempoInALoopOfPartBeats) {
+    // Quantize off: a manual loop 3.5 beats long moves the follower's beat
+    // half a beat every pass. It keeps the master's tempo there, as Mixxx's
+    // lock does without Quantize, instead of bending back at up to 5 % speed
+    // every pass, and plays on from the loop at that tempo when it ends.
+    ControlObject::set(kCdjSync, 1.0);
+    ControlObject::set(kPlayStartAlign, 1.0);
+    EngineBuffer* pBuffer1 = m_pChannel1->getEngineBuffer();
+    EngineBuffer* pBuffer2 = m_pChannel2->getEngineBuffer();
+    // How far deck 2's beat is ahead of the master's (negative: behind).
+    const auto audibleOffset = [&]() {
+        const double offset =
+                audioBeatFraction(pBuffer2, 100.0) - audioBeatFraction(pBuffer1, 130.0);
+        return offset - std::round(offset);
+    };
+    playDeckOneOverPausedDeckTwo();
+    ControlObject::set(ConfigKey(m_sGroup1, "quantize"), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "quantize"), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    pulse(m_sGroup2, "beatsync");
+    for (int i = 0; i < 8; ++i) {
+        ProcessBuffer();
+    }
+    ASSERT_TRUE(isFollower(m_sGroup2));
+    ASSERT_LT(std::abs(audibleOffset()), 0.001);
+
+    // LOOP IN here, LOOP OUT 3.5 beats on (engine samples are frames x 2).
+    const double loopIn = pBuffer2->getExactPlayPos().value();
+    ControlObject::set(ConfigKey(m_sGroup2, "loop_start_position"), 2.0 * loopIn);
+    ControlObject::set(ConfigKey(m_sGroup2, "loop_end_position"),
+            2.0 * (loopIn + 3.5 * kBeatFrames100));
+    pulse(m_sGroup2, "reloop_toggle");
+    ProcessBuffer();
+    ASSERT_DOUBLE_EQ(1.0, ControlObject::get(ConfigKey(m_sGroup2, "loop_enabled")));
+    // About 139 buffers a pass: two passes.
+    double maxSpeedError = 0.0;
+    double latestPosition = 0.0;
+    bool wrapped = false;
+    for (int i = 0; i < 300; ++i) {
+        ProcessBuffer();
+        maxSpeedError = std::max(maxSpeedError, std::abs(pBuffer2->getSpeed() - 1.3));
+        const double position = pBuffer2->getExactPlayPos().value();
+        wrapped = wrapped || position < latestPosition;
+        latestPosition = position;
+    }
+    ASSERT_TRUE(wrapped);
+    EXPECT_LT(maxSpeedError, 1e-9);
+
+    // Out of the loop: it plays on at the master's tempo from where the loop
+    // left it, without bending back.
+    pulse(m_sGroup2, "reloop_toggle");
+    ProcessBuffer();
+    ASSERT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup2, "loop_enabled")));
+    const double left = audibleOffset();
+    maxSpeedError = 0.0;
+    for (int i = 0; i < 60; ++i) {
+        ProcessBuffer();
+        maxSpeedError = std::max(maxSpeedError, std::abs(pBuffer2->getSpeed() - 1.3));
+    }
+    EXPECT_LT(maxSpeedError, 1e-9);
+    EXPECT_LT(phaseError(audibleOffset() - left), 1e-6);
+}
+
+TEST_F(EngineSyncTest, CdjSyncWithoutQuantizeFollowerHoldsWhenTheMasterJumps) {
+    // Quantize off: the DJ needle-drops the master 0.3 beat off its beat
+    // (the master may be the deck in the headphones by now). The follower,
+    // maybe on air, plays on as it was at the master's tempo, never bending
+    // for seconds to chase it. A small slip of the master is drift: the lock
+    // still pulls the follower after it.
+    ControlObject::set(kCdjSync, 1.0);
+    ControlObject::set(kPlayStartAlign, 1.0);
+    EngineBuffer* pBuffer1 = m_pChannel1->getEngineBuffer();
+    EngineBuffer* pBuffer2 = m_pChannel2->getEngineBuffer();
+    // How far deck 2's beat is ahead of the master's (negative: behind).
+    const auto audibleOffset = [&]() {
+        const double offset =
+                audioBeatFraction(pBuffer2, 100.0) - audioBeatFraction(pBuffer1, 130.0);
+        return offset - std::round(offset);
+    };
+    playDeckOneOverPausedDeckTwo();
+    ControlObject::set(ConfigKey(m_sGroup1, "quantize"), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "quantize"), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    pulse(m_sGroup2, "beatsync");
+    for (int i = 0; i < 8; ++i) {
+        ProcessBuffer();
+    }
+    ASSERT_TRUE(isSoftLeader(m_sGroup1));
+    ASSERT_TRUE(isFollower(m_sGroup2));
+    ASSERT_LT(std::abs(audibleOffset()), 0.001);
+
+    pBuffer1->queueNewPlaypos(
+            pBuffer1->getExactPlayPos() + 0.3 * kBeatFrames130, EngineBuffer::SEEK_STANDARD);
+    ProcessBuffer();
+    const double jumped = audibleOffset();
+    ASSERT_NEAR(-0.3, jumped, 0.01);
+    double maxSpeedError = 0.0;
+    for (int i = 0; i < 100; ++i) {
+        ProcessBuffer();
+        maxSpeedError = std::max(maxSpeedError, std::abs(pBuffer2->getSpeed() - 1.3));
+    }
+    EXPECT_LT(maxSpeedError, 1e-9);
+    EXPECT_NEAR(jumped, audibleOffset(), 1e-6);
+
+    // The master slips a fortieth of a beat: the follower is pulled after it,
+    // back to the offset it kept.
+    pBuffer1->seekExact(pBuffer1->getExactPlayPos() + kBeatFrames130 / 40);
+    ProcessBuffer();
+    ASSERT_GT(phaseError(audibleOffset() - jumped), 0.02);
+    for (int i = 0; i < 150; ++i) {
+        ProcessBuffer();
+    }
+    EXPECT_LT(phaseError(audibleOffset() - jumped), 0.0105);
+}
+
+TEST_F(EngineSyncTest, PlayStartSyncLockOnlyPausedTempoMasterIgnoresASyncedSampler) {
+    // Deck 2 is the tempo master, paused on its cue; deck 1 plays unsynced in
+    // the headphones and a synced sampler loop plays along. The sampler is no
+    // deck to line up with, so PLAY, a CUE preview and a hot cue preview still
+    // start exactly on the cue, never on the beat of deck 1. (The preview
+    // deck stands in for the sampler: it is no primary deck either.)
+    ControlObject::set(kCdjSync, 1.0);
+    ControlObject::set(kPlayStartAlign, 1.0);
+    auto pHotCue2Activate = std::make_unique<ControlProxy>(m_sGroup2, "hotcue_1_activate");
+    playDeckOneOverPausedDeckTwo();
+    ControlObject::set(ConfigKey(m_sGroup1, "volume"), 0.0);
+    // The main cue and a hot cue at 0:00, where deck 2 waits.
+    pulse(m_sGroup2, "cue_set");
+    pHotCue2Activate->set(1.0);
+    ProcessBuffer();
+    pHotCue2Activate->set(0.0);
+    ProcessBuffer();
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    pulse(m_sGroup2, "beatsync");
+    ProcessBuffer();
+    ProcessBuffer();
+    ASSERT_TRUE(isSoftLeader(m_sGroup2));
+    ASSERT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup1, "sync_enabled")));
+
+    TrackPointer pSamplerTrack = m_pPreview1->loadFakeTrack(false, 0.0);
+    pSamplerTrack->trySetBeats(mixxx::Beats::fromConstTempo(
+            pSamplerTrack->getSampleRate(), mixxx::audio::kStartFramePos, mixxx::Bpm(100)));
+    ProcessBuffer();
+    ControlObject::set(ConfigKey(m_sPreviewGroup, "sync_enabled"), 1.0);
+    ControlObject::set(ConfigKey(m_sPreviewGroup, "play"), 1.0);
+    ProcessBuffer();
+    ProcessBuffer();
+    ASSERT_TRUE(isFollower(m_sPreviewGroup));
+    ASSERT_DOUBLE_EQ(1.0, ControlObject::get(ConfigKey(m_sPreviewGroup, "play")));
+
+    // Back on the cue, paused, with the sampler still playing synced.
+    parkDeckTwo();
+    ASSERT_DOUBLE_EQ(1.0, ControlObject::get(ConfigKey(m_sPreviewGroup, "play")));
+    ASSERT_TRUE(isFollower(m_sPreviewGroup));
+
+    // PLAY: exactly one buffer after the cue.
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_DOUBLE_EQ(kOneBufferAt100Bpm, beatDistance(m_sGroup2));
+    EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
+
+    // CUE held on the cue: the preview starts on it.
+    parkDeckTwo();
+    ControlObject::set(ConfigKey(m_sGroup2, "cue_default"), 1.0);
+    ProcessBuffer();
+    ASSERT_DOUBLE_EQ(1.0, ControlObject::get(ConfigKey(m_sGroup2, "play")));
+    EXPECT_DOUBLE_EQ(kOneBufferAt100Bpm, beatDistance(m_sGroup2));
+    EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
+    ControlObject::set(ConfigKey(m_sGroup2, "cue_default"), 0.0);
+    ProcessBuffer();
+    ASSERT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup2, "play")));
+
+    // Paused between beats (2.3 beats in), the hot cue held: the preview
+    // starts on the hot cue.
+    ControlObject::set(ConfigKey(m_sGroup2, "playposition"), 0.276);
+    ProcessBuffer();
+    ASSERT_NEAR(0.3, beatDistance(m_sGroup2), 1e-9);
+    pHotCue2Activate->set(1.0);
+    ProcessBuffer();
+    EXPECT_DOUBLE_EQ(kOneBufferAt100Bpm, beatDistance(m_sGroup2));
+    EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
+    pHotCue2Activate->set(0.0);
+    ProcessBuffer();
+}
+
+TEST_F(EngineSyncTest, CdjSyncLeavesASyncedSamplerToItsQuantize) {
+    // The CDJ BEAT SYNC rules are for decks. A synced sampler with Quantize
+    // off keeps Mixxx's sync lock: it starts from its cue at the master's
+    // tempo, not lined up on the master's beat. (The preview deck stands in
+    // for the sampler: it is no primary deck either.)
+    ControlObject::set(kCdjSync, 1.0);
+    ControlObject::set(kPlayStartAlign, 1.0);
+    playDeckOneOverPausedDeckTwo();
+    // Deck 1, on air and playing, takes the master role at its own tempo.
+    pulse(m_sGroup1, "beatsync");
+    ProcessBuffer();
+    ProcessBuffer();
+    ASSERT_TRUE(isSoftLeader(m_sGroup1));
+
+    TrackPointer pSamplerTrack = m_pPreview1->loadFakeTrack(false, 0.0);
+    pSamplerTrack->trySetBeats(mixxx::Beats::fromConstTempo(
+            pSamplerTrack->getSampleRate(), mixxx::audio::kStartFramePos, mixxx::Bpm(100)));
+    ProcessBuffer();
+    ControlObject::set(ConfigKey(m_sPreviewGroup, "quantize"), 0.0);
+    ControlObject::set(ConfigKey(m_sPreviewGroup, "sync_enabled"), 1.0);
+    ProcessBuffer();
+    ASSERT_TRUE(isFollower(m_sPreviewGroup));
+    ASSERT_DOUBLE_EQ(130.0, ControlObject::get(ConfigKey(m_sPreviewGroup, "bpm")));
+    ASSERT_DOUBLE_EQ(0.0, beatDistance(m_sPreviewGroup));
+
+    ControlObject::set(ConfigKey(m_sPreviewGroup, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_NEAR(kOneBufferAt100Bpm * 130 / 100, beatDistance(m_sPreviewGroup), 1e-9);
+    EXPECT_FALSE(beatsAligned(m_sGroup1, m_sPreviewGroup));
 }

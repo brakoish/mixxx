@@ -46,6 +46,7 @@ class SyncControl : public EngineControl, public Syncable {
     /// Deck Lab: this deck follows the tempo master under the CDJ BEAT SYNC
     /// rules (decklabcdjsync.h), so sync lock keeps its beat on the master's
     /// whatever Quantize is set to. Mixxx keeps the phase only with Quantize.
+    /// Decks only: samplers keep Mixxx's rule.
     bool phaseFollowsMaster() const;
 
     double adjustSyncBeatDistance(double beatDistance) const;

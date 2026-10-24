@@ -214,7 +214,10 @@ bool SyncControl::isQuantized() const {
 }
 
 bool SyncControl::phaseFollowsMaster() const {
-    return m_pCdjSync->toBool() && getSyncMode() == SyncMode::Follower;
+    // Decks only, like the BEAT SYNC button: a sampler keeps Mixxx's sync
+    // lock, where its Quantize decides.
+    return m_pCdjSync->toBool() && m_pChannel->isPrimaryDeck() &&
+            getSyncMode() == SyncMode::Follower;
 }
 
 double SyncControl::adjustSyncBeatDistance(double beatDistance) const {

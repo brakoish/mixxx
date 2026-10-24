@@ -159,8 +159,10 @@ BEAT, not an inferred bar or phrase.
 
 SYNC works like a Pioneer CDJ-3000's BEAT SYNC. A tap turns Sync Lock on or off
 and the lamp stays lit while it is on; the deck follows the tempo master's tempo
-and beat, whatever its Quantize is set to (Quantize still governs hot cues, loops
-and beat jumps), and keeps its tempo when sync goes off. One deck is the tempo master
+and beat, whatever its Quantize is set to, and keeps its tempo when sync goes off.
+Quantize still governs hot cues, loops and beat jumps: with it off a jump lands
+where the DJ puts it and the lock keeps that offset until the deck pauses, rather
+than bending the deck back onto the beat. One deck is the tempo master
 (Mixxx's sync leader): the deck on air when sync first goes on (a deck on air
 that syncs with no other deck on air leads at its own tempo, never matched to a
 deck in the headphones), or the deck MORE's MASTER picks while it plays. Only a

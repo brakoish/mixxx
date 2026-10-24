@@ -130,12 +130,20 @@ class BpmControl : public EngineControl {
         return m_cdjSync.toBool() && getSyncMode() == SyncMode::Follower &&
                 !m_internalClockLeader.toBool();
     }
-    // Deck Lab: a follower under the CDJ BEAT SYNC rules stays on the
-    // master's beat whatever Quantize is set to (SyncControl's twin).
+    // Deck Lab: a deck that follows the master under the CDJ BEAT SYNC rules
+    // stays on the master's beat whatever Quantize is set to (SyncControl's
+    // twin). Decks only: a sampler keeps Mixxx's sync lock, where Quantize
+    // decides, like the CDJ BEAT SYNC button (SyncControl::slotControlBeatSync).
     bool phaseFollowsMaster() const {
-        return m_cdjSync.toBool() && getSyncMode() == SyncMode::Follower;
+        return m_cdjSync.toBool() && m_bPrimaryDeck && getSyncMode() == SyncMode::Follower;
     }
-    double calcSyncAdjustment(bool userTweakingSync);
+    // Deck Lab: such a deck with Quantize off. Its jumps land where the DJ
+    // puts them, so the lock keeps the beat offset a jump leaves instead of
+    // bending the deck back onto the master's beat (calcSyncAdjustment).
+    bool keepsJumpOffsets() const {
+        return !m_quantize.toBool() && phaseFollowsMaster();
+    }
+    double calcSyncAdjustment(bool userTweakingSync, bool keepJumps);
     void adjustBeatsBpm(double deltaBpm);
     void slotScaleBpm(mixxx::Beats::BpmScale bpmScale);
 
@@ -200,6 +208,8 @@ class BpmControl : public EngineControl {
     // the internal clock leads: the same rule as RateControl's fader.
     PollingControlProxy m_cdjSync;
     PollingControlProxy m_internalClockLeader;
+    // Deck Lab: a deck, not a sampler or a preview deck.
+    const bool m_bPrimaryDeck;
 
     TapFilter m_bpmTapFilter;   // threadsafe
     TapFilter m_tempoTapFilter; // threadsafe
@@ -207,6 +217,9 @@ class BpmControl : public EngineControl {
     // used in the engine thread only
     double m_dSyncInstantaneousBpm;
     double m_dLastSyncAdjustment;
+    // Deck Lab: the sync error of the last adjustment, to tell a jump of the
+    // beat from drift (calcSyncAdjustment).
+    double m_dLastSyncError;
 
     // m_pBeats is written from an engine worker thread
     mixxx::BeatsPointer m_pBeats;

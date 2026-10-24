@@ -7,6 +7,7 @@
 #include "engine/effects/groupfeaturestate.h"
 #include "engine/enginebuffer.h"
 #include "engine/sync/decklabcdjsync.h"
+#include "mixer/playermanager.h"
 #include "moc_bpmcontrol.cpp"
 #include "track/beatutils.h"
 #include "track/track.h"
@@ -41,6 +42,15 @@ constexpr int kLocalBpmSpan = 4;
 // of the next beat.
 constexpr double kPastBeatMatchThreshold = 1 / 8.0;
 
+// Deck Lab: a CDJ follower with Quantize off (BpmControl::keepsJumpOffsets).
+// A loop this close to a whole number of beats keeps the lock: each pass moves
+// the beat by less than the lock's dead band.
+constexpr double kWholeBeatLoopTolerance = 0.01;
+// The sync error moves this much between two callbacks only when the beat
+// jumps. The lock's own pull moves it by at most 5 % of a callback's beats:
+// under 0.015 beat even with 4096-frame buffers at 180 BPM.
+constexpr double kBeatJumpThreshold = 0.05;
+
 mixxx::Bpm averageBpmRoundedWithinRange(double averageLength, double rateRatio) {
     // (60 seconds per minute) * (1000 milliseconds per second) /
     //   (X millis per beat)
@@ -71,10 +81,12 @@ BpmControl::BpmControl(const QString& group,
           m_internalClockLeader(QStringLiteral("[InternalClock]"),
                   QStringLiteral("sync_leader"),
                   ControlFlag::AllowMissingOrInvalid),
+          m_bPrimaryDeck(PlayerManager::isDeckGroup(group)),
           m_bpmTapFilter(this, kBpmTapFilterLength, kBpmTapMaxInterval),
           m_tempoTapFilter(this, kBpmTapFilterLength, kBpmTapMaxInterval),
           m_dSyncInstantaneousBpm(0.0),
-          m_dLastSyncAdjustment(1.0) {
+          m_dLastSyncAdjustment(1.0),
+          m_dLastSyncError(0.0) {
     m_dSyncTargetBeatDistance.setValue(0.0);
     m_dUserOffset.setValue(0.0);
 
@@ -515,6 +527,14 @@ double BpmControl::calcSyncedRate(double userTweak) {
         m_resetSyncAdjustment = true;
         return rate + userTweak;
     }
+    // Deck Lab: a scratch ends back on the beat the deck kept (a phase seek
+    // on the next callback, EngineSync::notifyScratching), so for a CDJ
+    // follower with Quantize off the callback a scratch ends in neither
+    // bends the deck nor keeps the offset the scratch left.
+    if (keepsJumpOffsets() && getEngineBuffer()->getScratching()) {
+        m_resetSyncAdjustment = true;
+        return rate + userTweak;
+    }
 
     const auto prevBeatPosition =
             mixxx::audio::FramePos::fromEngineSamplePosMaybeInvalid(
@@ -547,17 +567,28 @@ double BpmControl::calcSyncedRate(double userTweak) {
                 m_resetSyncAdjustment = true;
                 return rate + userTweak;
             }
+            // Deck Lab: with Quantize off a loop can be any length. A CDJ
+            // follower in one that is not a whole number of beats keeps the
+            // master's tempo only, as Mixxx's sync lock does without
+            // Quantize: every pass moves its beat, and the lock would bend
+            // each pass back at up to 5 % speed. When the loop ends the lock
+            // keeps the offset the deck leaves it with (calcSyncAdjustment).
+            if (keepsJumpOffsets() &&
+                    std::abs(loopSize - std::round(loopSize)) > kWholeBeatLoopTolerance) {
+                m_resetSyncAdjustment = true;
+                return rate + userTweak;
+            }
         }
     }
 
     // Now we have all we need to calculate the sync adjustment if any.
-    double adjustment = calcSyncAdjustment(userTweak != 0.0);
+    double adjustment = calcSyncAdjustment(userTweak != 0.0, keepsJumpOffsets());
     // This can be used to detect pitch shift issues with cloned decks
     // DEBUG_ASSERT(((rate + userTweak) * adjustment) == 1);
     return (rate + userTweak) * adjustment;
 }
 
-double BpmControl::calcSyncAdjustment(bool userTweakingSync) {
+double BpmControl::calcSyncAdjustment(bool userTweakingSync, bool keepJumps) {
     int resetSyncAdjustment = m_resetSyncAdjustment.fetchAndStoreRelaxed(0);
     if (resetSyncAdjustment) {
         m_dLastSyncAdjustment = 1.0;
@@ -581,9 +612,23 @@ double BpmControl::calcSyncAdjustment(bool userTweakingSync) {
     const double error = shortestPercentageChange(syncTargetBeatDistance, thisBeatDistance);
     const double curUserOffset = m_dUserOffset.getValue();
 
+    // Deck Lab: a CDJ follower with Quantize off keeps the beat offset a jump
+    // leaves, as it keeps a nudge: its own jump (a hot cue, a needle drop, a
+    // cue, a loop; notifySeek flags it), a jump of the master's beat between
+    // two callbacks, or the lock taking over again after a loop or reverse
+    // play. Quantize decides where jumps land, so the lock pulls back only
+    // drift. Bending the deck back would take seconds at up to 5 % speed, on
+    // air; Mixxx's sync lock does that only with Quantize on, where a deck's
+    // own jumps land in phase.
+    double errorStep = error - m_dLastSyncError;
+    errorStep -= std::round(errorStep);
+    const bool keepJump = keepJumps &&
+            (resetSyncAdjustment || std::abs(errorStep) > kBeatJumpThreshold);
+    m_dLastSyncError = (userTweakingSync || keepJump) ? 0.0 : error;
+
     double adjustment = 1.0;
 
-    if (userTweakingSync) {
+    if (userTweakingSync || keepJump) {
         // The user is actively adjusting the sync, so take the current error as their preferred
         // user offset.
         adjustment = 1.0;
@@ -1200,6 +1245,25 @@ void BpmControl::trackBpmLockChanged(bool locked) {
 
 void BpmControl::notifySeek(mixxx::audio::FramePos position) {
     updateBeatDistance(position);
+    if (keepsJumpOffsets()) {
+        // Deck Lab: Quantize is off, so a jump lands where the DJ puts it:
+        // the next sync adjustment keeps the beat offset it leaves (a phase
+        // seek lands on the master's beat, so its offset stays). Measured at
+        // the new position: beat_prev and beat_next follow a seek only at
+        // the end of this callback (QuantizeControl).
+        double beatFraction = 0.0;
+        if (getBeatContext(m_pBeats, position, nullptr, nullptr, nullptr, &beatFraction)) {
+            double beatDistance = beatFraction - m_dUserOffset.getValue();
+            if (beatDistance < 0) {
+                ++beatDistance;
+            }
+            if (beatDistance > 1) {
+                --beatDistance;
+            }
+            m_pThisBeatDistance.set(beatDistance);
+        }
+        m_resetSyncAdjustment = true;
+    }
 }
 
 void BpmControl::slotBeatsTranslate(double v) {

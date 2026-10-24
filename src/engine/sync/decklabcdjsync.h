@@ -22,8 +22,14 @@
 //    whatever the deck's Quantize is set to (Mixxx's sync lock keeps the
 //    phase only with Quantize on): BEAT SYNC on a playing deck lines the beat
 //    up at once, every start of a paused follower lines up while the master
-//    plays (decklabplaystart.h), the lock keeps it there, and a scratch ends
-//    back on the beat. Quantize still governs hot cues, loops and beat jumps.
+//    plays (decklabplaystart.h), the lock keeps it there against drift, and a
+//    scratch ends back on the beat. Quantize still governs hot cues, loops and
+//    beat jumps: with it off a jump lands where the DJ puts it, and the lock
+//    keeps the beat offset it leaves, as it keeps a jog nudge, until the deck
+//    pauses or sync turns off. So does a jump of the master's beat, or a loop
+//    that is not a whole number of beats (tempo only while it runs). The lock
+//    never bends the deck back for seconds at up to 5 % speed. Decks only: a
+//    sampler keeps Mixxx's sync lock.
 //  - a synced deck that is not the tempo master ignores its tempo controls
 //    (rate, the rate_perm_* buttons, and bpm with bpm_up/bpm_down and
 //    tempo_tap): only the master moves the tempo, for every synced deck.
