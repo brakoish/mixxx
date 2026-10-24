@@ -281,7 +281,7 @@ QRegion DeckLabStripRenderer::setState(const DeckLabStripState& next) {
         add(Part::Title);
     }
     if (previous.master != next.master || previous.sync != next.sync ||
-            previous.matched != next.matched || previous.range != next.range ||
+            previous.range != next.range ||
             previous.overRange != next.overRange ||
             previous.pfl != next.pfl || previous.slip != next.slip || previous.keylock != next.keylock ||
             previous.quantize != next.quantize || previous.looping != next.looping ||
@@ -852,13 +852,9 @@ int DeckLabStripRenderer::paintLamps(QPainter& painter) const {
     if (m_mode == Mode::Full) {
         // r4-decks: flat lamps that look like lamps, not buttons. MASTER
         // fills and SYNC outlines in the deck's color; headphone cue fills
-        // white. A one-shot match turns SYNC into MATCHED for a second, in a
-        // slot wide enough for both, so nothing beside it moves.
+        // white. r6-sync: SYNC is lit for as long as BEAT SYNC is on.
         x += paintLamp(painter, x, top, tr("MASTER"), m_state.master ? Lamp::Filled : Lamp::Off, deckColor) + 4;
-        const int syncWidth = std::max(lampWidth(tr("SYNC")), lampWidth(tr("MATCHED")));
-        x += paintLamp(painter, x, top, m_state.matched ? tr("MATCHED") : tr("SYNC"),
-                     m_state.sync || m_state.matched ? Lamp::Outlined : Lamp::Off, deckColor, false, syncWidth) +
-                4;
+        x += paintLamp(painter, x, top, tr("SYNC"), m_state.sync ? Lamp::Outlined : Lamp::Off, deckColor) + 4;
         x += paintLamp(painter, x, top, QString(), m_state.pfl ? Lamp::Filled : Lamp::Off, kLampLit, true) + 8;
         // The tempo range as secondary text, or OVER when Sync took the
         // tempo beyond it: the next touch of the tempo fader would jump.
@@ -890,7 +886,7 @@ int DeckLabStripRenderer::paintLamps(QPainter& painter) const {
     QList<Lit> lamps{
             {over, m_state.overRange && !m_state.range.isEmpty(), kText, true, false},
             {tr("MASTER"), m_state.master, deckColor, false, false},
-            {m_state.matched ? tr("MATCHED") : tr("SYNC"), m_state.sync || m_state.matched, deckColor, true, false},
+            {tr("SYNC"), m_state.sync, deckColor, true, false},
             {QString(), m_state.pfl, kLampLit, false, true}};
     for (const auto& lamp : exceptions()) {
         lamps.append({lamp.text, true, kLampLit, lamp.outlined, false});

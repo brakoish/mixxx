@@ -28,6 +28,7 @@ class DeckLabLaneDecks; // r4-waveforms: the DECKS row under compact lanes (widg
 class DeckLabSampler;
 class DeckLabPadBlock;
 class DeckLabDeckTools; // r5-decks: key sheet and GRID mode (widget/decklabdecktools.h)
+class DeckLabSync; // r6-sync: SYNC, MASTER and INST DOUBLES (widget/decklabsync.h)
 class DeckLabStemPads;
 class DeckLabRail;
 class DeckLabSettingsPage;
@@ -313,7 +314,11 @@ class WDeckLab : public QWidget, public WBaseWidget {
         bool keylock = false;
         bool slip = false; // r4-decks: SLIP in MORE
         bool synced = false; // sync lock: the SYNC button is lit
-        bool feedback = false;
+        // r6-sync: MASTER (lit, and whether it can act), and the deck a SYNC
+        // hold or INST DOUBLES would copy (0: none).
+        bool master = false;
+        bool canMaster = false;
+        int doubles = 0;
         double size = -1;
         bool operator==(const TransportState&) const = default;
     };
@@ -327,6 +332,8 @@ class WDeckLab : public QWidget, public WBaseWidget {
         QPushButton* quantize = nullptr;
         QPushButton* keylock = nullptr;
         QPushButton* slip = nullptr;
+        QPushButton* master = nullptr; // r6-sync: MORE
+        QPushButton* doubles = nullptr; // r6-sync: MORE
         QPushButton* more = nullptr;
         TransportState shown;
     };
@@ -413,6 +420,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     std::array<DeckLabPadBlock*, 2> m_sidePads{};
     std::array<DeckLabPadBlock*, 4> m_cardPads{};
     DeckLabDeckTools* m_deckTools = nullptr; // r5-decks
+    std::unique_ptr<DeckLabSync> m_sync; // r6-sync
     bool m_sideBySideWaveforms = false;
     double m_linkedZoom = 0;
     bool m_zoomPending = false;
@@ -421,7 +429,6 @@ class WDeckLab : public QWidget, public WBaseWidget {
     // phrase bands drawn along each overview. Empty for every other track.
     std::array<decklab::PhraseMapPointer, 4> m_phraseMaps{};
     std::array<QPointer<DeckLabPhraseBands>, 4> m_phraseBands{};
-    std::array<qint64, 4> m_syncFeedbackUntil{};
     std::array<QPushButton*, 4> m_loadButtons{};
     DeckLabSampler* m_sampler = nullptr; // r4-sampler: the Sampler page
     std::array<QWidget*, 4> m_deckWaveforms{};

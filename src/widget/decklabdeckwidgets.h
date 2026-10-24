@@ -104,11 +104,10 @@ struct DeckLabStripState {
     bool keyMatched = false;
     QString remaining;
     bool endWarning = false;
+    // r6-sync: the tempo master (Mixxx's sync leader) and BEAT SYNC (sync
+    // lock), as a CDJ's MASTER and SYNC indicators. No one-shot MATCHED.
     bool master = false;
     bool sync = false;
-    // A one-shot SYNC tap just matched tempo and beat: the SYNC lamp reads
-    // MATCHED for a moment. Sync lock itself is `sync`.
-    bool matched = false;
     bool pfl = false;
     bool slip = false;
     bool keylock = false;

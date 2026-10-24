@@ -1790,6 +1790,7 @@ add_library(
   src/widget/decklabkeysheet.cpp
   src/widget/decklabgridmode.cpp
   src/widget/decklabdecktools.cpp
+  src/widget/decklabsync.cpp
   src/widget/decklabstempads.cpp
   src/widget/decklablabfx.cpp
   src/widget/decklablanes.cpp
