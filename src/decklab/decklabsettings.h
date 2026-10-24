@@ -119,6 +119,7 @@ class DeckLabSettingsPage : public QWidget {
     // Decks
     decklab::ui::ChoiceRow* m_layout = nullptr;
     decklab::ui::ChoiceRow* m_deckChoice = nullptr;
+    decklab::ui::ChoiceRow* m_playStart = nullptr; // r6-playstart: [DeckLab] PlayStartAlign
     decklab::ui::SwitchRow* m_quantize = nullptr;
     decklab::ui::SwitchRow* m_keylock = nullptr;
     decklab::ui::SwitchRow* m_slip = nullptr;

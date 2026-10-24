@@ -57,6 +57,7 @@
 #include "effects/effectsmanager.h"
 #include "effects/effectchain.h"
 #include "effects/effectslot.h"
+#include "engine/decklabplaystart.h" // r6-playstart
 #include "library/basetracktablemodel.h"
 #include "library/decklabknob.h"
 #include "library/library.h"
@@ -696,6 +697,10 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     setMinimumSize(800, 480);
     m_clock.start();
     m_sideBySideWaveforms = m_config->getValue(ConfigKey("[DeckLab]", "WaveformLayout"), 0) == 1;
+    // r6-playstart: PLAY starts exactly where the deck is (CDJ) unless the DJ
+    // chose otherwise in Settings; live, and kept across a skin rebuild.
+    ControlObject::set(decklab::playStartAlignControlKey(),
+            static_cast<double>(decklab::nativePlayStartAlign(m_config)));
     for (const auto& name : {"active", "browse_press", "browse_back", "browse_sources", "tool_request", "tool_serial", "tools_ready", "layout_decks"}) {
         createControl(kNative, QString::fromLatin1(name));
     }

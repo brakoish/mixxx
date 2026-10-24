@@ -1,11 +1,14 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <string>
 
 #include "control/controlobject.h"
 #include "engine/controls/bpmcontrol.h"
+#include "engine/decklabplaystart.h"
 #include "engine/sync/synccontrol.h"
 #include "mixer/basetrackplayer.h"
 #include "preferences/usersettings.h"
@@ -90,6 +93,34 @@ class EngineSyncTest : public MockedEngineBackendTest {
     void assertNoLeader() {
         EXPECT_EQ(NULL, m_pEngineSync->getLeaderChannel());
         EXPECT_EQ(NULL, m_pEngineSync->getLeaderSyncable());
+    }
+
+    // Deck Lab (decklabplaystart.h): deck 1 at 130 BPM has played three
+    // buffers; deck 2 at 100 BPM waits paused at 0:00, on a beat. Both are
+    // quantized, so an aligned start moves deck 2 off 0:00.
+    void playDeckOneOverPausedDeckTwo() {
+        m_pTrack1->trySetBeats(mixxx::Beats::fromConstTempo(
+                m_pTrack1->getSampleRate(), mixxx::audio::kStartFramePos, mixxx::Bpm(130)));
+        m_pTrack2->trySetBeats(mixxx::Beats::fromConstTempo(
+                m_pTrack2->getSampleRate(), mixxx::audio::kStartFramePos, mixxx::Bpm(100)));
+        ControlObject::set(ConfigKey(m_sGroup1, "quantize"), 1.0);
+        ControlObject::set(ConfigKey(m_sGroup2, "quantize"), 1.0);
+        ProcessBuffer();
+        ControlObject::set(ConfigKey(m_sGroup1, "play"), 1.0);
+        ProcessBuffer();
+        ProcessBuffer();
+        ProcessBuffer();
+        ASSERT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup2, "beat_distance")));
+        ASSERT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup2, "play")));
+    }
+
+    // Pause deck 2 and put it back on 0:00.
+    void parkDeckTwo() {
+        ControlObject::set(ConfigKey(m_sGroup2, "play"), 0.0);
+        ProcessBuffer();
+        ControlObject::set(ConfigKey(m_sGroup2, "playposition"), 0.0);
+        ProcessBuffer();
+        ASSERT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup2, "beat_distance")));
     }
 
   private:
@@ -3185,4 +3216,299 @@ TEST_F(EngineSyncTest, DISABLED_KeepCorrectFactorOnLoad) {
     EXPECT_NEAR(getRateSliderValue(1.0574),
             ControlObject::get(ConfigKey(m_sGroup2, "rate")),
             0.005);
+}
+
+// Deck Lab: "PLAY starts" (decklabplaystart.h). Mode 0 is upstream Mixxx: a
+// quantized deck starts on the beat of another playing deck. Mode 1 (the
+// native Deck Lab default) starts exactly where the deck is unless it syncs.
+namespace {
+
+const ConfigKey kPlayStartAlign = decklab::playStartAlignControlKey();
+// One 1024-sample buffer of a 100 BPM track at 44.1 kHz, in beats.
+constexpr double kOneBufferAt100Bpm = 0.019349962207105064;
+
+double beatDistance(const QString& group) {
+    return ControlObject::get(ConfigKey(group, "beat_distance"));
+}
+
+// The distance of a beat-fraction difference to a whole number of beats.
+double phaseError(double difference) {
+    const double wrapped = difference - std::floor(difference);
+    return std::min(wrapped, 1.0 - wrapped);
+}
+
+// True if a beat of `group` lands on a beat of `reference`: their last beats
+// or their next beats happen at the same time.
+bool beatsAligned(const QString& reference, const QString& group) {
+    const double bpmReference = ControlObject::get(ConfigKey(reference, "bpm"));
+    const double bpm = ControlObject::get(ConfigKey(group, "bpm"));
+    const double distanceReference = beatDistance(reference);
+    const double distance = beatDistance(group);
+    const double lastBeats = distanceReference * bpm / bpmReference;
+    const double nextBeats = 1.0 - (1.0 - distanceReference) * bpm / bpmReference;
+    return phaseError(distance - lastBeats) < 1e-9 || phaseError(distance - nextBeats) < 1e-9;
+}
+
+} // namespace
+
+TEST_F(EngineSyncTest, PlayStartMixxxAlignsUnsyncedDeckToPlayingDeck) {
+    // The engine default is upstream's: nothing in the engine writes 1.
+    EXPECT_DOUBLE_EQ(0.0, ControlObject::get(kPlayStartAlign));
+    playDeckOneOverPausedDeckTwo();
+
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+
+    // Deck 2 was moved off 0:00 onto deck 1's beat.
+    EXPECT_GT(std::abs(beatDistance(m_sGroup2) - kOneBufferAt100Bpm), 0.01);
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+}
+
+TEST_F(EngineSyncTest, PlayStartSyncLockOnlyKeepsPlayheadOfUnsyncedDeck) {
+    ControlObject::set(kPlayStartAlign, 1.0);
+    playDeckOneOverPausedDeckTwo();
+
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+
+    // Exactly one buffer after 0:00: no phase seek.
+    EXPECT_DOUBLE_EQ(kOneBufferAt100Bpm, beatDistance(m_sGroup2));
+    EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
+
+    // The start's exact flag never reaches a later seek: a quantized seek
+    // while playing still lands on deck 1's beat, as in Mixxx.
+    ControlObject::set(ConfigKey(m_sGroup2, "playposition"), 0.5);
+    ProcessBuffer();
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+
+    // The setting applies live: back to Mixxx's start.
+    parkDeckTwo();
+    ControlObject::set(kPlayStartAlign, 0.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+}
+
+TEST_F(EngineSyncTest, PlayStartSyncLockOnlyAlignsSyncFollower) {
+    ControlObject::set(kPlayStartAlign, 1.0);
+    ControlObject::set(ConfigKey(m_sGroup1, "sync_enabled"), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "sync_enabled"), 1.0);
+    playDeckOneOverPausedDeckTwo();
+    ASSERT_TRUE(isSoftLeader(m_sGroup1));
+    ASSERT_TRUE(isFollower(m_sGroup2));
+
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+
+    // Sync lock lines the follower up on start, as before.
+    EXPECT_DOUBLE_EQ(130.0, ControlObject::get(ConfigKey(m_sGroup2, "bpm")));
+    EXPECT_GT(std::abs(beatDistance(m_sGroup2) - kOneBufferAt100Bpm), 0.01);
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+}
+
+TEST_F(EngineSyncTest, PlayStartSyncLockOnlyAlignsSyncLeader) {
+    ControlObject::set(kPlayStartAlign, 1.0);
+    ControlObject::set(ConfigKey(m_sGroup1, "sync_enabled"), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "sync_enabled"), 1.0);
+    playDeckOneOverPausedDeckTwo();
+    // Deck 2, paused, takes the lead; deck 1 follows its tempo.
+    ControlObject::set(ConfigKey(m_sGroup2, "sync_leader"), 1.0);
+    ProcessBuffer();
+    ASSERT_TRUE(isSoftLeader(m_sGroup2));
+    ASSERT_TRUE(isFollower(m_sGroup1));
+    ASSERT_DOUBLE_EQ(0.0, beatDistance(m_sGroup2));
+
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+
+    // A leader starting while a synced deck plays still starts in phase.
+    EXPECT_GT(std::abs(beatDistance(m_sGroup2) - kOneBufferAt100Bpm), 0.01);
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+}
+
+TEST_F(EngineSyncTest, PlayStartSyncLockOnlyKeepsExplicitPhaseRequests) {
+    ControlObject::set(kPlayStartAlign, 1.0);
+    playDeckOneOverPausedDeckTwo();
+
+    // PLAY and beatsync_phase in the same buffer.
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "beatsync_phase"), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "beatsync_phase"), 0.0);
+    ProcessBuffer();
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+
+    // PLAY then beatsync, a controller's double-press SYNC: tempo and phase.
+    parkDeckTwo();
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "beatsync"), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "beatsync"), 0.0);
+    ProcessBuffer();
+    EXPECT_DOUBLE_EQ(130.0, ControlObject::get(ConfigKey(m_sGroup2, "bpm")));
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+    EXPECT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup2, "sync_enabled")));
+}
+
+TEST_F(EngineSyncTest, PlayStartSyncLockOnlySyncTapWhilePausedAlignsNextStart) {
+    ControlObject::set(kPlayStartAlign, 1.0);
+    playDeckOneOverPausedDeckTwo();
+
+    // The touch SYNC tap (beatsync_tempo + beatsync_phase) on the paused deck:
+    // the tempo matches now, the phase on PLAY.
+    ControlObject::set(ConfigKey(m_sGroup2, "beatsync_tempo"), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "beatsync_tempo"), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "beatsync_phase"), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "beatsync_phase"), 0.0);
+    ProcessBuffer();
+    EXPECT_DOUBLE_EQ(130.0, ControlObject::get(ConfigKey(m_sGroup2, "bpm")));
+    EXPECT_DOUBLE_EQ(0.0, beatDistance(m_sGroup2));
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_GT(std::abs(beatDistance(m_sGroup2) - kOneBufferAt100Bpm * 130 / 100), 0.01);
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+
+    // The tap was used by that start: the next one is exact again.
+    parkDeckTwo();
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_NEAR(kOneBufferAt100Bpm * 130 / 100, beatDistance(m_sGroup2), 1e-12);
+    EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
+
+    // A controller's single SYNC press (beatsync) on the paused deck.
+    parkDeckTwo();
+    ControlObject::set(ConfigKey(m_sGroup2, "beatsync"), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "beatsync"), 0.0);
+    ProcessBuffer();
+    EXPECT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup2, "sync_enabled")));
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+
+    // A tempo-only tap counts as a SYNC tap too.
+    parkDeckTwo();
+    ControlObject::set(ConfigKey(m_sGroup2, "beatsync_tempo"), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "beatsync_tempo"), 0.0);
+    ProcessBuffer();
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+}
+
+TEST_F(EngineSyncTest, PlayStartMixxxSyncTapWhilePausedAlignsNextStart) {
+    // Upstream: the quantized start supplies the phase a paused tap drops.
+    playDeckOneOverPausedDeckTwo();
+    ControlObject::set(ConfigKey(m_sGroup2, "beatsync_tempo"), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "beatsync_tempo"), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "beatsync_phase"), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "beatsync_phase"), 0.0);
+    ProcessBuffer();
+    EXPECT_DOUBLE_EQ(0.0, beatDistance(m_sGroup2));
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+
+    parkDeckTwo();
+    ControlObject::set(ConfigKey(m_sGroup2, "beatsync"), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "beatsync"), 0.0);
+    ProcessBuffer();
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+}
+
+TEST_F(EngineSyncTest, PlayStartSyncLockOnlySyncTapIsClearedByLoadAndEject) {
+    ControlObject::set(kPlayStartAlign, 1.0);
+    playDeckOneOverPausedDeckTwo();
+
+    // A tap on the old track does not line up a newly loaded one.
+    ControlObject::set(ConfigKey(m_sGroup2, "beatsync_phase"), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "beatsync_phase"), 0.0);
+    ProcessBuffer();
+    m_pMixerDeck2->loadFakeTrack(false, 100.0);
+    ProcessBuffer();
+    ASSERT_DOUBLE_EQ(100.0, ControlObject::get(ConfigKey(m_sGroup2, "bpm")));
+    ASSERT_DOUBLE_EQ(0.0, beatDistance(m_sGroup2));
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_DOUBLE_EQ(kOneBufferAt100Bpm, beatDistance(m_sGroup2));
+    EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
+
+    // Nor does a tap made before an eject.
+    parkDeckTwo();
+    ControlObject::set(ConfigKey(m_sGroup2, "beatsync_phase"), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "beatsync_phase"), 0.0);
+    ProcessBuffer();
+    m_pChannel2->getEngineBuffer()->ejectTrack();
+    ProcessBuffer();
+    m_pMixerDeck2->loadFakeTrack(false, 100.0);
+    ProcessBuffer();
+    ASSERT_DOUBLE_EQ(0.0, beatDistance(m_sGroup2));
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_DOUBLE_EQ(kOneBufferAt100Bpm, beatDistance(m_sGroup2));
+    EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
+}
+
+TEST_F(EngineSyncTest, PlayStartSyncLockOnlyHotCuePreviewStartsOnTheHotCue) {
+    ControlObject::set(kPlayStartAlign, 1.0);
+    auto pHotCue2Activate = std::make_unique<ControlProxy>(m_sGroup2, "hotcue_1_activate");
+    m_pTrack2->trySetBeats(mixxx::Beats::fromConstTempo(
+            m_pTrack2->getSampleRate(), mixxx::audio::kStartFramePos, mixxx::Bpm(100)));
+    ControlObject::set(ConfigKey(m_sGroup2, "quantize"), 1.0);
+    ProcessBuffer();
+    // A hot cue at 0:00, set while paused.
+    pHotCue2Activate->set(1.0);
+    ProcessBuffer();
+    pHotCue2Activate->set(0.0);
+    ProcessBuffer();
+
+    // One deck only: paused between beats (2.3 beats in), a preview starts on
+    // the hot cue, not on the paused playhead's phase.
+    ControlObject::set(ConfigKey(m_sGroup2, "playposition"), 0.138);
+    ProcessBuffer();
+    ASSERT_NEAR(0.3, beatDistance(m_sGroup2), 1e-9);
+    pHotCue2Activate->set(1.0);
+    ProcessBuffer();
+    EXPECT_DOUBLE_EQ(kOneBufferAt100Bpm, beatDistance(m_sGroup2));
+    pHotCue2Activate->set(0.0);
+    ProcessBuffer();
+    EXPECT_DOUBLE_EQ(0.0, beatDistance(m_sGroup2));
+
+    // With deck 1 playing at 130 BPM the preview still starts on the hot cue.
+    m_pTrack1->trySetBeats(mixxx::Beats::fromConstTempo(
+            m_pTrack1->getSampleRate(), mixxx::audio::kStartFramePos, mixxx::Bpm(130)));
+    ControlObject::set(ConfigKey(m_sGroup1, "play"), 1.0);
+    ProcessBuffer();
+    ProcessBuffer();
+    ProcessBuffer();
+    pHotCue2Activate->set(1.0);
+    ProcessBuffer();
+    EXPECT_DOUBLE_EQ(kOneBufferAt100Bpm, beatDistance(m_sGroup2));
+    EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
+    pHotCue2Activate->set(0.0);
+    ProcessBuffer();
+    EXPECT_DOUBLE_EQ(0.0, beatDistance(m_sGroup2));
+}
+
+TEST_F(EngineSyncTest, PlayStartMixxxHotCuePreviewKeepsThePausedPhase) {
+    // Upstream, one deck: a quantized preview from pause keeps the phase the
+    // paused playhead had, so it starts away from the hot cue.
+    auto pHotCue2Activate = std::make_unique<ControlProxy>(m_sGroup2, "hotcue_1_activate");
+    m_pTrack2->trySetBeats(mixxx::Beats::fromConstTempo(
+            m_pTrack2->getSampleRate(), mixxx::audio::kStartFramePos, mixxx::Bpm(100)));
+    ControlObject::set(ConfigKey(m_sGroup2, "quantize"), 1.0);
+    ProcessBuffer();
+    pHotCue2Activate->set(1.0);
+    ProcessBuffer();
+    pHotCue2Activate->set(0.0);
+    ProcessBuffer();
+
+    ControlObject::set(ConfigKey(m_sGroup2, "playposition"), 0.138);
+    ProcessBuffer();
+    ASSERT_NEAR(0.3, beatDistance(m_sGroup2), 1e-9);
+    pHotCue2Activate->set(1.0);
+    ProcessBuffer();
+    EXPECT_NEAR(0.3 + kOneBufferAt100Bpm, beatDistance(m_sGroup2), 1e-9);
+    pHotCue2Activate->set(0.0);
+    ProcessBuffer();
+    EXPECT_DOUBLE_EQ(0.0, beatDistance(m_sGroup2));
 }

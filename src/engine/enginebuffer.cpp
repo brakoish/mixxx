@@ -18,6 +18,7 @@
 #include "engine/controls/loopingcontrol.h"
 #include "engine/controls/quantizecontrol.h"
 #include "engine/controls/ratecontrol.h"
+#include "engine/decklabplaystart.h"
 #include "engine/enginemixer.h"
 #include "engine/readaheadmanager.h"
 #include "engine/sync/enginesync.h"
@@ -86,6 +87,7 @@ EngineBuffer::EngineBuffer(const QString& group,
           m_bSlipEnabledProcessing(false),
           m_slipModeState(SlipModeState::Disabled),
           m_quantize(ControlFlag::AllowMissingOrInvalid),
+          m_playStartAlign(ControlFlag::AllowMissingOrInvalid),
           m_pRepeat(nullptr),
           m_startButton(nullptr),
           m_endButton(nullptr),
@@ -93,6 +95,9 @@ EngineBuffer::EngineBuffer(const QString& group,
           m_iSeekPhaseQueued(0),
           m_iEnableSyncQueued(SYNC_REQUEST_NONE),
           m_iSyncModeQueued(static_cast<int>(SyncMode::Invalid)),
+          m_bPrimaryDeck(PlayerManager::isDeckGroup(group)),
+          m_iPlayStartExact(0),
+          m_iPhaseOnNextStart(0),
           m_bPlayAfterLoading(false),
           m_channelCount(mixxx::kEngineChannelOutputCount),
           m_pCrossfadeBuffer(SampleUtil::alloc(
@@ -195,6 +200,9 @@ EngineBuffer::EngineBuffer(const QString& group,
     QuantizeControl* pQuantize_control = new QuantizeControl(group, pConfig);
     addControl(pQuantize_control);
     m_quantize = PollingControlProxy(ConfigKey(group, "quantize"));
+    // Deck Lab: EngineMixer creates it before any deck.
+    m_playStartAlign = PollingControlProxy(
+            decklab::playStartAlignControlKey(), ControlFlag::AllowMissingOrInvalid);
 
     // Create the Loop Controller
     m_pLoopingControl = new LoopingControl(group, pConfig);
@@ -431,6 +439,20 @@ void EngineBuffer::requestSyncPhase() {
     m_iSeekPhaseQueued = 1;
 }
 
+void EngineBuffer::requestPhaseOnNextStart() {
+    // A tap while playing is applied at once (requestSyncPhase or sync lock).
+    if (!m_playButton->toBool()) {
+        m_iPhaseOnNextStart = 1;
+    }
+}
+
+bool EngineBuffer::alignsPlayStart() const {
+    // Samplers and preview decks, and decks that sync, keep Mixxx's start.
+    return decklab::playStartAlignFromValue(m_playStartAlign.get()) ==
+            decklab::PlayStartAlign::Quantize ||
+            !m_bPrimaryDeck || m_pSyncControl->isSynchronized();
+}
+
 void EngineBuffer::requestEnableSync(bool enabled) {
     // If we're not playing, the queued event won't get processed so do it now.
     if (m_playButton->get() == 0.0) {
@@ -598,6 +620,8 @@ void EngineBuffer::slotTrackLoaded(TrackPointer pTrack,
     m_pReplayGain->set(pTrack->getReplayGain().getRatio());
 
     m_queuedSeek.setValue(kNoQueuedSeek);
+    // Deck Lab: a SYNC tap belongs to the track it was made on.
+    m_iPhaseOnNextStart = 0;
 
     // Reset the pitch value for the new track.
     m_pause.unlock();
@@ -664,6 +688,7 @@ void EngineBuffer::ejectTrack() {
     m_pReplayGain->set(0.0);
 
     m_queuedSeek.setValue(kNoQueuedSeek);
+    m_iPhaseOnNextStart = 0;
 
     m_pause.unlock();
 
@@ -817,12 +842,19 @@ void EngineBuffer::slotControlPlayRequest(double v) {
     bool verifiedPlay = updateIndicatorsAndModifyPlay(v > 0.0, oldPlay);
 
     if (!oldPlay && verifiedPlay) {
+        // Deck Lab: every start takes a pending SYNC tap, used or not.
+        const bool phaseRequested = m_iPhaseOnNextStart.fetchAndStoreRelaxed(0) != 0;
         if (m_quantize.toBool()
 #ifdef __VINYLCONTROL__
                 && m_pVinylControlControl && !m_pVinylControlControl->isEnabled()
 #endif
         ) {
-            requestSyncPhase();
+            if (phaseRequested || alignsPlayStart()) {
+                requestSyncPhase();
+            } else {
+                // CDJ: start exactly here, or at the cue a preview seeks to.
+                m_iPlayStartExact = 1;
+            }
         }
     }
 
@@ -1359,6 +1391,11 @@ void EngineBuffer::processSyncRequests() {
 void EngineBuffer::processSeek(bool paused) {
     m_previousBufferSeek = false;
 
+    // Deck Lab: taken before any early return, so it only covers the seek
+    // queued with this PLAY start (hot cue or cue preview from pause).
+    const bool exactStart = m_iPlayStartExact.fetchAndStoreRelaxed(0) != 0 &&
+            !m_pSyncControl->isSynchronized();
+
     const QueuedSeek queuedSeek = m_queuedSeek.getValue();
 
     SeekRequests seekType = queuedSeek.seekType;
@@ -1377,7 +1414,7 @@ void EngineBuffer::processSeek(bool paused) {
             position = m_playPos;
             break;
         case SEEK_STANDARD:
-            if (m_quantize.toBool()) {
+            if (m_quantize.toBool() && !exactStart) {
                 seekType |= SEEK_PHASE;
             }
             // new position was already set above

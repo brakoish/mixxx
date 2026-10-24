@@ -139,6 +139,10 @@ class EngineBuffer : public EngineObject {
     // Queues a new seek position. Use SEEK_EXACT or SEEK_STANDARD as seekType
     void queueNewPlaypos(mixxx::audio::FramePos newpos, enum SeekRequest seekType);
     void requestSyncPhase();
+    /// Deck Lab: a SYNC tap (beatsync, beatsync_phase, beatsync_tempo) on a
+    /// paused deck. The next PLAY start is phase-aligned even when Settings
+    /// say PLAY starts exactly where it is (decklabplaystart.h).
+    void requestPhaseOnNextStart();
     void requestEnableSync(bool enabled);
     void requestSyncMode(SyncMode mode);
 
@@ -312,6 +316,8 @@ class EngineBuffer : public EngineObject {
 
     void processSyncRequests();
     void processSeek(bool paused);
+    /// Deck Lab: whether a quantized PLAY start phase-aligns this deck.
+    bool alignsPlayStart() const;
     // For debugging / testing -- returns true if the previous buffer call resulted in a seek.
     FRIEND_TEST(EngineSyncTest, FollowerUserTweakPreservedInSyncDisable);
     bool previousBufferSeek() const {
@@ -431,6 +437,8 @@ class EngineBuffer : public EngineObject {
     ControlPushButton* m_pSlipButton;
 
     PollingControlProxy m_quantize;
+    // Deck Lab: [DeckLab],play_start_align (decklabplaystart.h).
+    PollingControlProxy m_playStartAlign;
     ControlPotmeter* m_playposSlider;
     ControlProxy* m_pSampleRate;
     ControlProxy* m_pKeylockEngine;
@@ -481,6 +489,14 @@ class EngineBuffer : public EngineObject {
     QAtomicInt m_iSeekPhaseQueued;
     QAtomicInt m_iEnableSyncQueued;
     QAtomicInt m_iSyncModeQueued;
+    // Deck Lab (decklabplaystart.h). Only main decks start exactly.
+    const bool m_bPrimaryDeck;
+    // Set by a PLAY start that must not be phase-seeked. The next processSeek
+    // takes it before anything else, so it never reaches a later quantized
+    // seek (a hot cue, loop or beat jump while playing).
+    QAtomicInt m_iPlayStartExact;
+    // Armed by a SYNC tap while paused; the next PLAY start takes it.
+    QAtomicInt m_iPhaseOnNextStart;
     ControlValueAtomic<QueuedSeek> m_queuedSeek;
     bool m_previousBufferSeek = false;
 

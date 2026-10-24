@@ -353,6 +353,9 @@ class EngineMixer : public QObject, public AudioSource {
     // Mix two Mono channels. This is useful for outdoor gigs
     std::unique_ptr<ControlObject> m_pMainMonoMixdown;
     std::unique_ptr<ControlObject> m_pMicMonitorMode;
+    // Deck Lab: [DeckLab],play_start_align (decklabplaystart.h). Created
+    // before any deck so every EngineBuffer binds to it.
+    std::unique_ptr<ControlObject> m_pPlayStartAlign;
 
     // TODO (Swiftb0y): remove volatile (probably supposed to be std::atomic instead).
     volatile bool m_bBusOutputConnected[3];
