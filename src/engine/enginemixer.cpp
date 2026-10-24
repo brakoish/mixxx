@@ -11,6 +11,7 @@
 #include "effects/effectsmanager.h"
 #include "engine/channelmixer.h"
 #include "engine/channels/enginechannel.h"
+#include "engine/decklabplaystart.h"
 #include "engine/effects/engineeffectsmanager.h"
 #include "engine/enginebuffer.h"
 #include "engine/enginedelay.h"
@@ -149,7 +150,15 @@ EngineMixer::EngineMixer(UserSettingsPointer pConfig,
           m_pMainMonoMixdown(std::make_unique<ControlObject>(
                   ConfigKey(group, "mono_mixdown"), true, false, true)),
           m_pMicMonitorMode(std::make_unique<ControlObject>(
-                  ConfigKey(group, "talkover_mix"), true, false, true)) {
+                  ConfigKey(group, "talkover_mix"), true, false, true)),
+          m_pPlayStartAlign(std::make_unique<ControlObject>(
+                  decklab::playStartAlignControlKey(),
+                  false,
+                  false,
+                  false,
+                  static_cast<double>(pConfig->getValue(
+                          decklab::playStartAlignConfigKey(),
+                          static_cast<int>(decklab::PlayStartAlign::Quantize))))) {
     pEffectsManager->registerInputChannel(m_mainHandle);
     pEffectsManager->registerInputChannel(m_headphoneHandle);
     pEffectsManager->registerOutputChannel(m_mainHandle);

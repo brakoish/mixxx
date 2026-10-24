@@ -139,6 +139,15 @@ class EngineBuffer : public EngineObject {
     // Queues a new seek position. Use SEEK_EXACT or SEEK_STANDARD as seekType
     void queueNewPlaypos(mixxx::audio::FramePos newpos, enum SeekRequest seekType);
     void requestSyncPhase();
+    /// Deck Lab: a SYNC tap (beatsync, beatsync_phase, beatsync_tempo) on a
+    /// paused deck. The next PLAY start is phase-aligned even when Settings
+    /// say PLAY starts exactly where it is (decklabplaystart.h). An explicit
+    /// phase request (beatsync_phase) needs no Quantize; the others do.
+    void requestPhaseOnNextStart(bool explicitPhase);
+    /// Deck Lab: CueControl calls it just before a cue or hot cue preview is
+    /// released back to pause. The SYNC tap that the preview's start used
+    /// applies to the next start again.
+    void restorePhaseAfterPreview();
     void requestEnableSync(bool enabled);
     void requestSyncMode(SyncMode mode);
 
@@ -312,6 +321,10 @@ class EngineBuffer : public EngineObject {
 
     void processSyncRequests();
     void processSeek(bool paused);
+    /// Deck Lab: whether a quantized PLAY start phase-aligns this deck.
+    bool alignsPlayStart() const;
+    /// Deck Lab: whether the SYNC tap a PLAY start took lines this deck up.
+    bool syncTapLinesUp(int syncTap) const;
     // For debugging / testing -- returns true if the previous buffer call resulted in a seek.
     FRIEND_TEST(EngineSyncTest, FollowerUserTweakPreservedInSyncDisable);
     bool previousBufferSeek() const {
@@ -431,6 +444,8 @@ class EngineBuffer : public EngineObject {
     ControlPushButton* m_pSlipButton;
 
     PollingControlProxy m_quantize;
+    // Deck Lab: [DeckLab],play_start_align (decklabplaystart.h).
+    PollingControlProxy m_playStartAlign;
     ControlPotmeter* m_playposSlider;
     ControlProxy* m_pSampleRate;
     ControlProxy* m_pKeylockEngine;
@@ -481,6 +496,19 @@ class EngineBuffer : public EngineObject {
     QAtomicInt m_iSeekPhaseQueued;
     QAtomicInt m_iEnableSyncQueued;
     QAtomicInt m_iSyncModeQueued;
+    // Deck Lab (decklabplaystart.h). Only main decks start exactly.
+    const bool m_bPrimaryDeck;
+    // Set by a PLAY start that must not be phase-seeked. The next processSeek
+    // takes it before anything else, so it never reaches a later quantized
+    // seek (a hot cue, loop or beat jump while playing).
+    QAtomicInt m_iPlayStartExact;
+    // Armed by a SYNC tap while paused (kSyncTap* bits, enginebuffer.cpp);
+    // the next PLAY start takes it.
+    QAtomicInt m_iPhaseOnNextStart;
+    // The SYNC tap a preview's start took, until the preview ends: released
+    // back to pause it is armed again; ended any other way (latched into play,
+    // goto and play, a new track) it has been used.
+    QAtomicInt m_iPhaseHeldByPreview;
     ControlValueAtomic<QueuedSeek> m_queuedSeek;
     bool m_previousBufferSeek = false;
 

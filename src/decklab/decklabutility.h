@@ -33,6 +33,9 @@ class UtilityRow : public TouchButton, public KnobTarget {
     void setLabel(const QString& label);
     /// Muted second line (what the setting means).
     void setHint(const QString& hint);
+    QString hint() const {
+        return m_hint;
+    }
     /// Locked: the label dims and the reason replaces the hint; input is ignored.
     void setReason(const QString& reason);
     QString reason() const {

@@ -16,6 +16,7 @@
 #include "decklab/decklabsystemui.h"
 #include "decklab/decklabui.h"
 #include "decklab/decklabutility.h"
+#include "engine/decklabplaystart.h"
 #include "moc_decklabsettings.cpp"
 #include "waveform/waveformwidgetfactory.h"
 #include "widget/decklabdeckwidgets.h"
@@ -229,6 +230,38 @@ void DeckLabSettingsPage::buildDecks(QWidget* content) {
         line->addWidget(stems);
         rows->addWidget(holder);
     }
+    // r6-playstart: does PLAY move the playhead onto another playing deck's
+    // beat (Mixxx) or start exactly where the deck is (CDJ)? Every deck, any
+    // controller; applied at once, no restart (decklabplaystart.h).
+    m_playStart = new ChoiceRow(tr("PLAY starts"), content, QStringLiteral("decklab-settings-play-start"),
+            QStringLiteral("decklab-play-start"));
+    m_playStart->addOption(tr("EXACT"), tr("Exactly where it is (CDJ)"),
+            static_cast<int>(decklab::PlayStartAlign::SyncLockOnly));
+    m_playStart->addOption(tr("ON BEAT"), tr("On the other deck's beat (Mixxx)"),
+            static_cast<int>(decklab::PlayStartAlign::Quantize));
+    // What still lines decks up when PLAY starts exactly. Sync lock and a
+    // controller's SYNC need Quantize for the phase (a touch SYNC does not).
+    m_playStart->setHint(tr("Quantize on: sync lock or SYNC before PLAY still lines up"));
+    const ConfigKey playStartControl = decklab::playStartAlignControlKey();
+    const auto showPlayStart = [this](double v) {
+        auto* model = m_playStart->model();
+        const QSignalBlocker blocker(model);
+        model->setCurrentIndex(std::max(0, model->findData(static_cast<int>(decklab::playStartAlignFromValue(v)))));
+        m_playStart->update();
+    };
+    showPlayStart(m_hooks.value ? m_hooks.value(playStartControl.group, playStartControl.item)
+                                : m_config->getValue(decklab::playStartAlignConfigKey(), 0));
+    if (m_hooks.watch) {
+        m_hooks.watch(playStartControl.group, playStartControl.item, showPlayStart);
+    }
+    connect(m_playStart->model(), qOverload<int>(&QComboBox::activated), this, [this, playStartControl](int index) {
+        const int align = m_playStart->model()->itemData(index).toInt();
+        m_config->setValue(decklab::playStartAlignConfigKey(), align);
+        if (m_hooks.set) {
+            m_hooks.set(playStartControl.group, playStartControl.item, align);
+        }
+    });
+    rows->addWidget(m_playStart);
     rows->addWidget(new SectionRule(tr("Per deck"), content));
     m_deckChoice = new ChoiceRow(tr("Deck"), content, QStringLiteral("decklab-settings-deck"),
             QStringLiteral("decklab-settings-deck-model"));
