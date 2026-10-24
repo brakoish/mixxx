@@ -5,17 +5,20 @@
 #include <rekordbox_pdb.h>
 
 #include <QDir>
+#include <QHash>
 #include <QMap>
 #include <QMessageBox>
 #include <QSet>
 #include <QSettings>
 #include <QString>
+#include <QStorageInfo>
 #include <QStringList>
 #include <QTextCodec>
 #include <QtDebug>
 #include <exception>
 
 #include "decklab/decklabphrase.h"
+#include "decklab/decklabusbname.h"
 #include "engine/engine.h"
 #include "library/dao/trackschema.h"
 #include "library/library.h"
@@ -69,47 +72,35 @@ QString findRekordboxPdbPath(const QString& devicePath) {
 #if defined(__LINUX__)
 const QString kDeckLabMediaRoot = QStringLiteral("/media/decklab");
 
-// udev escapes characters such as spaces in /dev/disk link names ("\x20").
-QString udevUnescape(const QString& name) {
-    QByteArray bytes = name.toUtf8();
-    QByteArray out;
-    for (int i = 0; i < bytes.size(); ++i) {
-        bool ok = false;
-        if (bytes[i] == '\\' && i + 3 < bytes.size() && bytes[i + 1] == 'x') {
-            const int value = bytes.mid(i + 2, 2).toInt(&ok, 16);
-            if (ok) {
-                out.append(static_cast<char>(value));
-                i += 3;
-                continue;
+// r5-polish: the friendly name Browse, the rail and Storage use for every
+// stick mounted at /media/decklab/<FS-UUID> ("DJ USB", never the UUID). The
+// name is also the device key, so it is unique among them.
+QHash<QString, QString> deckLabStickNames() {
+    QList<decklab::UsbNameSource> sources;
+    QStringList paths;
+    const bool testing = decklab::usbMediaRootsAreForTesting();
+    for (const QString& root : decklab::usbMediaRoots()) {
+        const QFileInfoList sticks = QDir(root).entryInfoList(QDir::AllDirs | QDir::NoDotAndDotDot, QDir::Name);
+        for (const QFileInfo& stick : sticks) {
+            decklab::UsbNameSource source;
+            source.id = stick.fileName();
+            // As Browse's findUsbSticks(): generated roots have no label and no size.
+            source.label = testing ? QString() : decklab::usbLabelForUuid(stick.fileName());
+            source.rekordbox = !findRekordboxPdbPath(stick.filePath()).isEmpty();
+            if (!testing) {
+                const QStorageInfo mount(stick.filePath());
+                source.bytes = mount.isValid() ? mount.bytesTotal() : -1;
             }
-        }
-        out.append(bytes[i]);
-    }
-    return QString::fromUtf8(out);
-}
-
-// Filesystem label of a stick mounted at /media/decklab/<FS-UUID>, read from
-// udev's /dev/disk links. Empty when unknown.
-QString deckLabVolumeLabel(const QString& mountPath) {
-    const QFileInfo mount(mountPath);
-    if (mount.absolutePath() != kDeckLabMediaRoot) {
-        return {};
-    }
-    const QString device =
-            QFileInfo(QDir(QStringLiteral("/dev/disk/by-uuid")), mount.fileName())
-                    .canonicalFilePath();
-    if (device.isEmpty()) {
-        return {};
-    }
-    const QDir labels(QStringLiteral("/dev/disk/by-label"));
-    const QStringList links = labels.entryList(
-            QDir::AllEntries | QDir::System | QDir::Hidden | QDir::NoDotAndDotDot);
-    for (const QString& link : links) {
-        if (QFileInfo(labels.filePath(link)).canonicalFilePath() == device) {
-            return udevUnescape(link).trimmed();
+            sources.append(source);
+            paths.append(stick.filePath());
         }
     }
-    return {};
+    QHash<QString, QString> names;
+    const QStringList friendly = decklab::usbNames(sources);
+    for (int index = 0; index < paths.size(); ++index) {
+        names.insert(paths.at(index), friendly.at(index));
+    }
+    return names;
 }
 #endif
 
@@ -272,7 +263,12 @@ QList<TreeItem*> findRekordboxDevices() {
     // To get devices on Linux, we look for directories under /media and
     // /run/media/$USER.
     QFileInfoList devices;
-
+    if (decklab::usbMediaRootsAreForTesting()) {
+        // Tests: only the generated stick folders.
+        for (const QString& root : decklab::usbMediaRoots()) {
+            devices += QDir(root).entryInfoList(QDir::AllDirs | QDir::NoDotAndDotDot, QDir::Name);
+        }
+    } else {
     // Add folders under /media to devices.
     devices += QDir(QStringLiteral("/media")).entryInfoList(QDir::AllDirs | QDir::NoDotAndDotDot);
 
@@ -289,18 +285,21 @@ QList<TreeItem*> findRekordboxDevices() {
     // Deck Lab mounts every stick read-only at /media/decklab/<FS-UUID>,
     // whatever the appliance user is called.
     devices += QDir(kDeckLabMediaRoot).entryInfoList(QDir::AllDirs | QDir::NoDotAndDotDot);
+    }
 
     QSet<QString> seenPaths;
     QSet<QString> names;
+    const QHash<QString, QString> stickNames = deckLabStickNames();
     foreach (QFileInfo device, devices) {
         if (seenPaths.contains(device.filePath())) {
             continue;
         }
         seenPaths.insert(device.filePath());
         if (!findRekordboxPdbPath(device.filePath()).isEmpty()) {
-            // Show the stick's label rather than its UUID mount folder. The
-            // name is also the device key, so it must stay unique.
-            QString name = deckLabVolumeLabel(device.filePath());
+            // r5-polish: shown by the stick's friendly name rather than its
+            // UUID mount folder. Only for display: the device is its path
+            // (RekordboxFeature::mergeDevices, the tables' device column).
+            QString name = stickNames.value(device.filePath());
             if (name.isEmpty() || names.contains(name)) {
                 name = device.fileName();
             }
@@ -864,9 +863,11 @@ void clearDeviceTables(QSqlDatabase& database, TreeItem* child) {
 
     int trackID = -1;
     int playlistID = kInvalidPlaylistId;
+    // r5-polish: a device is its mount path (its label is a display name).
+    const QString device = child->getData().toList().value(0).toString();
     QSqlQuery tracksQuery(database);
     tracksQuery.prepare("select id from " + kRekordboxLibraryTable + " where device=:device");
-    tracksQuery.bindValue(":device", child->getLabel());
+    tracksQuery.bindValue(":device", device);
 
     QSqlQuery deletePlaylistsQuery(database);
     deletePlaylistsQuery.prepare("delete from " + kRekordboxPlaylistsTable + " where id=:id");
@@ -877,7 +878,7 @@ void clearDeviceTables(QSqlDatabase& database, TreeItem* child) {
 
     if (!tracksQuery.exec()) {
         LOG_FAILED_QUERY(tracksQuery)
-                << "device:" << child->getLabel();
+                << "device:" << device;
     }
 
     while (tracksQuery.next()) {
@@ -917,11 +918,11 @@ void clearDeviceTables(QSqlDatabase& database, TreeItem* child) {
 
     QSqlQuery deleteTracksQuery(database);
     deleteTracksQuery.prepare("delete from " + kRekordboxLibraryTable + " where device=:device");
-    deleteTracksQuery.bindValue(":device", child->getLabel());
+    deleteTracksQuery.bindValue(":device", device);
 
     if (!deleteTracksQuery.exec()) {
         LOG_FAILED_QUERY(deleteTracksQuery)
-                << "device:" << child->getLabel();
+                << "device:" << device;
     }
 
     transaction.commit();
@@ -1670,6 +1671,55 @@ QString RekordboxFeature::formatRootViewHtml() const {
 void RekordboxFeature::refreshLibraryModels() {
 }
 
+QList<TreeItem*> RekordboxFeature::findDevices() {
+    return findRekordboxDevices();
+}
+
+void RekordboxFeature::mergeDevices(TreeItemModel* model,
+        std::vector<std::unique_ptr<TreeItem>> found,
+        const std::function<void(TreeItem*)>& removed) {
+    const auto pathOf = [](const TreeItem* item) {
+        return item->getData().toList().value(0).toString();
+    };
+    TreeItem* root = model->getRootItem();
+    // Backwards, so removing a row never skips the next one.
+    for (int deviceIndex = root->childRows() - 1; deviceIndex >= 0; --deviceIndex) {
+        TreeItem* child = root->child(deviceIndex);
+        bool present = false;
+        for (const auto& device : found) {
+            present |= pathOf(device.get()) == pathOf(child);
+        }
+        if (!present) {
+            // Device has since been unmounted (or another stick took its name).
+            if (removed) {
+                removed(child);
+            }
+            model->removeRows(deviceIndex, 1);
+        }
+    }
+    std::vector<std::unique_ptr<TreeItem>> childrenToAdd;
+    for (auto&& device : found) {
+        TreeItem* known = nullptr;
+        int knownRow = -1;
+        for (int deviceIndex = 0; deviceIndex < root->childRows(); ++deviceIndex) {
+            if (pathOf(root->child(deviceIndex)) == pathOf(device.get())) {
+                known = root->child(deviceIndex);
+                knownRow = deviceIndex;
+            }
+        }
+        if (!known) {
+            childrenToAdd.push_back(std::move(device));
+        } else if (known->getLabel() != device->getLabel()) {
+            // Same stick, new display name: keep the row and its read export.
+            known->setLabel(device->getLabel());
+            model->triggerRepaint(model->index(knownRow, 0));
+        }
+    }
+    if (!childrenToAdd.empty()) {
+        model->insertTreeItemRows(std::move(childrenToAdd), 0);
+    }
+}
+
 void RekordboxFeature::activate() {
     qDebug() << "RekordboxFeature::activate()";
 
@@ -1719,9 +1769,10 @@ void RekordboxFeature::activateChild(const QModelIndex& index) {
         qDebug() << "Parse Rekordbox Device DB: " << playlist;
 
         // Only value snapshots cross into the worker. GUI items stay on this thread.
+        // r5-polish: the tables key the device by its mount path.
         m_tracksFuture = QtConcurrent::run(parseDeviceDB,
                 static_cast<Library*>(parent())->dbConnectionPool(),
-                item->getLabel(),
+                playlist,
                 playlist);
         m_tracksFutureWatcher.setFuture(m_tracksFuture);
 
@@ -1761,46 +1812,11 @@ void RekordboxFeature::onRekordboxDevicesFound() {
             m_pSidebarModel->removeRows(0, root->childRows());
         }
     } else {
-        for (int deviceIndex = 0; deviceIndex < root->childRows(); deviceIndex++) {
-            TreeItem* child = root->child(deviceIndex);
-            bool removeChild = true;
-
-            for (const auto& pDeviceFound : foundDevices) {
-                if (pDeviceFound->getLabel() == child->getLabel()) {
-                    removeChild = false;
-                    break;
-                }
-            }
-
-            if (removeChild) {
-                // Device has since been unmounted, cleanup DB
-                clearDeviceTables(database, child);
-
-                m_pSidebarModel->removeRows(deviceIndex, 1);
-            }
-        }
-
-        std::vector<std::unique_ptr<TreeItem>> childrenToAdd;
-
-        for (auto&& pDeviceFound : foundDevices) {
-            bool addNewChild = true;
-            for (int deviceIndex = 0; deviceIndex < root->childRows(); deviceIndex++) {
-                TreeItem* child = root->child(deviceIndex);
-
-                if (pDeviceFound->getLabel() == child->getLabel()) {
-                    // This device already exists in the TreeModel, don't add or parse is again
-                    addNewChild = false;
-                }
-            }
-
-            if (addNewChild) {
-                childrenToAdd.push_back(std::move(pDeviceFound));
-            }
-        }
-
-        if (!childrenToAdd.empty()) {
-            m_pSidebarModel->insertTreeItemRows(std::move(childrenToAdd), 0);
-        }
+        // r5-polish: matched by mount path, so a renamed stick keeps its row
+        // and a different stick with the same name gets its own.
+        mergeDevices(m_pSidebarModel.get(), std::move(foundDevices), [&database](TreeItem* child) {
+            clearDeviceTables(database, child); // unmounted: clean up the tables
+        });
     }
 
     // calls a slot in the sidebarmodel such that 'isLoading' is removed from the feature title.

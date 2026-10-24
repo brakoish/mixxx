@@ -76,6 +76,8 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void showSampler(int sampler = 0);
     void openSource();
     void openCollection();
+    // r5-polish (tests): the Match bar as if the list held `count` matches.
+    void setMatchCountForTesting(int count);
     // r4-labfx: Lab FX out. Default: CUT (dry now); musical: RELEASE (the
     // tail rings out); mute: ECHO OUT (the track drops for a bar).
     void releaseEffects(bool musical = false, bool mute = false);

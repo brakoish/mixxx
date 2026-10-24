@@ -175,6 +175,12 @@ class Row : public TouchButton {
     QString titleText() const {
         return m_title;
     }
+    QString subtitleText() const {
+        return m_subtitle;
+    }
+    QStringList tags() const {
+        return m_tags;
+    }
 
   protected:
     void paintEvent(QPaintEvent* event) override;

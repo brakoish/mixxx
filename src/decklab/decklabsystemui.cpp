@@ -20,6 +20,7 @@
 #include "decklab/decklabsetupwizard.h"
 #include "decklab/decklabsystem.h"
 #include "decklab/decklabui.h"
+#include "decklab/decklabusbname.h"
 #include "moc_decklabsystemui.cpp"
 #include "util/cmdlineargs.h"
 
@@ -69,6 +70,13 @@ QWidget* DeckLabSystemUi::createSetupPanel(QWidget* parent) {
     auto* panel = new QWidget(parent);
     panel->setObjectName(QStringLiteral("decklab-setup-panel"));
     auto* layout = vbox(panel, 0, 0);
+    // r5-polish: after "Set up later", the way back, until setup is done.
+    m_finishSetup = new decklab::ui::ActionRow(tr("Finish setup"), panel, QStringLiteral("decklab-finish-setup"));
+    m_finishSetup->setHint(tr("Wi-Fi, time zone, controller and sound"));
+    m_finishSetup->setValue(tr("Not finished"));
+    m_finishSetup->setLamp(decklab::ui::Lamp::On);
+    connect(m_finishSetup.data(), &QPushButton::clicked, this, [this] { openFirstRun(); });
+    layout->addWidget(m_finishSetup);
     m_setupController = new decklab::ui::ActionRow(tr("Controller"), panel, QStringLiteral("decklab-setup-controller-state"));
     connect(m_setupController.data(), &QPushButton::clicked, this, [this] { openWizard(0); });
     layout->addWidget(m_setupController);
@@ -148,6 +156,10 @@ void DeckLabSystemUi::attach(DeckLabSystem* system) {
         updateSetupPanel();
         refreshRail();
     });
+    connect(system, &DeckLabSystem::firstRunChanged, this, [this] {
+        updateSetupPanel();
+        refreshRail();
+    });
     if (m_setupButton) {
         m_setupButton->setEnabled(true);
     }
@@ -167,11 +179,11 @@ void DeckLabSystemUi::attach(DeckLabSystem* system) {
         });
     }
     const bool smoke = !qEnvironmentVariableIsEmpty("DECKLAB_SMOKE_DIR");
-    if (!system->firstRunDone() && !CmdlineArgs::Instance().getSafeMode() && !smoke) {
+    if (system->firstRunDue() && !CmdlineArgs::Instance().getSafeMode() && !smoke) {
         // First run: welcome, Wi-Fi, time zone and Deck Setup once the
-        // surface has settled.
+        // surface has settled. r5-polish: not after "Set up later".
         QTimer::singleShot(1500, this, [this] {
-            if (!m_wizard && m_system && !m_system->firstRunDone()) {
+            if (!m_wizard && m_system && m_system->firstRunDue()) {
                 openFirstRun();
             }
         });
@@ -211,9 +223,11 @@ void DeckLabSystemUi::refreshRail() {
         const QJsonArray drives = rail.serviceOnline ? m_system->usbDrives() : QJsonArray();
         const QString directory = m_system->recordingDirectory();
         QStringList names;
-        for (const auto& value : drives) {
-            const QJsonObject drive = value.toObject();
-            const QString label = drive.value(QStringLiteral("label")).toString(tr("USB drive"));
+        // r5-polish: the stick's friendly name (never its UUID), as in Browse.
+        const QStringList friendly = decklab::usbNames(decklab::usbNameSources(drives));
+        for (int index = 0; index < drives.size(); ++index) {
+            const QJsonObject drive = drives.at(index).toObject();
+            const QString label = friendly.at(index);
             const bool readOnly = drive.value(QStringLiteral("read_only")).toBool(true);
             rail.usbRekordbox |= drive.value(QStringLiteral("rekordbox")).toBool();
             if (!readOnly && decklab::isPathOnMount(directory, drive.value(QStringLiteral("mount")).toString())) {
@@ -250,6 +264,7 @@ void DeckLabSystemUi::refreshRail() {
             }
         }
         rail.controllerNew = !m_offerKey.isEmpty();
+        rail.setupPending = !m_system->firstRunDone();
         if (rail.controllerNew && !m_offerName.isEmpty()) {
             rail.controllerName = m_offerName;
         }
@@ -388,9 +403,16 @@ DeckLabSetupWizard* DeckLabSystemUi::openFirstRun() {
     return wizard;
 }
 
+bool DeckLabSystemUi::setupPending() const {
+    return m_system && !m_system->firstRunDone();
+}
+
 void DeckLabSystemUi::updateSetupPanel() {
     if (!m_setupController || !m_setupAudio) {
         return;
+    }
+    if (m_finishSetup) {
+        m_finishSetup->setVisible(setupPending());
     }
     using decklab::ui::Lamp;
     if (!m_system) {
