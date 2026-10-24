@@ -131,7 +131,9 @@ fixes everything the 6-lens review confirmed (see "Review fixes").
   currentRowChanged; the settings `dimPlayedChosen` hook; `bindBrowser()`: the `trackSelected` skip and
   `initHistory()`; `attachSystem()` (one line); one case each in `browseEnter`, `browseBack`, `browseSegments`; one
   line each in `browseMove`, `openCategory`, `refreshBrowseCard`, `rebuildHome`, `openHomeRow`, `browseTrackLevel`,
-  `applyBrowsePresentation`, `fillMixes`; a block of new functions appended at the end of the file.
+  `applyBrowsePresentation`, `fillMixes`; `updateMatchBar()` re-lays its column after the bar's visibility is set
+  (one line: after a stick's tracks the bar's 46 px stayed reserved over History and the home); a block of new
+  functions appended at the end of the file.
 - **`src/widget/wtracktableview.cpp`**: one include, `DeckLabCellDelegate::initStyleOption`/`mixxxPlayedColor`, the
   `drawBase` blend guard and `decklab::history::makeTrackCellDelegate` (for tests), all marked.
 - **`src/widget/decklabbrowsemix.cpp`**: `paintMixRow` reserves the mark's slot and dims the title (marked).
