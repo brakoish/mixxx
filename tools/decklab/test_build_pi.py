@@ -7,6 +7,8 @@ import tempfile
 import unittest
 
 import build_pi
+# The DeckLab loading screen's numbers against its image run with these guards (CI runs this file).
+from test_launch_image import LaunchImageGeometry  # noqa: F401
 
 
 class BuildGuards(unittest.TestCase):

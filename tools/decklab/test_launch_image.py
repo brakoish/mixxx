@@ -4,7 +4,12 @@ res/skins/DeckLab/boot/launch.png is the Deck Lab boot screen's last frame; the 
 skin's <LaunchImageStyle> must sit exactly on its waveform, starting at the parked playhead (the cue).
 This finds the playhead and the waveform in launch.png and checks the QProgressBar margins and size.
 
-    python -m unittest tools/decklab/test_launch_image.py
+    python -m unittest tools/decklab/test_launch_image.py   (test_build_pi.py, which CI runs, imports it)
+
+Qt centres the QProgressBar box (margin-left + contents, no right margin) in the window, like the
+background image, so the contents start at (W + margin_left - width) / 2. With the contents ending at
+the waveform's right edge, that is the cue when margin_left = cue + wave_right - W, wherever the art
+sits. The same for rows: margin_top = 2 * wave_y + rows - H.
 """
 from pathlib import Path
 import re
@@ -57,13 +62,14 @@ class LaunchImageGeometry(unittest.TestCase):
         cue = (red_cols[0] + red_cols[-1] + 1) // 2
         lit = [x for x in range(width) if any(max(pixel(x, y)) > 60 and not is_red(pixel(x, y))
                                               for y in range(wave_y, wave_y + wave_rows))]
-        wave_x, wave_right = lit[0], lit[-1] + 1
+        wave_right = lit[-1] + 1
 
         skin = (SKIN / "skin.xml").read_text(encoding="utf-8")
         style = re.search(r"<LaunchImageStyle>(.*?)</LaunchImageStyle>", skin, re.S).group(1)
         bar = dict((k.strip(), v.strip()) for k, v in (d.split(":", 1) for d in
                    re.search(r"QProgressBar\s*\{([^}]*)\}", style).group(1).split(";") if ":" in d))
-        self.assertEqual(bar["margin"], "%dpx 0 0 %dpx" % (2 * wave_y + wave_rows - height, cue - wave_x))
+        margin = (2 * wave_y + wave_rows - height, cue + wave_right - width)
+        self.assertEqual(bar["margin"], "%dpx 0 0 %dpx" % margin)
         for key, value in (("min-width", wave_right - cue), ("max-width", wave_right - cue),
                            ("min-height", wave_rows), ("max-height", wave_rows)):
             self.assertEqual(bar[key], "%dpx" % value, key)
