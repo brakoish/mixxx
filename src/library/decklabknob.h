@@ -73,6 +73,16 @@ inline void onKnobOwnerChanged(QObject* receiver, std::function<void()> callback
     }
 }
 
+// r5-fix2-history: in native Deck Lab a load from the table selection (a
+// controller's LOAD, an empty deck's PLAY, an empty pad, the first stopped
+// deck) takes only the track Browse highlights. The surface answers at load
+// time, after settling a History or Mixes row still waiting for its table:
+// true exactly when [DeckLabNative] track_level is 1 (LibraryControl).
+inline std::function<bool()>& nativeLoadGuard() {
+    static std::function<bool()> guard;
+    return guard;
+}
+
 inline void noteKnobOwnerChanged() {
     auto& listeners = knobOwnerListeners();
     for (int index = static_cast<int>(listeners.size()) - 1; index >= 0; --index) {

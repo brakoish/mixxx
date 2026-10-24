@@ -229,7 +229,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void openHistoryRow(int row);
     void historyMove(int delta);
     void historyBack();
-    void syncHistorySelection();
+    void syncHistorySelection(bool restartSettle = true);
     QStringList historySegments() const;
     void refreshHistoryCard();
     void applyHistoryPresentation();
@@ -254,6 +254,19 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void historyKnobHold(bool down);
     bool consumeNewSetRelease();
     void cancelNewSetKnob();
+    // r5-fix2-history: track_level exactly, a press settles the row, Mixes
+    // on its own table, the controller load guard.
+    void settleHistoryRow();
+    void flushBrowseRow();
+    bool browseLoadableNow();
+    bool listTrackRow() const;
+    void updateTrackLevel();
+    void hookTrackLevel();
+    void historyTableShown();
+    void clearTableSelection(bool remember);
+    void restoreTableSelection();
+    bool mixTableForeign() const;
+    bool ensureMixTable();
     int displayedDeck(int side) const;
     void setDisplayedDeck(int side, int deck);
     QString channel(int deck) const;

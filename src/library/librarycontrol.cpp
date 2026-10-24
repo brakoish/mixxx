@@ -31,6 +31,16 @@ bool nativeBrowseActive() {
     const auto* active = ControlObject::getControl(ConfigKey("[DeckLabNative]", "active"), ControlFlag::NoWarnIfMissing);
     return active && active->toBool();
 }
+// r5-fix2-history: loads from the selection in native Deck Lab: only Browse's
+// highlighted track ([DeckLabNative] track_level, checked again by the
+// surface now), never a selection left under the home, a category list or a
+// set list, nor one a table swapped in under a History or Mixes row restored.
+bool nativeLoadAllowed() {
+    if (!nativeBrowseActive()) return true;
+    if (const auto& guard = decklab::nativeLoadGuard(); guard && !guard()) return false;
+    const auto* level = ControlObject::getControl(ConfigKey("[DeckLabNative]", "track_level"), ControlFlag::NoWarnIfMissing);
+    return level && level->get() > 0;
+}
 bool nativeBrowseAction(const char* action) {
     if (!nativeBrowseActive()) return false;
     ControlObject::set(ConfigKey("[DeckLabNative]", action), 1);
@@ -713,7 +723,7 @@ void LibraryControl::slotLoadSelectedTrackToGroup(
 #else
 void LibraryControl::slotLoadSelectedTrackToGroup(const QString& group, bool play) {
 #endif
-    if (!m_pLibraryWidget) {
+    if (!m_pLibraryWidget || !nativeLoadAllowed()) { // r5-fix2-history
         return;
     }
 
@@ -728,7 +738,7 @@ void LibraryControl::slotLoadSelectedTrackToGroup(const QString& group, bool pla
 }
 
 void LibraryControl::slotLoadSelectedIntoFirstStopped(double v) {
-    if (!m_pLibraryWidget || v <= 0) {
+    if (!m_pLibraryWidget || v <= 0 || !nativeLoadAllowed()) { // r5-fix2-history
         return;
     }
 

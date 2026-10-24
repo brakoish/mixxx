@@ -31,9 +31,10 @@ fixes everything the 6-lens review confirmed (see "Review fixes").
 ### A set spans restarts
 - Mixxx starts a new history playlist on every launch, and Deck Lab restarts Mixxx in normal use (Restart to detect
   after a controller replug, Power › Restart app, a crash, a power blip). A set is therefore every history playlist
-  from the one where the DJ last held New set on. The set starts are kept in the settings (`[DeckLab]
-  HistorySetStarts`: history playlist ids, never wall-clock times). The first run starts a set at that run's playlist;
-  playlists from before it (older history) stay one set each and group by day as before.
+  from the one where the DJ last held New set on. The set starts (history playlist ids, never wall-clock times) are
+  kept in their own small file in the profile, `decklab-history-sets.json` (r5-fix2-history; earlier round-5 builds
+  used `[DeckLab] HistorySetStarts`, moved once). The first run starts a set at that run's playlist; playlists from
+  before it (older history) stay one set each and group by day as before.
 - The sets list shows a set as one entry whatever restarts it spans; its tracks list in play order across them, each
   row bound to its own Mixxx playlist for LOAD.
 
@@ -92,13 +93,56 @@ fixes everything the 6-lens review confirmed (see "Review fixes").
 - **Exactly the highlighted row.** LOAD (dock, sampler pad, controller) and Preview at History and Mixes track level
   check that the hidden table is the row's own playlist and its selected row the row's track; otherwise they resync
   and refuse. A table Mixxx swaps in underneath (a rekordbox read finishing) triggers the same resync.
-- **Persistence.** `[DeckLab] HistorySetStarts` is written to disk at once (first run and each New set).
+- **Persistence.** `[DeckLab] HistorySetStarts` is written to disk at once (first run and each New set). Replaced
+  in r5-fix2-history: Mixxx's config save is not crash-safe.
 - **Pi budget.** A History knob step selects at once only within the playlist already shown; switching Mixxx's
   hidden playlist table waits for the knob to settle (120 ms, with the Track read). LOAD is not offered meanwhile.
 - Tests: `NativeDeckLabTest.NewSetKnobFollowsTheControllersRealSequences` (push-turn, Numark and SB2 Shift+press,
   a hold under a menu, press twice, full hold with its release press, hold then turn), `track_level` assertions;
   the smoke checks `track_level` (0 on the sets, 1 on a set's track) and loads through the controller path
   (`LoadSelectedTrack`, into the preview deck, never played), expecting exactly the highlighted track.
+
+## Verification fixes (decklab/r5-fix2-history, on round 5 at 95c18e0c18)
+- **Set starts, crash-safe (major).** No more `m_config->save()`: a power cut during Mixxx's save (it deletes
+  `mixxx.cfg` before renaming the new one, with no fsync) could leave every setting, the mapping and the sound setup
+  empty. The starts live in `decklab-history-sets.json` in the profile (`{"version":1,"starts":[...]}`), replaced
+  with `QSaveFile` after an `fsync` of the new file, then an `fsync` of the folder. Read at start; a profile from an
+  earlier round-5 build moves its `[DeckLab] HistorySetStarts` once (the file is written, then the key is removed
+  from the settings in memory; Mixxx's own next save drops it). A damaged file reads as "none yet".
+- **`track_level`, exactly.** 1 exactly while Browse highlights a loadable track and the hidden table's selected row
+  is that track, on every page: it follows the hidden table's selection, model resets and removals (re-hooked when
+  Mixxx shows another model), and Deck Lab's own refreshes. Home, Sources, Categories, Values, Folder, the sets list
+  and headers unselect the hidden table (a track table gets its row back when it is shown again), so hold-Back to
+  Home, page switches and stick reads leave nothing for a LOAD.
+- **Load-time guard.** `LibraryControl` (LoadSelectedTrack, LoadSelectedTrackAndPlay, the stems load and
+  LoadSelectedIntoFirstStopped, for every deck, sampler and preview deck) asks the surface in native mode
+  (`decklab::nativeLoadGuard()`, `decklabknob.h`) and refuses unless the highlighted row is loadable and selected;
+  a History or Mixes row still waiting for its table is settled first, on Browse only. The Tools menu's "Load into
+  sampler" uses the same check. A table swapped in under a History or Mixes row drops the selection and
+  `track_level` at once (a direct `showTrackModel` handler), then the row comes back queued.
+- **Order.** `browse_move` and `browse_select` run where LibraryControl sets them (the GUI thread, synchronously),
+  so a turn always lands before a press or LOAD sent after it; a script's own write still queues.
+- **New set.** A menu, sheet or dialog taking the knob (`decklab::onKnobOwnerChanged`) calls off an armed "press
+  twice" and a hold in progress.
+- **Mixes.** A swapped-in table is undone: the source is shown again (on Browse, once per swap) and the rows re-rank
+  if the reference moved meanwhile. The candidates and the list are never rebuilt from another model of the same
+  source; the card never reads another model's row.
+- **Settle.** A knob press, a dock or pad LOAD and a controller's LOAD inside the 120 ms History settle switch the
+  table now and act on the highlighted row; a track row that cannot load yet never just stops the running preview.
+  LOAD taps no longer restart the settle, and a resync never postpones one already running. Nothing switches Mixxx's
+  table while Browse is hidden: the row is marked and comes back on the next visit.
+- Tests: `DeckLabHistoryDbTest.SetStartsLiveInTheirOwnFileAndMoveOnceFromTheConfig` (write, replace, no temporary
+  file left, damaged and missing files, a missing folder, the one-time move, the file winning over a stale key) and
+  `ASetSpansRestartsUntilNewSet` (reads the file; Mixxx's config file is never written).
+  `NewSetKnobFollowsTheControllersRealSequences` adds the latched-Shift Numark sequence, the status sheet opened and
+  closed between two presses (no new set), a synchronous turn, and the guard on the sets list and the home. The smoke
+  swaps the collection's table in under a History row (`track_level` 0 and no selection at once; the controller LOAD
+  then loads exactly the highlighted track) and checks the home (no selection, `track_level` 0). Its Sampler and
+  Decks demo loads now go through the Library's track list, as a DJ's would.
+- Hooks, each marked `r5-fix2-history`: `decklabknob.h` (`nativeLoadGuard`), `librarycontrol.cpp`
+  (`nativeLoadAllowed` and one line in each load slot), `wdecklab.{h,cpp}` (the turn proxies, the Tools menu,
+  `loadDeck`, `togglePreview`, `showTracks`, the Mixes functions, `initHistory`, new functions in the History block),
+  `decklabhistory.{h,cpp}`, `decklabsmoke.cpp`; the lock's hashes refreshed.
 
 ## Renders
 `local/wt/audit/screens/r5-history/` (not committed):

@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <optional>
 
 #include <QAbstractItemDelegate>
 #include <QDir>
@@ -304,7 +305,8 @@ TEST_F(DeckLabHistoryDbTest, MarksFollowTheHistoryLiveAndNewSetMovesThemToEarlie
 
 // A set spans restarts: Mixxx starts a new history playlist on every launch
 // (Restart to detect, Restart app, a crash, a power blip), and this set goes
-// on until the DJ holds New set. The starts live in the settings.
+// on until the DJ holds New set. The starts live in their own file in the
+// profile, never in Mixxx's config (whose save is not crash-safe).
 TEST_F(DeckLabHistoryDbTest, ASetSpansRestartsUntilNewSet) {
     QTemporaryDir settings;
     ASSERT_TRUE(settings.isValid());
@@ -321,7 +323,11 @@ TEST_F(DeckLabHistoryDbTest, ASetSpansRestartsUntilNewSet) {
     store.setBackend(backend(config));
     store.ensureLoaded();
     EXPECT_EQ(run1, store.currentId());
-    EXPECT_EQ(QString::number(run1), config->getValueString(ConfigKey(QStringLiteral("[DeckLab]"), QStringLiteral("HistorySetStarts"))));
+    const QString file = setStartsFile(settings.path());
+    EXPECT_EQ(std::optional<QVector<int>>(QVector<int>{run1}), readSetStarts(file));
+    EXPECT_FALSE(config->exists(ConfigKey(QStringLiteral("[DeckLab]"), QStringLiteral("HistorySetStarts"))));
+    // Mixxx's config file was never written for it.
+    EXPECT_FALSE(QFileInfo::exists(QDir(settings.path()).filePath(QStringLiteral("generated.cfg"))));
 
     // The app restarts mid-set: a new store, and Mixxx's new history playlist.
     store.setBackend(nullptr);
@@ -346,8 +352,8 @@ TEST_F(DeckLabHistoryDbTest, ASetSpansRestartsUntilNewSet) {
     EXPECT_TRUE(store.startNewSet());
     const int run3 = store.currentId();
     EXPECT_GT(run3, run2);
-    EXPECT_EQ(QStringLiteral("%1,%2").arg(run1).arg(run3),
-            config->getValueString(ConfigKey(QStringLiteral("[DeckLab]"), QStringLiteral("HistorySetStarts"))));
+    EXPECT_EQ(std::optional<QVector<int>>(QVector<int>{run1, run3}), readSetStarts(file));
+    EXPECT_FALSE(QFileInfo::exists(QDir(settings.path()).filePath(QStringLiteral("generated.cfg"))));
     ASSERT_TRUE(playlists().appendTrackToPlaylist(closer, run3));
     EXPECT_EQ(Played::Earlier, store.played(location(QStringLiteral("Generated Tone 112"))));
     EXPECT_EQ(Played::Session, store.played(location(QStringLiteral("Generated Tone 116"))));
@@ -366,6 +372,62 @@ TEST_F(DeckLabHistoryDbTest, ASetSpansRestartsUntilNewSet) {
     EXPECT_TRUE(store.sessions().at(2).legacy);
     EXPECT_EQ(Played::Session, store.played(location(QStringLiteral("Generated Tone 116"))));
     EXPECT_EQ(Played::Earlier, store.played(location(QStringLiteral("Generated Tone 114"))));
+}
+
+// The set starts file: replaced whole (no temporary file left beside it),
+// read back exactly, unreadable or missing means "none yet"; and a profile
+// from a round-5 build that kept them in the config moves them once.
+TEST_F(DeckLabHistoryDbTest, SetStartsLiveInTheirOwnFileAndMoveOnceFromTheConfig) {
+    QTemporaryDir settings;
+    ASSERT_TRUE(settings.isValid());
+    const QString file = setStartsFile(settings.path());
+    EXPECT_EQ(QStringLiteral("decklab-history-sets.json"), QFileInfo(file).fileName());
+    EXPECT_TRUE(setStartsFile(QString()).isEmpty());
+    EXPECT_FALSE(readSetStarts(file).has_value());
+
+    ASSERT_TRUE(writeSetStarts(file, QVector<int>{4, 9}));
+    EXPECT_EQ(std::optional<QVector<int>>(QVector<int>{4, 9}), readSetStarts(file));
+    ASSERT_TRUE(writeSetStarts(file, QVector<int>{4, 9, 12}));
+    EXPECT_EQ(std::optional<QVector<int>>(QVector<int>{4, 9, 12}), readSetStarts(file));
+    ASSERT_TRUE(writeSetStarts(file, QVector<int>{}));
+    EXPECT_EQ(std::optional<QVector<int>>(QVector<int>{}), readSetStarts(file));
+    EXPECT_EQ(QStringList{QStringLiteral("decklab-history-sets.json")},
+            QDir(settings.path()).entryList(QDir::Files | QDir::Hidden | QDir::System));
+
+    // A damaged file reads as none; a folder that is not there fails cleanly.
+    {
+        QFile damaged(file);
+        ASSERT_TRUE(damaged.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        damaged.write("{\"starts\": [3,");
+    }
+    EXPECT_FALSE(readSetStarts(file).has_value());
+    EXPECT_FALSE(writeSetStarts(QDir(settings.path()).filePath(QStringLiteral("missing/sets.json")), QVector<int>{1}));
+    QFile::remove(file);
+
+    // Migration: the old config value becomes the file, once, and goes.
+    const TrackId opener = addTrack(QStringLiteral("Generated Tone 118"), 118, mixxx::track::io::key::A_MINOR);
+    const int run1 = history(QStringLiteral("2026-10-22"));
+    ASSERT_TRUE(playlists().appendTrackToPlaylist(opener, run1));
+    const int run2 = history(QStringLiteral("2026-10-23"));
+    const ConfigKey old(QStringLiteral("[DeckLab]"), QStringLiteral("HistorySetStarts"));
+    UserSettingsPointer config(new UserSettings(QDir(settings.path()).filePath(QStringLiteral("generated.cfg"))));
+    config->setValue(old, QString::number(run2));
+    Store& store = Store::instance();
+    store.setBackend(backend(config));
+    store.ensureLoaded();
+    EXPECT_EQ(run2, store.currentId());
+    EXPECT_EQ(std::optional<QVector<int>>(QVector<int>{run2}), readSetStarts(file));
+    EXPECT_FALSE(config->exists(old));
+    EXPECT_EQ(Played::Earlier, store.played(location(QStringLiteral("Generated Tone 118"))));
+
+    // Read at start: the file wins over a stale config value.
+    store.setBackend(nullptr);
+    config->setValue(old, QString::number(run1));
+    store.setBackend(backend(config));
+    store.ensureLoaded();
+    EXPECT_EQ(run2, store.currentId());
+    EXPECT_EQ(std::optional<QVector<int>>(QVector<int>{run2}), readSetStarts(file));
+    store.setBackend(nullptr);
 }
 
 // A history track whose file moved (USB relink, Mixxx's relocate) keeps its
