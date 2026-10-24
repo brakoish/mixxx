@@ -83,6 +83,7 @@
 #include "widget/decklabpads.h" // r4-decks: pad modes
 #include "widget/decklabdecktools.h" // r5-decks: key sheet and GRID mode
 #include "widget/decklabsync.h" // r6-sync: SYNC, MASTER and INST DOUBLES
+#include "widget/decklabmoreknob.h" // r6-sync: the knob in MORE
 #include "engine/sync/decklabcdjsync.h" // r6-sync: the engine's CDJ BEAT SYNC rules
 #include "widget/decklabbrowsedock.h"
 #include "widget/decklabbrowsehome.h"
@@ -1342,6 +1343,7 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
         addGroup(sheet, rows, tr("VIEW"), zoomKeys(sheet));
         sheet->setMinimumWidth(320);
         auto* widgetAction = new QWidgetAction(menu); widgetAction->setDefaultWidget(sheet); menu->addAction(widgetAction);
+        new DeckLabMoreKnob(menu, sheet); // r6-sync: MASTER and INST DOUBLES by knob too
         connect(menu, &QMenu::aboutToShow, this, [this, target, prefix] { refreshTransport(target(), prefix); });
         connect(menu, &QMenu::aboutToHide, this, [this, play, cue] {
             releaseTouchCue(); play->setDown(false); cue->setDown(false);
@@ -1379,6 +1381,7 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
         addGroup(content, rows, tr("VIEW"), zoomKeys(content));
         content->setMinimumWidth(392);
         auto* widgetAction = new QWidgetAction(menu); widgetAction->setDefaultWidget(content); menu->addAction(widgetAction);
+        new DeckLabMoreKnob(menu, content); // r6-sync: MASTER and INST DOUBLES by knob too
         connect(menu, &QMenu::aboutToShow, this, [this, deck] { refreshTransport(deck, m_cardPrefixes[deck - 1]); });
         watch(kTab, "current", [menu](double) { menu->close(); });
         watch(kNative, "layout_decks", [menu](double) { menu->close(); });

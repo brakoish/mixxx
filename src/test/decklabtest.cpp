@@ -9,6 +9,7 @@
 #include <QFile>
 #include <QFontDatabase>
 #include <QFontInfo>
+#include <QFrame>
 #include <QDialog>
 #include <QComboBox>
 #include <QLabel>
@@ -70,6 +71,7 @@
 #include "widget/decklabdecktools.h" // r5-decks
 #include "widget/decklabgridmode.h"
 #include "widget/decklabkeysheet.h"
+#include "widget/decklabmoreknob.h" // r6-sync
 #include "widget/decklabpads.h"
 #include "widget/decklabhistory.h"     // r5-history
 #include "widget/decklabhistoryview.h" // r5-history
@@ -3855,6 +3857,8 @@ TEST_F(NativeDeckLabTest, SyncHoldIsInstantDoublesOnlyOntoAStoppedDeck) {
     // track), and MORE's INST DOUBLES is off.
     auto other = Track::newTemporary(getTestDir().filePath(QStringLiteral("sine-30.wav")));
     loadTrack(m_pMixerDeck3.get(), other); ASSERT_TRUE(other->trySetBpm(126));
+    settle(); QTest::qWait(150); settle(); // the player finishes its load (cue recall) first
+    put(3, "playposition", .6); ProcessBuffer();
     put(3, "play", 1); ProcessBuffer(); ProcessBuffer();
     put(3, "sync_leader", 1);
     for (int n = 0; n < 4; ++n) ProcessBuffer();
@@ -3872,7 +3876,7 @@ TEST_F(NativeDeckLabTest, SyncHoldIsInstantDoublesOnlyOntoAStoppedDeck) {
     panel->findChild<QMenu*>("decklab-2-more-menu")->close(); settle();
     // Stopped, deck 2 offers the tempo master (deck 3, hidden on its layer)
     // before deck 1, which only plays.
-    ASSERT_GT(get(3, "sync_leader"), 0);
+    ASSERT_GT(get(3, "sync_leader"), 0); ASSERT_DOUBLE_EQ(1, get(3, "play"));
     put(2, "play", 0); ProcessBuffer(); settle(); QTest::qWait(150); settle();
     EXPECT_TRUE(sync2->accessibleDescription().contains("deck 3")) << sync2->accessibleDescription().toStdString();
     panel->findChild<QPushButton*>("decklab-2-more")->click(); settle();
@@ -3958,6 +3962,61 @@ TEST_F(NativeDeckLabTest, MasterInMoreTakesAndHandsOnTheTempoMaster) {
     QMetaObject::invokeMethod(panel->findChild<QComboBox*>("decklab-deck-layout"), "activated", Q_ARG(int, 2)); QTest::qWait(150);
     EXPECT_NE(nullptr, panel->findChild<QPushButton*>("decklab-card-1-master"));
     EXPECT_NE(nullptr, panel->findChild<QPushButton*>("decklab-card-1-doubles"));
+    for (int deck = 1; deck <= 2; ++deck) { put(deck, "play", 0); put(deck, "sync_enabled", 0); }
+    ProcessBuffer();
+}
+
+// r6-sync: the browse knob drives a MORE sheet: the first event shows the
+// cursor and does nothing else, a turn moves it through the keys that can
+// act in reading order, a press clicks the key under it, back closes.
+TEST_F(NativeDeckLabTest, KnobReachesMasterInTheMoreSheet) {
+    loadGenerated(1, 128); loadGenerated(2, 130); ProcessBuffer(); settle();
+    const auto get = [](int deck, const char* item) { return ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), item)); };
+    const auto put = [](int deck, const char* item, double v) { ControlObject::set(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), item), v); };
+    put(1, "quantize", 0); put(2, "quantize", 0);
+    put(1, "play", 1); put(2, "play", 1); ProcessBuffer(); ProcessBuffer();
+    panel->findChild<QPushButton*>("decklab-1-beatsync")->click();
+    for (int n = 0; n < 4; ++n) ProcessBuffer();
+    settle();
+    ASSERT_GT(get(2, "sync_leader"), 0);
+    panel->findChild<QPushButton*>("decklab-1-more")->click(); settle();
+    auto* menu = panel->findChild<QMenu*>("decklab-1-more-menu"); ASSERT_NE(nullptr, menu); ASSERT_TRUE(menu->isVisible());
+    auto* knob = menu->findChild<DeckLabMoreKnob*>(); ASSERT_NE(nullptr, knob);
+    auto* ring = menu->findChild<QFrame*>("decklab-more-knob-cursor"); ASSERT_NE(nullptr, ring);
+    auto* master = panel->findChild<QPushButton*>("decklab-1-master"); ASSERT_NE(nullptr, master);
+    EXPECT_EQ(nullptr, knob->cursorKey()); EXPECT_FALSE(ring->isVisible());
+    // The first turn only shows the cursor.
+    r4Pulse("[Playlist]", "SelectTrackKnob", 1); settle();
+    ASSERT_NE(nullptr, knob->cursorKey()); EXPECT_TRUE(ring->isVisible());
+    EXPECT_DOUBLE_EQ(1, get(1, "play")) << "a reveal acts on nothing";
+    EXPECT_TRUE(menu->isVisible());
+    // Turn to MASTER (reading order: PLAY, then the SYNC group).
+    for (int n = 0; n < 12 && knob->cursorKey() != master; ++n) {
+        r4Pulse("[Playlist]", "SelectTrackKnob", 1); settle();
+    }
+    ASSERT_EQ(master, knob->cursorKey());
+    const QRect key(master->mapTo(ring->parentWidget(), QPoint()), master->size());
+    EXPECT_TRUE(ring->geometry().contains(key)) << "the ring is around MASTER";
+    const QString output = qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
+    if (!output.isEmpty()) EXPECT_TRUE(menu->grab().save(QDir(output).filePath(QStringLiteral("decks-more-knob-master.png"))));
+    // Press: deck 1 takes the master; the sheet stays open on MASTER.
+    r4Pulse("[DeckLabNative]", "browse_press");
+    for (int n = 0; n < 4; ++n) ProcessBuffer();
+    settle();
+    EXPECT_GT(get(1, "sync_leader"), 0); EXPECT_DOUBLE_EQ(0, get(2, "sync_leader"));
+    EXPECT_TRUE(menu->isVisible()); EXPECT_EQ(master, knob->cursorKey());
+    EXPECT_TRUE(master->isChecked());
+    // A turn back up and a press: PLAY, as with a finger.
+    for (int n = 0; n < 12; ++n) { r4Pulse("[Playlist]", "SelectTrackKnob", -1); settle(); }
+    EXPECT_EQ(panel->findChild<QPushButton*>("decklab-1-play"), knob->cursorKey());
+    // Back closes the sheet; the next opening starts with a reveal again.
+    r4Pulse("[DeckLabNative]", "browse_back"); settle();
+    EXPECT_FALSE(menu->isVisible());
+    panel->findChild<QPushButton*>("decklab-1-more")->click(); settle();
+    ASSERT_TRUE(menu->isVisible());
+    EXPECT_EQ(nullptr, knob->cursorKey()); EXPECT_FALSE(ring->isVisible());
+    menu->close(); settle();
+    EXPECT_DOUBLE_EQ(1, get(1, "play")); EXPECT_DOUBLE_EQ(1, get(2, "play"));
     for (int deck = 1; deck <= 2; ++deck) { put(deck, "play", 0); put(deck, "sync_enabled", 0); }
     ProcessBuffer();
 }
