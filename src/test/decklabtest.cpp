@@ -4024,11 +4024,14 @@ TEST_F(NativeDeckLabTest, SyncOnTheDeckOnAirNeverMatchesADeckNobodyHears) {
     settle(); ProcessBuffer(); // the loads finish (cue recall) before the positions are set
     const auto get = [](int deck, const char* item) { return ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), item)); };
     const auto put = [](int deck, const char* item, double v) { ControlObject::set(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), item), v); };
-    put(1, "quantize", 1); put(2, "quantize", 1);
+    // Quantize goes on once both play: a quantized start would snap deck 2
+    // to deck 1's phase.
+    put(1, "quantize", 0); put(2, "quantize", 0);
     put(1, "playposition", .11); put(2, "playposition", .26); ProcessBuffer();
     put(2, "volume", 0); // cued in the headphones
     put(1, "play", 1); put(2, "play", 1);
     for (int n = 0; n < 4; ++n) ProcessBuffer();
+    put(1, "quantize", 1); put(2, "quantize", 1);
     settle();
     ASSERT_NEAR(.11, get(1, "playposition"), .02); ASSERT_NEAR(.26, get(2, "playposition"), .02);
     ASSERT_GT(std::abs(get(1, "beat_distance") - get(2, "beat_distance")), .05);
