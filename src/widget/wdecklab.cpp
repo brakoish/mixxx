@@ -1171,7 +1171,7 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
         // actions (toggles, loop sizes, SYNC) act on release.
         const bool onPress = item == QStringLiteral("play") && prefix.startsWith(QStringLiteral("decklab-card-"));
         // r6-sync: a SYNC press held past kSyncHoldMs that loaded INST
-        // DOUBLES must not also toggle sync on release.
+        // DOUBLES, or held on a playing deck, must not toggle sync on release.
         auto heldSync = std::make_shared<bool>(false);
         const auto perform = [this, prefix, item](int actual) {
             if (item == "play" || item == "quantize" || item == "keylock" || item == "slip_enabled")
@@ -1222,12 +1222,12 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
                 // Same stale-press guards as a tap: same deck, same epoch,
                 // and the finger still on the button. r6-sync: the hold is
                 // INST DOUBLES, which loads only onto a stopped deck (empty
-                // or cued). A hold that loaded nothing (a playing deck, or
-                // nothing to copy) is still a tap on release, as on the
-                // Numark overlay.
+                // or cued). On a playing deck the hold does nothing, its
+                // release included; on a stopped deck with nothing to copy
+                // the release is still a tap (DeckLabSync::hold).
                 const int actual = pressed->first;
                 if (!b->isDown() || pressed->second != m_interactionEpoch || actual != target()) return;
-                *heldSync = m_sync->instantDoubles(actual);
+                *heldSync = m_sync->hold(actual);
                 m_transport[prefix].shown = TransportState();
                 refreshTransport(actual, prefix);
             });

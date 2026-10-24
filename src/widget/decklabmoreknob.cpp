@@ -9,6 +9,7 @@
 #include <algorithm>
 
 #include "moc_decklabmoreknob.cpp"
+#include "widget/decklabpads.h"
 
 DeckLabMoreKnob::DeckLabMoreKnob(QMenu* menu, QWidget* sheet)
         : QObject(menu),
@@ -27,12 +28,27 @@ QPushButton* DeckLabMoreKnob::cursorKey() const {
     return m_used ? m_cursor.data() : nullptr;
 }
 
+bool DeckLabMoreKnob::touchOnly(QPushButton* key) const {
+    // Transport and performance keys act on a deck that may be on air: PLAY,
+    // CUE (a held key) and the pad block (hot cues, loops, rolls, stems and
+    // their mode keys). A press one detent off, or a bounce, must never stop
+    // a deck or jump it to a cue.
+    const QString name = key->objectName();
+    if (name.endsWith(QStringLiteral("-play")) || name.endsWith(QStringLiteral("cue_default"))) {
+        return true;
+    }
+    for (QWidget* widget = key; widget && widget != m_sheet; widget = widget->parentWidget()) {
+        if (qobject_cast<DeckLabPadBlock*>(widget)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 QList<QPushButton*> DeckLabMoreKnob::keys() const {
     QList<QPushButton*> usable;
     for (auto* key : m_sheet->findChildren<QPushButton*>()) {
-        // CUE (hold) is a held key: touch only.
-        if (key->isVisible() && key->isEnabled() &&
-                !key->objectName().endsWith(QStringLiteral("cue_default"))) {
+        if (key->isVisible() && key->isEnabled() && !touchOnly(key)) {
             usable << key;
         }
     }
@@ -79,7 +95,7 @@ bool DeckLabMoreKnob::eventFilter(QObject* watched, QEvent* event) {
         return false;
     }
     if (event->type() == QEvent::Show || event->type() == QEvent::Hide) {
-        // Every opening starts over: the first knob event reveals.
+        // Every opening starts over: the first turn reveals.
         m_used = false;
         m_cursor = nullptr;
         m_ring->hide();
@@ -93,6 +109,12 @@ bool DeckLabMoreKnob::eventFilter(QObject* watched, QEvent* event) {
     const bool press = key == Qt::Key_Return || key == Qt::Key_Enter;
     if (!turn && !press) {
         return false; // Escape closes the menu, as before.
+    }
+    if (!m_used && press) {
+        // Before any turn a press closes MORE, as it always did: a press
+        // from habit, or a double press, acts on no key.
+        m_menu->close();
+        return true;
     }
     if (!m_used || !m_cursor || !keys().contains(m_cursor.data())) {
         // Reveal (or the key under the cursor went away): show where the

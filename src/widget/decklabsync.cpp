@@ -104,3 +104,10 @@ bool DeckLabSync::instantDoubles(int deck) {
     m_host.write(deck, kCloneFromDeck, source);
     return true;
 }
+
+bool DeckLabSync::hold(int deck) {
+    if (loaded(deck) && playing(deck)) {
+        return true; // never a track replaced, and no BEAT SYNC on release
+    }
+    return instantDoubles(deck);
+}

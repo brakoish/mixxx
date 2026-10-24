@@ -22,10 +22,12 @@
 //  - SYNC hold (and INST DOUBLES in MORE): only onto a stopped deck, empty or
 //    cued, the tempo master's track (else a playing deck's) loads at the same
 //    position, playing if it plays (Mixxx's CloneFromDeck). Never onto a
-//    playing deck. A hold that loaded nothing (a playing deck, or nothing to
-//    copy) is still a tap on release, as on the Numark overlay. The CDJ has
-//    no such limit (its LOAD LOCK setting only blocks loads while playing);
-//    Deck Lab never replaces a track on air.
+//    playing deck: there a hold does nothing at all, not even BEAT SYNC on
+//    release (owner rule; a CDJ's hold never toggles Beat Sync either). On a
+//    stopped deck with nothing to copy the hold's release is still a tap, as
+//    on the Numark overlay, so a slow press is never a dead button. The CDJ
+//    has no such limit (its LOAD LOCK setting only blocks loads while
+//    playing); Deck Lab never replaces a track on air.
 // The tempo fader rules live in the engine (decklabcdjsync.h): a synced deck
 // that is not the master ignores its fader; after sync is off, the fader
 // takes over only once it passes the tempo (a controller's soft takeover).
@@ -62,6 +64,10 @@ class DeckLabSync final {
     }
     // Loads the source's track onto this stopped deck. False: nothing done.
     bool instantDoubles(int deck);
+    // SYNC held: INST DOUBLES on a stopped deck. True when the hold used up
+    // the press (it loaded a track, or the deck plays: a hold on a playing
+    // deck does nothing), so its release is no tap.
+    bool hold(int deck);
 
   private:
     bool loaded(int deck) const;
