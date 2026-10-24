@@ -72,6 +72,14 @@ class EngineSync : public SyncableListener {
     /// are not audible.
     bool otherSyncedPlaying(const QString& group);
 
+    /// r6-sync: Deck Lab's CDJ BEAT SYNC rules (engine/sync/decklabcdjsync.h).
+    /// The tempo master deck while it plays with a tempo, else nullptr.
+    Syncable* playingLeaderDeck() const;
+    /// r6-sync: the first audible, playing primary deck with a tempo other
+    /// than pDontPick (a synced one first), else nullptr: the deck on air a
+    /// BEAT SYNC press follows while no deck is a playing tempo master.
+    Syncable* pickAudiblePlayingDeck(EngineChannel* pDontPick) const;
+
     void addSyncableDeck(Syncable* pSyncable);
     EngineChannel* getLeaderChannel() const;
     void onCallbackStart(mixxx::audio::SampleRate sampleRate, std::size_t bufferSize);
@@ -89,6 +97,11 @@ class EngineSync : public SyncableListener {
     /// that would be strange behavior for the user.
     /// Returns nullptr if none can be found.
     Syncable* findBpmMatchTarget(Syncable* requester);
+
+    /// r6-sync: under the CDJ rules a playing tempo master deck keeps the
+    /// role until it pauses, its track changes or MASTER hands it on; a
+    /// closed channel fader or another deck's BEAT SYNC never moves it.
+    bool cdjLeaderStays() const;
 
     /// Activate a specific syncable as Leader.
     void activateLeader(Syncable* pSyncable, bool explicitLeader);

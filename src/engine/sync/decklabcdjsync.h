@@ -12,16 +12,23 @@
 //  - beatsync on a deck is the BEAT SYNC button: a press turns sync lock on
 //    or off (otherwise it is Mixxx's one-shot match). It never turns sync on
 //    for a deck without a tempo (a track not analysed yet), so a later
-//    analysis can never retune that deck on its own. With no tempo master
-//    deck yet, the audible playing deck it matches becomes the master first
-//    (keeping its tempo), so the synced deck follows it from then on. Every
-//    controller mapping that sends beatsync gets the CDJ button unchanged.
-//  - a synced deck that is not the tempo master ignores its tempo control
-//    (rate and the rate_perm_* buttons): only the master moves the tempo,
-//    for every synced deck. Mixxx otherwise lets any synced deck retune the
-//    whole group, the deck on air included. When sync turns off the deck
-//    keeps its tempo; a controller's soft takeover picks its fader up once
-//    the fader passes that tempo, as on the CDJ.
+//    analysis can never retune that deck on its own. With no playing tempo
+//    master deck, another audible playing deck becomes the master first
+//    (keeping its tempo), so the synced deck follows it from then on; with
+//    none, a deck that is itself on air becomes the master at its own tempo
+//    (never matched to a deck nobody hears). Every controller mapping that
+//    sends beatsync gets the CDJ button unchanged.
+//  - a synced deck that is not the tempo master ignores its tempo controls
+//    (rate, the rate_perm_* buttons, and bpm with bpm_up/bpm_down and
+//    tempo_tap): only the master moves the tempo, for every synced deck.
+//    Mixxx otherwise lets any synced deck retune the whole group, the deck on
+//    air included. When sync turns off the deck keeps its tempo; a
+//    controller's soft takeover picks its fader up once the fader passes
+//    that tempo, as on the CDJ.
+//  - a playing tempo master stays the master until it pauses, its track
+//    changes or MASTER hands it on: a closed channel fader or crossfader, or
+//    another deck's BEAT SYNC, never moves it (Mixxx's soft leader would
+//    follow the audible deck).
 namespace decklab::cdjsync {
 
 inline ConfigKey controlKey() {

@@ -70,6 +70,12 @@ void EngineSync::requestSyncMode(Syncable* pSyncable, SyncMode mode) {
         [[fallthrough]];
     }
     case SyncMode::Follower: {
+        if (pSyncable != m_pLeaderSyncable && cdjLeaderStays()) {
+            // r6-sync: a deck that syncs follows the playing tempo master,
+            // which stays the master, audible or not (CDJ BEAT SYNC).
+            activateFollower(pSyncable);
+            break;
+        }
         // This request is also used to verify and move a soft leader
         if (!m_pLeaderSyncable || m_pLeaderSyncable == pSyncable ||
                 m_pLeaderSyncable->getSyncMode() != SyncMode::LeaderExplicit) {
@@ -413,6 +419,13 @@ void EngineSync::notifyPlayingAudible(Syncable* pSyncable, bool playingAudible) 
 
     // similar to enablesync -- we pick a new leader and maybe reinit.
     Syncable* newLeader = pickLeader(pSyncable, playingAudible);
+    if (newLeader != m_pLeaderSyncable && cdjLeaderStays()) {
+        // r6-sync: a channel fader or the crossfader never moves the tempo
+        // master while it plays; only a pause, a new track or MASTER does,
+        // as on a CDJ. Mixxx's soft leader would follow the audible deck,
+        // and the tempo fader that leads would jump to the other deck.
+        newLeader = m_pLeaderSyncable;
+    }
 
     if (newLeader != nullptr && newLeader != m_pLeaderSyncable) {
         activateLeader(newLeader, SyncMode::LeaderSoft);
@@ -581,6 +594,40 @@ Syncable* EngineSync::pickNonSyncSyncTarget(EngineChannel* pDontPick) const {
     // No playing decks have a BPM. Go with the first deck that was stopped but
     // had a BPM.
     return pFirstNonplayingDeck;
+}
+
+Syncable* EngineSync::playingLeaderDeck() const {
+    if (m_pLeaderSyncable && m_pLeaderSyncable->getChannel() &&
+            m_pLeaderSyncable->isPlaying() &&
+            m_pLeaderSyncable->getBaseBpm().isValid()) {
+        return m_pLeaderSyncable;
+    }
+    return nullptr;
+}
+
+Syncable* EngineSync::pickAudiblePlayingDeck(EngineChannel* pDontPick) const {
+    Syncable* pFirst = nullptr;
+    for (Syncable* pSyncable : std::as_const(m_syncables)) {
+        EngineChannel* pChannel = pSyncable->getChannel();
+        if (pChannel == nullptr || pChannel == pDontPick ||
+                !pChannel->isPrimaryDeck() || !pChannel->isMainMixEnabled() ||
+                !pSyncable->getBaseBpm().isValid() ||
+                !pSyncable->isPlaying() || !pSyncable->isAudible()) {
+            continue;
+        }
+        if (pSyncable->isSynchronized()) {
+            return pSyncable;
+        }
+        if (pFirst == nullptr) {
+            pFirst = pSyncable;
+        }
+    }
+    return pFirst;
+}
+
+bool EngineSync::cdjLeaderStays() const {
+    return m_pCdjSync->toBool() && playingLeaderDeck() &&
+            m_pLeaderSyncable->isSynchronized();
 }
 
 bool EngineSync::otherSyncedPlaying(const QString& group) {

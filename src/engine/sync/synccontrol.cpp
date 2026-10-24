@@ -455,13 +455,19 @@ void SyncControl::slotControlBeatSync(double value) {
         if (isSynchronized()) {
             m_pChannel->getEngineBuffer()->requestEnableSync(false);
         } else if (getLocalBpm().isValid() && !m_pPassthroughEnabled->toBool()) {
-            // The deck follows the tempo master. With no master deck yet, the
-            // deck on air that Mixxx would match becomes the master first:
-            // it keeps its tempo, and this deck keeps following it.
-            if (!m_pEngineSync->getLeaderChannel()) {
-                Syncable* pTarget = m_pEngineSync->pickNonSyncSyncTarget(m_pChannel);
-                if (pTarget && pTarget->getChannel() && pTarget->isPlaying() && pTarget->isAudible()) {
-                    pTarget->getChannel()->getEngineBuffer()->requestSyncMode(SyncMode::LeaderSoft);
+            // The deck follows the tempo master. With no playing master deck,
+            // another deck on air becomes the master first: it keeps its
+            // tempo, and this deck keeps following it. With none, this deck,
+            // if it is on air, is the master itself at its own tempo: Mixxx
+            // would match it to a deck nobody hears (one in the headphones),
+            // retuning and seeking the deck on air.
+            if (!m_pEngineSync->playingLeaderDeck()) {
+                Syncable* pOnAir = m_pEngineSync->pickAudiblePlayingDeck(m_pChannel);
+                if (pOnAir) {
+                    pOnAir->getChannel()->getEngineBuffer()->requestSyncMode(SyncMode::LeaderSoft);
+                } else if (isPlaying() && isAudible()) {
+                    m_pChannel->getEngineBuffer()->requestSyncMode(SyncMode::LeaderSoft);
+                    return;
                 }
             }
             m_pChannel->getEngineBuffer()->requestEnableSync(true);
