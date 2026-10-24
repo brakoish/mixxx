@@ -27,6 +27,7 @@
 #include <QFuture>
 #include <QFutureWatcher>
 #include <QPersistentModelIndex>
+#include <QSqlDatabase>
 #include <QStringListModel>
 #include <QtConcurrentRun>
 #include <fstream>
@@ -81,6 +82,16 @@ class RekordboxFeature : public BaseExternalLibraryFeature {
     static void mergeDevices(TreeItemModel* model,
             std::vector<std::unique_ptr<TreeItem>> found,
             const std::function<void(TreeItem*)>& removed);
+    /// Deck Lab r6-keys: the columns read from rekordbox_library (its key_id
+    /// is read from the export's key text at import).
+    static QStringList libraryColumns();
+    /// Deck Lab r6-keys, for tests: the rekordbox_library table, and one
+    /// generated track row written through the import's own INSERT.
+    static bool createLibraryTableForTesting(QSqlDatabase& database);
+    static bool insertLibraryTrackForTesting(QSqlDatabase& database,
+            int rbId,
+            const QString& title,
+            const QString& keyText);
 
   public slots:
     void activate() override;

@@ -351,7 +351,10 @@ class DeckLabTrackCard : public QWidget {
     // Covers come from Mixxx's asynchronous CoverArtCache. Enable only where
     // the application created that cache (never in widget-only tests).
     void enableCovers();
-    void showTrack(const TrackPointer& track);
+    /// r6-keys: storedKeyText is the key its row stores (a rekordbox
+    /// export's "8A", a USB file's tag), shown when Mixxx has no key for the
+    /// track itself.
+    void showTrack(const TrackPointer& track, const QString& storedKeyText = QString());
     void showItem(decklab::Glyph glyph,
             const QString& title,
             const QString& subtitle,
@@ -388,7 +391,7 @@ class DeckLabTrackCard : public QWidget {
     QString m_album;
     QString m_genre;
     QString m_comment;
-    QString m_keyText; // r6-keys: as stored (tag, export or Mixxx's text)
+    QString m_keyText; // r6-keys: as stored (a key Mixxx could not read)
     decklab::ChromaticKey m_key = mixxx::track::io::key::INVALID;
     double m_bpm = 0;
     double m_duration = 0;

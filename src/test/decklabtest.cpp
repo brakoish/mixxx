@@ -55,9 +55,11 @@
 #include "library/libraryfeature.h"
 #include "library/librarycontrol.h"
 #include "library/library_prefs.h" // r6-keys
+#include "library/proxytrackmodel.h" // r6-keys
 #include "library/rekordbox/rekordboxfeature.h"
 #include "library/sidebarmodel.h"
 #include "library/treeitem.h"
+#include "test/decklabgeneratedfolder.h" // r6-keys
 #include "test/decklabpaintedtext.h" // r6-keys
 #include "test/signalpathtest.h"
 #include "mixer/playermanager.h"
@@ -84,6 +86,7 @@
 #include "widget/wlibrary.h"
 #include "widget/wlibrarysidebar.h"
 #include "widget/wsearchlineedit.h"
+#include "widget/wtracktableview.h" // r6-keys
 #include "widget/wwaveformviewer.h"
 #include "widget/woverview.h"
 #include "widget/controlwidgetconnection.h"
@@ -196,6 +199,8 @@ class NativeDeckLabTest : public BaseSignalPathTest {
         soundStatus = std::make_unique<ControlObject>(ConfigKey("[SoundManager]", "status"));
         // RecordingManager's status exists before the skin in the app.
         recordingStatus = std::make_unique<ControlObject>(ConfigKey("[Recording]", "status"));
+        // r6-keys: Library makes [Library],key_notation before the skin in the app.
+        keyNotation = std::make_unique<ControlObject>(mixxx::library::prefs::kKeyNotationConfigKey);
         players = std::make_unique<TestPlayers>(); players->decks={m_pMixerDeck1.get(),m_pMixerDeck2.get(),m_pMixerDeck3.get(),fourthDeck.get()};
         panel = std::make_unique<WDeckLab>(config(), nullptr, players.get(), m_pEffectsManager.get());
         sidebar = new WLibrarySidebar(panel.get()); sidebar->setModel(model.get());
@@ -215,7 +220,9 @@ class NativeDeckLabTest : public BaseSignalPathTest {
         panel->resize(800, 480); panel->show(); QCoreApplication::processEvents();
     }
     void TearDown() override {
-        panel.reset(); soundStatus.reset(); recordingStatus.reset(); players.reset(); navigation.reset(); model.reset(); source.reset();
+        panel.reset();
+        generatedRows.reset(); generatedFolder.reset(); keyNotation.reset(); // r6-keys: after the table
+        soundStatus.reset(); recordingStatus.reset(); players.reset(); navigation.reset(); model.reset(); source.reset();
         collection.reset(); autoDj.reset(); rekordbox.reset(); computer.reset();
         decklab::setUsbStickRootsForTesting({});
         fourthDeck.reset(); WaveformWidgetFactory::destroy(); BaseSignalPathTest::TearDown();
@@ -232,9 +239,49 @@ class NativeDeckLabTest : public BaseSignalPathTest {
     std::unique_ptr<LibraryControl> navigation;
     std::unique_ptr<ControlObject> soundStatus;
     std::unique_ptr<ControlObject> recordingStatus;
+    std::unique_ptr<ControlObject> keyNotation; // r6-keys
+    std::unique_ptr<DeckLabGeneratedFolder> generatedFolder; // r6-keys
+    std::unique_ptr<ProxyTrackModel> generatedRows;          // r6-keys
     std::unique_ptr<Deck> fourthDeck;
     WLibrarySidebar* sidebar = nullptr;
     WLibrary* library = nullptr;
+    // r6-keys: a Browse track table (Mixxx's WTrackTableView with Deck Lab's
+    // cells) over generated rows whose keys are stored text, as a USB folder
+    // or a rekordbox export hands them over: the library's current view.
+    WTrackTableView* installGeneratedTable(const QStringList& keys) {
+        generatedFolder = std::make_unique<DeckLabGeneratedFolder>(keys);
+        generatedRows = std::make_unique<ProxyTrackModel>(generatedFolder.get());
+        auto* table = new WTrackTableView(library, config(), nullptr, 1.0);
+        library->registerView(QStringLiteral("decklab-generated-table"), table);
+        table->loadTrackModel(generatedRows.get(), false);
+        library->switchToView(QStringLiteral("decklab-generated-table"));
+        return table;
+    }
+    // r6-keys: Browse's track level from the Decks page (USB library ›
+    // Genres › House shows the library's current view).
+    void openTrackLevel() {
+        panel->browsePress(); panel->browsePress();
+        const QPersistentModelIndex genres = model->index(0, 0, sidebar->rootIndex());
+        sidebar->selectIndex(genres); QCoreApplication::processEvents();
+        QTest::mouseClick(sidebar->viewport(), Qt::LeftButton, Qt::NoModifier, sidebar->visualRect(genres).center());
+        QCoreApplication::processEvents();
+        panel->browsePress(); QCoreApplication::processEvents(); settle();
+    }
+    // r6-keys: what a table's own KEY cell paints for each row, in row order.
+    static QString paintedKeys(QTableView* table, int column) {
+        QStringList keys;
+        QAbstractItemDelegate* cell = table->itemDelegateForColumn(column);
+        for (int row = 0; cell && row < table->model()->rowCount(); ++row) {
+            QStyleOptionViewItem option;
+            option.initFrom(table);
+            option.widget = table;
+            option.rect = QRect(0, 0, 120, 44); // wide: no text is cut
+            option.font = table->font();
+            option.state = QStyle::State_Enabled;
+            keys << DeckLabPaintedText::of(*cell, option, table->model()->index(row, column)).join(QLatin1Char('|'));
+        }
+        return keys.join(QLatin1Char(' '));
+    }
     DeckLabDeckStrip* strip(int deck) const {
         return panel->findChild<DeckLabDeckStrip*>(QStringLiteral("decklab-info-hit-%1").arg(deck));
     }
@@ -6491,23 +6538,15 @@ TEST_F(NativeDeckLabTest, KeyFormatSettingReachesEveryKeyLive) {
 }
 
 // r6-keys: a notation chosen in the desktop preferences (Mixxx's
-// [Library],key_notation) reaches Deck Lab too, its Settings row included.
+// [Library],key_notation) reaches Deck Lab too, its Settings row included;
+// quick changes settle on the last one; the config always says what is shown.
 TEST_F(NativeDeckLabTest, KeyFormatFollowsTheDesktopPreferences) {
     using namespace mixxx::track::io::key;
-    std::unique_ptr<ControlObject> owned;
-    if (!ControlObject::getControl(mixxx::library::prefs::kKeyNotationConfigKey, ControlFlag::NoWarnIfMissing)) {
-        // Library makes it before the skin in the app; the surface watches it from its start.
-        owned = std::make_unique<ControlObject>(mixxx::library::prefs::kKeyNotationConfigKey);
-        panel.reset();
-        panel = std::make_unique<WDeckLab>(config(), nullptr, players.get(), m_pEffectsManager.get());
-        for (int deck = 1; deck <= 4; ++deck) {
-            auto* slot = new QWidget(panel.get());
-            panel->addWaveform(slot, deck);
-            auto* overview = new QWidget(panel.get());
-            panel->addOverview(overview, deck);
-        }
-        panel->resize(800, 480); panel->show(); QCoreApplication::processEvents();
-    }
+    // From the start the config says what is shown: a missing value would
+    // read as Traditional in the desktop preferences, and their OK apply it.
+    EXPECT_EQ(QStringLiteral("Lancelot"), config()->getValueString(ConfigKey("[Key]", "KeyNotation")));
+    EXPECT_EQ(static_cast<double>(KeyUtils::KeyNotation::Lancelot),
+            ControlObject::get(mixxx::library::prefs::kKeyNotationConfigKey));
     loadGenerated(1, 122, A_MINOR); ProcessBuffer(); QTest::qWait(250); settle();
     EXPECT_EQ(QStringLiteral("8A"), strip(1)->state().key);
     ControlObject::set(mixxx::library::prefs::kKeyNotationConfigKey,
@@ -6522,9 +6561,155 @@ TEST_F(NativeDeckLabTest, KeyFormatFollowsTheDesktopPreferences) {
     ControlObject::set(mixxx::library::prefs::kKeyNotationConfigKey, static_cast<double>(KeyUtils::KeyNotation::Custom));
     settle();
     EXPECT_EQ(decklab::KeyFormat::Musical, decklab::keyFormat());
-    QMetaObject::invokeMethod(format, "activated", Q_ARG(int, 0)); settle();
+    // Two changes before the queued notifications run (two knob commits in
+    // one busy pass, or the desktop and Deck Lab at once) settle on the last
+    // one and stay: no notification is acted on with its old value.
+    ControlProxy notation(mixxx::library::prefs::kKeyNotationConfigKey);
+    int changes = 0;
+    notation.connectValueChanged(&notation, [&changes](double) { ++changes; });
+    QMetaObject::invokeMethod(format, "activated", Q_ARG(int, 0));
+    QMetaObject::invokeMethod(format, "activated", Q_ARG(int, 1));
+    changes = 0;
+    for (int pass = 0; pass < 6; ++pass) {
+        QCoreApplication::processEvents();
+        EXPECT_EQ(decklab::KeyFormat::OpenKey, decklab::keyFormat()) << pass;
+    }
+    EXPECT_EQ(0, changes) << "the notation swapped back and forth";
+    EXPECT_EQ(QStringLiteral("1m"), strip(1)->state().key);
+    ControlObject::set(mixxx::library::prefs::kKeyNotationConfigKey,
+            static_cast<double>(KeyUtils::KeyNotation::Traditional));
+    ControlObject::set(mixxx::library::prefs::kKeyNotationConfigKey,
+            static_cast<double>(KeyUtils::KeyNotation::Lancelot));
+    changes = 0;
+    for (int pass = 0; pass < 6; ++pass) {
+        QCoreApplication::processEvents();
+        EXPECT_EQ(decklab::KeyFormat::Lancelot, decklab::keyFormat()) << pass;
+    }
+    EXPECT_EQ(0, changes) << "the notation swapped back and forth";
     EXPECT_EQ(QStringLiteral("8A"), strip(1)->state().key);
+    EXPECT_EQ(0, format->currentIndex());
+    QMetaObject::invokeMethod(format, "activated", Q_ARG(int, 0)); settle();
     EXPECT_EQ(static_cast<double>(KeyUtils::KeyNotation::Lancelot),
             ControlObject::get(mixxx::library::prefs::kKeyNotationConfigKey));
+    // At start-up a value Deck Lab does not show is written as what it
+    // shows: the desktop's combined notations as the closest format, Custom
+    // and junk as Lancelot.
+    const auto restart = [this](const QString& saved) {
+        panel.reset();
+        config()->setValue(ConfigKey("[Key]", "KeyNotation"), saved);
+        panel = std::make_unique<WDeckLab>(config(), nullptr, players.get(), m_pEffectsManager.get());
+        for (int deck = 1; deck <= 4; ++deck) {
+            panel->addWaveform(new QWidget(panel.get()), deck);
+            panel->addOverview(new QWidget(panel.get()), deck);
+        }
+        panel->resize(800, 480); panel->show(); QCoreApplication::processEvents();
+        return config()->getValueString(ConfigKey("[Key]", "KeyNotation"));
+    };
+    EXPECT_EQ(QStringLiteral("OpenKey"), restart(QStringLiteral("OpenKey/Traditional")));
+    EXPECT_EQ(decklab::KeyFormat::OpenKey, decklab::keyFormat());
+    EXPECT_EQ(static_cast<double>(KeyUtils::KeyNotation::OpenKey),
+            ControlObject::get(mixxx::library::prefs::kKeyNotationConfigKey));
+    EXPECT_EQ(QStringLiteral("Traditional"), restart(QStringLiteral("Traditional")));
+    EXPECT_EQ(decklab::KeyFormat::Musical, decklab::keyFormat());
+    EXPECT_EQ(QStringLiteral("Lancelot"), restart(QStringLiteral("Custom")));
+    EXPECT_EQ(decklab::KeyFormat::Lancelot, decklab::keyFormat());
+    EXPECT_EQ(QStringLiteral("Lancelot"), restart(QStringLiteral("Lancelot/Traditional")));
+    // The Settings row, built after, shows the format on screen.
+    config()->setValue(ConfigKey("[Key]", "KeyNotation"), QStringLiteral("OpenKey/Traditional"));
+    ControlObject::set(mixxx::library::prefs::kKeyNotationConfigKey,
+            static_cast<double>(KeyUtils::KeyNotation::OpenKeyAndTraditional));
+    settle();
+    EXPECT_EQ(decklab::KeyFormat::OpenKey, decklab::keyFormat());
+    panel->selectPage(4); QCoreApplication::processEvents();
+    auto* row = panel->findChild<QComboBox*>(QStringLiteral("decklab-key-format"));
+    ASSERT_NE(nullptr, row);
+    EXPECT_EQ(1, row->currentIndex());
     panel.reset();
+}
+
+// r6-keys: Browse's track table, the surface the owner reported (the
+// library, a rekordbox USB, a USB folder: Mixxx's WTrackTableView with Deck
+// Lab's KEY cell). Keys stored as text ("Am", "F#m", Open Key "1d", "Ebm",
+// "12B", "4A") read in the chosen format; a format change repaints the rows
+// and a table sorted by key goes round the new wheel, with the same column and
+// order; text that is not a key stays as stored.
+TEST_F(NativeDeckLabTest, KeyFormatReachesTheLibraryTableLive) {
+    WTrackTableView* table = installGeneratedTable({QStringLiteral("Am"), QStringLiteral("F#m"), QStringLiteral("1d"),
+            QStringLiteral("Ebm"), QStringLiteral("Unknown"), QStringLiteral("12B"), QStringLiteral("4A")});
+    openTrackLevel();
+    ASSERT_TRUE(library->isVisible());
+    ASSERT_TRUE(table->isVisible());
+    const int keyColumn = 1;
+    ASSERT_NE(nullptr, table->itemDelegateForColumn(keyColumn));
+    EXPECT_TRUE(table->itemDelegateForColumn(keyColumn)->property("decklabKey").toBool());
+    const auto stored = [table] {
+        QStringList keys;
+        for (int row = 0; row < table->model()->rowCount(); ++row) {
+            keys << table->model()->index(row, 1).data().toString();
+        }
+        return keys.join(QLatin1Char(' '));
+    };
+    // Lancelot, sorted by KEY: round the Lancelot wheel, keyless first.
+    table->sortByColumn(keyColumn, Qt::AscendingOrder); settle();
+    EXPECT_EQ(QStringLiteral("Unknown Ebm 4A Am 1d F#m 12B"), stored());
+    EXPECT_EQ(QStringLiteral("Unknown 2A 4A 8A 8B 11A 12B"), paintedKeys(table, keyColumn));
+    capture(QStringLiteral("r6-keys-table-lancelot.png"));
+    // Open Key on the Settings row: the rows repaint and go round the Open
+    // Key wheel, though the column and order are the same.
+    struct PaintCounter : QObject {
+        int paints = 0;
+        bool eventFilter(QObject*, QEvent* event) override {
+            if (event->type() == QEvent::Paint) ++paints;
+            return false;
+        }
+    } counter;
+    table->viewport()->installEventFilter(&counter);
+    QComboBox* format = panel->findChild<QComboBox*>(QStringLiteral("decklab-key-format"));
+    ASSERT_NE(nullptr, format);
+    QMetaObject::invokeMethod(format, "activated", Q_ARG(int, 1)); settle(); QTest::qWait(30);
+    EXPECT_GT(counter.paints, 0);
+    EXPECT_EQ(keyColumn, table->horizontalHeader()->sortIndicatorSection());
+    EXPECT_EQ(Qt::AscendingOrder, table->horizontalHeader()->sortIndicatorOrder());
+    EXPECT_EQ(QStringLiteral("Unknown 1d Am F#m 12B Ebm 4A"), stored());
+    EXPECT_EQ(QStringLiteral("Unknown 1d 1m 4m 5d 7m 9m"), paintedKeys(table, keyColumn));
+    // Musical from the desktop preferences: names, in Open Key order (as Mixxx).
+    ControlObject::set(mixxx::library::prefs::kKeyNotationConfigKey,
+            static_cast<double>(KeyUtils::KeyNotation::Traditional));
+    settle(); QTest::qWait(30);
+    EXPECT_EQ(QStringLiteral("Unknown 1d Am F#m 12B Ebm 4A"), stored());
+    EXPECT_EQ(QString::fromUtf8("Unknown C Am F♯m E E♭m Fm"), paintedKeys(table, keyColumn));
+    capture(QStringLiteral("r6-keys-table-musical.png"));
+    // Not sorted by key: the rows only repaint ([Library],key_notation reaches
+    // the table itself).
+    table->sortByColumn(0, Qt::AscendingOrder); settle(); QTest::qWait(30);
+    counter.paints = 0;
+    QMetaObject::invokeMethod(format, "activated", Q_ARG(int, 0)); settle(); QTest::qWait(30);
+    EXPECT_GT(counter.paints, 0) << "the shown rows repaint in the new format";
+    table->viewport()->removeEventFilter(&counter);
+    EXPECT_EQ(QStringLiteral("Am F#m 1d Ebm Unknown 12B 4A"), stored());
+    EXPECT_EQ(QStringLiteral("8A 11A 8B 2A Unknown 12B 4A"), paintedKeys(table, keyColumn));
+}
+
+// r6-keys: in Mixes, a row whose stored key text is not a key ("Unknown")
+// shows that text, never "—" (a keyless reference deck ranks by tempo only).
+TEST_F(NativeDeckLabTest, KeyTextThatIsNotAKeyShowsAsStoredInMixes) {
+    loadGenerated(1, 122); ProcessBuffer(); QTest::qWait(250); settle();
+    installGeneratedTable({QStringLiteral("Am"), QStringLiteral("Unknown"), QStringLiteral("12B")});
+    panel->selectPage(1); QCoreApplication::processEvents(); settle();
+    ASSERT_TRUE(selectRow(QStringLiteral("Library")));
+    panel->browsePress(); QCoreApplication::processEvents(); settle();
+    auto* list = browseList(); ASSERT_NE(nullptr, list);
+    ASSERT_GE(list->count(), 1);
+    ASSERT_EQ(decklab::mixesTitle(1), list->item(0)->text());
+    list->setCurrentRow(0);
+    panel->browsePress(); QCoreApplication::processEvents(); settle();
+    QMap<QString, QString> keys;
+    for (int row = 0; row < list->count(); ++row) {
+        if (list->item(row)->data(DeckLabListDelegate::MixRole).toBool()) {
+            keys.insert(list->item(row)->text(), list->item(row)->data(DeckLabListDelegate::MixKeyRole).toString());
+        }
+    }
+    EXPECT_EQ(QStringLiteral("8A"), keys.value(QStringLiteral("Generated Tone 0")));
+    EXPECT_EQ(QStringLiteral("Unknown"), keys.value(QStringLiteral("Generated Tone 1")));
+    EXPECT_EQ(QStringLiteral("12B"), keys.value(QStringLiteral("Generated Tone 2")));
 }

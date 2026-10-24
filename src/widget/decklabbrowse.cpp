@@ -1338,7 +1338,7 @@ void DeckLabTrackCard::enableCovers() {
             });
 }
 
-void DeckLabTrackCard::showTrack(const TrackPointer& track) {
+void DeckLabTrackCard::showTrack(const TrackPointer& track, const QString& storedKeyText) {
     if (!track) {
         showItem(Glyph::Tracks, tr("Pick a track"), QString(), QString());
         return;
@@ -1356,11 +1356,20 @@ void DeckLabTrackCard::showTrack(const TrackPointer& track) {
     m_genre = track->getGenre().trimmed();
     m_comment = track->getComment().simplified();
     m_key = track->getKey();
-    // r6-keys: the stored text; painted through displayKey() so the chosen
-    // key format applies, and a change of format needs only a repaint.
-    m_keyText = track->getKeyText();
-    if (m_key == mixxx::track::io::key::INVALID && !m_keyText.isEmpty()) {
-        m_key = keyFromText(m_keyText);
+    // r6-keys: a key Mixxx has not read stays as its source stores it: the
+    // track's own key text, else its row's ("8A" from a rekordbox export, a
+    // USB file's tag). Painted through displayKey(): the chosen key format
+    // applies, a change of format is a repaint, and text that is not a key
+    // shows as stored, never as "—".
+    m_keyText.clear();
+    if (m_key == mixxx::track::io::key::INVALID) {
+        m_keyText = track->getKeys().getGlobalKeyText().trimmed();
+        if (m_keyText.isEmpty()) {
+            m_keyText = storedKeyText.trimmed();
+        }
+        if (!m_keyText.isEmpty()) {
+            m_key = keyFromText(m_keyText);
+        }
     }
     m_bpm = track->getBpm();
     m_duration = track->getDuration();

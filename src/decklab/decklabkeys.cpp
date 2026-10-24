@@ -156,13 +156,12 @@ void applyKeyFormat(KeyFormat format) {
 }
 
 KeyFormat keyFormatFromConfig(const QString& value) {
-    if (value == QStringLiteral("OpenKey") || value == QStringLiteral("OpenKeyAndTraditional")) {
-        return KeyFormat::OpenKey;
-    }
-    if (value == QStringLiteral("Traditional")) {
-        return KeyFormat::Musical;
-    }
-    return KeyFormat::Lancelot;
+    // Mixxx's own reading of the value ("OpenKey/Traditional" is notation 5,
+    // and so on), then the closest of the three; missing, Custom and unknown
+    // values read as Lancelot.
+    KeyFormat format = KeyFormat::Lancelot;
+    keyFormatFromNotation(static_cast<int>(KeyUtils::keyNotationFromString(value)), &format);
+    return format;
 }
 
 QString keyFormatConfigValue(KeyFormat format) {

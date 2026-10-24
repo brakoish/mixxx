@@ -388,7 +388,8 @@ void WTrackTableView::selectionChanged(
     // If 'selectedClick' is enabled Ctrl+click opens the editor instead of
     // toggling the clicked item.
     // TODO Remove or adjust version guard as soon as the bug is fixed.
-    if (m_pLibrary->selectedClickEnabled()) {
+    // r6-keys: tests show a table without a Library.
+    if (m_pLibrary && m_pLibrary->selectedClickEnabled()) {
         if (selectionModel()->selectedRows().size() > 1) {
             setSelectedClick(false);
         } else {

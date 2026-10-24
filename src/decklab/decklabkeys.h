@@ -38,9 +38,10 @@ void setKeyFormat(KeyFormat format);
 /// sort order and [Library],key_notation) to use the same notation.
 void applyKeyFormat(KeyFormat format);
 /// [Key] KeyNotation values: "Lancelot", "OpenKey", "Traditional" (kept for
-/// compatibility with Mixxx's preferences). Anything else (missing, the
-/// desktop's combined or custom notations) reads as the closest of the
-/// three: OpenKeyAndTraditional is Open Key, everything else Lancelot.
+/// compatibility with Mixxx's preferences). The desktop's combined values
+/// read as the closest of the three ("OpenKey/Traditional" is Open Key,
+/// "Lancelot/Traditional" Lancelot); missing, "Custom" and anything unknown
+/// read as Lancelot.
 KeyFormat keyFormatFromConfig(const QString& value);
 QString keyFormatConfigValue(KeyFormat format);
 /// Mixxx's KeyUtils::KeyNotation for the format, as a number.

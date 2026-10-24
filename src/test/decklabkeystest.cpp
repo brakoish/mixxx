@@ -6,6 +6,8 @@
 
 #include <QListWidget>
 #include <QSet>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QStandardItemModel>
 #include <QTableView>
 #include <algorithm>
@@ -13,11 +15,18 @@
 
 #include "control/controlobject.h"
 #include "decklab/decklabkeys.h"
+#include "library/columncache.h"
+#include "library/dao/trackschema.h"
 #include "library/library_prefs.h"
 #include "library/proxytrackmodel.h"
+#include "library/rekordbox/rekordboxfeature.h"
+#include "library/searchquery.h"
+#include "library/searchqueryparser.h"
 #include "library/trackmodel.h"
+#include "test/decklabgeneratedfolder.h"
 #include "test/decklabpaintedtext.h"
 #include "track/keyutils.h"
+#include "track/track.h"
 #include "widget/decklabbrowse.h"
 
 using namespace mixxx::track::io::key;
@@ -199,8 +208,11 @@ TEST(DeckLabBrowseMatchTest, KeyFormatKeepsMixxxsConfigValues) {
     // Missing or the desktop's other notations: the closest of the three.
     EXPECT_EQ(KeyFormat::Lancelot, decklab::keyFormatFromConfig(QString()));
     EXPECT_EQ(KeyFormat::Lancelot, decklab::keyFormatFromConfig(QStringLiteral("Custom")));
-    EXPECT_EQ(KeyFormat::Lancelot, decklab::keyFormatFromConfig(QStringLiteral("LancelotAndTraditional")));
-    EXPECT_EQ(KeyFormat::OpenKey, decklab::keyFormatFromConfig(QStringLiteral("OpenKeyAndTraditional")));
+    // The desktop preferences' combined notations, as Mixxx writes them
+    // (KEY_NOTATION_*_AND_TRADITIONAL).
+    EXPECT_EQ(KeyFormat::Lancelot, decklab::keyFormatFromConfig(QStringLiteral("Lancelot/Traditional")));
+    EXPECT_EQ(KeyFormat::OpenKey, decklab::keyFormatFromConfig(QStringLiteral("OpenKey/Traditional")));
+    EXPECT_EQ(KeyFormat::Lancelot, decklab::keyFormatFromConfig(QStringLiteral("Junk")));
     for (const auto format : {KeyFormat::Lancelot, KeyFormat::OpenKey, KeyFormat::Musical}) {
         EXPECT_EQ(format, decklab::keyFormatFromConfig(decklab::keyFormatConfigValue(format)));
         // Mixxx's preferences read the same value as the same notation.
@@ -301,76 +313,29 @@ TEST(DeckLabBrowseTest, KeyValuesFollowTheChosenFormatAndItsWheel) {
     }
 }
 
-namespace {
-
-// A USB folder's rows as Mixxx's file browser hands them to ProxyTrackModel:
-// the key tag as text, sorted by Qt::UserRole.
-class GeneratedFolderModel final : public QStandardItemModel, public TrackModel {
-  public:
-    explicit GeneratedFolderModel(const QStringList& keys)
-            : QStandardItemModel(static_cast<int>(keys.size()), 2),
-              TrackModel(QSqlDatabase(), "mixxx.db.model.decklab.keys.folder") {
-        for (int row = 0; row < keys.size(); ++row) {
-            auto* title = new QStandardItem(QStringLiteral("Generated Tone %1").arg(row));
-            title->setData(title->text(), Qt::UserRole);
-            setItem(row, 0, title);
-            auto* key = new QStandardItem(keys[row]);
-            key->setData(keys[row], Qt::UserRole);
-            setItem(row, 1, key);
-        }
+// The track card's KEY chip: the track's own key first; a track Mixxx has
+// no key for shows the key its row stores (a rekordbox export's "Am") in the
+// chosen format, and text that is not a key as stored, never "—".
+TEST(DeckLabBrowseTest, TrackCardShowsTheRowsKeyWhenTheTrackHasNone) {
+    DeckLabTrackCard card;
+    TrackPointer track = Track::newTemporary();
+    {
+        KeyFormatScope lancelot(KeyFormat::Lancelot);
+        card.showTrack(track, QStringLiteral("Am"));
+        EXPECT_EQ(QStringLiteral("8A"), card.keyText());
+        card.showTrack(track, QStringLiteral("Unknown"));
+        EXPECT_EQ(QStringLiteral("Unknown"), card.keyText());
+        card.showTrack(track);
+        EXPECT_EQ(QString(), card.keyText()); // painted as "—": nothing stored
+        track->setKey(C_MAJOR, mixxx::track::io::key::USER);
+        card.showTrack(track, QStringLiteral("Am"));
+        EXPECT_EQ(QStringLiteral("8B"), card.keyText());
     }
-    TrackPointer getTrack(const QModelIndex&) const override {
-        return {};
+    {
+        KeyFormatScope musical(KeyFormat::Musical);
+        EXPECT_EQ(QStringLiteral("C"), card.keyText()); // a format change is a repaint
     }
-    TrackPointer getTrackByRef(const TrackRef&) const override {
-        return {};
-    }
-    QUrl getTrackUrl(const QModelIndex&) const override {
-        return {};
-    }
-    QString getTrackLocation(const QModelIndex&) const override {
-        return {};
-    }
-    TrackId getTrackId(const QModelIndex&) const override {
-        return {};
-    }
-    CoverInfo getCoverInfo(const QModelIndex&) const override {
-        return {};
-    }
-    const QVector<int> getTrackRows(TrackId) const override {
-        return {};
-    }
-    void search(const QString&) override {
-    }
-    const QString currentSearch() const override {
-        return {};
-    }
-    bool isColumnInternal(int) override {
-        return false;
-    }
-    bool isColumnHiddenByDefault(int) override {
-        return false;
-    }
-    SortColumnId sortColumnIdFromColumnIndex(int index) const override {
-        return index == 1 ? SortColumnId::Key : SortColumnId::Title;
-    }
-    int columnIndexFromSortColumnId(SortColumnId column) const override {
-        return column == SortColumnId::Key ? 1 : column == SortColumnId::Title ? 0 : -1;
-    }
-    QString modelKey(bool) const override {
-        return QStringLiteral("decklab-keys-folder");
-    }
-    bool updateTrackGenre(Track*, const QString&) const override {
-        return false;
-    }
-#if defined(__EXTRA_METADATA__)
-    bool updateTrackMood(Track*, const QString&) const override {
-        return false;
-    }
-#endif
-};
-
-} // namespace
+}
 
 // A USB folder sorted by key goes round the wheel of the notation the
 // library shows ([Library],key_notation), not alphabetically ("10A" before
@@ -384,7 +349,7 @@ TEST(DeckLabBrowseTest, FolderTracksSortByKeyRoundTheWheel) {
     auto* notation = ControlObject::getControl(mixxx::library::prefs::kKeyNotationConfigKey);
     ASSERT_NE(nullptr, notation);
     const double before = notation->get();
-    GeneratedFolderModel folder({QStringLiteral("Am"), QStringLiteral("F#m"), QStringLiteral("1d"),
+    DeckLabGeneratedFolder folder({QStringLiteral("Am"), QStringLiteral("F#m"), QStringLiteral("1d"),
             QStringLiteral("Ebm"), QStringLiteral("Unknown"), QStringLiteral("G#m"), QStringLiteral("12B")});
     ProxyTrackModel proxy(&folder);
     const auto keys = [&proxy] {
@@ -400,12 +365,113 @@ TEST(DeckLabBrowseTest, FolderTracksSortByKeyRoundTheWheel) {
     EXPECT_EQ(QStringLiteral("Unknown G#m Ebm Am 1d F#m 12B"), keys());
     proxy.sort(1, Qt::DescendingOrder);
     EXPECT_EQ(QStringLiteral("12B F#m 1d Am Ebm G#m Unknown"), keys());
+    proxy.sort(1, Qt::AscendingOrder);
+    EXPECT_EQ(QStringLiteral("Unknown G#m Ebm Am 1d F#m 12B"), keys());
+    // A new notation, then the same column and order (what a format change
+    // does to a table sorted by key): Qt would skip it, the rows still go
+    // round the new wheel. 1d 1m 4m 5d 6m 7m
     notation->set(decklab::keyFormatNotation(KeyFormat::OpenKey));
     proxy.sort(1, Qt::AscendingOrder);
-    // 1d 1m 4m 5d 6m 7m
     EXPECT_EQ(QStringLiteral("Unknown 1d Am F#m 12B G#m Ebm"), keys());
+    proxy.sort(1, Qt::AscendingOrder); // and again: nothing moves
+    EXPECT_EQ(QStringLiteral("Unknown 1d Am F#m 12B G#m Ebm"), keys());
+    notation->set(decklab::keyFormatNotation(KeyFormat::Musical)); // Open Key order too, as Mixxx
+    proxy.sort(1, Qt::AscendingOrder);
+    EXPECT_EQ(QStringLiteral("Unknown 1d Am F#m 12B G#m Ebm"), keys());
+    notation->set(decklab::keyFormatNotation(KeyFormat::Lancelot));
+    proxy.sort(1, Qt::AscendingOrder);
+    EXPECT_EQ(QStringLiteral("Unknown G#m Ebm Am 1d F#m 12B"), keys());
     // Other columns still sort as text.
     proxy.sort(0, Qt::DescendingOrder);
     EXPECT_EQ(QStringLiteral("Generated Tone 6"), proxy.index(0, 0).data().toString());
+    notation->set(before);
+}
+
+// A rekordbox USB's rows through the import's own table and INSERT
+// (RekordboxFeature): each export key text ("Am" Classic, "8A" Alphanumeric)
+// gets its key_id at import, so the row reads in the chosen format, sorts round
+// the wheel (ColumnCache's CASE key_id, which failed on a table without it)
+// and key: / Match filters select by key. Generated rows, an in-memory table.
+TEST(DeckLabBrowseTest, RekordboxRowsReadSortAndFilterByKey) {
+    std::unique_ptr<ControlObject> owned;
+    if (!ControlObject::getControl(mixxx::library::prefs::kKeyNotationConfigKey, ControlFlag::NoWarnIfMissing)) {
+        owned = std::make_unique<ControlObject>(mixxx::library::prefs::kKeyNotationConfigKey);
+    }
+    auto* notation = ControlObject::getControl(mixxx::library::prefs::kKeyNotationConfigKey);
+    ASSERT_NE(nullptr, notation);
+    const double before = notation->get();
+    notation->set(decklab::keyFormatNotation(KeyFormat::Lancelot));
+    const QString connection = QStringLiteral("decklab-r6-keys-rekordbox");
+    {
+        QSqlDatabase database = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connection);
+        database.setDatabaseName(QStringLiteral(":memory:"));
+        ASSERT_TRUE(database.open());
+        ASSERT_TRUE(RekordboxFeature::createLibraryTableForTesting(database));
+        const QStringList stored{QStringLiteral("Am"), QStringLiteral("8A"), QStringLiteral("F#m"),
+                QStringLiteral("Ebm"), QStringLiteral("Unknown"), QString(), QStringLiteral("C")};
+        for (int row = 0; row < stored.size(); ++row) {
+            ASSERT_TRUE(RekordboxFeature::insertLibraryTrackForTesting(
+                    database, row + 1, QStringLiteral("Generated Tone %1").arg(row), stored[row]))
+                    << stored[row].toStdString();
+        }
+        // Every row imported, each with the key its text names (0: none).
+        QSqlQuery query(database);
+        ASSERT_TRUE(query.exec(QStringLiteral("SELECT key, key_id FROM rekordbox_library ORDER BY rb_id")));
+        QList<int> ids;
+        QStringList shown;
+        QStringList musical;
+        while (query.next()) {
+            ids << query.value(1).toInt();
+            // What the feature's model shows (KeyUtils' key-or-text rule),
+            // then Browse's KEY cell (displayKey) in each format.
+            const QString cell = KeyUtils::keyFromKeyTextAndIdFields(query.value(0), query.value(1)).toString();
+            shown << decklab::displayKey(cell);
+            KeyFormatScope scope(KeyFormat::Musical);
+            musical << decklab::displayKey(cell);
+        }
+        EXPECT_EQ((QList<int>{A_MINOR, A_MINOR, F_SHARP_MINOR, E_FLAT_MINOR, INVALID, INVALID, C_MAJOR}), ids);
+        EXPECT_EQ((QStringList{"8A", "8A", "11A", "2A", "Unknown", "", "8B"}), shown);
+        EXPECT_EQ((QStringList{"Am", "Am", QStringLiteral(u"F♯m"), QStringLiteral(u"E♭m"), "Unknown", "", "C"}),
+                musical);
+        // The feature's columns carry key_id, so the library's key sort and
+        // key filter apply. Sort as BaseSqlTableModel asks for it.
+        const QStringList columns = RekordboxFeature::libraryColumns();
+        ASSERT_TRUE(columns.contains(LIBRARYTABLE_KEY_ID));
+        ColumnCache cache(columns);
+        const auto keysInOrder = [&](const QString& where) {
+            QSqlQuery sorted(database);
+            const QString sql = QStringLiteral("SELECT key FROM rekordbox_library%1 ORDER BY %2, rb_id")
+                                        .arg(where.isEmpty() ? QString() : QStringLiteral(" WHERE ") + where,
+                                                cache.columnSortForFieldIndex(
+                                                        cache.fieldIndex(ColumnCache::COLUMN_LIBRARYTABLE_KEY)));
+            EXPECT_TRUE(sorted.exec(sql)) << sql.toStdString();
+            QStringList keys;
+            while (sorted.next()) {
+                keys << sorted.value(0).toString();
+            }
+            return keys.join(QLatin1Char(','));
+        };
+        // Lancelot: no key, 2A, 8A, 8A, 8B, 11A.
+        EXPECT_EQ(QStringLiteral("Unknown,,Ebm,Am,8A,C,F#m"), keysInOrder(QString()));
+        // Open Key (and Musical): no key, 1d, 1m, 1m, 4m, 7m.
+        notation->set(decklab::keyFormatNotation(KeyFormat::OpenKey));
+        EXPECT_EQ(QStringLiteral("Unknown,,C,Am,8A,F#m,Ebm"), keysInOrder(QString()));
+        notation->set(decklab::keyFormatNotation(KeyFormat::Lancelot));
+        // key: and the Match filter, parsed as BaseTrackCache parses them.
+        SearchQueryParser parser(nullptr, {LIBRARYTABLE_TITLE});
+        parser.setAvailableColumns(columns);
+        const auto where = [&parser](const QString& search) {
+            return parser.parseQuery(search, QString())->toSql();
+        };
+        EXPECT_EQ(QStringLiteral("Am,8A"), keysInOrder(where(QStringLiteral("key:8A"))));
+        EXPECT_EQ(QStringLiteral("Am,8A"), keysInOrder(where(QStringLiteral("key:Am"))));
+        decklab::MatchReference reference;
+        reference.deck = 1;
+        reference.key = A_MINOR;
+        // 8A, 8B, 7A and 9A: the two A minors and C major.
+        EXPECT_EQ(QStringLiteral("Am,8A,C"), keysInOrder(where(decklab::matchFilterQuery(reference))));
+        database.close();
+    }
+    QSqlDatabase::removeDatabase(connection);
     notation->set(before);
 }

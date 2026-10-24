@@ -699,10 +699,20 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     m_sideBySideWaveforms = m_config->getValue(ConfigKey("[DeckLab]", "WaveformLayout"), 0) == 1;
     // r6-keys: the saved key format for every surface and Mixxx's own tables;
     // a notation chosen in the desktop preferences reaches Deck Lab too.
-    decklab::applyKeyFormat(decklab::keyFormatFromConfig(m_config->getValueString(ConfigKey("[Key]", "KeyNotation"))));
-    watch(QStringLiteral("[Library]"), QStringLiteral("key_notation"), [this](double value) {
+    {
+        const QString saved = m_config->getValueString(ConfigKey("[Key]", "KeyNotation"));
+        const auto format = decklab::keyFormatFromConfig(saved);
+        // The config says what is shown (a missing value is otherwise read as
+        // Traditional by the desktop preferences, whose OK would apply it).
+        if (saved != decklab::keyFormatConfigValue(format)) m_config->setValue(ConfigKey("[Key]", "KeyNotation"), decklab::keyFormatConfigValue(format));
+        decklab::applyKeyFormat(format);
+    }
+    watch(QStringLiteral("[Library]"), QStringLiteral("key_notation"), [this](double) {
+        // The notation now, not the queued value: two quick changes never
+        // swap the format back and forth.
         decklab::KeyFormat format = decklab::keyFormat();
-        if (!decklab::keyFormatFromNotation(static_cast<int>(value), &format) || format == decklab::keyFormat()) return;
+        if (!decklab::keyFormatFromNotation(static_cast<int>(value(QStringLiteral("[Library]"), QStringLiteral("key_notation"))), &format) ||
+                format == decklab::keyFormat()) return;
         decklab::applyKeyFormat(format);
         if (auto* row = m_settings ? m_settings->findChild<QComboBox*>(QStringLiteral("decklab-key-format")) : nullptr) {
             row->setCurrentIndex(static_cast<int>(format));
@@ -3325,7 +3335,23 @@ void WDeckLab::refreshBrowseCard() {
     auto& b = *m_browseState;
     if (!b.card || !m_browseStack) return;
     if (b.list == DeckLabList::History && m_browseStack->currentIndex() == 0) { refreshHistoryCard(); return; } // r5-history
-    if (browseTrackLevel()) { b.card->showTrack(b.selectedTrack); return; } // r4-browse: Mixes too
+    if (browseTrackLevel()) { // r4-browse: Mixes too
+        // r6-keys: a track Mixxx has no key for shows the key its row stores
+        // (a rekordbox export's "8A", a USB file's tag), never "—".
+        QString stored;
+        if (b.selectedTrack && b.selectedTrack->getKey() == mixxx::track::io::key::INVALID) {
+            if (b.list == DeckLabList::Mixes && m_browseStack->currentIndex() == 0) {
+                if (const auto* item = b.items->currentItem()) stored = item->data(DeckLabListDelegate::MixKeyRole).toString();
+            } else if (auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr) {
+                auto* tracks = dynamic_cast<TrackModel*>(table->model());
+                const int column = tracks ? tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Key) : -1;
+                const QModelIndexList rows = table->selectionModel() ? table->selectionModel()->selectedRows() : QModelIndexList();
+                if (column >= 0 && rows.size() == 1) stored = rows.first().sibling(rows.first().row(), column).data().toString();
+            }
+        }
+        b.card->showTrack(b.selectedTrack, stored);
+        return;
+    }
     const QString openHint = tr("Turn or swipe to choose · press or tap to open");
     if (b.list == DeckLabList::Home || b.list == DeckLabList::Folder) {
         const QListWidgetItem* item = b.items->currentItem();
@@ -5208,13 +5234,17 @@ void WDeckLab::fillMixes(bool keepCurrent) {
     if (tracks && model && b.mixModel == model && b.mixModelRows == model->rowCount()) {
         const int titleColumn = tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Title);
         const int artistColumn = tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Artist);
+        const int keyColumn = tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Key); // r6-keys
         for (const auto& mix : decklab::rankMixes(b.mixCandidates, reference, mixSkipRow())) {
             const QModelIndex index = model->index(mix.row, 0);
             if (!index.isValid()) continue;
             QString title = titleColumn >= 0 ? model->index(mix.row, titleColumn).data().toString().trimmed() : QString();
             if (title.isEmpty()) title = QFileInfo(tracks->getTrackLocation(index)).completeBaseName();
             const QString relation = decklab::mixRelationText(mix.key, mix.bpm, reference);
-            const QString key = decklab::formatKey(mix.key); // r6-keys
+            // r6-keys: a key that is not one (no reference key ranks by tempo
+            // only) shows as its row stores it, never as "—".
+            const QString key = mix.key != mixxx::track::io::key::INVALID ? decklab::formatKey(mix.key)
+                    : keyColumn >= 0 ? model->index(mix.row, keyColumn).data().toString().trimmed() : QString();
             auto* item = new QListWidgetItem(title, b.items);
             item->setData(DeckLabListDelegate::MixRole, true);
             item->setData(DeckLabListDelegate::MixKeyRole, key);
@@ -5904,7 +5934,7 @@ void WDeckLab::refreshHistoryCard() {
     const QString joins = tr("A track joins when it plays on a deck the room hears");
     if (historyTrackLevel()) {
         if (b.selectedTrack) {
-            b.card->showTrack(b.selectedTrack);
+            b.card->showTrack(b.selectedTrack, kind == RowKind::Track ? item->data(KeyRole).toString() : QString()); // r6-keys
             return;
         }
         if (kind != RowKind::Track) {

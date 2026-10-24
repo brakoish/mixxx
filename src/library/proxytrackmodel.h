@@ -69,4 +69,7 @@ class ProxyTrackModel : public QSortFilterProxyModel, public TrackModel {
     TrackModel* m_pTrackModel;
     QString m_currentSearch;
     bool m_bHandleSearches;
+    // r6-keys: the key column goes round the Lancelot wheel (else Open Key's),
+    // as [Library],key_notation said when the last sort started.
+    bool m_lancelotKeyOrder = true;
 };

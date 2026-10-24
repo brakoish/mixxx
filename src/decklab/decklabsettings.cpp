@@ -550,8 +550,9 @@ void DeckLabSettingsPage::buildLibrary(QWidget* content) {
         m_keys->addOption(decklab::keyFormatName(format), decklab::keyFormatName(format), static_cast<int>(format));
     }
     m_keys->setHint(tr("How keys read in Browse, on the decks and in Match"));
-    m_keys->model()->setCurrentIndex(static_cast<int>(
-            decklab::keyFormatFromConfig(m_config->getValueString(ConfigKey("[Key]", "KeyNotation")))));
+    // The format on screen (applied from the config at start-up, or followed
+    // from the desktop preferences since), so the row never disagrees with it.
+    m_keys->model()->setCurrentIndex(static_cast<int>(decklab::keyFormat()));
     connect(m_keys->model(), qOverload<int>(&QComboBox::activated), this, [this](int index) {
         if (m_hooks.keyNotationChosen) {
             m_hooks.keyNotationChosen(m_keys->model()->itemData(index).toInt());
