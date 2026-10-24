@@ -559,6 +559,8 @@ void EngineBuffer::slotTrackLoading() {
     m_iTrackLoading = 1;
     m_pause.unlock();
 
+    // Deck Lab: a SYNC tap belongs to the old track, even on load and play.
+    m_iPhaseOnNextStart = 0;
     // Set play here, to signal the user that the play command is adopted
     m_playButton->set((double)m_bPlayAfterLoading);
     setTrackEndPosition(mixxx::audio::kInvalidFramePos); // Stop renderer
