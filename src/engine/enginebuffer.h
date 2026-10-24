@@ -141,8 +141,13 @@ class EngineBuffer : public EngineObject {
     void requestSyncPhase();
     /// Deck Lab: a SYNC tap (beatsync, beatsync_phase, beatsync_tempo) on a
     /// paused deck. The next PLAY start is phase-aligned even when Settings
-    /// say PLAY starts exactly where it is (decklabplaystart.h).
-    void requestPhaseOnNextStart();
+    /// say PLAY starts exactly where it is (decklabplaystart.h). An explicit
+    /// phase request (beatsync_phase) needs no Quantize; the others do.
+    void requestPhaseOnNextStart(bool explicitPhase);
+    /// Deck Lab: CueControl calls it just before a cue or hot cue preview is
+    /// released back to pause. The SYNC tap that the preview's start used
+    /// applies to the next start again.
+    void restorePhaseAfterPreview();
     void requestEnableSync(bool enabled);
     void requestSyncMode(SyncMode mode);
 
@@ -318,6 +323,8 @@ class EngineBuffer : public EngineObject {
     void processSeek(bool paused);
     /// Deck Lab: whether a quantized PLAY start phase-aligns this deck.
     bool alignsPlayStart() const;
+    /// Deck Lab: whether the SYNC tap a PLAY start took lines this deck up.
+    bool syncTapLinesUp(int syncTap) const;
     // For debugging / testing -- returns true if the previous buffer call resulted in a seek.
     FRIEND_TEST(EngineSyncTest, FollowerUserTweakPreservedInSyncDisable);
     bool previousBufferSeek() const {
@@ -495,8 +502,13 @@ class EngineBuffer : public EngineObject {
     // takes it before anything else, so it never reaches a later quantized
     // seek (a hot cue, loop or beat jump while playing).
     QAtomicInt m_iPlayStartExact;
-    // Armed by a SYNC tap while paused; the next PLAY start takes it.
+    // Armed by a SYNC tap while paused (kSyncTap* bits, enginebuffer.cpp);
+    // the next PLAY start takes it.
     QAtomicInt m_iPhaseOnNextStart;
+    // The SYNC tap a preview's start took, until the preview ends: released
+    // back to pause it is armed again; ended any other way (latched into play,
+    // goto and play, a new track) it has been used.
+    QAtomicInt m_iPhaseHeldByPreview;
     ControlValueAtomic<QueuedSeek> m_queuedSeek;
     bool m_previousBufferSeek = false;
 

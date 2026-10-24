@@ -54,6 +54,12 @@ constexpr int kPlaypositionUpdateRate = 15; // updates per second
 
 const QString kAppGroup = QStringLiteral("[App]");
 
+// Deck Lab: what a SYNC tap on a paused deck asked of its next PLAY start.
+// beatsync and beatsync_tempo line it up with Quantize on, like sync lock;
+// beatsync_phase asks for the phase outright, as it does on a playing deck.
+constexpr int kSyncTapQuantized = 1;
+constexpr int kSyncTapPhase = 2;
+
 } // anonymous namespace
 
 EngineBuffer::EngineBuffer(const QString& group,
@@ -98,6 +104,7 @@ EngineBuffer::EngineBuffer(const QString& group,
           m_bPrimaryDeck(PlayerManager::isDeckGroup(group)),
           m_iPlayStartExact(0),
           m_iPhaseOnNextStart(0),
+          m_iPhaseHeldByPreview(0),
           m_bPlayAfterLoading(false),
           m_channelCount(mixxx::kEngineChannelOutputCount),
           m_pCrossfadeBuffer(SampleUtil::alloc(
@@ -439,10 +446,17 @@ void EngineBuffer::requestSyncPhase() {
     m_iSeekPhaseQueued = 1;
 }
 
-void EngineBuffer::requestPhaseOnNextStart() {
+void EngineBuffer::requestPhaseOnNextStart(bool explicitPhase) {
     // A tap while playing is applied at once (requestSyncPhase or sync lock).
     if (!m_playButton->toBool()) {
-        m_iPhaseOnNextStart = 1;
+        m_iPhaseOnNextStart.fetchAndOrRelaxed(explicitPhase ? kSyncTapPhase : kSyncTapQuantized);
+    }
+}
+
+void EngineBuffer::restorePhaseAfterPreview() {
+    const int syncTap = m_iPhaseHeldByPreview.fetchAndStoreRelaxed(0);
+    if (syncTap != 0) {
+        m_iPhaseOnNextStart.fetchAndOrRelaxed(syncTap);
     }
 }
 
@@ -451,6 +465,17 @@ bool EngineBuffer::alignsPlayStart() const {
     return decklab::playStartAlignFromValue(m_playStartAlign.get()) ==
             decklab::PlayStartAlign::Quantize ||
             !m_bPrimaryDeck || m_pSyncControl->isSynchronized();
+}
+
+bool EngineBuffer::syncTapLinesUp(int syncTap) const {
+    if (!(syncTap & kSyncTapPhase) && !((syncTap & kSyncTapQuantized) && m_quantize.toBool())) {
+        return false;
+    }
+    // Only a playing deck gives a phase. With none, a phase seek would keep
+    // this deck's own phase from before the start, and a preview would land
+    // off its cue (BpmControl::getBeatMatchPosition).
+    const Syncable* pTarget = m_pEngineSync->pickNonSyncSyncTarget(m_pSyncControl->getChannel());
+    return pTarget && pTarget->getChannel()->getEngineBuffer()->getSpeed() != 0.0;
 }
 
 void EngineBuffer::requestEnableSync(bool enabled) {
@@ -561,6 +586,7 @@ void EngineBuffer::slotTrackLoading() {
 
     // Deck Lab: a SYNC tap belongs to the old track, even on load and play.
     m_iPhaseOnNextStart = 0;
+    m_iPhaseHeldByPreview = 0;
     // Set play here, to signal the user that the play command is adopted
     m_playButton->set((double)m_bPlayAfterLoading);
     setTrackEndPosition(mixxx::audio::kInvalidFramePos); // Stop renderer
@@ -624,6 +650,7 @@ void EngineBuffer::slotTrackLoaded(TrackPointer pTrack,
     m_queuedSeek.setValue(kNoQueuedSeek);
     // Deck Lab: a SYNC tap belongs to the track it was made on.
     m_iPhaseOnNextStart = 0;
+    m_iPhaseHeldByPreview = 0;
 
     // Reset the pitch value for the new track.
     m_pause.unlock();
@@ -691,6 +718,7 @@ void EngineBuffer::ejectTrack() {
 
     m_queuedSeek.setValue(kNoQueuedSeek);
     m_iPhaseOnNextStart = 0;
+    m_iPhaseHeldByPreview = 0;
 
     m_pause.unlock();
 
@@ -844,14 +872,23 @@ void EngineBuffer::slotControlPlayRequest(double v) {
     bool verifiedPlay = updateIndicatorsAndModifyPlay(v > 0.0, oldPlay);
 
     if (!oldPlay && verifiedPlay) {
-        // Deck Lab: every start takes a pending SYNC tap, used or not.
-        const bool phaseRequested = m_iPhaseOnNextStart.fetchAndStoreRelaxed(0) != 0;
-        if (m_quantize.toBool()
+        // Deck Lab: every start takes a pending SYNC tap, used or not; a
+        // preview holds it until it ends (restorePhaseAfterPreview).
+        const int syncTap = m_iPhaseOnNextStart.fetchAndStoreRelaxed(0);
+        m_iPhaseHeldByPreview = m_pCueControl->isPreviewing() ? syncTap : 0;
 #ifdef __VINYLCONTROL__
-                && m_pVinylControlControl && !m_pVinylControlControl->isEnabled()
+        const bool phaseSeekAllowed =
+                m_pVinylControlControl && !m_pVinylControlControl->isEnabled();
+#else
+        const bool phaseSeekAllowed = true;
 #endif
-        ) {
-            if (phaseRequested || alignsPlayStart()) {
+        if (phaseSeekAllowed) {
+            if (alignsPlayStart()) {
+                // Mixxx: a quantized start lands on the playing deck's beat.
+                if (m_quantize.toBool()) {
+                    requestSyncPhase();
+                }
+            } else if (syncTapLinesUp(syncTap)) {
                 requestSyncPhase();
             } else {
                 // CDJ: start exactly here, or at the cue a preview seeks to.
@@ -1397,6 +1434,11 @@ void EngineBuffer::processSeek(bool paused) {
     // queued with this PLAY start (hot cue or cue preview from pause).
     const bool exactStart = m_iPlayStartExact.fetchAndStoreRelaxed(0) != 0 &&
             !m_pSyncControl->isSynchronized();
+    // A preview that ended other than back to pause (CueControl hands that
+    // one back first) has used the SYNC tap it held.
+    if (atomicLoadRelaxed(m_iPhaseHeldByPreview) != 0 && !m_pCueControl->isPreviewing()) {
+        m_iPhaseHeldByPreview = 0;
+    }
 
     const QueuedSeek queuedSeek = m_queuedSeek.getValue();
 

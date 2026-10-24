@@ -15,6 +15,7 @@
 #include "test/mixxxtest.h"
 #include "test/mockedenginebackendtest.h"
 #include "track/beats.h"
+#include "track/track.h"
 
 namespace {
 constexpr double kMaxFloatingPointErrorLowPrecision = 0.005;
@@ -3250,6 +3251,17 @@ bool beatsAligned(const QString& reference, const QString& group) {
     return phaseError(distance - lastBeats) < 1e-9 || phaseError(distance - nextBeats) < 1e-9;
 }
 
+void pulse(const QString& group, const char* item) {
+    ControlObject::set(ConfigKey(group, item), 1.0);
+    ControlObject::set(ConfigKey(group, item), 0.0);
+}
+
+// The native touch SYNC: tempo and phase once, no lock.
+void touchSyncTap(const QString& group) {
+    pulse(group, "beatsync_tempo");
+    pulse(group, "beatsync_phase");
+}
+
 } // namespace
 
 TEST_F(EngineSyncTest, PlayStartMixxxAlignsUnsyncedDeckToPlayingDeck) {
@@ -3514,4 +3526,211 @@ TEST_F(EngineSyncTest, PlayStartMixxxHotCuePreviewKeepsThePausedPhase) {
     pHotCue2Activate->set(0.0);
     ProcessBuffer();
     EXPECT_DOUBLE_EQ(0.0, beatDistance(m_sGroup2));
+}
+
+TEST_F(EngineSyncTest, PlayStartSyncLockOnlySyncTapSurvivesACuePreview) {
+    ControlObject::set(kPlayStartAlign, 1.0);
+    playDeckOneOverPausedDeckTwo();
+    // The main cue at 0:00, where deck 2 waits.
+    pulse(m_sGroup2, "cue_set");
+    ProcessBuffer();
+    ASSERT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup2, "cue_point")));
+    touchSyncTap(m_sGroup2);
+    ProcessBuffer();
+    ASSERT_DOUBLE_EQ(130.0, ControlObject::get(ConfigKey(m_sGroup2, "bpm")));
+
+    // CUE held on the cue: the preview starts in phase, as the tap asked.
+    ControlObject::set(ConfigKey(m_sGroup2, "cue_default"), 1.0);
+    ProcessBuffer();
+    ASSERT_DOUBLE_EQ(1.0, ControlObject::get(ConfigKey(m_sGroup2, "play")));
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+    // Let go: back on the cue, paused.
+    ControlObject::set(ConfigKey(m_sGroup2, "cue_default"), 0.0);
+    ProcessBuffer();
+    ASSERT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup2, "play")));
+    ASSERT_DOUBLE_EQ(0.0, beatDistance(m_sGroup2));
+
+    // PLAY still starts in phase: the preview gave the tap back.
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_GT(std::abs(beatDistance(m_sGroup2) - kOneBufferAt100Bpm * 130 / 100), 0.01);
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+
+    // That start used it: the next one is exact.
+    parkDeckTwo();
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_NEAR(kOneBufferAt100Bpm * 130 / 100, beatDistance(m_sGroup2), 1e-9);
+    EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
+}
+
+TEST_F(EngineSyncTest, PlayStartSyncLockOnlySyncTapSurvivesAHotCuePreview) {
+    ControlObject::set(kPlayStartAlign, 1.0);
+    auto pHotCue2Activate = std::make_unique<ControlProxy>(m_sGroup2, "hotcue_1_activate");
+    playDeckOneOverPausedDeckTwo();
+    // A hot cue at 0:00, set while paused.
+    pHotCue2Activate->set(1.0);
+    ProcessBuffer();
+    pHotCue2Activate->set(0.0);
+    ProcessBuffer();
+    // A controller's single SYNC press this time.
+    pulse(m_sGroup2, "beatsync");
+    ProcessBuffer();
+    ASSERT_DOUBLE_EQ(130.0, ControlObject::get(ConfigKey(m_sGroup2, "bpm")));
+    ASSERT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup2, "sync_enabled")));
+
+    // The pad held: the preview starts in phase. Let go: back on the hot cue.
+    pHotCue2Activate->set(1.0);
+    ProcessBuffer();
+    ASSERT_DOUBLE_EQ(1.0, ControlObject::get(ConfigKey(m_sGroup2, "play")));
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+    pHotCue2Activate->set(0.0);
+    ProcessBuffer();
+    ASSERT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup2, "play")));
+    ASSERT_DOUBLE_EQ(0.0, beatDistance(m_sGroup2));
+
+    // PLAY still starts in phase.
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_GT(std::abs(beatDistance(m_sGroup2) - kOneBufferAt100Bpm * 130 / 100), 0.01);
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+}
+
+TEST_F(EngineSyncTest, PlayStartSyncLockOnlyCueHeldIntoPlayUsesTheSyncTap) {
+    ControlObject::set(kPlayStartAlign, 1.0);
+    playDeckOneOverPausedDeckTwo();
+    pulse(m_sGroup2, "cue_set");
+    ProcessBuffer();
+    touchSyncTap(m_sGroup2);
+    ProcessBuffer();
+
+    // CUE held, then PLAY (a toggle, as PLAY buttons send): the preview
+    // latches into play and keeps the phase it started with.
+    ControlObject::set(ConfigKey(m_sGroup2, "cue_default"), 1.0);
+    ProcessBuffer();
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 0.0);
+    ProcessBuffer();
+    ControlObject::set(ConfigKey(m_sGroup2, "cue_default"), 0.0);
+    ProcessBuffer();
+    ASSERT_DOUBLE_EQ(1.0, ControlObject::get(ConfigKey(m_sGroup2, "play")));
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+
+    // The tap is used: after a pause, PLAY starts exactly.
+    parkDeckTwo();
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_NEAR(kOneBufferAt100Bpm * 130 / 100, beatDistance(m_sGroup2), 1e-9);
+    EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
+}
+
+TEST_F(EngineSyncTest, PlayStartSyncLockOnlySyncTapWithNoOtherDeckIsIgnored) {
+    ControlObject::set(kPlayStartAlign, 1.0);
+    // Only deck 2 has a beat grid: there is no deck to sync to.
+    m_pTrack2->trySetBeats(mixxx::Beats::fromConstTempo(
+            m_pTrack2->getSampleRate(), mixxx::audio::kStartFramePos, mixxx::Bpm(100)));
+    ControlObject::set(ConfigKey(m_sGroup1, "quantize"), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "quantize"), 1.0);
+    ProcessBuffer();
+    touchSyncTap(m_sGroup2);
+    pulse(m_sGroup2, "beatsync");
+    ProcessBuffer();
+    ASSERT_DOUBLE_EQ(100.0, ControlObject::get(ConfigKey(m_sGroup2, "bpm")));
+
+    // Much later deck 1 gets a grid and plays. The taps that did nothing do
+    // not move deck 2's start.
+    m_pTrack1->trySetBeats(mixxx::Beats::fromConstTempo(
+            m_pTrack1->getSampleRate(), mixxx::audio::kStartFramePos, mixxx::Bpm(130)));
+    ControlObject::set(ConfigKey(m_sGroup1, "play"), 1.0);
+    ProcessBuffer();
+    ProcessBuffer();
+    ProcessBuffer();
+    ASSERT_DOUBLE_EQ(0.0, beatDistance(m_sGroup2));
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_DOUBLE_EQ(kOneBufferAt100Bpm, beatDistance(m_sGroup2));
+    EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
+}
+
+TEST_F(EngineSyncTest, PlayStartSyncLockOnlySyncTapWaitsForAPlayingDeck) {
+    ControlObject::set(kPlayStartAlign, 1.0);
+    auto pHotCue2Activate = std::make_unique<ControlProxy>(m_sGroup2, "hotcue_1_activate");
+    m_pTrack1->trySetBeats(mixxx::Beats::fromConstTempo(
+            m_pTrack1->getSampleRate(), mixxx::audio::kStartFramePos, mixxx::Bpm(130)));
+    m_pTrack2->trySetBeats(mixxx::Beats::fromConstTempo(
+            m_pTrack2->getSampleRate(), mixxx::audio::kStartFramePos, mixxx::Bpm(100)));
+    ControlObject::set(ConfigKey(m_sGroup1, "quantize"), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "quantize"), 1.0);
+    ProcessBuffer();
+    pHotCue2Activate->set(1.0);
+    ProcessBuffer();
+    pHotCue2Activate->set(0.0);
+    ProcessBuffer();
+
+    // Both decks paused: the tap matches deck 1's tempo now.
+    touchSyncTap(m_sGroup2);
+    ProcessBuffer();
+    ASSERT_DOUBLE_EQ(130.0, ControlObject::get(ConfigKey(m_sGroup2, "bpm")));
+
+    // Paused between beats (2.3 beats in) with nothing playing: a preview
+    // starts exactly on the hot cue, keeping no stale phase.
+    ControlObject::set(ConfigKey(m_sGroup2, "playposition"), 0.276);
+    ProcessBuffer();
+    ASSERT_NEAR(0.3, beatDistance(m_sGroup2), 1e-9);
+    pHotCue2Activate->set(1.0);
+    ProcessBuffer();
+    EXPECT_NEAR(kOneBufferAt100Bpm * 130 / 100, beatDistance(m_sGroup2), 1e-9);
+    pHotCue2Activate->set(0.0);
+    ProcessBuffer();
+    ASSERT_DOUBLE_EQ(0.0, beatDistance(m_sGroup2));
+
+    // Deck 1 starts. PLAY on deck 2 lines up now: the tap was kept for it.
+    ControlObject::set(ConfigKey(m_sGroup1, "play"), 1.0);
+    ProcessBuffer();
+    ProcessBuffer();
+    ProcessBuffer();
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_GT(std::abs(beatDistance(m_sGroup2) - kOneBufferAt100Bpm * 130 / 100), 0.01);
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+}
+
+TEST_F(EngineSyncTest, PlayStartSyncLockOnlySyncTapDoesNotCarryOverALoadAndPlay) {
+    ControlObject::set(kPlayStartAlign, 1.0);
+    playDeckOneOverPausedDeckTwo();
+    pulse(m_sGroup2, "beatsync_phase");
+    ProcessBuffer();
+
+    // Load and play a new track through the real loader, as a controller's
+    // LoadSelectedTrackAndPlay does: play is set while it loads.
+    const TrackPointer pTrack = Track::newTemporary(mixxx::FileAccess(
+            mixxx::FileInfo(getTestDir().filePath(QStringLiteral("sine-30.wav")))));
+    pTrack->setAudioProperties(mixxx::audio::ChannelCount(1),
+            mixxx::audio::SampleRate(44100),
+            mixxx::audio::Bitrate(),
+            mixxx::Duration::fromSeconds(30));
+    ASSERT_TRUE(pTrack->trySetBeats(mixxx::Beats::fromConstTempo(
+            mixxx::audio::SampleRate(44100), mixxx::audio::kStartFramePos, mixxx::Bpm(100))));
+    m_pMixerDeck2->slotLoadTrack(pTrack,
+#ifdef __STEM__
+            mixxx::StemChannelSelection(),
+#endif
+            true);
+    ProcessBuffer();
+    EngineBuffer* pBuffer2 = m_pChannel2->getEngineBuffer();
+    for (int i = 0; i < 2000; ++i) {
+        if (pBuffer2->getLoadedTrack() == pTrack && pBuffer2->isTrackLoaded()) {
+            break;
+        }
+        QTest::qSleep(1); // up to 2 s
+    }
+    ASSERT_EQ(pTrack, pBuffer2->getLoadedTrack());
+    ASSERT_TRUE(pBuffer2->isTrackLoaded());
+    ASSERT_DOUBLE_EQ(1.0, ControlObject::get(ConfigKey(m_sGroup2, "play")));
+
+    // The new track starts at 0:00, not on deck 1's beat.
+    ProcessBuffer();
+    ASSERT_DOUBLE_EQ(100.0, ControlObject::get(ConfigKey(m_sGroup2, "bpm")));
+    EXPECT_NEAR(kOneBufferAt100Bpm, beatDistance(m_sGroup2), 1e-9);
+    EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
 }

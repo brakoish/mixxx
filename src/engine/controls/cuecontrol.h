@@ -197,6 +197,10 @@ class CueControl : public EngineControl {
 
     void hintReader(gsl::not_null<HintVector*> pHintList) override;
     bool updateIndicatorsAndModifyPlay(bool newPlay, bool oldPlay, bool playPossible);
+    /// Deck Lab: a cue or hot cue preview holds play (decklabplaystart.h).
+    bool isPreviewing() const {
+        return m_currentlyPreviewingIndex.loadAcquire() != Cue::kNoHotCue;
+    }
     void updateIndicators();
     bool isTrackAtIntroCue();
     void resetIndicators();

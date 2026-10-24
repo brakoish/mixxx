@@ -419,8 +419,11 @@ void SyncControl::slotControlBeatSyncPhase(double value) {
         return;
     }
 
-    // Deck Lab: a paused deck cannot phase-seek now; keep it for PLAY.
-    m_pChannel->getEngineBuffer()->requestPhaseOnNextStart();
+    // Deck Lab: a paused deck cannot phase-seek now; keep it for PLAY, when
+    // there is another deck to line up with.
+    if (m_pEngineSync->pickNonSyncSyncTarget(getChannel())) {
+        m_pChannel->getEngineBuffer()->requestPhaseOnNextStart(true);
+    }
     m_pChannel->getEngineBuffer()->requestSyncPhase();
 }
 
@@ -428,8 +431,6 @@ void SyncControl::slotControlBeatSyncTempo(double value) {
     if (value == 0) {
         return;
     }
-    // Deck Lab: a SYNC tap on a paused deck also lines up the next PLAY.
-    m_pChannel->getEngineBuffer()->requestPhaseOnNextStart();
     // This request is a noop if we are already synced.
     const auto localBpm = getLocalBpm();
     if (isSynchronized() || !localBpm.isValid()) {
@@ -441,14 +442,19 @@ void SyncControl::slotControlBeatSyncTempo(double value) {
         return;
     }
 
+    // Deck Lab: a SYNC tap on a paused deck also lines up the next PLAY.
+    m_pChannel->getEngineBuffer()->requestPhaseOnNextStart(false);
     double multiplier = determineBpmMultiplier(fileBpm(), target->getBaseBpm());
     m_pRateRatio->set(target->getBpm() * multiplier / localBpm);
 }
 
 void SyncControl::slotControlBeatSync(double value) {
     if (value > 0) {
-        // Deck Lab: a paused deck syncs tempo now and phase on the next PLAY.
-        m_pChannel->getEngineBuffer()->requestPhaseOnNextStart();
+        // Deck Lab: a paused deck syncs tempo now and phase on the next PLAY,
+        // when there is another deck to line up with.
+        if (m_pEngineSync->pickNonSyncSyncTarget(getChannel())) {
+            m_pChannel->getEngineBuffer()->requestPhaseOnNextStart(false);
+        }
         m_pChannel->getEngineBuffer()->requestEnableSync(true);
         m_pChannel->getEngineBuffer()->requestEnableSync(false);
     }

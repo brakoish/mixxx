@@ -1198,6 +1198,8 @@ void CueControl::hotcueActivatePreview(HotcueControl* pControl, double value) {
     } else if (m_currentlyPreviewingIndex == index) {
         // This is a release of a previewing hotcue
         const mixxx::audio::FramePos position = pControl->getPreviewingPosition();
+        // Deck Lab: back to pause, a SYNC tap lines up the next start again.
+        getEngineBuffer()->restorePhaseAfterPreview();
         updateCurrentlyPreviewingIndex(Cue::kNoHotCue);
         m_pPlay->set(0.0);
         if (position.isValid()) {
@@ -1444,6 +1446,8 @@ void CueControl::cuePreview(double value) {
         seekAbs(mainCuePosition);
         m_pPlay->set(1.0);
     } else if (m_currentlyPreviewingIndex == kMainCueIndex) {
+        // Deck Lab: back to pause, a SYNC tap lines up the next start again.
+        getEngineBuffer()->restorePhaseAfterPreview();
         updateCurrentlyPreviewingIndex(Cue::kNoHotCue);
         m_pPlay->set(0.0);
         seekExact(mainCuePosition);
@@ -1502,6 +1506,8 @@ void CueControl::cueCDJ(double value) {
             }
         }
     } else if (m_currentlyPreviewingIndex == kMainCueIndex) {
+        // Deck Lab: back to pause, a SYNC tap lines up the next start again.
+        getEngineBuffer()->restorePhaseAfterPreview();
         updateCurrentlyPreviewingIndex(Cue::kNoHotCue);
         m_pPlay->set(0.0);
         // Need to unlock before emitting any signals to prevent deadlock.
@@ -1551,6 +1557,8 @@ void CueControl::cueDenon(double value) {
             seekExact(mainCuePosition);
         }
     } else if (m_currentlyPreviewingIndex == kMainCueIndex) {
+        // Deck Lab: back to pause, a SYNC tap lines up the next start again.
+        getEngineBuffer()->restorePhaseAfterPreview();
         updateCurrentlyPreviewingIndex(Cue::kNoHotCue);
         m_pPlay->set(0.0);
         seekExact(mainCuePosition);
@@ -1577,6 +1585,10 @@ void CueControl::cuePlay(double value) {
     // pressed
     if (value > 0) {
         if (freely_playing) {
+            if (isPreviewing()) {
+                // Deck Lab: back to pause, a SYNC tap lines up the next start again.
+                getEngineBuffer()->restorePhaseAfterPreview();
+            }
             updateCurrentlyPreviewingIndex(Cue::kNoHotCue);
             m_pPlay->set(0.0);
             seekAbs(mainCuePosition);

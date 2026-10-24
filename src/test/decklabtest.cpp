@@ -6400,8 +6400,10 @@ TEST_F(NativeDeckLabTest, SettingsPlayStartsRowSwitchesLiveByTouchAndKnob) {
     EXPECT_EQ(QStringLiteral("On the other deck's beat (Mixxx)"), row->model()->itemText(1));
     EXPECT_EQ(0, row->model()->itemData(1).toInt());
     EXPECT_EQ(0, row->currentIndex()) << "the native default: exactly where it is";
-    // The reason line tells what still lines decks up.
-    EXPECT_TRUE(row->hint().contains(QStringLiteral("Sync lock")));
+    // The reason line tells what still lines decks up, and that it takes
+    // Quantize (sync lock and a controller's SYNC need it for the phase).
+    EXPECT_TRUE(row->hint().startsWith(QStringLiteral("Quantize on:")));
+    EXPECT_TRUE(row->hint().contains(QStringLiteral("sync lock")));
     EXPECT_TRUE(row->hint().contains(QStringLiteral("SYNC before PLAY")));
     capture(QStringLiteral("settings-decks-play-start.png"));
 
@@ -6475,4 +6477,43 @@ TEST_F(NativeDeckLabTest, TouchPlayStartsExactlyWhileAnotherDeckPlaysAndSyncTapL
     EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel2]", "play")));
     EXPECT_NEAR(ControlObject::get(ConfigKey("[Channel1]", "beat_distance")),
             ControlObject::get(ConfigKey("[Channel2]", "beat_distance")), 1e-6);
+}
+
+TEST_F(NativeDeckLabTest, TouchSyncTapLinesUpPlayAfterACueHoldAndWithoutQuantize) {
+    // r6-playstart: SYNC on the paused deck, then CUE held to listen and let
+    // go. The preview starts in phase, and PLAY after it still does: a
+    // preview back to pause leaves the tap for the next start.
+    m_pMixerDeck1->loadFakeTrack(false, 128); m_pMixerDeck2->loadFakeTrack(false, 130); ProcessBuffer();
+    const auto get = [](const char* group, const char* item) { return ControlObject::get(ConfigKey(group, item)); };
+    ASSERT_DOUBLE_EQ(1, get("[Channel2]", "quantize"));
+    ControlObject::set(ConfigKey("[Channel2]", "playposition"), .21);
+    ControlObject::set(ConfigKey("[Channel1]", "play"), 1); ProcessBuffer(); ProcessBuffer(); settle();
+    auto* cue = panel->findChild<QPushButton*>("decklab-2-cue_default"); ASSERT_NE(nullptr, cue);
+    auto* play = panel->findChild<QPushButton*>("decklab-2-play"); ASSERT_NE(nullptr, play);
+    auto* sync = panel->findChild<QPushButton*>("decklab-2-beatsync"); ASSERT_NE(nullptr, sync);
+    // CUE on the paused deck sets the cue where it waits.
+    QTest::mousePress(cue, Qt::LeftButton); QTest::mouseRelease(cue, Qt::LeftButton); settle(); ProcessBuffer();
+    ASSERT_DOUBLE_EQ(0, get("[Channel2]", "play"));
+    ASSERT_NE(-1, get("[Channel2]", "cue_point"));
+    sync->click(); settle(); ProcessBuffer();
+    ASSERT_NEAR(128, get("[Channel2]", "bpm"), 1e-6);
+    QTest::mousePress(cue, Qt::LeftButton); settle(); ProcessBuffer();
+    ASSERT_DOUBLE_EQ(1, get("[Channel2]", "play"));
+    EXPECT_NEAR(get("[Channel1]", "beat_distance"), get("[Channel2]", "beat_distance"), 1e-6);
+    QTest::mouseRelease(cue, Qt::LeftButton); settle(); ProcessBuffer();
+    ASSERT_DOUBLE_EQ(0, get("[Channel2]", "play"));
+    play->click(); settle(); ProcessBuffer();
+    ASSERT_DOUBLE_EQ(1, get("[Channel2]", "play"));
+    EXPECT_NEAR(get("[Channel1]", "beat_distance"), get("[Channel2]", "beat_distance"), 1e-6);
+
+    // The touch SYNC asks for the phase outright, so it needs no Quantize
+    // (as on a playing deck).
+    play->click(); settle(); ProcessBuffer();
+    ASSERT_DOUBLE_EQ(0, get("[Channel2]", "play"));
+    ControlObject::set(ConfigKey("[Channel2]", "quantize"), 0);
+    ControlObject::set(ConfigKey("[Channel2]", "playposition"), .21); ProcessBuffer(); settle();
+    sync->click(); settle(); ProcessBuffer();
+    play->click(); settle(); ProcessBuffer();
+    ASSERT_DOUBLE_EQ(1, get("[Channel2]", "play"));
+    EXPECT_NEAR(get("[Channel1]", "beat_distance"), get("[Channel2]", "beat_distance"), 1e-6);
 }
