@@ -98,7 +98,7 @@ fixes everything the 6-lens review confirmed (see "Review fixes").
 - Tests: `NativeDeckLabTest.NewSetKnobFollowsTheControllersRealSequences` (push-turn, Numark and SB2 Shift+press,
   a hold under a menu, press twice, full hold with its release press, hold then turn), `track_level` assertions;
   the smoke checks `track_level` (0 on the sets, 1 on a set's track) and loads empty deck 3 through
-  `[Channel3] LoadSelectedTrack`, expecting exactly the highlighted track.
+  `LoadSelectedTrack`, expecting exactly the highlighted track.
 
 ## Renders
 `local/wt/audit/screens/r5-history/` (not committed):

@@ -904,21 +904,21 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                              auto* tile = static_cast<DeckLabDockTile*>(surface->findChild<QPushButton*>(QStringLiteral("decklab-load-3")));
                              if (!tile || !tile->loadReady()) failures->append(QStringLiteral("History track not loadable from the dock"));
                              // r5-fix-history: a controller's LOAD on this list level
-                             // ([DeckLabNative] track_level) loads exactly this row
-                             // (into empty deck 3; nothing plays).
+                             // ([DeckLabNative] track_level) loads exactly this row.
+                             // The same LoadSelectedTrack path, into the preview deck
+                             // (loaded, never played), so no deck layer changes.
                              if (ControlObject::get(ConfigKey(QStringLiteral("[DeckLabNative]"), QStringLiteral("track_level"))) != 1)
                                  failures->append(QStringLiteral("History track row does not report track_level"));
                              const int wanted = item ? item->data(decklab::history::TrackIdRole).toInt() : -1;
-                             ControlObject::set(ConfigKey(QStringLiteral("[Channel3]"), QStringLiteral("LoadSelectedTrack")), 1);
-                             ControlObject::set(ConfigKey(QStringLiteral("[Channel3]"), QStringLiteral("LoadSelectedTrack")), 0);
+                             ControlObject::set(ConfigKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("LoadSelectedTrack")), 1);
+                             ControlObject::set(ConfigKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("LoadSelectedTrack")), 0);
                              QTimer::singleShot(700, surface, [surface, failures, wanted] {
-                                 const TrackPointer loaded = PlayerInfo::instance().getTrackInfo(QStringLiteral("[Channel3]"));
+                                 const TrackPointer loaded = PlayerInfo::instance().getTrackInfo(QStringLiteral("[PreviewDeck1]"));
                                  if (!loaded || loaded->getId().toVariant().toInt() != wanted)
                                      failures->append(QStringLiteral("Controller LOAD from History loaded another track"));
-                                 // Empty again, so later captures see the decks as before.
-                                 ControlObject::set(ConfigKey(QStringLiteral("[Channel3]"), QStringLiteral("eject")), 1);
-                                 ControlObject::set(ConfigKey(QStringLiteral("[Channel3]"), QStringLiteral("eject")), 0);
-                                 surface->selectPage(1); // a load returns to Decks
+                                 ControlObject::set(ConfigKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("eject")), 1);
+                                 ControlObject::set(ConfigKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("eject")), 0);
+                                 if (surface->currentPage() != 1) surface->selectPage(1);
                              });
                          });
                          return true;
