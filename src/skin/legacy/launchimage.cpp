@@ -19,8 +19,10 @@ bool isIn2024ChristmasHolidays() {
 } // namespace
 
 LaunchImage::LaunchImage(QWidget* pParent, const QString& styleSheet)
-        : QWidget(pParent) {
-    if (isIn2024ChristmasHolidays()) {
+        : QWidget(pParent),
+          m_pImageAndBar(nullptr) {
+    // Deck Lab: a skin's own launch image is never replaced by the holiday logo.
+    if (styleSheet.isEmpty() && isIn2024ChristmasHolidays()) {
         setStyleSheet(
                 "LaunchImage { background-color: #202020; }"
                 "QLabel { "
@@ -82,12 +84,24 @@ LaunchImage::LaunchImage(QWidget* pParent, const QString& styleSheet)
     hbox->addStretch();
     hbox->addLayout(vbox);
     hbox->addStretch();
+    m_pImageAndBar = vbox;
 }
 
 void LaunchImage::progress(int value, const QString& serviceName) {
     m_pProgressBar->setValue(value);
     // TODO: show serviceName
     Q_UNUSED(serviceName);
+}
+
+int LaunchImage::spacing() const {
+    return m_pImageAndBar ? m_pImageAndBar->spacing() : -1;
+}
+
+void LaunchImage::setSpacing(int spacing) {
+    // Set from the skin's style sheet (qproperty-spacing) when the widget is polished.
+    if (m_pImageAndBar) {
+        m_pImageAndBar->setSpacing(spacing);
+    }
 }
 
 void LaunchImage::paintEvent(QPaintEvent *)

@@ -77,7 +77,7 @@
     "res/decklab/performance.lv2/manifest.ttl": "76dd1e71e94b34e62346367e06dafc92ac2541cf7ef3e0007ad837b2b1fcfac9",
     "res/decklab/performance.lv2/performance.ttl": "7e7dd46eaaff88d0d6457973eaeddf01d003beeaa50ede2cf2f0f0c6a3392f49",
     "res/skins/DeckLab/LICENSE": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
-    "res/skins/DeckLab/skin.xml": "617183030d5df6ab1868848ce793d21b4739466f8ebde5cfd993b8904eb3999e",
+    "res/skins/DeckLab/skin.xml": "993ef25e152f91275839cc70cdf73bb10475597c7effc47fe949e94392aa5c0b",
     "src/coreservices.cpp": "597671d7f56fdb45a968ec18eb802e06acc2f5713ce6bfe6e4b634448f41d1b3",
     "src/effects/backends/effectprocessor.h": "941a3caf9bbee5651f5285ad9afb38c8735ca51c3be1b719cf8582f0be22dc1f",
     "src/effects/backends/lv2/lv2backend.cpp": "458f972ebb7cb22ae65bc756374c4d840de958a6cb156db753e559ed7e3bda4b",
