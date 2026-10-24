@@ -2,9 +2,12 @@
 
 #include <gtest/gtest_prod.h>
 
+#include <memory>
+
 #include "engine/sync/syncable.h"
 #include "preferences/usersettings.h"
 
+class ControlObject;
 class InternalClock;
 class EngineChannel;
 
@@ -167,4 +170,7 @@ class EngineSync : public SyncableListener {
     Syncable* m_pLeaderSyncable;
     /// The list of all Syncables registered via addSyncableDeck.
     QList<Syncable*> m_syncables;
+    /// r6-sync: [DeckLab],cdj_sync, Deck Lab's CDJ BEAT SYNC rules
+    /// (engine/sync/decklabcdjsync.h). 0, Mixxx's behaviour, by default.
+    std::unique_ptr<ControlObject> m_pCdjSync;
 };

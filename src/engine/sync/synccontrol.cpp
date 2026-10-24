@@ -7,6 +7,7 @@
 #include "engine/controls/bpmcontrol.h"
 #include "engine/enginebuffer.h"
 #include "engine/enginemixer.h"
+#include "engine/sync/decklabcdjsync.h"
 #include "engine/sync/enginesync.h"
 #include "mixer/playermanager.h"
 #include "moc_synccontrol.cpp"
@@ -96,6 +97,11 @@ SyncControl::SyncControl(const QString& group,
             Qt::DirectConnection);
 
     m_pQuantize = new ControlProxy(group, "quantize", this);
+
+    // r6-sync: Deck Lab's CDJ BEAT SYNC rules, off unless the native
+    // surface turns them on (EngineSync creates the control).
+    m_pCdjSync = new ControlProxy(
+            decklab::cdjsync::controlKey(), this, ControlFlag::AllowMissingOrInvalid);
 
     // BPMControl and RateControl will be initialized later.
 }
@@ -442,6 +448,26 @@ void SyncControl::slotControlBeatSyncTempo(double value) {
 }
 
 void SyncControl::slotControlBeatSync(double value) {
+    if (value > 0 && m_pCdjSync->toBool() && m_pChannel->isPrimaryDeck()) {
+        // r6-sync: a deck's beatsync is the CDJ's BEAT SYNC button: sync
+        // lock on or off. Never on without a tempo, so a later analysis
+        // cannot retune the deck by itself (decklabcdjsync.h).
+        if (isSynchronized()) {
+            m_pChannel->getEngineBuffer()->requestEnableSync(false);
+        } else if (getLocalBpm().isValid() && !m_pPassthroughEnabled->toBool()) {
+            // The deck follows the tempo master. With no master deck yet, the
+            // deck on air that Mixxx would match becomes the master first:
+            // it keeps its tempo, and this deck keeps following it.
+            if (!m_pEngineSync->getLeaderChannel()) {
+                Syncable* pTarget = m_pEngineSync->pickNonSyncSyncTarget(m_pChannel);
+                if (pTarget && pTarget->getChannel() && pTarget->isPlaying() && pTarget->isAudible()) {
+                    pTarget->getChannel()->getEngineBuffer()->requestSyncMode(SyncMode::LeaderSoft);
+                }
+            }
+            m_pChannel->getEngineBuffer()->requestEnableSync(true);
+        }
+        return;
+    }
     if (value > 0) {
         m_pChannel->getEngineBuffer()->requestEnableSync(true);
         m_pChannel->getEngineBuffer()->requestEnableSync(false);

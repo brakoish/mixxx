@@ -2,8 +2,10 @@
 
 #include <QMetaType>
 
+#include "control/controlobject.h"
 #include "engine/channels/enginechannel.h"
 #include "engine/enginebuffer.h"
+#include "engine/sync/decklabcdjsync.h"
 #include "engine/sync/internalclock.h"
 #include "util/assert.h"
 #include "util/logger.h"
@@ -20,6 +22,9 @@ EngineSync::EngineSync(UserSettingsPointer pConfig)
           m_pLeaderSyncable(nullptr) {
     qRegisterMetaType<SyncMode>("SyncMode");
     m_pInternalClock->updateLeaderBpm(kDefaultBpm);
+    // r6-sync: created before any deck, so the decks' sync and rate controls
+    // can read it; the native Deck Lab surface sets it.
+    m_pCdjSync = std::make_unique<ControlObject>(decklab::cdjsync::controlKey());
 }
 
 EngineSync::~EngineSync() {

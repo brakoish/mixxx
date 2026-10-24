@@ -157,6 +157,8 @@ class SyncControl : public EngineControl, public Syncable {
     ControlProxy* m_pPassthroughEnabled;
     ControlProxy* m_pSyncPhaseButton;
     ControlProxy* m_pQuantize;
+    // r6-sync: [DeckLab],cdj_sync (engine/sync/decklabcdjsync.h)
+    ControlProxy* m_pCdjSync;
 
     // m_pBeats is written from an engine worker thread
     mixxx::BeatsPointer m_pBeats;

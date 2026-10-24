@@ -10,6 +10,7 @@
 #include "engine/controls/bpmcontrol.h"
 #include "engine/controls/enginecontrol.h"
 #include "engine/positionscratchcontroller.h"
+#include "engine/sync/decklabcdjsync.h"
 #include "mixer/playermanager.h"
 #include "moc_ratecontrol.cpp"
 #include "util/rotary.h"
@@ -105,6 +106,10 @@ RateControl::RateControl(const QString& group, UserSettingsPointer pConfig)
           m_pVCMode(nullptr),
           m_syncMode(group, QStringLiteral("sync_mode")),
           m_slipEnabled(group, QStringLiteral("slip_enabled")),
+          m_cdjSync(decklab::cdjsync::controlKey(), ControlFlag::AllowMissingOrInvalid),
+          m_internalClockLeader(QStringLiteral("[InternalClock]"),
+                  QStringLiteral("sync_leader"),
+                  ControlFlag::AllowMissingOrInvalid),
           m_wrapAroundCount(0),
           m_jumpPos(mixxx::audio::FramePos()),
           m_targetPos(mixxx::audio::FramePos()),
@@ -291,6 +296,13 @@ void RateControl::slotRateRangeChanged(double) {
 }
 
 void RateControl::slotRateSliderChanged(double v) {
+    if (tempoFollowsMaster()) {
+        // r6-sync: as on a CDJ, a synced deck that is not the tempo master
+        // ignores its tempo fader (and rate_perm_*): the slider goes back to
+        // the tempo sync set, before anything retunes the sync group.
+        slotRateRatioChanged(m_pRateRatio->get());
+        return;
+    }
     double rateRatio = 1.0 + m_pRateDir->get() * m_pRateRange->get() * v;
     m_pRateRatio->set(rateRatio);
 }
@@ -395,6 +407,14 @@ double RateControl::getJogFactor() const {
 
 SyncMode RateControl::getSyncMode() const {
     return syncModeFromDouble(m_syncMode.get());
+}
+
+bool RateControl::tempoFollowsMaster() const {
+    // r6-sync: a follower while a deck leads. When the internal clock leads
+    // (Mixxx's "lock BPM" algorithm), every deck is a follower and the faders
+    // keep Mixxx's behaviour, or no deck could change the tempo.
+    return m_cdjSync.toBool() && getSyncMode() == SyncMode::Follower &&
+            !m_internalClockLeader.toBool();
 }
 
 double RateControl::calculateSpeed(double baserate,
