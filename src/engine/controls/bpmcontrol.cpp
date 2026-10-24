@@ -6,6 +6,7 @@
 #include "control/controlpushbutton.h"
 #include "engine/effects/groupfeaturestate.h"
 #include "engine/enginebuffer.h"
+#include "engine/sync/decklabcdjsync.h"
 #include "moc_bpmcontrol.cpp"
 #include "track/beatutils.h"
 #include "track/track.h"
@@ -66,6 +67,10 @@ BpmControl::BpmControl(const QString& group,
           // Measures distance from last beat in percentage: 0.5 = half-beat away.
           m_pThisBeatDistance(group, QStringLiteral("beat_distance")),
           m_pSyncMode(group, QStringLiteral("sync_mode")),
+          m_cdjSync(decklab::cdjsync::controlKey(), ControlFlag::AllowMissingOrInvalid),
+          m_internalClockLeader(QStringLiteral("[InternalClock]"),
+                  QStringLiteral("sync_leader"),
+                  ControlFlag::AllowMissingOrInvalid),
           m_bpmTapFilter(this, kBpmTapFilterLength, kBpmTapMaxInterval),
           m_tempoTapFilter(this, kBpmTapFilterLength, kBpmTapMaxInterval),
           m_dSyncInstantaneousBpm(0.0),
@@ -1140,6 +1145,15 @@ void BpmControl::slotUpdateRateSlider(double value) {
 
     double localBpm = m_pLocalBpm->get();
     if (localBpm == 0.0) {
+        return;
+    }
+
+    if (tempoFollowsMaster()) {
+        // r6-sync: as on a CDJ, a synced deck that is not the tempo master
+        // ignores a tempo written as bpm (bpm_up/bpm_down, tempo_tap, a
+        // mapping's BPM): bpm goes back to the tempo sync set, before the
+        // rate ratio could retune the sync group.
+        m_pEngineBpm->set(localBpm * m_pRateRatio->get());
         return;
     }
 

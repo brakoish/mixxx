@@ -7,6 +7,7 @@
 #include "engine/controls/bpmcontrol.h"
 #include "engine/enginebuffer.h"
 #include "engine/enginemixer.h"
+#include "engine/sync/decklabcdjsync.h"
 #include "engine/sync/enginesync.h"
 #include "mixer/playermanager.h"
 #include "moc_synccontrol.cpp"
@@ -96,6 +97,11 @@ SyncControl::SyncControl(const QString& group,
             Qt::DirectConnection);
 
     m_pQuantize = new ControlProxy(group, "quantize", this);
+
+    // r6-sync: Deck Lab's CDJ BEAT SYNC rules, off unless the native
+    // surface turns them on (EngineSync creates the control).
+    m_pCdjSync = new ControlProxy(
+            decklab::cdjsync::controlKey(), this, ControlFlag::AllowMissingOrInvalid);
 
     // BPMControl and RateControl will be initialized later.
 }
@@ -449,6 +455,32 @@ void SyncControl::slotControlBeatSyncTempo(double value) {
 }
 
 void SyncControl::slotControlBeatSync(double value) {
+    if (value > 0 && m_pCdjSync->toBool() && m_pChannel->isPrimaryDeck()) {
+        // r6-sync: a deck's beatsync is the CDJ's BEAT SYNC button: sync
+        // lock on or off. Never on without a tempo, so a later analysis
+        // cannot retune the deck by itself (decklabcdjsync.h).
+        if (isSynchronized()) {
+            m_pChannel->getEngineBuffer()->requestEnableSync(false);
+        } else if (getLocalBpm().isValid() && !m_pPassthroughEnabled->toBool()) {
+            // The deck follows the tempo master. With no playing master deck,
+            // another deck on air becomes the master first: it keeps its
+            // tempo, and this deck keeps following it. With none, this deck,
+            // if it is on air, is the master itself at its own tempo: Mixxx
+            // would match it to a deck nobody hears (one in the headphones),
+            // retuning and seeking the deck on air.
+            if (!m_pEngineSync->playingLeaderDeck()) {
+                Syncable* pOnAir = m_pEngineSync->pickAudiblePlayingDeck(m_pChannel);
+                if (pOnAir) {
+                    pOnAir->getChannel()->getEngineBuffer()->requestSyncMode(SyncMode::LeaderSoft);
+                } else if (isPlaying() && isAudible()) {
+                    m_pChannel->getEngineBuffer()->requestSyncMode(SyncMode::LeaderSoft);
+                    return;
+                }
+            }
+            m_pChannel->getEngineBuffer()->requestEnableSync(true);
+        }
+        return;
+    }
     if (value > 0) {
         // Deck Lab: a paused deck syncs tempo now and phase on the next PLAY,
         // when there is another deck to line up with.

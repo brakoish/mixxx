@@ -96,6 +96,9 @@ private:
   double getJogFactor() const;
   double getWheelFactor() const;
   SyncMode getSyncMode() const;
+  // r6-sync: this deck follows a tempo master deck, so its tempo control
+  // does nothing (Deck Lab's CDJ BEAT SYNC rules).
+  bool tempoFollowsMaster() const;
 
   // Set rate change of the temporary pitch rate
   void setRateTemp(double v);
@@ -149,6 +152,10 @@ private:
 
   PollingControlProxy m_syncMode;
   PollingControlProxy m_slipEnabled;
+  // r6-sync: [DeckLab],cdj_sync (engine/sync/decklabcdjsync.h), and whether
+  // the internal clock leads (then no deck is the tempo master).
+  PollingControlProxy m_cdjSync;
+  PollingControlProxy m_internalClockLeader;
 
   // Values used when temp and perm rate buttons are pressed
   static ControlValueAtomic<double> m_dTemporaryRateChangeCoarse;

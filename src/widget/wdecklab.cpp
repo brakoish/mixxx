@@ -83,6 +83,9 @@
 #include "widget/decklabsamplercontrols.h" // r4-sampler
 #include "widget/decklabpads.h" // r4-decks: pad modes
 #include "widget/decklabdecktools.h" // r5-decks: key sheet and GRID mode
+#include "widget/decklabsync.h" // r6-sync: SYNC, MASTER and INST DOUBLES
+#include "widget/decklabmoreknob.h" // r6-sync: the knob in MORE
+#include "engine/sync/decklabcdjsync.h" // r6-sync: the engine's CDJ BEAT SYNC rules
 #include "widget/decklabbrowsedock.h"
 #include "widget/decklabbrowsehome.h"
 #include "widget/decklabbrowselegend.h"
@@ -260,10 +263,9 @@ const QString kDialogStyle = QStringLiteral(R"(
  QPushButton:disabled {color:#4B525C;border-color:#1E2228;}
  )");
 const QColor kFxLamp(0xf2, 0xf4, 0xf7);
-// A SYNC press held this long toggles sync lock instead of matching once.
+// r6-sync: a SYNC press held this long is INST DOUBLES (on a stopped deck),
+// not BEAT SYNC.
 constexpr int kSyncHoldMs = 500;
-// How long the one-shot match reads MATCHED.
-constexpr qint64 kSyncFeedbackMs = 1000;
 // Layer follow ignores controller traffic right after start-up and right
 // after a track load (mapping initialisation and load-time engine resets).
 constexpr qint64 kFollowStartupGraceMs = 1200;
@@ -930,6 +932,22 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
         tools.setSetting = [this](const QString& item, const QString& value) { m_config->set(ConfigKey(QStringLiteral("[DeckLab]"), item), ConfigValue(value)); };
         m_deckTools = new DeckLabDeckTools(tools, m_deckGrid, this);
     }
+    // r6-sync: SYNC as on a CDJ-3000 (widget/decklabsync.h), and the engine's
+    // half of it for every controller (engine/sync/decklabcdjsync.h).
+    {
+        DeckLabSync::Host host;
+        host.read = [this](int deck, const QString& item) { return value(channel(deck), item); };
+        host.write = [this](int deck, const QString& item, double v) { set(channel(deck), item, v); };
+        m_sync = std::make_unique<DeckLabSync>(std::move(host));
+        const ConfigKey cdjSync = decklab::cdjsync::controlKey();
+        control(cdjSync.group, cdjSync.item)->set(1);
+        // A mapping's SYNC hold: [DeckLabNative],inst_doubles = N (then 0) is
+        // INST DOUBLES on deck N, with the touch rules (a stopped deck only).
+        createControl(kNative, QStringLiteral("inst_doubles"));
+        watch(kNative, QStringLiteral("inst_doubles"), [this](double v) {
+            if (v >= 1 && v <= 4) m_sync->instantDoubles(static_cast<int>(v));
+        });
+    }
     m_deckControls = buildDecks();
     m_pages->addWidget(buildBrowse());
     m_pages->addWidget(buildSampler());
@@ -1091,6 +1109,9 @@ WDeckLab::~WDeckLab() {
     releaseTouchCue();
     releaseEffects();
     set(kNative, "active", 0);
+    // r6-sync: without the native surface, Mixxx's own sync behaviour.
+    const ConfigKey cdjSync = decklab::cdjsync::controlKey();
+    control(cdjSync.group, cdjSync.item)->set(0);
 }
 
 QString WDeckLab::channel(int deck) const {
@@ -1152,24 +1173,18 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
     auto makeAction = [this, strip, target, prefix](const QString& label, const QString& item, bool checked = false) {
         auto pressed = std::make_shared<std::pair<int, quint64>>(0, 0);
         // Four-deck Play acts on touch-down, like a player's PLAY; the other
-        // actions (toggles, loop sizes, the one-shot SYNC) act on release.
+        // actions (toggles, loop sizes, SYNC) act on release.
         const bool onPress = item == QStringLiteral("play") && prefix.startsWith(QStringLiteral("decklab-card-"));
-        // A SYNC press held past kSyncHoldMs toggled the lock: its release
-        // must not also match once.
+        // r6-sync: a SYNC press held past kSyncHoldMs that loaded INST
+        // DOUBLES, or held on a playing deck, must not toggle sync on release.
         auto heldSync = std::make_shared<bool>(false);
         const auto perform = [this, prefix, item](int actual) {
             if (item == "play" || item == "quantize" || item == "keylock" || item == "slip_enabled")
                 set(channel(actual), item, !value(channel(actual), item));
             else if (item == "loop_halve" || item == "loop_double" || item == "beatloop_activate")
                 pulse(channel(actual), item);
-            else if (item == "beatsync") {
-                // Explicit tempo + phase once, independent of Quantize; no
-                // lock (hold SYNC for the lock). The readout says MATCHED.
-                pulse(channel(actual), QStringLiteral("beatsync_tempo"));
-                pulse(channel(actual), QStringLiteral("beatsync_phase"));
-                m_syncFeedbackUntil[actual - 1] = m_clock.elapsed() + kSyncFeedbackMs;
-                markDeckDirty(actual);
-            }
+            else if (item == "beatsync")
+                m_sync->tap(actual); // r6-sync: BEAT SYNC on or off; the lamp follows sync_enabled
             refreshTransport(actual, prefix);
         };
         auto* b = button(label, [this, target, prefix, pressed, perform, onPress, heldSync] {
@@ -1209,18 +1224,17 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
             connect(b, &QPushButton::pressed, hold, qOverload<>(&QTimer::start));
             connect(b, &QPushButton::released, hold, &QTimer::stop);
             connect(hold, &QTimer::timeout, this, [this, b, target, prefix, pressed, heldSync] {
-                // Same stale-press guards as a tap: same deck, same epoch, a
-                // loaded track, and the finger still on the button.
+                // Same stale-press guards as a tap: same deck, same epoch,
+                // and the finger still on the button. r6-sync: the hold is
+                // INST DOUBLES, which loads only onto a stopped deck (empty
+                // or cued). On a playing deck the hold does nothing, its
+                // release included; on a stopped deck with nothing to copy
+                // the release is still a tap (DeckLabSync::hold).
                 const int actual = pressed->first;
-                if (!b->isDown() || pressed->second != m_interactionEpoch || actual != target() ||
-                        value(channel(actual), "track_loaded") <= 0) return;
-                *heldSync = true;
-                const QString group = channel(actual);
-                set(group, QStringLiteral("sync_enabled"), value(group, QStringLiteral("sync_enabled")) > 0 ? 0 : 1);
-                m_syncFeedbackUntil[actual - 1] = 0;
+                if (!b->isDown() || pressed->second != m_interactionEpoch || actual != target()) return;
+                *heldSync = m_sync->hold(actual);
                 m_transport[prefix].shown = TransportState();
                 refreshTransport(actual, prefix);
-                markDeckDirty(actual);
             });
         }
         if (item == "cue_default") {
@@ -1300,6 +1314,26 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
                 makeAction(tr("KEY LOCK"), QStringLiteral("keylock"), true), key,
                 makeAction(tr("SLIP"), QStringLiteral("slip_enabled"), true)};
     };
+    // r6-sync: MASTER (take the tempo master, or hand it on) and INST DOUBLES
+    // (the hold on SYNC, for the knob and for anyone who does not know it).
+    const auto syncKeys = [this, target, prefix](QWidget* owner, QMenu* menu) {
+        auto* master = button(tr("MASTER"), [this, target, prefix] {
+            m_transport[prefix].shown = TransportState();
+            m_sync->toggleMaster(target());
+            refreshTransport(target(), prefix);
+        }, owner, prefix + QStringLiteral("master"));
+        auto* doubles = button(tr("INST DOUBLES"), [this, target, menu] {
+            menu->close();
+            m_sync->instantDoubles(target());
+        }, owner, prefix + QStringLiteral("doubles"));
+        for (auto* key : {master, doubles}) {
+            key->setStyleSheet(kActionStyle); key->setFixedHeight(44); key->setMinimumWidth(44);
+        }
+        master->setCheckable(true);
+        m_transport[prefix].master = master;
+        m_transport[prefix].doubles = doubles;
+        return QList<QWidget*>{master, doubles};
+    };
     if (followsLayer) {
         // r4-decks: SYNC over MORE, the right-hand column of the side's pad
         // block. The loop row became LOOP mode on the pads (any length in
@@ -1314,11 +1348,13 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
         auto* play = makeAction(tr("PLAY"), QStringLiteral("play"), true);
         auto* cue = makeAction(tr("CUE (hold)"), QStringLiteral("cue_default"));
         addGroup(sheet, rows, tr("PLAY"), {play, cue});
+        addGroup(sheet, rows, tr("SYNC"), syncKeys(sheet, menu)); // r6-sync
         addGroup(sheet, rows, tr("DECK"), deckKeys(sheet, menu)); // r5-decks: + KEY
         addGroup(sheet, rows, tr("TRACK"), trackKeys(sheet, menu));
         addGroup(sheet, rows, tr("VIEW"), zoomKeys(sheet));
         sheet->setMinimumWidth(320);
         auto* widgetAction = new QWidgetAction(menu); widgetAction->setDefaultWidget(sheet); menu->addAction(widgetAction);
+        new DeckLabMoreKnob(menu, sheet); // r6-sync: MASTER and INST DOUBLES by knob too
         connect(menu, &QMenu::aboutToShow, this, [this, target, prefix] { refreshTransport(target(), prefix); });
         connect(menu, &QMenu::aboutToHide, this, [this, play, cue] {
             releaseTouchCue(); play->setDown(false); cue->setDown(false);
@@ -1350,11 +1386,13 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
         // class in four-deck view.
         addGroup(content, rows, tr("PADS"), {});
         rows->addWidget(buildPads(deck, false, content));
+        addGroup(content, rows, tr("SYNC"), syncKeys(content, menu)); // r6-sync
         addGroup(content, rows, tr("DECK"), deckKeys(content, menu)); // r5-decks: + KEY
         addGroup(content, rows, tr("TRACK"), trackKeys(content, menu));
         addGroup(content, rows, tr("VIEW"), zoomKeys(content));
         content->setMinimumWidth(392);
         auto* widgetAction = new QWidgetAction(menu); widgetAction->setDefaultWidget(content); menu->addAction(widgetAction);
+        new DeckLabMoreKnob(menu, content); // r6-sync: MASTER and INST DOUBLES by knob too
         connect(menu, &QMenu::aboutToShow, this, [this, deck] { refreshTransport(deck, m_cardPrefixes[deck - 1]); });
         watch(kTab, "current", [menu](double) { menu->close(); });
         watch(kNative, "layout_decks", [menu](double) { menu->close(); });
@@ -3643,7 +3681,6 @@ void WDeckLab::refreshDeck(int deck) {
             ? QStringLiteral("±%1%").arg(QString::number(range * 100, 'g', 3)) : QString();
     state.master = state.loaded && d.leader->get() > 0;
     state.sync = state.loaded && d.sync->get() > 0;
-    state.matched = state.loaded && m_clock.elapsed() < m_syncFeedbackUntil[deck - 1];
     state.pfl = d.pfl->get() > 0;
     state.slip = state.loaded && d.slip->get() > 0;
     state.keylock = state.loaded && d.keylock->get() > 0;
@@ -3883,13 +3920,6 @@ bool WDeckLab::deckShown(int deck) const {
 
 void WDeckLab::tickDecks() {
     const qint64 now = m_clock.elapsed();
-    for (int deck = 1; deck <= 4; ++deck) {
-        // An expired one-shot Sync acknowledgment repaints exactly once.
-        if (m_syncFeedbackUntil[deck - 1] && now >= m_syncFeedbackUntil[deck - 1]) {
-            m_syncFeedbackUntil[deck - 1] = 0;
-            markDeckDirty(deck);
-        }
-    }
     connectControllerFx();
     // r4-labfx: the Lab FX tab is lit while an effect plays (on any page)
     // and blinks with the beat while its tail rings out.
@@ -3979,15 +4009,20 @@ void WDeckLab::refreshTransport(int deck, const QString& prefix) {
     state.keylock = d.keylock->get() > 0;
     state.slip = d.slip->get() > 0;
     state.synced = state.loaded && d.sync->get() > 0;
-    state.feedback = m_clock.elapsed() < m_syncFeedbackUntil[deck - 1];
+    // r6-sync: MASTER and what INST DOUBLES would copy (a few control reads).
+    state.master = state.loaded && d.leader->get() > 0;
+    state.canMaster = m_sync->canMaster(deck);
+    state.doubles = m_sync->doublesSource(deck);
     state.size = d.loopSize->get();
     // Cached buttons and an unchanged state: no lookups and no widget writes.
     if (state == t.shown) return;
     t.shown = state;
     if (t.more)
-        setAccessibleNameIf(t.more, (card ? tr("Deck %1 more: pads, quantize, key lock, slip, track information, grid and zoom")
-                                          : tr("Deck %1 more: play, cue, quantize, key lock, slip, track information, grid and zoom")).arg(deck));
-    for (auto* b : {t.play, t.cue, t.sync, t.halve, t.loop, t.twice, t.quantize, t.keylock, t.slip}) setEnabledIf(b, state.loaded);
+        setAccessibleNameIf(t.more, (card ? tr("Deck %1 more: pads, master, instant doubles, quantize, key lock, slip, track information, grid and zoom")
+                                          : tr("Deck %1 more: play, cue, master, instant doubles, quantize, key lock, slip, track information, grid and zoom")).arg(deck));
+    for (auto* b : {t.play, t.cue, t.halve, t.loop, t.twice, t.quantize, t.keylock, t.slip}) setEnabledIf(b, state.loaded);
+    // r6-sync: an empty deck's SYNC still holds for INST DOUBLES.
+    setEnabledIf(t.sync, state.loaded || state.doubles > 0);
     if (t.play) {
         // A fixed play/pause glyph; the green lamp says it is playing.
         setCheckedIf(t.play, state.playing);
@@ -4015,12 +4050,28 @@ void WDeckLab::refreshTransport(int deck, const QString& prefix) {
         setAccessibleNameIf(t.slip, tr("Deck %1 slip %2").arg(deck).arg(state.slip ? tr("on") : tr("off")));
     }
     if (t.sync) {
-        // Tap: match once (outlined acknowledgment, MATCHED on the readout).
-        // Hold: sync lock on or off, lit filled while locked.
-        setStylePropertyIf(t.sync, "actionFeedback", state.feedback);
+        // r6-sync: BEAT SYNC. Tap: on or off, lit filled while on. Hold on a
+        // stopped deck: INST DOUBLES.
         setStylePropertyIf(t.sync, "lit", state.synced);
-        setAccessibleNameIf(t.sync, tr("Deck %1 sync, %2").arg(deck).arg(state.synced ? tr("locked") : tr("not locked")));
-        setAccessibleDescriptionIf(t.sync, tr("Tap to match tempo and beat once. Hold to turn sync lock on or off."));
+        setAccessibleNameIf(t.sync, tr("Deck %1 sync, %2").arg(deck).arg(state.synced
+                        ? (state.master ? tr("on, tempo master") : tr("on")) : tr("off")));
+        setAccessibleDescriptionIf(t.sync, state.doubles > 0
+                        ? tr("Tap to turn beat sync on or off. Hold for instant doubles of deck %1.").arg(state.doubles)
+                        : tr("Tap to turn beat sync on or off. Hold on a stopped deck for instant doubles."));
+    }
+    if (t.master) {
+        setCheckedIf(t.master, state.master);
+        setEnabledIf(t.master, state.canMaster);
+        setAccessibleNameIf(t.master, state.master ? tr("Deck %1 is the tempo master; hand it on").arg(deck)
+                        : state.canMaster ? tr("Make deck %1 the tempo master").arg(deck)
+                                          : tr("Deck %1 can be the tempo master while it plays").arg(deck));
+    }
+    if (t.doubles) {
+        setEnabledIf(t.doubles, state.doubles > 0);
+        setAccessibleNameIf(t.doubles, state.doubles > 0
+                        ? tr("Instant doubles: deck %1's track on deck %2, same position").arg(state.doubles).arg(deck)
+                        : state.playing ? tr("Instant doubles: deck %1 is playing").arg(deck)
+                                        : tr("Instant doubles: no tempo master or playing deck to copy"));
     }
 }
 
@@ -4827,10 +4878,9 @@ void WDeckLab::openCollection() {
 int WDeckLab::displayedDeck(int side) const { return m_layers[side]; }
 void WDeckLab::setDisplayedDeck(int side, int deck) {
     if (m_layers[side] == deck) return;
-    // A held touch or acknowledgment belongs to its actual deck, not the side.
+    // A held touch belongs to its actual deck, not the side.
     if (m_touchCue == channel(m_layers[side])) releaseTouchCue();
     ++m_interactionEpoch;
-    m_syncFeedbackUntil[m_layers[side] - 1] = 0;
     m_layers[side] = deck;
 }
 void WDeckLab::updateLayers() {

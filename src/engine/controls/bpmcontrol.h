@@ -124,6 +124,12 @@ class BpmControl : public EngineControl {
     inline bool isSynchronized() const {
         return toSynchronized(getSyncMode());
     }
+    // r6-sync: this deck follows a tempo master deck, so its tempo controls
+    // do nothing (Deck Lab's CDJ BEAT SYNC rules, RateControl's twin).
+    bool tempoFollowsMaster() const {
+        return m_cdjSync.toBool() && getSyncMode() == SyncMode::Follower &&
+                !m_internalClockLeader.toBool();
+    }
     double calcSyncAdjustment(bool userTweakingSync);
     void adjustBeatsBpm(double deltaBpm);
     void slotScaleBpm(mixxx::Beats::BpmScale bpmScale);
@@ -185,6 +191,10 @@ class BpmControl : public EngineControl {
     ControlValueAtomic<double> m_dUserOffset;
     QAtomicInt m_resetSyncAdjustment;
     PollingControlProxy m_pSyncMode;
+    // r6-sync: [DeckLab],cdj_sync (engine/sync/decklabcdjsync.h), and whether
+    // the internal clock leads: the same rule as RateControl's fader.
+    PollingControlProxy m_cdjSync;
+    PollingControlProxy m_internalClockLeader;
 
     TapFilter m_bpmTapFilter;   // threadsafe
     TapFilter m_tempoTapFilter; // threadsafe
