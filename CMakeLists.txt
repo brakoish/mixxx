@@ -1765,6 +1765,7 @@ add_library(
   src/widget/decklabbrowselegend.cpp
   src/widget/decklabbrowsemix.cpp
   src/widget/decklabsmoke.cpp
+  src/decklab/decklabcontrollers.cpp
   src/decklab/decklabdclient.cpp
   src/decklab/decklabfakeservice.cpp
   src/decklab/decklaboverlay.cpp

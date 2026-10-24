@@ -25,6 +25,9 @@
 #include "controllers/defs_controllers.h"
 #include "controllers/legacycontrollermapping.h"
 #include "controllers/legacycontrollermappingfilehandler.h"
+#ifdef __HID__
+#include "controllers/hid/hidcontroller.h"
+#endif
 #include "decklab/decklabdclient.h"
 #include "library/dao/directorydao.h"
 #include "library/library_decl.h"
@@ -69,23 +72,11 @@ QString compact(const QString& text) {
     return result;
 }
 
-std::optional<uint16_t> parseUsbId(const QJsonValue& value) {
-    bool ok = false;
-    int id = -1;
-    if (value.isDouble()) {
-        id = value.toInt(-1);
-        ok = id >= 0;
-    } else if (value.isString()) {
-        QString text = value.toString().trimmed();
-        if (text.startsWith(QStringLiteral("0x"), Qt::CaseInsensitive)) {
-            text = text.mid(2);
-        }
-        id = text.toInt(&ok, 16);
-    }
-    if (!ok || id < 0 || id > 0xffff) {
-        return std::nullopt;
-    }
-    return static_cast<uint16_t>(id);
+// ControllerManager's config item for a device name.
+QString controllerConfigItem(QString name) {
+    return name.replace(QLatin1Char(' '), QLatin1Char('_'))
+            .replace(QLatin1Char('/'), QLatin1Char('_'))
+            .replace(QLatin1Char('\\'), QLatin1Char('_'));
 }
 
 int alsaCardNumber(const QString& text) {
@@ -206,6 +197,17 @@ DeckLabSystem::DeckLabSystem(Services services, QObject* parent, const QString& 
         connect(players, &PlayerManagerInterface::numberOfSamplersChanged, this, [this](int) { watchPlayers(); });
     }
     if (auto* controllers = m_services.controllers.get()) {
+        // r5-polish: fresh locations for the new device list, and no HID
+        // interface left open beside the MIDI port in use.
+        connect(
+                controllers,
+                &ControllerManager::devicesChanged,
+                this,
+                [this] {
+                    forgetControllerCache();
+                    closeStrayInterfaces();
+                },
+                Qt::QueuedConnection);
         connect(controllers,
                 &ControllerManager::devicesChanged,
                 this,
@@ -226,6 +228,8 @@ DeckLabSystem::~DeckLabSystem() = default;
 
 void DeckLabSystem::start() {
     m_client->start();
+    // Mixxx may have opened its enabled controllers before Deck Lab attached.
+    QTimer::singleShot(0, this, [this] { closeStrayInterfaces(); });
 }
 
 bool DeckLabSystem::isReady() const {
@@ -582,89 +586,207 @@ void DeckLabSystem::forgetMissingRecordingDrive() {
     config->save();
 }
 
-QList<DeckLabSystem::ControllerInfo> DeckLabSystem::controllers() const {
-    QList<ControllerInfo> result;
-    QList<Controller*> mixxx;
-    if (auto* manager = m_services.controllers.get()) {
-        const auto all = manager->getControllers();
-        for (Controller* controller : all) {
-            if (controller->isInputDevice()) {
-                mixxx.append(controller);
-            }
-        }
+QList<decklab::ControllerEndpoint> DeckLabSystem::controllerEndpoints() const {
+    if (m_controllerHooks.endpoints) {
+        return m_controllerHooks.endpoints();
     }
-    QList<Controller*> matched;
-    const QJsonArray reported = m_devices.value(QStringLiteral("controllers")).toArray();
-    for (const auto& value : reported) {
-        const QJsonObject device = value.toObject();
-        ControllerInfo info;
-        info.key = device.value(QStringLiteral("key")).toString();
-        info.name = device.value(QStringLiteral("name")).toString();
-        info.hid = device.value(QStringLiteral("hid")).toBool();
-        info.vendorId = parseUsbId(device.value(QStringLiteral("vid")));
-        info.productId = parseUsbId(device.value(QStringLiteral("pid")));
-        info.audioCard = device.value(QStringLiteral("audio_card")).toObject();
-        QStringList ports;
-        for (const auto& port : device.value(QStringLiteral("midi_ports")).toArray()) {
-            ports.append(port.toString());
-        }
-        for (Controller* controller : std::as_const(mixxx)) {
-            if (matched.contains(controller)) {
-                continue;
-            }
-            bool same = false;
-            const QString name = controller->getName();
-            for (const QString& port : std::as_const(ports)) {
-                same |= port == name || compact(ControllerMappingMatcher::modelName(port)) ==
-                                compact(ControllerMappingMatcher::modelName(name));
-            }
-            if (!same && info.vendorId && info.productId && controller->getVendorId() &&
-                    controller->getProductId()) {
-                same = *controller->getVendorId() == *info.vendorId &&
-                        *controller->getProductId() == *info.productId;
-            }
-            if (same) {
-                matched.append(controller);
-                info.mixxxName = name;
-                info.open = controller->isOpen();
-                info.interfaceNumber = controller->getUsbInterfaceNumber()
-                        ? std::optional<int>(*controller->getUsbInterfaceNumber())
-                        : std::nullopt;
-                break;
-            }
-        }
-        if (info.name.isEmpty()) {
-            info.name = ControllerMappingMatcher::modelName(info.mixxxName);
-        }
-        result.append(info);
+    QList<decklab::ControllerEndpoint> result;
+    auto* manager = m_services.controllers.get();
+    if (!manager) {
+        return result;
     }
-    for (Controller* controller : std::as_const(mixxx)) {
-        const QString name = controller->getName();
-        if (matched.contains(controller) || name.startsWith(QStringLiteral("MIDI Through"), Qt::CaseInsensitive)) {
+    const auto all = manager->getControllers();
+    for (Controller* controller : all) {
+        if (!controller->isInputDevice()) {
             continue;
         }
+        decklab::ControllerEndpoint endpoint;
+        endpoint.name = controller->getName();
+        endpoint.hid = controller->getDataRepresentationProtocol() == DataRepresentationProtocol::HID;
+        endpoint.open = controller->isOpen();
+        endpoint.mapping = manager->getConfiguredMappingFileForDevice(endpoint.name);
+        endpoint.enabled = m_services.config &&
+                m_services.config->getValue(
+                        ConfigKey(QStringLiteral("[Controller]"), controllerConfigItem(endpoint.name)), 0) == 1;
+        endpoint.vendorId = controller->getVendorId();
+        endpoint.productId = controller->getProductId();
+        endpoint.serial = controller->getSerialNumber();
+        if (const auto number = controller->getUsbInterfaceNumber()) {
+            endpoint.interfaceNumber = static_cast<int>(*number);
+        }
+#ifdef __HID__
+        if (const auto* hid = qobject_cast<const HidController*>(controller)) {
+            endpoint.usagePage = hid->getUsagePage();
+            endpoint.product = hid->getProductString();
+            const QString path = hid->getDevicePath();
+            if (!m_hidLocations.contains(path)) {
+                m_hidLocations.insert(path, decklab::usbpath::hidrawLocation(path));
+            }
+            endpoint.usbPath = m_hidLocations.value(path);
+        }
+#endif
+        if (!endpoint.hid) {
+            if (!m_midiLocations) {
+                m_midiLocations = decklab::usbpath::midiPortLocations();
+            }
+            endpoint.usbPath = m_midiLocations->value(endpoint.name);
+        }
+        result.append(endpoint);
+    }
+    return result;
+}
+
+void DeckLabSystem::setControllerHooksForTesting(ControllerHooks hooks) {
+    m_controllerHooks = std::move(hooks);
+    forgetControllerCache();
+}
+
+void DeckLabSystem::forgetControllerCache() {
+    m_midiLocations.reset();
+    m_hidLocations.clear();
+    m_hidMatches.clear();
+}
+
+bool DeckLabSystem::hidMappingMatches(const decklab::ControllerEndpoint& endpoint) const {
+    const QString key = QStringLiteral("%1/%2/%3/%4/%5")
+                                .arg(endpoint.name)
+                                .arg(endpoint.vendorId.value_or(0))
+                                .arg(endpoint.productId.value_or(0))
+                                .arg(endpoint.interfaceNumber.value_or(-1))
+                                .arg(endpoint.usagePage.value_or(0));
+    const auto cached = m_hidMatches.constFind(key);
+    if (cached != m_hidMatches.constEnd()) {
+        return cached.value();
+    }
+    ControllerInfo probe;
+    probe.mixxxName = endpoint.name;
+    probe.name = endpoint.product;
+    probe.hid = true;
+    probe.vendorId = endpoint.vendorId;
+    probe.productId = endpoint.productId;
+    probe.interfaceNumber = endpoint.interfaceNumber;
+    const auto matches = suggestMappings(probe);
+    const bool made = !matches.isEmpty() && matches.first().score >= ControllerMappingMatcher::kConfidentScore;
+    m_hidMatches.insert(key, made);
+    return made;
+}
+
+QList<decklab::ControllerGroup> DeckLabSystem::controllerGroups() const {
+    return decklab::groupControllers(controllerEndpoints(),
+            decklab::reportedControllers(m_devices),
+            [this](const decklab::ControllerEndpoint& endpoint) { return hidMappingMatches(endpoint); });
+}
+
+QList<DeckLabSystem::ControllerInfo> DeckLabSystem::controllers() const {
+    QList<ControllerInfo> result;
+    const auto reported = decklab::reportedControllers(m_devices);
+    const auto groups = controllerGroups();
+    for (const auto& group : groups) {
         ControllerInfo info;
-        info.mixxxName = name;
-        info.name = ControllerMappingMatcher::modelName(name);
-        info.hid = controller->mappingExtension() == QString::fromLatin1(HID_MAPPING_EXTENSION);
-        info.open = controller->isOpen();
-        info.vendorId = controller->getVendorId();
-        info.productId = controller->getProductId();
-        info.interfaceNumber = controller->getUsbInterfaceNumber()
-                ? std::optional<int>(*controller->getUsbInterfaceNumber())
-                : std::nullopt;
-        info.key = decklab::DeviceStore::deviceKey(
-                info.vendorId, info.productId, controller->getSerialNumber(), name);
+        const decklab::ReportedController* report =
+                group.reported >= 0 && group.reported < reported.size() ? &reported.at(group.reported) : nullptr;
+        const decklab::ControllerEndpoint* primary = group.primaryEndpoint();
+        if (report) {
+            info.key = report->key;
+            info.name = report->name;
+            info.vendorId = report->vendorId;
+            info.productId = report->productId;
+            info.audioCard = report->audioCard;
+            // Not enumerated by Mixxx yet: MIDI when it has ports.
+            info.hid = report->hid && report->midiPorts.isEmpty();
+        }
+        if (primary) {
+            info.mixxxName = primary->name;
+            info.hid = primary->hid;
+            info.open = decklab::isWorking(*primary);
+            info.mapping = primary->mapping;
+            info.interfaceNumber = primary->interfaceNumber;
+            if (info.key.isEmpty()) {
+                info.key = decklab::DeviceStore::deviceKey(
+                        primary->vendorId, primary->productId, primary->serial, primary->name);
+            }
+            if (info.name.isEmpty()) {
+                info.name = primary->hid && !primary->product.trimmed().isEmpty()
+                        ? primary->product.trimmed()
+                        : ControllerMappingMatcher::modelName(primary->name);
+            }
+            info.interfaces.append(primary->name);
+        }
+        for (int index = 0; index < group.endpoints.size(); ++index) {
+            const auto& endpoint = group.endpoints.at(index);
+            if (index != group.primary) {
+                info.interfaces.append(endpoint.name);
+            }
+            if (group.suppressed.contains(index)) {
+                info.suppressed.append(endpoint.name);
+            }
+            // USB ids from any interface (the HID side has them, MIDI does not).
+            if (!info.vendorId && endpoint.vendorId && endpoint.productId) {
+                info.vendorId = endpoint.vendorId;
+                info.productId = endpoint.productId;
+            }
+        }
         result.append(info);
     }
-    if (auto* manager = m_services.controllers.get()) {
-        for (auto& info : result) {
-            if (!info.mixxxName.isEmpty()) {
-                info.mapping = manager->getConfiguredMappingFileForDevice(info.mixxxName);
+    return result;
+}
+
+bool DeckLabSystem::disableInterface(const QString& name) {
+    if (m_controllerHooks.disable) {
+        m_controllerHooks.disable(name);
+        return true;
+    }
+    auto manager = m_services.controllers;
+    if (!manager) {
+        return false;
+    }
+    // Preferences' "disable" (close it, enabled = 0, no mapping saved), on the
+    // controller thread. Queued, never blocking: a controller opening there
+    // may itself wait for this thread (screens). The device is looked up
+    // there, so a rescan in between can't leave a stale pointer.
+    QMetaObject::invokeMethod(
+            manager.get(),
+            [manager, name]() {
+                const auto all = manager->getControllers();
+                for (Controller* controller : all) {
+                    if (controller->getName() == name) {
+                        manager->slotApplyMapping(controller, nullptr, false);
+                        return;
+                    }
+                }
+            },
+            Qt::QueuedConnection);
+    return true;
+}
+
+QStringList DeckLabSystem::closeStrayInterfaces() {
+    QStringList closed;
+    if (!m_controllerHooks.endpoints && !m_services.controllers) {
+        return closed;
+    }
+    const auto groups = controllerGroups();
+    for (const auto& group : groups) {
+        for (int index : group.suppressed) {
+            const auto& endpoint = group.endpoints.at(index);
+            // Open now, or Mixxx would open it at the next start or rescan.
+            const bool armed = endpoint.open || (endpoint.enabled && !endpoint.mapping.isEmpty());
+            if (armed && disableInterface(endpoint.name)) {
+                qInfo() << "DeckLab: closed" << endpoint.name << "beside the MIDI port in use"
+                        << (group.primaryEndpoint() ? group.primaryEndpoint()->name : QString());
+                closed.append(endpoint.name);
             }
         }
     }
-    return result;
+    if (!closed.isEmpty() && m_services.config && !m_controllerHooks.disable) {
+        // Keep the repair across a crash: save once the controller thread has
+        // applied it.
+        QTimer::singleShot(1000, this, [this] {
+            if (m_services.config) {
+                m_services.config->save();
+            }
+        });
+    }
+    return closed;
 }
 
 QString DeckLabSystem::mixxxNameForKey(const QString& key) const {
@@ -749,6 +871,43 @@ int DeckLabSystem::suggestedDeckCount(const QString& mappingPath) const {
 }
 
 bool DeckLabSystem::applyMapping(const QString& controllerName, const QString& mappingPath, QString* error) {
+    // r5-polish: never open a HID interface beside the MIDI port in use, and
+    // never give an interface a mapping made for the other kind (a MIDI
+    // mapping on a HID interface still opens the device).
+    const auto groups = controllerGroups();
+    for (const auto& group : groups) {
+        for (int index = 0; index < group.endpoints.size(); ++index) {
+            const auto& endpoint = group.endpoints.at(index);
+            if (endpoint.name != controllerName) {
+                continue;
+            }
+            const auto* primary = group.primaryEndpoint();
+            if (group.suppressed.contains(index)) {
+                qWarning() << "DeckLab: refused to open" << controllerName << "beside"
+                           << (primary ? primary->name : QString());
+                if (error) {
+                    *error = tr("Deck Lab plays %1 through its MIDI port, so its HID interface stays closed.")
+                                     .arg(ControllerMappingMatcher::modelName(primary ? primary->name : controllerName));
+                }
+                return false;
+            }
+            if (!mappingPath.isEmpty() && !decklab::mappingFits(endpoint, mappingPath)) {
+                qWarning() << "DeckLab: refused" << QFileInfo(mappingPath).fileName() << "for" << controllerName;
+                if (error) {
+                    *error = endpoint.hid ? tr("That mapping is for a MIDI controller. Choose a HID mapping.")
+                                          : tr("That mapping is for a HID controller. Choose a MIDI mapping.");
+                }
+                return false;
+            }
+        }
+    }
+    if (m_controllerHooks.open) {
+        if (!m_controllerHooks.open(controllerName, mappingPath, error)) {
+            return false;
+        }
+        emit controllersChanged();
+        return true;
+    }
     auto manager = m_services.controllers;
     if (!manager || !m_services.config) {
         if (error) {
@@ -838,6 +997,8 @@ bool DeckLabSystem::rescanControllers(QString* reason) {
 
 void DeckLabSystem::onRescanFinished() {
     m_rescanning = false;
+    forgetControllerCache();
+    closeStrayInterfaces();
     emit controllersChanged();
     emit controllersRescanned();
     const auto pending = m_pendingReapply;
@@ -1107,6 +1268,7 @@ void DeckLabSystem::markFirstRunDone() {
 
 void DeckLabSystem::onDevicesChanged(const QJsonObject& data, const QStringList& added) {
     m_devices = data;
+    forgetControllerCache();
     emit devicesChanged();
     const QJsonArray reported = data.value(QStringLiteral("controllers")).toArray();
     for (const QString& key : added) {
@@ -1141,8 +1303,11 @@ void DeckLabSystem::onDevicesChanged(const QJsonObject& data, const QStringList&
 
 void DeckLabSystem::reapply(const decklab::DeviceProfile& profile, bool afterRescan) {
     const auto all = controllers();
+    // r5-polish: one entry per physical controller; the profile's Mixxx name
+    // may be any of its interfaces (an earlier build saved the HID one).
     const auto isProfile = [&profile](const ControllerInfo& info) {
-        return info.key == profile.key || (!profile.controller.isEmpty() && info.mixxxName == profile.controller);
+        return info.key == profile.key ||
+                (!profile.controller.isEmpty() && info.interfaces.contains(profile.controller));
     };
     if (!afterRescan && m_services.controllers) {
         // A replugged controller needs fresh MIDI/HID streams even when Mixxx
@@ -1167,7 +1332,7 @@ void DeckLabSystem::reapply(const decklab::DeviceProfile& profile, bool afterRes
     }
     const ControllerInfo* current = nullptr;
     for (const auto& info : all) {
-        if (isProfile(info) && !info.mixxxName.isEmpty()) {
+        if (isProfile(info) && !info.mixxxName.isEmpty() && !current) {
             current = &info;
         }
     }

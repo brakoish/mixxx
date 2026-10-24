@@ -37,6 +37,7 @@
 
 #include "control/controlobject.h"
 #include "control/controlproxy.h"
+#include "decklab/decklabfakeservice.h"
 #include "decklab/decklaboverlay.h"
 #include "decklab/decklabsetupwizard.h"
 #include "decklab/decklabsystem.h"
@@ -4710,4 +4711,63 @@ TEST_F(DeckLabOverlayTest, EveryOverlayOverTheWaveformsHidesThemOrIsNativeAndRai
     settle();
     EXPECT_FALSE(panel->waveformsSuppressed());
     EXPECT_TRUE(waveform->isVisible()); EXPECT_TRUE(laterWaveform->isVisible());
+}
+
+// r5-polish: a MIDI + vendor HID controller is one Deck Setup row with the
+// MIDI badge (fake enumeration and decklabd report; generated USB location).
+TEST_F(NativeDeckLabTest, DeckSetupListsAMidiAndHidControllerOnce) {
+    config()->setValue(ConfigKey("[DeckLab]", "first_run_done"), 1);
+    QTemporaryDir socketDir;
+    DeckLabFakeService fake;
+    fake.devices = QJsonObject{{"controllers", QJsonArray{QJsonObject{{"key", "15e4:0035"}, {"vid", "15e4"}, {"pid", "0035"},
+            {"name", "Numark MixTrack Pro 3"}, {"midi_ports", QJsonArray{"MixTrack Pro 3 MIDI 1"}}, {"hid", true},
+            {"usb_port", "1-1.2"}}}}, {"audio_cards", QJsonArray{}}};
+    ASSERT_TRUE(fake.listen(socketDir.filePath(QStringLiteral("decklabd.sock"))));
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, socketDir.filePath(QStringLiteral("decklabd.sock")));
+    const QString location = QStringLiteral("usb-0000:01:00.0-1.2");
+    decklab::ControllerEndpoint midi;
+    midi.name = QStringLiteral("MixTrack Pro 3 MIDI 1");
+    midi.open = midi.enabled = true;
+    midi.mapping = QDir(config()->getResourcePath()).filePath(QStringLiteral("controllers/Numark-Mixtrack-3.midi.xml"));
+    midi.usbPath = location;
+    decklab::ControllerEndpoint hid;
+    hid.name = QStringLiteral("MixTrack Pro 3 _3");
+    hid.hid = true;
+    hid.product = QStringLiteral("MixTrack Pro 3");
+    hid.usagePage = 0xFFA0;
+    hid.interfaceNumber = 3;
+    hid.vendorId = 0x15e4;
+    hid.productId = 0x0035;
+    hid.usbPath = location;
+    QStringList opened;
+    DeckLabSystem::ControllerHooks hooks;
+    hooks.endpoints = [midi, hid] { return QList<decklab::ControllerEndpoint>{midi, hid}; };
+    hooks.open = [&opened](const QString& name, const QString&, QString*) { opened.append(name); return true; };
+    hooks.disable = [&opened](const QString& name) { opened.append(QStringLiteral("disabled ") + name); };
+    system.setControllerHooksForTesting(hooks);
+    system.start();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.isReady() && !system.devices().isEmpty(); }, 3000));
+    panel->attachSystem(&system);
+    auto* ui = panel->findChild<DeckLabSystemUi*>(); ASSERT_NE(nullptr, ui);
+    QPointer<DeckLabSetupWizard> wizard = ui->openWizard(0); ASSERT_FALSE(wizard.isNull());
+    QTest::qWait(50);
+    QList<decklab::ui::Row*> rows;
+    for (auto* row : wizard->findChildren<decklab::ui::Row*>(QStringLiteral("decklab-setup-controller")))
+        if (row->isVisibleTo(wizard)) rows.append(row);
+    ASSERT_EQ(1, rows.size());
+    EXPECT_EQ(QStringLiteral("Numark MixTrack Pro 3"), rows.first()->titleText());
+    EXPECT_EQ(QStringList{QStringLiteral("MIDI")}, rows.first()->tags());
+    capture(QStringLiteral("setup-controller-midi-hid.png"));
+    // The status sheet and Settings name it once, working.
+    auto* rail = panel->findChild<DeckLabRail*>(); ASSERT_NE(nullptr, rail);
+    EXPECT_TRUE(QTest::qWaitFor([rail] { return rail->inputs().controller == decklab::rail::Inputs::Controller::Working; }, 2000));
+    EXPECT_EQ(QStringLiteral("Numark MixTrack Pro 3"), rail->inputs().controllerName);
+    auto* state = static_cast<decklab::ui::ActionRow*>(panel->findChild<QPushButton*>(QStringLiteral("decklab-setup-controller-state")));
+    ASSERT_NE(nullptr, state);
+    EXPECT_FALSE(state->value().contains(QStringLiteral("_3"))) << state->value().toStdString();
+    EXPECT_FALSE(state->value().contains(QStringLiteral(","))) << state->value().toStdString();
+    EXPECT_TRUE(opened.isEmpty()) << opened.join(QStringLiteral(", ")).toStdString();
+    wizard->hide();
 }
