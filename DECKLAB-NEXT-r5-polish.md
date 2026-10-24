@@ -34,7 +34,7 @@ rescan) and every start reopened it in `slotSetUpDevices()`. The wizard also pre
   `applyMapping()` refuses it, and refuses any mapping of the other kind on any interface.
   `closeStrayInterfaces()` disables a suppressed interface that is open or armed (enabled with a mapping),
   queued on the controller thread (never blocking), at start, after a rescan and when the device list
-  changes. This repairs the Pi's saved state: the first start of this build may still open the HID
+  changes. It picks the interface by its HID device path, so both of two identical controllers close. This repairs the Pi's saved state: the first start of this build may still open the HID
   interface once (Mixxx's own start-up), then Deck Lab closes and disables it for good.
 - `reapply()` matches a profile by key or by any interface name and applies to the interface in use.
 - HID-only devices and HID interfaces with a matching `.hid.xml` mapping work as before.
@@ -50,8 +50,10 @@ rescan) and every start reopened it in `slotSetUpDevices()`. The wizard also pre
 flag is set (`DeckLabSystem::firstRunDue()`). Settings › Controller & audio shows **Finish setup**
 ("Wi-Fi, time zone, controller and sound", lamp on, value "Not finished") and the status sheet gets a
 **Setup** line with a Finish setup button, both until setup is done. Finishing Deck Setup (first run or
-not) sets `first_run_done` and clears the deferral. A unit that never finished will show Welcome once more
-after this update; "Set up later" then sticks.
+not) sets `first_run_done` and clears the deferral. Upgrade: a unit with a remembered Deck Setup
+(`[DeckLabDevices]`) counts as set up, so the owner's unit shows no Welcome and no "Not finished". The
+empty-controller page names the real path (Settings › Controller & audio › Run Deck Setup), and its
+"Skip – set up later" defers like the header button.
 
 ## 3. "CONTRO…" in the step bar
 

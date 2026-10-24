@@ -58,12 +58,14 @@ class DeckLabSystem : public QObject {
         QStringList suppressed; // interfaces Deck Lab never opens
     };
     /// Test seam for Deck Setup (r5-polish): fake Mixxx interfaces, and what
-    /// opening one with a mapping or disabling one would do. Never set by
-    /// the application.
+    /// opening one with a mapping, disabling one or a rescan would do (a
+    /// rescan then finishes as ControllerManager's does). Never set by the
+    /// application.
     struct ControllerHooks {
         std::function<QList<decklab::ControllerEndpoint>()> endpoints;
         std::function<bool(const QString& name, const QString& mappingPath, QString* error)> open;
-        std::function<void(const QString& name)> disable;
+        std::function<void(const decklab::ControllerEndpoint& endpoint)> disable;
+        std::function<void()> rescan;
     };
     using Done = std::function<void(bool ok, const QString& message)>;
 
@@ -133,7 +135,7 @@ class DeckLabSystem : public QObject {
     /// Closes and disables interfaces Deck Lab must never have open: a HID
     /// interface beside the MIDI port in use (an earlier build could enable
     /// one with a MIDI mapping, and Mixxx then reopened it at every start).
-    /// Returns the names it disabled.
+    /// Returns the names it disabled (twins: once each).
     QStringList closeStrayInterfaces();
     QList<MappingInfo> mappings(bool hid) const;
     QList<ControllerMappingMatcher::Match> suggestMappings(const ControllerInfo& controller) const;
@@ -221,7 +223,10 @@ class DeckLabSystem : public QObject {
     QList<decklab::ControllerGroup> controllerGroups() const;
     bool hidMappingMatches(const decklab::ControllerEndpoint& endpoint) const;
     void forgetControllerCache();
-    bool disableInterface(const QString& name);
+    bool disableInterface(const decklab::ControllerEndpoint& endpoint);
+    /// An upgrade from a build without first_run_deferred: a unit with a
+    /// remembered Deck Setup counts as set up.
+    void migrateFirstRun();
 
     Services m_services;
     DeckLabdClient* m_client;

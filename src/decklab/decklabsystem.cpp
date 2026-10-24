@@ -223,9 +223,23 @@ DeckLabSystem::DeckLabSystem(Services services, QObject* parent, const QString& 
     if (auto* sound = m_services.sound.get()) {
         connect(sound, &SoundManager::devicesSetup, this, &DeckLabSystem::audioChanged);
     }
+    migrateFirstRun();
 }
 
 DeckLabSystem::~DeckLabSystem() = default;
+
+void DeckLabSystem::migrateFirstRun() {
+    // r5-polish: units set up before first_run_deferred existed have a
+    // remembered Deck Setup ([DeckLabDevices]) but may never have reached
+    // Play in the first run: they are set up, so no Welcome and no
+    // "Not finished".
+    if (!m_services.config || firstRunDone() || firstRunDeferred() || deviceStore().all().isEmpty()) {
+        return;
+    }
+    qInfo() << "DeckLab: a remembered Deck Setup exists; first run counts as done";
+    m_services.config->setValue(ConfigKey(kDeckLab, QStringLiteral("first_run_done")), 1);
+    m_services.config->save();
+}
 
 void DeckLabSystem::start() {
     m_client->start();
@@ -618,6 +632,7 @@ QList<decklab::ControllerEndpoint> DeckLabSystem::controllerEndpoints() const {
             endpoint.usagePage = hid->getUsagePage();
             endpoint.product = hid->getProductString();
             const QString path = hid->getDevicePath();
+            endpoint.devicePath = path;
             if (!m_hidLocations.contains(path)) {
                 m_hidLocations.insert(path, decklab::usbpath::hidrawLocation(path));
             }
@@ -730,9 +745,9 @@ QList<DeckLabSystem::ControllerInfo> DeckLabSystem::controllers() const {
     return result;
 }
 
-bool DeckLabSystem::disableInterface(const QString& name) {
+bool DeckLabSystem::disableInterface(const decklab::ControllerEndpoint& endpoint) {
     if (m_controllerHooks.disable) {
-        m_controllerHooks.disable(name);
+        m_controllerHooks.disable(endpoint);
         return true;
     }
     auto manager = m_services.controllers;
@@ -742,16 +757,25 @@ bool DeckLabSystem::disableInterface(const QString& name) {
     // Preferences' "disable" (close it, enabled = 0, no mapping saved), on the
     // controller thread. Queued, never blocking: a controller opening there
     // may itself wait for this thread (screens). The device is looked up
-    // there, so a rescan in between can't leave a stale pointer.
+    // there, so a rescan in between can't leave a stale pointer. Twins share
+    // a name: the HID device path picks the right one (no path: every one).
+    const QString name = endpoint.name;
+    const QString path = endpoint.devicePath;
     QMetaObject::invokeMethod(
             manager.get(),
-            [manager, name]() {
+            [manager, name, path]() {
                 const auto all = manager->getControllers();
                 for (Controller* controller : all) {
-                    if (controller->getName() == name) {
-                        manager->slotApplyMapping(controller, nullptr, false);
-                        return;
+                    if (controller->getName() != name) {
+                        continue;
                     }
+#ifdef __HID__
+                    const auto* hid = qobject_cast<const HidController*>(controller);
+                    if (!path.isEmpty() && (!hid || hid->getDevicePath() != path)) {
+                        continue;
+                    }
+#endif
+                    manager->slotApplyMapping(controller, nullptr, false);
                 }
             },
             Qt::QueuedConnection);
@@ -769,7 +793,7 @@ QStringList DeckLabSystem::closeStrayInterfaces() {
             const auto& endpoint = group.endpoints.at(index);
             // Open now, or Mixxx would open it at the next start or rescan.
             const bool armed = endpoint.open || (endpoint.enabled && !endpoint.mapping.isEmpty());
-            if (armed && disableInterface(endpoint.name)) {
+            if (armed && disableInterface(endpoint)) {
                 qInfo() << "DeckLab: closed" << endpoint.name << "beside the MIDI port in use"
                         << (group.primaryEndpoint() ? group.primaryEndpoint()->name : QString());
                 closed.append(endpoint.name);
@@ -967,7 +991,7 @@ bool DeckLabSystem::preferencesOpen() const {
 }
 
 bool DeckLabSystem::canRescanControllers(QString* reason) const {
-    if (!m_services.controllers) {
+    if (!m_services.controllers && !m_controllerHooks.rescan) {
         if (reason) {
             *reason = tr("Controller support is not running.");
         }
@@ -990,6 +1014,11 @@ bool DeckLabSystem::rescanControllers(QString* reason) {
         return false;
     }
     m_rescanning = true;
+    if (m_controllerHooks.rescan) {
+        m_controllerHooks.rescan();
+        QTimer::singleShot(0, this, &DeckLabSystem::onRescanFinished);
+        return true;
+    }
     m_services.controllers->rescanDevices();
     return true;
 }

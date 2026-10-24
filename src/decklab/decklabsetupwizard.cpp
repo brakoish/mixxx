@@ -669,16 +669,19 @@ void DeckLabSetupWizard::buildController(QWidget* page) {
     emptyActions->addWidget(emptyDetect);
     emptyActions->addStretch(1);
     empty->addLayout(emptyActions);
-    auto* skip = muted(tr("No controller yet? Tap Next to set up audio only, or set up later in "
-                          "Settings → Setup → Deck Setup."),
+    // r5-polish: the real path (there is no "Settings → Setup").
+    auto* skip = muted(tr("No controller yet? Tap Next to set up sound only, or add it later in "
+                          "Settings › Controller & audio › Run Deck Setup."),
             m_controllerEmpty);
     skip->setAlignment(Qt::AlignHCenter);
     empty->addWidget(skip);
     auto* laterRow = hbox(10);
     laterRow->addStretch(1);
+    // r5-polish: "set up later" means what the header's Set up later does:
+    // the first run is deferred and Settings offers Finish setup.
     m_skipLater = button(tr("Skip – set up later"), m_controllerEmpty, QStringLiteral("decklab-setup-skip-later"), 48);
     m_skipLater->setFixedWidth(240);
-    connect(m_skipLater, &QPushButton::clicked, this, &DeckLabSetupWizard::skipToDone);
+    connect(m_skipLater, &QPushButton::clicked, m_close, &QPushButton::click);
     laterRow->addWidget(m_skipLater);
     laterRow->addStretch(1);
     empty->addLayout(laterRow);
@@ -1246,5 +1249,5 @@ void DeckLabSetupWizard::renderDone() {
     m_doneTitle->setText(m_firstRun ? tr("Deck Lab is ready") : tr("You're ready to play"));
     setMessage(info && m_mappingApplied
                     ? tr("Saved. %1 is set up automatically when you plug it in.").arg(info->name)
-                    : tr("Add a controller any time: Settings → Setup → Deck Setup."));
+                    : tr("Add a controller any time: Settings › Controller & audio › Run Deck Setup."));
 }

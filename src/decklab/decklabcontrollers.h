@@ -30,6 +30,7 @@ struct ControllerEndpoint {
     std::optional<int> interfaceNumber;
     std::optional<uint16_t> usagePage; // HID only
     QString product;                   // HID product string ("MixTrack Pro 3")
+    QString devicePath;                // HID: hidapi's path ("/dev/hidraw0"); tells twins apart
     /// USB location ("usb-0000:01:00.0-1.3", the ALSA card's and hidraw's
     /// HID_PHYS form), empty when unknown (not Linux, or ambiguous).
     QString usbPath;

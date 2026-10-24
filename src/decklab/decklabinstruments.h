@@ -71,6 +71,9 @@ class DeckLabLiveTile : public TouchButton {
         m_bars = bars;
         update();
     }
+    QList<Bar> bars() const {
+        return m_bars;
+    }
     void setSignal(int percent) {
         m_signal = percent;
         update();

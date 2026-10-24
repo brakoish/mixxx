@@ -4868,7 +4868,7 @@ TEST_F(NativeDeckLabTest, DeckSetupListsAMidiAndHidControllerOnce) {
     DeckLabSystem::ControllerHooks hooks;
     hooks.endpoints = [midi, hid] { return QList<decklab::ControllerEndpoint>{midi, hid}; };
     hooks.open = [&opened](const QString& name, const QString&, QString*) { opened.append(name); return true; };
-    hooks.disable = [&opened](const QString& name) { opened.append(QStringLiteral("disabled ") + name); };
+    hooks.disable = [&opened](const decklab::ControllerEndpoint& endpoint) { opened.append(QStringLiteral("disabled ") + endpoint.name); };
     system.setControllerHooksForTesting(hooks);
     system.start();
     ASSERT_TRUE(QTest::qWaitFor([&] { return system.isReady() && !system.devices().isEmpty(); }, 3000));

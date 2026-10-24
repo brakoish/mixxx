@@ -69,7 +69,7 @@ class DeckLabSetupWizard : public QWidget {
         return m_decks;
     }
     void showMappingPicker();
-    /// "Skip – set up later": straight to Done without a controller.
+    /// Straight to Done without a controller (finishing still completes setup).
     void skipToDone();
 
   signals:
