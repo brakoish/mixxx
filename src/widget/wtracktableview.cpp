@@ -16,6 +16,7 @@
 #include "library/tabledelegates/defaultdelegate.h"
 
 #include "control/controlobject.h"
+#include "decklab/decklabkeys.h" // r6-keys
 #include "library/dao/trackschema.h"
 #include "library/library.h"
 #include "library/library_prefs.h"
@@ -235,7 +236,10 @@ class DeckLabKeyDelegate final : public DeckLabCellDelegate {
         const bool selected = opt.state & QStyle::State_Selected;
         QColor ink = selected ? textColor(opt) : decklab::colors::muted;
         const QFontMetrics& metrics = opt.fontMetrics;
-        const QString text = metrics.elidedText(opt.text, Qt::ElideRight, option.rect.width() - 14);
+        // r6-keys: every source's key text (Mixxx's formatted key id, a
+        // rekordbox export's "Am", a USB file's tag) in the chosen key format;
+        // text that is not a key stays as stored. One cached lookup per paint.
+        const QString text = metrics.elidedText(decklab::displayKey(opt.text), Qt::ElideRight, option.rect.width() - 14);
         if (match.harmonic != decklab::HarmonicMatch::None && !text.isEmpty()) {
             const int pillWidth = std::min(option.rect.width() - 10, metrics.horizontalAdvance(text) + 16);
             const QRectF pill(option.rect.left() + 7,
@@ -274,6 +278,11 @@ class DeckLabKeyDelegate final : public DeckLabCellDelegate {
 // r5-history: the Deck Lab cell delegate, for tests that paint through it.
 QAbstractItemDelegate* decklab::history::makeTrackCellDelegate(QTableView* table, bool secondary) {
     return new DeckLabCellDelegate(table, -1, -1, secondary);
+}
+
+// r6-keys: Browse's KEY cell, for tests that paint through it.
+QAbstractItemDelegate* decklab::makeKeyCellDelegate(QTableView* table, int keyColumn, int bpmColumn) {
+    return new DeckLabKeyDelegate(table, keyColumn, bpmColumn);
 }
 
 namespace {
@@ -379,7 +388,8 @@ void WTrackTableView::selectionChanged(
     // If 'selectedClick' is enabled Ctrl+click opens the editor instead of
     // toggling the clicked item.
     // TODO Remove or adjust version guard as soon as the bug is fixed.
-    if (m_pLibrary->selectedClickEnabled()) {
+    // r6-keys: tests show a table without a Library.
+    if (m_pLibrary && m_pLibrary->selectedClickEnabled()) {
         if (selectionModel()->selectedRows().size() > 1) {
             setSelectedClick(false);
         } else {
@@ -2413,4 +2423,5 @@ QString WTrackTableView::getModelStateKey() const {
 
 void WTrackTableView::keyNotationChanged() {
     QWidget::update();
+    viewport()->update(); // r6-keys: the rows, where the keys are
 }

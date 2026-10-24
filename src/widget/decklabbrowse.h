@@ -20,6 +20,7 @@
 #include "track/track_decl.h"
 
 class QAbstractItemModel;
+class QListWidget;
 class QPainter;
 
 namespace decklab {
@@ -79,7 +80,7 @@ QString keyRelationText(ChromaticKey track, ChromaticKey reference);
 QStringList compatibleLancelotKeys(ChromaticKey reference);
 
 // Parses any key notation shown by Mixxx or an export (8A, 1m, Am, A♭m...).
-// Cached, GUI thread only.
+// Cached, GUI thread only. r6-keys: decklab::parseKey (decklab/decklabkeys.h).
 ChromaticKey keyFromText(const QString& text);
 QColor keyWheelColor(ChromaticKey key);
 
@@ -155,6 +156,9 @@ struct CategoryValue {
 // search query that filters that model to them. No database access.
 QVector<CategoryValue> collectCategoryValues(
         const QAbstractItemModel& model, int column, Category category);
+// r6-keys: a shown Key values list after a key format change: each row
+// relabelled and the rows in the new wheel's order, the highlight kept.
+void relabelKeyValues(QListWidget& list);
 QString exactTextQuery(const QString& field, const QString& value);
 QString bpmBucketQuery(int bpm);
 
@@ -347,7 +351,10 @@ class DeckLabTrackCard : public QWidget {
     // Covers come from Mixxx's asynchronous CoverArtCache. Enable only where
     // the application created that cache (never in widget-only tests).
     void enableCovers();
-    void showTrack(const TrackPointer& track);
+    /// r6-keys: storedKeyText is the key its row stores (a rekordbox
+    /// export's "8A", a USB file's tag), shown when Mixxx has no key for the
+    /// track itself.
+    void showTrack(const TrackPointer& track, const QString& storedKeyText = QString());
     void showItem(decklab::Glyph glyph,
             const QString& title,
             const QString& subtitle,
@@ -361,6 +368,8 @@ class DeckLabTrackCard : public QWidget {
         return m_title;
     }
     QString matchSummary() const;
+    /// r6-keys: the KEY chip's text, in the chosen key format.
+    QString keyText() const;
     QSize sizeHint() const override;
 
   protected:
@@ -382,7 +391,7 @@ class DeckLabTrackCard : public QWidget {
     QString m_album;
     QString m_genre;
     QString m_comment;
-    QString m_keyText;
+    QString m_keyText; // r6-keys: as stored (a key Mixxx could not read)
     decklab::ChromaticKey m_key = mixxx::track::io::key::INVALID;
     double m_bpm = 0;
     double m_duration = 0;
@@ -433,7 +442,7 @@ class DeckLabListDelegate : public QStyledItemDelegate {
         AlsoLeadRole, // bool: the first chip, painted after the "Also" label
         // r4-browse: rows of "Mixes with deck N" (decklabbrowsemix.h).
         MixRole,         // bool
-        MixKeyRole,      // QString: Lancelot key
+        MixKeyRole,      // QString: the key (painted in the chosen key format)
         MixBpmRole,      // double
         MixDeltaRole,    // QString: "▼1.0"
         MixRelationRole, // QString: "same key, ▼1 BPM"

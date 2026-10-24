@@ -285,6 +285,40 @@ void DlgPrefKey::slotApply() {
     m_keySettings.setStemStrategy(m_stemStrategy);
 }
 
+// r6-keys: Deck Lab changes the notation without this page (Settings ›
+// Library › Key format). Show the saved one each time the dialog opens, so
+// OK or Apply here never brings back the notation loaded at start-up.
+void DlgPrefKey::slotShow() {
+    const KeyUtils::KeyNotation notation =
+            KeyUtils::keyNotationFromString(m_keySettings.getKeyNotation());
+    QRadioButton* radio = radioNotationOpenKey; // OpenKey and unknown names, as loadSettings()
+    switch (notation) {
+    case KeyUtils::KeyNotation::Custom:
+        radio = radioNotationCustom;
+        break;
+    case KeyUtils::KeyNotation::Lancelot:
+        radio = radioNotationLancelot;
+        break;
+    case KeyUtils::KeyNotation::LancelotAndTraditional:
+        radio = radioNotationLancelotAndTraditional;
+        break;
+    case KeyUtils::KeyNotation::Traditional:
+        radio = radioNotationTraditional;
+        break;
+    case KeyUtils::KeyNotation::OpenKeyAndTraditional:
+        radio = radioNotationOpenKeyAndTraditional;
+        break;
+    default:
+        break;
+    }
+    radio->setChecked(true);
+    if (notation == KeyUtils::KeyNotation::Custom) {
+        for (auto it = m_keyLineEdits.constBegin(); it != m_keyLineEdits.constEnd(); ++it) {
+            it.value()->setText(m_keySettings.getCustomKeyNotation(it.key()));
+        }
+    }
+}
+
 void DlgPrefKey::slotUpdate() {
     plugincombo->setEnabled(m_bAnalyzerEnabled);
     banalyzerenabled->setChecked(m_bAnalyzerEnabled);

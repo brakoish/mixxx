@@ -17,6 +17,7 @@
 #include <QtDebug>
 #include <exception>
 
+#include "decklab/decklabkeys.h" // r6-keys
 #include "decklab/decklabphrase.h"
 #include "decklab/decklabusbname.h"
 #include "engine/engine.h"
@@ -153,6 +154,9 @@ bool createLibraryTable(QSqlDatabase& database, const QString& tableName) {
             "    bitrate TEXT,"
             "    bpm FLOAT,"
             "    key TEXT,"
+            // r6-keys: the key read from the export's text ("Am" or "8A"),
+            // so rows show, sort and filter keys in the chosen key format.
+            "    key_id INTEGER,"
             "    rating INTEGER,"
             "    analyze_path TEXT UNIQUE,"
             "    device TEXT,"
@@ -428,6 +432,65 @@ mixxx::RgbColor colorFromID(int colorID) {
     return kColorForIDNoColor;
 }
 
+// r6-keys: one track row of rekordbox_library, written by the import and
+// by tests through the same INSERT and bindings.
+const QString kInsertLibraryTrack = QStringLiteral("INSERT INTO ") + kRekordboxLibraryTable +
+        QStringLiteral(
+        " (rb_id, artist, title, album, year,"
+        "genre,comment,tracknumber,bpm, bitrate,duration, location,"
+        "rating,key,key_id,analyze_path,device,color) VALUES (:rb_id, :artist, "
+        ":title, :album, :year,:genre,"
+        ":comment, :tracknumber,:bpm, :bitrate,:duration, :location,"
+        ":rating,:key,:key_id,:analyze_path,:device,:color)");
+
+struct LibraryTrackRow {
+    int rbId = 0;
+    QString artist;
+    QString title;
+    QString album;
+    QString year;
+    QString genre;
+    QString location;
+    float bpm = 0;
+    int bitrate = 0;
+    QString key; // the export's text: "Am" (Classic) or "8A" (Alphanumeric)
+    int duration = 0;
+    int rating = 0;
+    QString comment;
+    QString tracknumber;
+    QString analyzePath;
+    QString device;
+    QVariant color;
+};
+
+bool insertLibraryTrackRow(QSqlQuery& query, const LibraryTrackRow& row) {
+    query.bindValue(":rb_id", row.rbId);
+    query.bindValue(":artist", row.artist);
+    query.bindValue(":title", row.title);
+    query.bindValue(":album", row.album);
+    query.bindValue(":genre", row.genre);
+    query.bindValue(":year", row.year);
+    query.bindValue(":duration", row.duration);
+    query.bindValue(":location", row.location);
+    query.bindValue(":rating", row.rating);
+    query.bindValue(":comment", row.comment);
+    query.bindValue(":tracknumber", row.tracknumber);
+    query.bindValue(":key", row.key);
+    // The key read once from the export's text, 0 when unsure: rows then
+    // show, sort and filter as keys in the chosen key format.
+    query.bindValue(":key_id", static_cast<int>(decklab::parseKeyText(row.key)));
+    query.bindValue(":bpm", row.bpm);
+    query.bindValue(":bitrate", row.bitrate);
+    query.bindValue(":analyze_path", row.analyzePath);
+    query.bindValue(":device", row.device);
+    query.bindValue(":color", row.color);
+    if (!query.exec()) {
+        LOG_FAILED_QUERY(query);
+        return false;
+    }
+    return true;
+}
+
 void insertTrack(
         QSqlDatabase& database,
         rekordbox_pdb_t::track_row_t* track,
@@ -441,44 +504,26 @@ void insertTrack(
         const QString& device,
         int audioFilesCount) {
     int rbID = static_cast<int>(track->id());
-    QString title = getText(track->title());
-    QString artist = artistsMap[track->artist_id()];
-    QString album = albumsMap[track->album_id()];
-    QString year = QString::number(track->year());
-    QString genre = genresMap[track->genre_id()];
-    QString location = devicePath + getText(track->file_path());
-    float bpm = static_cast<float>(track->tempo() / 100.0);
-    int bitrate = static_cast<int>(track->bitrate());
-    QString key = keysMap[track->key_id()];
-    int playtime = static_cast<int>(track->duration());
-    int rating = static_cast<int>(track->rating());
-    QString comment = getText(track->comment());
-    QString tracknumber = QString::number(track->track_number());
-    QString anlzPath = devicePath + getText(track->analyze_path());
-
-    query.bindValue(":rb_id", rbID);
-    query.bindValue(":artist", artist);
-    query.bindValue(":title", title);
-    query.bindValue(":album", album);
-    query.bindValue(":genre", genre);
-    query.bindValue(":year", year);
-    query.bindValue(":duration", playtime);
-    query.bindValue(":location", location);
-    query.bindValue(":rating", rating);
-    query.bindValue(":comment", comment);
-    query.bindValue(":tracknumber", tracknumber);
-    query.bindValue(":key", key);
-    query.bindValue(":bpm", bpm);
-    query.bindValue(":bitrate", bitrate);
-    query.bindValue(":analyze_path", anlzPath);
-    query.bindValue(":device", device);
-    query.bindValue(":color",
-            mixxx::RgbColor::toQVariant(
-                    colorFromID(static_cast<int>(track->color_id()))));
-
-    if (!query.exec()) {
-        LOG_FAILED_QUERY(query);
-    }
+    // r6-keys: written by insertLibraryTrackRow() (key_id read from the key).
+    LibraryTrackRow row;
+    row.rbId = rbID;
+    row.title = getText(track->title());
+    row.artist = artistsMap[track->artist_id()];
+    row.album = albumsMap[track->album_id()];
+    row.year = QString::number(track->year());
+    row.genre = genresMap[track->genre_id()];
+    row.location = devicePath + getText(track->file_path());
+    row.bpm = static_cast<float>(track->tempo() / 100.0);
+    row.bitrate = static_cast<int>(track->bitrate());
+    row.key = keysMap[track->key_id()];
+    row.duration = static_cast<int>(track->duration());
+    row.rating = static_cast<int>(track->rating());
+    row.comment = getText(track->comment());
+    row.tracknumber = QString::number(track->track_number());
+    row.analyzePath = devicePath + getText(track->analyze_path());
+    row.device = device;
+    row.color = mixxx::RgbColor::toQVariant(colorFromID(static_cast<int>(track->color_id())));
+    insertLibraryTrackRow(query, row);
 
     int trackID = -1;
     QSqlQuery finderQuery(database);
@@ -552,13 +597,7 @@ std::shared_ptr<TreeItem> parseDeviceDB(mixxx::DbConnectionPoolPtr dbConnectionP
     ScopedTransaction transaction(database);
 
     QSqlQuery query(database);
-    query.prepare("INSERT INTO " + kRekordboxLibraryTable +
-            " (rb_id, artist, title, album, year,"
-            "genre,comment,tracknumber,bpm, bitrate,duration, location,"
-            "rating,key,analyze_path,device,color) VALUES (:rb_id, :artist, "
-            ":title, :album, :year,:genre,"
-            ":comment, :tracknumber,:bpm, :bitrate,:duration, :location,"
-            ":rating,:key,:analyze_path,:device,:color)");
+    query.prepare(kInsertLibraryTrack); // r6-keys: shared with the tests
 
     int audioFilesCount = 0;
 
@@ -1492,18 +1531,13 @@ bool RekordboxPlaylistModel::isColumnHiddenByDefault(int column) {
 
 bool RekordboxPlaylistModel::isColumnInternal(int column) {
     return column == fieldIndex(ColumnCache::COLUMN_REKORDBOX_ANALYZE_PATH) ||
+            column == fieldIndex(ColumnCache::COLUMN_LIBRARYTABLE_KEY_ID) || // r6-keys
             BaseExternalPlaylistModel::isColumnInternal(column);
 }
 
-RekordboxFeature::RekordboxFeature(
-        Library* pLibrary,
-        UserSettingsPointer pConfig)
-        : BaseExternalLibraryFeature(pLibrary, pConfig, QStringLiteral("rekordbox")),
-          m_pSidebarModel(make_parented<TreeItemModel>(this)) {
-    QString tableName = kRekordboxLibraryTable;
-    QString idColumn = LIBRARYTABLE_ID;
-    QStringList columns = {
-            LIBRARYTABLE_ID,
+// r6-keys: the columns the feature reads from rekordbox_library.
+QStringList RekordboxFeature::libraryColumns() {
+    return {LIBRARYTABLE_ID,
             LIBRARYTABLE_ARTIST,
             LIBRARYTABLE_TITLE,
             LIBRARYTABLE_ALBUM,
@@ -1517,8 +1551,43 @@ RekordboxFeature::RekordboxFeature(
             LIBRARYTABLE_BITRATE,
             LIBRARYTABLE_BPM,
             LIBRARYTABLE_KEY,
+            LIBRARYTABLE_KEY_ID, // key text read once, formatted and sorted as a key
             LIBRARYTABLE_COLOR,
             REKORDBOX_ANALYZE_PATH};
+}
+
+bool RekordboxFeature::createLibraryTableForTesting(QSqlDatabase& database) {
+    return createLibraryTable(database, kRekordboxLibraryTable);
+}
+
+bool RekordboxFeature::insertLibraryTrackForTesting(QSqlDatabase& database,
+        int rbId,
+        const QString& title,
+        const QString& keyText) {
+    QSqlQuery query(database);
+    if (!query.prepare(kInsertLibraryTrack)) {
+        LOG_FAILED_QUERY(query);
+        return false;
+    }
+    LibraryTrackRow row;
+    row.rbId = rbId;
+    row.title = title;
+    row.location = QStringLiteral("/media/decklab/GENERATED/Contents/%1.wav").arg(rbId);
+    row.analyzePath = QStringLiteral("/media/decklab/GENERATED/PIONEER/USBANLZ/%1/ANLZ0000.DAT").arg(rbId);
+    row.key = keyText;
+    row.bpm = 120;
+    row.device = QStringLiteral("GENERATED");
+    return insertLibraryTrackRow(query, row);
+}
+
+RekordboxFeature::RekordboxFeature(
+        Library* pLibrary,
+        UserSettingsPointer pConfig)
+        : BaseExternalLibraryFeature(pLibrary, pConfig, QStringLiteral("rekordbox")),
+          m_pSidebarModel(make_parented<TreeItemModel>(this)) {
+    QString tableName = kRekordboxLibraryTable;
+    QString idColumn = LIBRARYTABLE_ID;
+    QStringList columns = libraryColumns(); // r6-keys: shared with the tests
 
     const QStringList searchColumns = {
             LIBRARYTABLE_ARTIST,

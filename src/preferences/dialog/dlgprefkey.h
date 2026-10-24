@@ -25,6 +25,8 @@ class DlgPrefKey : public DlgPreferencePage, Ui::DlgPrefKeyDlg {
     void slotApply() override;
     void slotUpdate() override;
     void slotResetToDefaults() override;
+    // r6-keys: shows the saved notation each time the dialog opens.
+    void slotShow() override;
 
   private slots:
     void pluginSelected(int i);

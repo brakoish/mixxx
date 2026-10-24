@@ -52,7 +52,7 @@ class DeckLabSettingsPage : public QWidget {
         std::function<bool()> fourDecksShown;
         std::function<void(bool)> waveformLayoutChosen; // true: side by side
         std::function<bool()> sideBySide;
-        std::function<void(int)> keyNotationChosen; // 0 Lancelot, 1 Open Key, 2 Musical
+        std::function<void(int)> keyNotationChosen; // decklab::KeyFormat: 0 Lancelot, 1 Open Key, 2 Musical
         std::function<void(bool)> dimPlayedChosen;
         std::function<void(int)> tool;   // 2 Get music, 3 Sample Maker, 10 Storage
         std::function<void()> advanced; // the desktop preferences
@@ -129,6 +129,8 @@ class DeckLabSettingsPage : public QWidget {
     decklab::ui::SwitchRow* m_split = nullptr;
     decklab::ui::StepperRow* m_mix = nullptr;
     // Display
+    decklab::ui::ChoiceRow* m_waves = nullptr;
+    // Library (r6-keys: the key format moved here, where keys are browsed)
     decklab::ui::ChoiceRow* m_keys = nullptr;
     // Controller & audio
     decklab::ui::InfoRow* m_health = nullptr;

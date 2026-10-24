@@ -6,7 +6,9 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QHash>
+#include <QListWidget>
 #include <QSet>
+#include <QSignalBlocker>
 #include <QStorageInfo>
 #include <QLinearGradient>
 #include <QLocale>
@@ -19,6 +21,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "decklab/decklabkeys.h" // r6-keys
 #include "decklab/decklaboverlay.h"
 #include "decklab/decklabusbname.h"
 #include "library/coverart.h"
@@ -306,7 +309,8 @@ QString keyRelationText(ChromaticKey track, ChromaticKey reference) {
     case HarmonicMatch::Same:
         return translate("Same key");
     case HarmonicMatch::Relative:
-        return translate("Relative %1→%2").arg(lancelotText(reference), lancelotText(track));
+        // r6-keys: in the chosen key format ("Relative 8A→8B", "Relative Am→C").
+        return translate("Relative %1→%2").arg(formatKey(reference), formatKey(track));
     case HarmonicMatch::Adjacent: {
         const int distance = (lancelot(track).number - lancelot(reference).number + 12) % 12;
         return distance == 1 ? translate("Key +1 (up)") : translate("Key −1 (down)");
@@ -461,24 +465,8 @@ QStringList stickSubfolders(const QString& folder) {
 }
 
 ChromaticKey keyFromText(const QString& text) {
-    static QHash<QString, ChromaticKey> cache;
-    const auto found = cache.constFind(text);
-    if (found != cache.constEnd()) {
-        return found.value();
-    }
-    if (cache.size() > 512) {
-        cache.clear();
-    }
-    ChromaticKey key = KeyUtils::guessKeyFromText(text);
-    if (key == mixxx::track::io::key::INVALID) {
-        // Combined notations, for example "8A (Am)" or "1m (Am)".
-        const QString first = text.section(QLatin1Char(' '), 0, 0).trimmed();
-        if (!first.isEmpty() && first != text) {
-            key = KeyUtils::guessKeyFromText(first);
-        }
-    }
-    cache.insert(text, key);
-    return key;
+    // r6-keys: one reader for every key text (decklab/decklabkeys.h).
+    return parseKey(text);
 }
 
 QColor keyWheelColor(ChromaticKey key) {
@@ -654,16 +642,14 @@ QVector<CategoryValue> collectCategoryValues(
             ++counts[static_cast<int>(keyFromText(text))];
         }
         QList<int> keys = counts.keys();
+        // r6-keys: round the wheel of the chosen key format, keyless last.
         std::sort(keys.begin(), keys.end(), [](int a, int b) {
-            const LancelotPosition x = lancelot(static_cast<ChromaticKey>(a));
-            const LancelotPosition y = lancelot(static_cast<ChromaticKey>(b));
-            if (x.isValid() != y.isValid()) {
-                return x.isValid();
+            const int x = keyWheelOrder(static_cast<ChromaticKey>(a));
+            const int y = keyWheelOrder(static_cast<ChromaticKey>(b));
+            if ((x > 0) != (y > 0)) {
+                return x > 0;
             }
-            if (x.number != y.number) {
-                return x.number < y.number;
-            }
-            return !x.major && y.major;
+            return x < y;
         });
         for (int value : keys) {
             const auto key = static_cast<ChromaticKey>(value);
@@ -672,11 +658,9 @@ QVector<CategoryValue> collectCategoryValues(
                 values.append({translate("No key"), QStringLiteral("key:\"\""), counts.value(value), QColor()});
                 continue;
             }
-            QString label = KeyUtils::keyToString(key);
-            if (label.isEmpty()) {
-                label = lancelotName;
-            }
-            values.append({label, QStringLiteral("key:") + lancelotName, counts.value(value), keyWheelColor(key)});
+            // The label in the chosen format; the query stays a wheel name,
+            // which Mixxx's key filter reads whatever the format.
+            values.append({formatKey(key), QStringLiteral("key:") + lancelotName, counts.value(value), keyWheelColor(key)});
         }
         break;
     }
@@ -684,6 +668,41 @@ QVector<CategoryValue> collectCategoryValues(
         break;
     }
     return values;
+}
+
+void relabelKeyValues(QListWidget& list) {
+    const auto keyOf = [](const QListWidgetItem* item) {
+        const QString query = item->data(DeckLabListDelegate::QueryRole).toString();
+        return query.startsWith(QStringLiteral("key:")) ? parseKey(query.mid(4))
+                                                         : mixxx::track::io::key::INVALID;
+    };
+    const QSignalBlocker blocker(&list);
+    QListWidgetItem* current = list.currentItem();
+    QList<QListWidgetItem*> rows;
+    while (list.count()) {
+        rows.append(list.takeItem(0));
+    }
+    for (QListWidgetItem* row : std::as_const(rows)) {
+        const ChromaticKey key = keyOf(row);
+        if (key != mixxx::track::io::key::INVALID) {
+            row->setText(formatKey(key));
+        }
+    }
+    // The order collectCategoryValues() gives: round the wheel, keyless last.
+    std::stable_sort(rows.begin(), rows.end(), [&keyOf](const QListWidgetItem* a, const QListWidgetItem* b) {
+        const int x = keyWheelOrder(keyOf(a));
+        const int y = keyWheelOrder(keyOf(b));
+        if ((x > 0) != (y > 0)) {
+            return x > 0;
+        }
+        return x < y;
+    });
+    for (QListWidgetItem* row : std::as_const(rows)) {
+        list.addItem(row);
+    }
+    if (current) {
+        list.setCurrentItem(current);
+    }
 }
 
 void paintGlyph(QPainter& painter, const QRectF& box, Glyph glyph, const QColor& color) {
@@ -1319,7 +1338,7 @@ void DeckLabTrackCard::enableCovers() {
             });
 }
 
-void DeckLabTrackCard::showTrack(const TrackPointer& track) {
+void DeckLabTrackCard::showTrack(const TrackPointer& track, const QString& storedKeyText) {
     if (!track) {
         showItem(Glyph::Tracks, tr("Pick a track"), QString(), QString());
         return;
@@ -1337,11 +1356,20 @@ void DeckLabTrackCard::showTrack(const TrackPointer& track) {
     m_genre = track->getGenre().trimmed();
     m_comment = track->getComment().simplified();
     m_key = track->getKey();
-    m_keyText = m_key != mixxx::track::io::key::INVALID
-            ? KeyUtils::keyToString(m_key)
-            : track->getKeyText();
-    if (m_key == mixxx::track::io::key::INVALID && !m_keyText.isEmpty()) {
-        m_key = keyFromText(m_keyText);
+    // r6-keys: a key Mixxx has not read stays as its source stores it: the
+    // track's own key text, else its row's ("8A" from a rekordbox export, a
+    // USB file's tag). Painted through displayKey(): the chosen key format
+    // applies, a change of format is a repaint, and text that is not a key
+    // shows as stored, never as "—".
+    m_keyText.clear();
+    if (m_key == mixxx::track::io::key::INVALID) {
+        m_keyText = track->getKeys().getGlobalKeyText().trimmed();
+        if (m_keyText.isEmpty()) {
+            m_keyText = storedKeyText.trimmed();
+        }
+        if (!m_keyText.isEmpty()) {
+            m_key = keyFromText(m_keyText);
+        }
     }
     m_bpm = track->getBpm();
     m_duration = track->getDuration();
@@ -1377,6 +1405,10 @@ void DeckLabTrackCard::showItem(Glyph glyph,
     m_accent = accent;
     setAccessibleName(title);
     update();
+}
+
+QString DeckLabTrackCard::keyText() const {
+    return m_itemMode ? QString() : displayKey(m_key, m_keyText);
 }
 
 void DeckLabTrackCard::refreshMatch() {
@@ -1522,6 +1554,7 @@ void DeckLabTrackCard::paintTrack(QPainter& painter) {
             ? harmonicMatch(m_key, reference.key)
             : HarmonicMatch::None;
     const bool tempo = reference.active() && tempoInWindow(m_bpm, reference.window());
+    const QString key = keyText(); // r6-keys
     const int chipTop = artBox.bottom() + 9;
     const int chipHeight = compact ? 44 : 50;
     const int gap = 6;
@@ -1534,7 +1567,7 @@ void DeckLabTrackCard::paintTrack(QPainter& painter) {
             font());
     paintChip(painter,
             QRect(pad + chipWidth + gap, chipTop, chipWidth, chipHeight),
-            m_keyText.isEmpty() ? QStringLiteral("—") : m_keyText,
+            key.isEmpty() ? QStringLiteral("—") : key,
             tr("KEY"),
             harmonic != HarmonicMatch::None ? colors::keyMatch : QColor(),
             font());

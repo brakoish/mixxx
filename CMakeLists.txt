@@ -1433,6 +1433,7 @@ add_library(
   src/decklab/decklabphraseview.cpp
   src/decklab/decklabusbrelink.cpp
   src/decklab/decklabusbname.cpp
+  src/decklab/decklabkeys.cpp
   src/library/rhythmbox/rhythmboxfeature.cpp
   src/library/scanner/importfilestask.cpp
   src/library/scanner/libraryscanner.cpp
@@ -2827,6 +2828,7 @@ if(BUILD_TESTING)
     src/test/decklabvsynctest.cpp
     src/test/decklablabfxtest.cpp
     src/test/decklablanestest.cpp
+    src/test/decklabkeystest.cpp
     src/test/waveformmarklabeltest.cpp
     src/test/enginefilterbiquadtest.cpp
     src/test/enginemixertest.cpp

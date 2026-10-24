@@ -79,7 +79,7 @@ QString entryTimeText(const QVector<Entry>& entries, int index, bool clockTruste
 void paintHistoryRow(QPainter& painter, const QStyleOptionViewItem& option, const QModelIndex& index);
 int historyRowHeight(const QModelIndex& index);
 
-// "8A" in the configured notation, else the stored key text.
+// "8A" in the chosen key format (decklab/decklabkeys.h), else the stored key text.
 QString entryKeyText(const Entry& entry);
 
 } // namespace decklab::history

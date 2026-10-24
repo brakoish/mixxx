@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "decklab/decklabkeys.h"       // r6-keys
 #include "widget/decklabhistoryview.h" // r5-history
 
 namespace decklab {
@@ -171,7 +172,11 @@ void paintMixRow(QPainter& painter, const QStyleOptionViewItem& option, const QM
     const QFont base = option.font;
     // Key pill: solid green for the same key, outlined for relative and +1/-1.
     const auto match = static_cast<HarmonicMatch>(index.data(DeckLabListDelegate::MixMatchRole).toInt());
-    const QString key = index.data(DeckLabListDelegate::MixKeyRole).toString();
+    // r6-keys: in the chosen key format at paint time.
+    const QString key = QFontMetrics(numberFont(base, 16))
+                                .elidedText(displayKey(index.data(DeckLabListDelegate::MixKeyRole).toString()),
+                                        Qt::ElideRight,
+                                        42);
     const QRectF pill(r.left() + 12.5, r.center().y() - 12.5, 48, 26);
     if (match == HarmonicMatch::Same) {
         painter.setPen(Qt::NoPen);

@@ -1,8 +1,12 @@
 #include "library/proxytrackmodel.h"
 
+#include "control/controlobject.h"
+#include "decklab/decklabkeys.h" // r6-keys
 #include "library/browse/browsetablemodel.h"
+#include "library/library_prefs.h"
 #include "library/searchqueryparser.h"
 #include "moc_proxytrackmodel.cpp"
+#include "track/keyutils.h"
 #include "util/assert.h"
 
 ProxyTrackModel::ProxyTrackModel(QAbstractItemModel* pTrackModel,
@@ -233,6 +237,39 @@ bool ProxyTrackModel::setModelSetting(const QString& name, const QVariant& value
 
 void ProxyTrackModel::sort(int column, Qt::SortOrder order) {
     if (m_pTrackModel && m_pTrackModel->isColumnSortable(column)) {
+        // r6-keys: Lancelot order for Lancelot, Open Key order otherwise
+        // (ColumnCache's rule for the library's own tables).
+        bool lancelot = m_lancelotKeyOrder;
+        if (const ControlObject* notation = ControlObject::getControl(
+                    mixxx::library::prefs::kKeyNotationConfigKey, ControlFlag::NoWarnIfMissing)) {
+            const auto value = KeyUtils::keyNotationFromNumericValue(notation->get());
+            lancelot = value == KeyUtils::KeyNotation::Lancelot ||
+                    value == KeyUtils::KeyNotation::LancelotAndTraditional;
+        }
+        const bool wheelChanged = lancelot != m_lancelotKeyOrder;
+        m_lancelotKeyOrder = lancelot;
+        if (wheelChanged && column == sortColumn() && order == sortOrder() &&
+                column == m_pTrackModel->columnIndexFromSortColumnId(TrackModel::SortColumnId::Key)) {
+            // Qt skips a sort by the same column and order; the rows still go
+            // round the new wheel (persistent indexes and selection kept).
+            invalidate();
+            return;
+        }
         QSortFilterProxyModel::sort(column, order);
     }
+}
+
+bool ProxyTrackModel::lessThan(const QModelIndex& left, const QModelIndex& right) const {
+    // r6-keys: a folder's key tags ("Am", "8A", "1m") sort round the wheel,
+    // not as text; keys that cannot be read come first, as in the library.
+    if (m_pTrackModel &&
+            left.column() == m_pTrackModel->columnIndexFromSortColumnId(TrackModel::SortColumnId::Key)) {
+        const auto wheel = m_lancelotKeyOrder ? decklab::KeyFormat::Lancelot : decklab::KeyFormat::OpenKey;
+        const int a = decklab::keyWheelOrder(decklab::parseKey(left.data(sortRole()).toString()), wheel);
+        const int b = decklab::keyWheelOrder(decklab::parseKey(right.data(sortRole()).toString()), wheel);
+        if (a != b) {
+            return a < b;
+        }
+    }
+    return QSortFilterProxyModel::lessThan(left, right);
 }
