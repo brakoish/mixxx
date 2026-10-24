@@ -4159,14 +4159,13 @@ TEST_F(EngineSyncTest, PlayStartSyncLockOnlyPausedTempoMasterIgnoresASyncedSampl
     // Deck 2 is the tempo master, paused on its cue; deck 1 plays unsynced in
     // the headphones and a synced sampler loop plays along. The sampler is no
     // deck to line up with, so PLAY, a CUE preview and a hot cue preview still
-    // start exactly on the cue, never on the beat of deck 1. (The preview
-    // deck stands in for the sampler: it is no primary deck either.)
+    // start exactly on the cue, never on the beat of deck 1, and the master
+    // then keeps its own beat: the lock never bends it toward the sampler's.
+    // (The preview deck stands in for the sampler: it is no primary deck
+    // either.)
     ControlObject::set(kCdjSync, 1.0);
     ControlObject::set(kPlayStartAlign, 1.0);
     auto pHotCue2Activate = std::make_unique<ControlProxy>(m_sGroup2, "hotcue_1_activate");
-    // A start is one buffer at deck 2's speed: with the master paused, Mixxx's
-    // sync lock hands the group the tempo of the one synced player left
-    // playing, the sampler (EngineSync::notifyPlayingAudible).
     EngineBuffer* pBuffer2 = m_pChannel2->getEngineBuffer();
     playDeckOneOverPausedDeckTwo();
     ControlObject::set(ConfigKey(m_sGroup1, "volume"), 0.0);
@@ -4200,18 +4199,25 @@ TEST_F(EngineSyncTest, PlayStartSyncLockOnlyPausedTempoMasterIgnoresASyncedSampl
     ASSERT_DOUBLE_EQ(1.0, ControlObject::get(ConfigKey(m_sPreviewGroup, "play")));
     ASSERT_TRUE(isFollower(m_sPreviewGroup));
 
-    // PLAY: exactly one buffer after the cue.
+    // PLAY: exactly one buffer after the cue, and on at the master's own
+    // tempo.
     ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
     ProcessBuffer();
-    EXPECT_NEAR(kOneBufferAt100Bpm * pBuffer2->getSpeed(), beatDistance(m_sGroup2), 1e-9);
+    EXPECT_DOUBLE_EQ(kOneBufferAt100Bpm, beatDistance(m_sGroup2));
     EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
+    double maxSpeedError = std::abs(pBuffer2->getSpeed() - 1.0);
+    for (int i = 0; i < 20; ++i) {
+        ProcessBuffer();
+        maxSpeedError = std::max(maxSpeedError, std::abs(pBuffer2->getSpeed() - 1.0));
+    }
+    EXPECT_LT(maxSpeedError, 1e-9);
 
     // CUE held on the cue: the preview starts on it.
     parkDeckTwo();
     ControlObject::set(ConfigKey(m_sGroup2, "cue_default"), 1.0);
     ProcessBuffer();
     ASSERT_DOUBLE_EQ(1.0, ControlObject::get(ConfigKey(m_sGroup2, "play")));
-    EXPECT_NEAR(kOneBufferAt100Bpm * pBuffer2->getSpeed(), beatDistance(m_sGroup2), 1e-9);
+    EXPECT_DOUBLE_EQ(kOneBufferAt100Bpm, beatDistance(m_sGroup2));
     EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
     ControlObject::set(ConfigKey(m_sGroup2, "cue_default"), 0.0);
     ProcessBuffer();
@@ -4224,7 +4230,7 @@ TEST_F(EngineSyncTest, PlayStartSyncLockOnlyPausedTempoMasterIgnoresASyncedSampl
     ASSERT_NEAR(0.3, beatDistance(m_sGroup2), 1e-9);
     pHotCue2Activate->set(1.0);
     ProcessBuffer();
-    EXPECT_NEAR(kOneBufferAt100Bpm * pBuffer2->getSpeed(), beatDistance(m_sGroup2), 1e-9);
+    EXPECT_DOUBLE_EQ(kOneBufferAt100Bpm, beatDistance(m_sGroup2));
     EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
     pHotCue2Activate->set(0.0);
     ProcessBuffer();

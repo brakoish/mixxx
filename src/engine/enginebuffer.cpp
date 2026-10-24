@@ -1464,6 +1464,14 @@ void EngineBuffer::processSeek(bool paused) {
     // same rule as the start's: only a sync group lines a synced deck up.
     const bool exactStart = m_iPlayStartExact.fetchAndStoreRelaxed(0) != 0 &&
             !startsWithSyncGroup();
+    if (exactStart && isLeader(m_pSyncControl->getSyncMode())) {
+        // A tempo master that starts exactly, with no synced deck playing,
+        // sets the beat: the sync clock takes its phase now, as on a seek.
+        // Otherwise the clock keeps the phase of a synced sampler that
+        // played on, and with Quantize on the lock would bend the master
+        // toward it.
+        m_pSyncControl->notifySeek(m_playPos);
+    }
     // A preview that ended other than back to pause (CueControl hands that
     // one back first) has used the SYNC tap it held.
     if (atomicLoadRelaxed(m_iPhaseHeldByPreview) != 0 && !m_pCueControl->isPreviewing()) {
