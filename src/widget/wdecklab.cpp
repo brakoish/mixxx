@@ -2575,6 +2575,9 @@ void WDeckLab::selectPage(int page) {
     // r4-labfx: leaving Lab FX keeps a latched effect playing, and a held
     // one until its finger lifts (PF-X24); the rail tab shows it.
     setSearchOpen(false);
+    // round5: the status sheet covers the page area but not the rail, so a tab
+    // tap would put a page (and its knob claim) under it; close it first.
+    if (m_railUi && m_railUi->sheet() && m_railUi->sheet()->isVisible()) m_railUi->sheet()->hide();
     if (m_page == 1 && page != 1) m_sampleTarget = 0;
     releaseTouchCue(); ++m_interactionEpoch;
     m_page = page;
@@ -5163,7 +5166,9 @@ void WDeckLab::fillMixes(bool keepCurrent) {
     }
     const QSignalBlocker blocker(b.items);
     b.items->clear();
-    int current = 0;
+    // round5: a kept highlight whose file is gone leaves no highlight, so a
+    // press never loads a track the DJ did not pick (row 0).
+    int current = keep.isEmpty() ? 0 : -1;
     if (tracks && model && b.mixModel == model && b.mixModelRows == model->rowCount()) {
         const int titleColumn = tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Title);
         const int artistColumn = tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Artist);
