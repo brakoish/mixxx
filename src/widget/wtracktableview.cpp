@@ -36,6 +36,7 @@
 #include "util/dnd.h"
 #include "util/time.h"
 #include "widget/decklabbrowse.h"
+#include "widget/decklabhistoryview.h" // r5-history
 #include "widget/wtrackmenu.h"
 #include "widget/wtracktableviewheader.h"
 
@@ -113,6 +114,15 @@ class DeckLabCellDelegate : public DefaultDelegate {
     }
     bool editorEvent(QEvent*, QAbstractItemModel*, const QStyleOptionViewItem&, const QModelIndex&) override {
         return false;
+    }
+    // r5-history: the played look comes from the history (a dimmed row and a
+    // check on the title, decklabhistoryview.h), not Mixxx's per-start colour.
+    void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override {
+        const QColor before = option->palette.color(QPalette::Text);
+        DefaultDelegate::initStyleOption(option, index);
+        const auto* view = qobject_cast<const WTrackTableView*>(m_table);
+        decklab::history::styleTrackCell(option, index, before, m_secondary,
+                view ? view->getTrackPlayedColor() : QColor());
     }
 
   protected:
