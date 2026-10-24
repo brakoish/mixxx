@@ -19,6 +19,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QSqlQuery> // r5-history
 #include <QStackedWidget>
 #include <QTimer>
 #include <QToolTip>
@@ -37,6 +38,9 @@
 #include "library/coverartutils.h"
 #include "library/library.h"
 #include "library/sidebarmodel.h"
+#include "library/dao/playlistdao.h" // r5-history
+#include "library/playlisttablemodel.h" // r5-history
+#include "library/trackcollection.h" // r5-history
 #include "library/trackcollectionmanager.h"
 #include "library/trackmodel.h"
 #include "mixer/playerinfo.h"
@@ -49,6 +53,8 @@
 #include "widget/decklabgridmode.h"
 #include "widget/decklabkeysheet.h"
 #include "widget/decklabbrowsemix.h"
+#include "widget/decklabbrowsedock.h" // r5-history
+#include "widget/decklabhistory.h"    // r5-history
 #include "widget/wdecklab.h"
 #include "widget/wlibrary.h"
 #include "widget/wlibrarysidebar.h"
@@ -409,6 +415,61 @@ void seedDemoStick(const QString& root) {
     decklab::setUsbStickRootsForTesting({QDir(root).filePath(QStringLiteral("decklab"))});
 }
 
+// r5-history: a generated history for the History captures: last night's
+// set (two demo tracks, moved back a day) and this set (three, two of them
+// on paused decks). Rows go into Mixxx's own history playlists as the setlog
+// adds them when a deck becomes audible; nothing plays.
+bool seedDemoHistory(Library* library) {
+    if (!library || !library->trackCollectionManager()) return false;
+    TrackCollection* collection = library->trackCollectionManager()->internalCollection();
+    PlaylistDAO& playlists = collection->getPlaylistDAO();
+    QSqlDatabase database = collection->database();
+    const auto trackId = [&database](const char* title) {
+        QSqlQuery query(database);
+        query.prepare(QStringLiteral("SELECT id FROM library WHERE title = :title"));
+        query.bindValue(QStringLiteral(":title"), QString::fromUtf8(title));
+        return query.exec() && query.next() ? TrackId(query.value(0)) : TrackId();
+    };
+    const auto currentSet = [&database] {
+        QSqlQuery query(database);
+        return query.exec(QStringLiteral("SELECT MAX(id) FROM Playlists WHERE hidden = 2")) && query.next()
+                ? query.value(0).toInt()
+                : -1;
+    };
+    // Spread a set's times: its tracks were appended within one second.
+    const auto retime = [&database](int set, const QString& shift) {
+        QSqlQuery query(database);
+        query.prepare(QStringLiteral("UPDATE PlaylistTracks SET pl_datetime_added = "
+                                     "datetime(pl_datetime_added, :shift, '+' || (position * 7) || ' minutes') "
+                                     "WHERE playlist_id = :id"));
+        query.bindValue(QStringLiteral(":shift"), shift);
+        query.bindValue(QStringLiteral(":id"), set);
+        const bool tracks = query.exec();
+        query.prepare(QStringLiteral("UPDATE Playlists SET date_created = datetime(date_created, :shift) WHERE id = :id"));
+        query.bindValue(QStringLiteral(":shift"), shift);
+        query.bindValue(QStringLiteral(":id"), set);
+        return tracks && query.exec();
+    };
+    auto& history = decklab::history::Store::instance();
+    history.ensureLoaded();
+    const int lastNight = currentSet();
+    if (lastNight < 0) return false;
+    for (const char* title : {"Signal Fire", "Deep Current"}) {
+        const TrackId id = trackId(title);
+        if (!id.isValid() || !playlists.appendTrackToPlaylist(id, lastNight)) return false;
+    }
+    if (!history.startNewSet() || !retime(lastNight, QStringLiteral("-1 day"))) return false;
+    const int tonight = currentSet();
+    if (tonight == lastNight) return false;
+    for (const char* title : {"Night Drive", "Glass Garden", "Harbor Lights"}) {
+        const TrackId id = trackId(title);
+        if (!id.isValid() || !playlists.appendTrackToPlaylist(id, tonight)) return false;
+    }
+    if (!retime(tonight, QStringLiteral("-40 minutes"))) return false;
+    history.reload();
+    return history.currentCount() == 3;
+}
+
 bool selectListItem(WDeckLab* surface, const QString& text) {
     auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
     if (!list) return false;
@@ -708,7 +769,7 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                          QCoreApplication::processEvents();
                          auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
                          return list && list->currentItem() &&
-                                 list->currentItem()->text() == QStringLiteral("USB stick (3A1F)") &&
+                                 list->currentItem()->text() == QStringLiteral("USB stick") &&
                                  list->currentItem()->data(DeckLabListDelegate::TileRole).toInt() == 1 &&
                                  surface->findChild<QWidget*>(QStringLiteral("decklab-deck-dock"))->isVisible();
                      }},
@@ -778,6 +839,91 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                          auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
                          if (!list || !list->count() || !list->item(0)->data(DeckLabListDelegate::MixRole).toBool()) return false;
                          list->setCurrentRow(std::min(1, list->count() - 1));
+                         return true;
+                     }},
+                    {"history", 2400, [surface, failures] {
+                         // r5-history: Glass Garden is loaded (paused) on deck 2,
+                         // the generated history goes in (Mixxx's history
+                         // playlists), and the home's History chip opens the sets:
+                         // this set first, last night's under "Yesterday".
+                         surface->browseBack();
+                         if (!selectListItem(surface, decklab::categoryName(decklab::Category::AllTracks))) return false;
+                         surface->browsePress();
+                         if (!selectTrack(surface, "Glass Garden")) return false;
+                         ControlObject::set(ConfigKey("[Channel2]", "LoadSelectedTrack"), 1);
+                         ControlObject::set(ConfigKey("[Channel2]", "LoadSelectedTrack"), 0);
+                         // A load returns to Decks; come back once it is in.
+                         QTimer::singleShot(1000, surface, [surface, failures] {
+                             if (!seedDemoHistory(surface->library())) failures->append(QStringLiteral("Demo history could not be seeded"));
+                             surface->selectPage(1);
+                             surface->browseBack();
+                             surface->browseBack();
+                             auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
+                             // The stick's files first, so the track table holds no
+                             // history track when History opens.
+                             // round5 merge: r5-polish names a lone unlabeled plain stick "USB stick".
+                             if (!selectListItem(surface, QStringLiteral("USB stick"))) failures->append(QStringLiteral("No demo stick"));
+                             surface->browsePress();
+                             for (int row = 0; list && row < list->count(); ++row) {
+                                 if (list->item(row)->data(DeckLabListDelegate::KeyRole).toString() == QStringLiteral("tracks")) list->setCurrentRow(row);
+                             }
+                             surface->browsePress();
+                             // A moment on the stick's tracks, as a DJ would, then History.
+                             QTimer::singleShot(500, surface, [surface, failures, list] {
+                                 surface->browseBack();
+                                 surface->browseBack();
+                                 if (!selectListItem(surface, QStringLiteral("History"))) failures->append(QStringLiteral("No History on the home"));
+                                 surface->browsePress();
+                                 if (!list || list->count() < 3 || list->item(0)->text() != QStringLiteral("This set"))
+                                     failures->append(QStringLiteral("History does not list this set first"));
+                             });
+                         });
+                         return true;
+                     }},
+                    {"history-set", 1200, [surface, failures] {
+                         // This set in play order (time, deck, BPM, key), on its
+                         // latest track; the paused decks offer LOAD from history.
+                         surface->browsePress();
+                         QCoreApplication::processEvents();
+                         auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
+                         if (!list || list->count() != 3) return false;
+                         QTimer::singleShot(400, surface, [surface, failures, list] {
+                             // LOAD and Preview read the set's own Mixxx history
+                             // playlist, on the highlighted track (by library id).
+                             auto* library = surface->findChild<WLibrary*>();
+                             auto* table = library ? library->getCurrentTrackTableView() : nullptr;
+                             const auto* playlist = table ? dynamic_cast<PlaylistTableModel*>(table->model()) : nullptr;
+                             const QListWidgetItem* item = list->currentItem();
+                             const QModelIndexList rows = table && table->selectionModel() ? table->selectionModel()->selectedRows() : QModelIndexList();
+                             if (!item || !playlist || playlist->getPlaylist() != item->data(decklab::history::PlaylistRole).toInt())
+                                 failures->append(QStringLiteral("History table is not the set's playlist"));
+                             else if (rows.size() != 1 || playlist->getTrackId(rows.first()).toVariant().toInt() != item->data(decklab::history::TrackIdRole).toInt())
+                                 failures->append(QStringLiteral("History selection is not the highlighted track"));
+                             auto* tile = static_cast<DeckLabDockTile*>(surface->findChild<QPushButton*>(QStringLiteral("decklab-load-3")));
+                             if (!tile || !tile->loadReady()) failures->append(QStringLiteral("History track not loadable from the dock"));
+                         });
+                         return true;
+                     }},
+                    {"history-marks", 900, [surface] {
+                         // Played marks in a track list: this set's rows dim with
+                         // a check, last night's carry a quieter ring.
+                         surface->browseBack();
+                         surface->browseBack();
+                         if (!selectListItem(surface, QStringLiteral("Library"))) return false;
+                         surface->browsePress();
+                         if (!selectListItem(surface, decklab::categoryName(decklab::Category::AllTracks))) return false;
+                         surface->browsePress();
+                         return selectTrack(surface, "Late Checkout");
+                     }},
+                    {"history-mixes", 900, [surface] {
+                         // The marks reach "Mixes with deck 1" too. Browse ends
+                         // on the Library, as before, for the Sampler captures.
+                         surface->browseBack();
+                         if (!selectListItem(surface, decklab::mixesTitle(1))) return false;
+                         surface->browsePress();
+                         auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
+                         if (!list || !list->count() || !list->item(0)->data(DeckLabListDelegate::MixRole).toBool()) return false;
+                         list->setCurrentRow(0);
                          return true;
                      }},
             });

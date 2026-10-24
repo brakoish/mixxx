@@ -30,6 +30,7 @@
 #include "decklab/decklabsystem.h"
 #include "decklab/decklabinstruments.h"
 #include "decklab/decklabui.h"
+#include "decklab/decklabusbname.h"
 #include "moc_decklabsystempages.cpp"
 #include "util/versionstore.h"
 
@@ -1195,10 +1196,8 @@ class StoragePage : public SectionPage {
             const QJsonObject drive = value.toObject();
             const QString id = drive.value(QStringLiteral("id")).toString();
             const QString mount = drive.value(QStringLiteral("mount")).toString();
-            QString label = drive.value(QStringLiteral("label")).toString();
-            if (label.isEmpty()) {
-                label = tr("USB drive");
-            }
+            // r5-polish: the friendly name ("DJ USB", never the UUID).
+            const QString label = decklab::usbDriveName(drive, drives);
             const bool readOnly = drive.value(QStringLiteral("read_only")).toBool(true);
             const bool mounted = drive.value(QStringLiteral("mounted")).toBool(true);
             const bool recordingHere = decklab::isPathOnMount(directory, mount) && !readOnly;
@@ -1297,7 +1296,7 @@ class StoragePage : public SectionPage {
                     if (candidate.value(QStringLiteral("id")).toString() != id &&
                             candidate.value(QStringLiteral("mounted")).toBool(true) &&
                             !candidate.value(QStringLiteral("read_only")).toBool(true)) {
-                        other = candidate.value(QStringLiteral("label")).toString(tr("USB drive"));
+                        other = decklab::usbDriveName(candidate, m_system->usbDrives());
                         break;
                     }
                 }
@@ -1880,7 +1879,7 @@ void DeckLabSystemPage::refreshTiles() {
         }
         const QJsonObject drive = value.toObject();
         DeckLabLiveTile::Bar bar;
-        bar.name = drive.value(QStringLiteral("label")).toString(tr("USB drive"));
+        bar.name = decklab::usbDriveName(drive, drives);
         const double size = drive.value(QStringLiteral("size_mb")).toDouble(0);
         const double free = drive.value(QStringLiteral("free_mb")).toDouble(0);
         bar.used = size > 0 ? 1.0 - free / size : 0;

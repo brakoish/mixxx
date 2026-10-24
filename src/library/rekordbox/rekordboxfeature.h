@@ -30,7 +30,9 @@
 #include <QStringListModel>
 #include <QtConcurrentRun>
 #include <fstream>
+#include <functional>
 #include <memory>
+#include <vector>
 
 #include "library/baseexternallibraryfeature.h"
 #include "library/baseexternalplaylistmodel.h"
@@ -67,6 +69,18 @@ class RekordboxFeature : public BaseExternalLibraryFeature {
             KeyboardEventFilter* keyboard) override;
 
     TreeItemModel* sidebarModel() const override;
+
+    /// Deck Lab r5-polish: the device scan the worker runs (sticks with an
+    /// export, named for display). Owns the returned items.
+    static QList<TreeItem*> findDevices();
+    /// Deck Lab r5-polish: merges a scan into the device rows. A device is
+    /// its mount path (never its display name, which may change): a row
+    /// whose path is gone is removed (`removed` is told first), a new path
+    /// is added, and a known path keeps its row and read export but takes
+    /// the new name.
+    static void mergeDevices(TreeItemModel* model,
+            std::vector<std::unique_ptr<TreeItem>> found,
+            const std::function<void(TreeItem*)>& removed);
 
   public slots:
     void activate() override;

@@ -53,6 +53,9 @@ class DeckLabSystemUi : public QObject {
     DeckLabSetupWizard* openWizard(int step = 0, const QString& controllerKey = QString());
     /// Welcome → Wi-Fi → time zone → Deck Setup; sets first_run_done.
     DeckLabSetupWizard* openFirstRun();
+    /// r5-polish: setup not finished yet (Settings and the status sheet
+    /// offer Finish setup until it is).
+    bool setupPending() const;
     DeckLabSetupWizard* wizard() const;
     void setAudioOutputConfigured(bool configured);
     /// Overlay and rail check for a real display (DECKLAB_OVERLAY_PROBE=<s>
@@ -87,6 +90,7 @@ class DeckLabSystemUi : public QObject {
     QPointer<DeckLabSystemPage> m_systemPage;
     QPointer<DeckLabSetupWizard> m_wizard;
     QPointer<decklab::ui::ActionRow> m_setupButton;
+    QPointer<decklab::ui::ActionRow> m_finishSetup;
     QPointer<decklab::ui::ActionRow> m_setupController;
     QPointer<decklab::ui::ActionRow> m_setupAudio;
     QTimer m_offerTimer;

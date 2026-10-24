@@ -20,6 +20,7 @@
 #include <cmath>
 
 #include "decklab/decklaboverlay.h"
+#include "decklab/decklabusbname.h"
 #include "library/coverart.h"
 #include "library/coverartcache.h"
 #include "track/keyutils.h"
@@ -358,52 +359,6 @@ QString matchFilterQuery(const MatchReference& reference, const QString& extra) 
     return alternatives.join(QStringLiteral(" | "));
 }
 
-namespace {
-QStringList& usbStickTestRoots() {
-    static QStringList roots;
-    return roots;
-}
-
-#if defined(Q_OS_LINUX)
-// udev escapes characters such as spaces in /dev/disk link names ("\x20").
-QString udevUnescape(const QString& name) {
-    const QByteArray bytes = name.toUtf8();
-    QByteArray out;
-    for (int i = 0; i < bytes.size(); ++i) {
-        bool ok = false;
-        if (bytes[i] == '\\' && i + 3 < bytes.size() && bytes[i + 1] == 'x') {
-            const int value = bytes.mid(i + 2, 2).toInt(&ok, 16);
-            if (ok) {
-                out.append(static_cast<char>(value));
-                i += 3;
-                continue;
-            }
-        }
-        out.append(bytes[i]);
-    }
-    return QString::fromUtf8(out);
-}
-
-// Label of the filesystem whose UUID names the appliance mount folder.
-QString labelForUuid(const QString& uuid) {
-    const QString device =
-            QFileInfo(QDir(QStringLiteral("/dev/disk/by-uuid")), uuid).canonicalFilePath();
-    if (device.isEmpty()) {
-        return {};
-    }
-    const QDir labels(QStringLiteral("/dev/disk/by-label"));
-    const QStringList links = labels.entryList(
-            QDir::AllEntries | QDir::System | QDir::Hidden | QDir::NoDotAndDotDot);
-    for (const QString& link : links) {
-        if (QFileInfo(labels.filePath(link)).canonicalFilePath() == device) {
-            return udevUnescape(link).trimmed();
-        }
-    }
-    return {};
-}
-#endif
-} // namespace
-
 bool hasRekordboxExport(const QString& path) {
     for (const auto* relative : {"PIONEER/rekordbox/export.pdb", ".PIONEER/rekordbox/export.pdb"}) {
         if (QFileInfo(QDir(path).filePath(QString::fromLatin1(relative))).isFile()) {
@@ -414,14 +369,15 @@ bool hasRekordboxExport(const QString& path) {
 }
 
 void setUsbStickRootsForTesting(const QStringList& roots) {
-    usbStickTestRoots() = roots;
+    // Shared with the rekordbox device scan (decklab/decklabusbname.h).
+    setUsbMediaRootsForTesting(roots);
 }
 
 QList<UsbStick> findUsbSticks() {
     QList<UsbStick> sticks;
 #if defined(Q_OS_LINUX)
-    const bool testing = !usbStickTestRoots().isEmpty();
-    QStringList roots = usbStickTestRoots();
+    const bool testing = usbMediaRootsAreForTesting();
+    QStringList roots = testing ? usbMediaRoots() : QStringList();
     if (!testing) {
         const QString user = QString::fromLocal8Bit(qgetenv("USER"));
         roots << QStringLiteral("/media/decklab");
@@ -431,6 +387,7 @@ QList<UsbStick> findUsbSticks() {
     }
     QSet<QString> seen;
     QSet<QByteArray> devices;
+    QList<UsbNameSource> names; // r5-polish: friendly names, as the rail and Storage
     for (const QString& root : std::as_const(roots)) {
         const bool applianceRoot = QDir(root).dirName() == QStringLiteral("decklab");
         const QFileInfoList entries = QDir(root).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
@@ -439,6 +396,7 @@ QList<UsbStick> findUsbSticks() {
             if (seen.contains(path)) {
                 continue;
             }
+            UsbNameSource name;
             if (!testing) {
                 // Only real mounts: the appliance helper removes stale
                 // folders, but a desktop may leave empty ones behind. A stick
@@ -449,26 +407,30 @@ QList<UsbStick> findUsbSticks() {
                     continue;
                 }
                 devices.insert(mount.device());
+                name.bytes = mount.bytesTotal();
             }
             seen.insert(path);
             UsbStick stick;
             stick.path = path;
-            if (applianceRoot) {
-                stick.label = testing ? QString() : labelForUuid(entry.fileName());
-                if (stick.label.isEmpty()) {
-                    stick.label = translate("USB stick (%1)")
-                                          .arg(entry.fileName().left(4).toUpper());
-                }
-            } else {
-                // udisks names desktop mount folders after the label.
-                stick.label = entry.fileName();
-            }
             stick.rekordbox = hasRekordboxExport(path);
+            // The appliance mounts by filesystem UUID and udev knows the
+            // label; udisks names desktop mount folders after the label (or
+            // the UUID when there is none).
+            name.id = applianceRoot ? entry.fileName() : path;
+            name.label = applianceRoot ? (testing ? QString() : usbLabelForUuid(entry.fileName()))
+                                       : entry.fileName();
+            name.rekordbox = stick.rekordbox;
+            names.append(name);
             sticks.append(stick);
         }
     }
+    const QStringList labels = usbNames(names);
+    for (int index = 0; index < sticks.size(); ++index) {
+        sticks[index].label = labels.at(index);
+    }
     std::sort(sticks.begin(), sticks.end(), [](const UsbStick& a, const UsbStick& b) {
-        return QString::localeAwareCompare(a.label, b.label) < 0;
+        const int order = QString::localeAwareCompare(a.label, b.label);
+        return order != 0 ? order < 0 : a.path < b.path;
     });
 #endif
     return sticks;
@@ -912,12 +874,36 @@ DeckLabActionButton::DeckLabActionButton(const QString& text, QWidget* parent)
     setFocusPolicy(Qt::NoFocus);
 }
 
-void DeckLabActionButton::setDetail(const QString& detail) {
-    if (m_detail == detail) {
+void DeckLabActionButton::setDetail(const QString& detail, const QString& shortDetail) {
+    if (m_detail == detail && m_shortDetail == shortDetail) {
         return;
     }
     m_detail = detail;
+    m_shortDetail = shortDetail;
     update();
+}
+
+QString DeckLabActionButton::shownDetail() const {
+    if (m_shortDetail.isEmpty()) {
+        return m_detail;
+    }
+    const int width = rect().adjusted(8, 2, -8, -2).width();
+    return QFontMetrics(secondaryFont(font())).horizontalAdvance(m_detail) <= width ? m_detail : m_shortDetail;
+}
+
+bool DeckLabActionButton::textFits() const {
+    if (m_deck > 0 || (text().isEmpty() && m_glyph != Glyph::None)) {
+        return true; // LOAD targets have their own layout; glyph-only buttons
+    }
+    const QRect content = rect().adjusted(8, 2, -8, -2);
+    const QFontMetrics primaryMetrics(strongFont(font()));
+    const int textWidth = std::max(0, content.width() - (m_glyph == Glyph::None ? 0 : 20));
+    const QString label = text().toUpper();
+    if (primaryMetrics.elidedText(label, Qt::ElideRight, textWidth) != label) {
+        return false;
+    }
+    const QString detail = shownDetail();
+    return QFontMetrics(secondaryFont(font())).elidedText(detail, Qt::ElideRight, content.width()) == detail;
 }
 
 void DeckLabActionButton::setTone(Tone tone) {
@@ -1108,13 +1094,23 @@ void DeckLabActionButton::paintEvent(QPaintEvent*) {
                                  content.width(),
                                  detailMetrics.height()),
                 Qt::AlignHCenter | Qt::AlignVCenter,
-                detailMetrics.elidedText(m_detail, Qt::ElideRight, content.width()));
+                detailMetrics.elidedText(shownDetail(), Qt::ElideRight, content.width()));
     }
 }
 
 DeckLabDeckChip::DeckLabDeckChip(QWidget* parent)
         : QPushButton(parent) {
     setFocusPolicy(Qt::NoFocus);
+}
+
+bool DeckLabDeckChip::textFits() const {
+    if (m_deck <= 0) {
+        return QFontMetrics(secondaryFont(font())).elidedText(m_detail, Qt::ElideRight, width() - 18) == m_detail;
+    }
+    const int left = 13;
+    const QString title = (m_automatic ? tr("Deck %1 · auto").arg(m_deck) : tr("Deck %1").arg(m_deck)).toUpper();
+    return QFontMetrics(labelFont(font())).elidedText(title, Qt::ElideRight, width() - left - 6) == title &&
+            QFontMetrics(numberFont(font(), 16)).elidedText(m_detail, Qt::ElideRight, width() - left - 6) == m_detail;
 }
 
 void DeckLabDeckChip::setReference(int deck, bool automatic, const QString& detail) {
@@ -1184,6 +1180,16 @@ void DeckLabTwoLineLabel::setLines(const QString& primary, const QString& second
     m_active = active;
     setAccessibleName(secondary.isEmpty() ? primary : primary + QStringLiteral(", ") + secondary);
     update();
+}
+
+bool DeckLabTwoLineLabel::textFits() const {
+    const QFontMetrics valueMetrics(m_active ? numberFont(font(), 16) : secondaryFont(font()));
+    const int width = std::max(0, this->width() - 8);
+    if (valueMetrics.elidedText(m_primary, Qt::ElideRight, width) != m_primary) {
+        return false;
+    }
+    return m_secondary.isEmpty() ||
+            QFontMetrics(labelFont(font())).elidedText(m_secondary, Qt::ElideRight, width) == m_secondary;
 }
 
 void DeckLabTwoLineLabel::paintEvent(QPaintEvent*) {

@@ -71,6 +71,9 @@ class DeckLabLiveTile : public TouchButton {
         m_bars = bars;
         update();
     }
+    QList<Bar> bars() const {
+        return m_bars;
+    }
     void setSignal(int percent) {
         m_signal = percent;
         update();
@@ -214,6 +217,50 @@ class DeckLabProgressLine : public QWidget {
         return m_current;
     }
 
+    /// r5-polish: the 14 px caps label face, Barlow SemiBold with minimal
+    /// tracking, so all seven first-run step names fit at 800 px.
+    QFont stepFont() const {
+        QFont caps = decklab::ui::uiFont(font(), 14, QFont::DemiBold);
+        caps.setCapitalization(QFont::AllUppercase);
+        caps.setLetterSpacing(QFont::PercentageSpacing, 101);
+        return caps;
+    }
+    /// Each step's box: its label's width plus an equal share of the rest,
+    /// so a long name (CONTROLLER) gets the room a short one (TIME) leaves.
+    QList<QRectF> stepCells() const {
+        QList<QRectF> cells;
+        if (m_steps.isEmpty()) {
+            return cells;
+        }
+        const QFontMetricsF metrics(stepFont());
+        QList<double> widths;
+        double total = 0;
+        for (const QString& step : m_steps) {
+            widths.append(metrics.horizontalAdvance(step.toUpper()) + 2);
+            total += widths.last();
+        }
+        const double spare = width() - total;
+        const auto count = static_cast<double>(m_steps.size());
+        double left = 0;
+        for (const double labelWidth : std::as_const(widths)) {
+            // Too narrow for every label: shrink in proportion (labels elide).
+            const double cell = spare >= 0 ? labelWidth + spare / count : labelWidth * width() / total;
+            cells.append(QRectF(left, 0, cell, height()));
+            left += cell;
+        }
+        return cells;
+    }
+    /// The labels as painted (elided only when the line is too narrow).
+    QStringList shownSteps() const {
+        QStringList shown;
+        const QFontMetricsF metrics(stepFont());
+        const auto cells = stepCells();
+        for (int index = 0; index < m_steps.size(); ++index) {
+            shown.append(metrics.elidedText(m_steps.at(index).toUpper(), Qt::ElideRight, cells.at(index).width()));
+        }
+        return shown;
+    }
+
   protected:
     void paintEvent(QPaintEvent*) override {
         if (m_steps.isEmpty()) {
@@ -221,23 +268,24 @@ class DeckLabProgressLine : public QWidget {
         }
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
-        const QFont caps = capsFont(font(), 14);
-        painter.setFont(caps);
-        const QFontMetrics metrics(caps);
+        painter.setFont(stepFont());
+        const auto cells = stepCells();
+        const QStringList shown = shownSteps();
         const int count = static_cast<int>(m_steps.size());
-        const double cell = width() / static_cast<double>(count);
         const double lineY = 30;
+        const double first = cells.first().center().x();
+        const double last = cells.last().center().x();
         // The line: played part dim (like the overview), the rest white.
-        const double here = cell * (m_current + 0.5);
-        painter.fillRect(QRectF(cell * 0.5, lineY - 1, std::max(0.0, here - cell * 0.5), 2), QColor(kDim));
-        painter.fillRect(QRectF(here, lineY - 1, std::max(0.0, cell * (count - 0.5) - here), 2), QColor(kText));
+        const double here = cells.at(std::clamp(m_current, 0, count - 1)).center().x();
+        painter.fillRect(QRectF(first, lineY - 1, std::max(0.0, here - first), 2), QColor(kDim));
+        painter.fillRect(QRectF(here, lineY - 1, std::max(0.0, last - here), 2), QColor(kText));
         for (int index = 0; index < count; ++index) {
-            const double center = cell * (index + 0.5);
+            const QRectF cell = cells.at(index);
+            const double center = cell.center().x();
             const bool done = index < m_current;
             const bool current = index == m_current;
-            painter.setPen(QColor(current ? kText : done ? kMuted : kMuted));
-            const QString name = metrics.elidedText(m_steps.at(index), Qt::ElideRight, static_cast<int>(cell) - 4);
-            painter.drawText(QRectF(center - cell / 2, 4, cell, 20), Qt::AlignCenter, name);
+            painter.setPen(QColor(current ? kText : kMuted));
+            painter.drawText(QRectF(cell.left(), 4, cell.width(), 20), Qt::AlignCenter, shown.at(index));
             if (current) {
                 painter.setPen(Qt::NoPen);
                 painter.setBrush(QColor(kText));

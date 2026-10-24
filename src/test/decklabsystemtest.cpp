@@ -33,12 +33,15 @@
 #include "controllers/controllermappingmatcher.h"
 #include "decklab/decklabdclient.h"
 #include "decklab/decklabfakeservice.h"
+#include "decklab/decklabinstruments.h"
 #include "decklab/decklabsetupmodel.h"
 #include "decklab/decklabsetupwizard.h"
 #include "decklab/decklabsignals.h"
 #include "decklab/decklabsystem.h"
 #include "decklab/decklabrail.h"
 #include "decklab/decklabsystempages.h"
+#include "decklab/decklabsystemui.h"
+#include "decklab/decklabusbname.h"
 #include "decklab/decklabui.h"
 #include "decklab/decklabui.h"
 #include "test/mixxxtest.h"
@@ -922,10 +925,11 @@ TEST_F(DeckLabSystemTest, RailLampsTeachAndRedIsOnlyForLive) {
     in.outputWorking = true;
     in.undervoltage = true;
     EXPECT_EQ(decklab::rail::Alert::LowPower, decklab::rail::alertFor(in));
-    // USB: presence, count and a rekordbox export.
+    // USB: presence and count. r5-polish: no "RB" abbreviation; the stick's
+    // name ("DJ USB") is in Browse and the status sheet.
     in.usbDrives = 1;
     in.usbRekordbox = true;
-    EXPECT_EQ(QStringLiteral("USB RB"), decklab::rail::usbView(in).label);
+    EXPECT_EQ(QStringLiteral("USB"), decklab::rail::usbView(in).label);
     in.usbDrives = 2;
     EXPECT_EQ(QStringLiteral("USB 2"), decklab::rail::usbView(in).label);
     in.controllerNew = true;
@@ -1086,4 +1090,744 @@ TEST_F(DeckLabSystemTest, FirstRunFlowCompletesWithoutAControllerAndSetsTheFlag)
     EXPECT_TRUE(finished.at(0).at(0).toBool());
     EXPECT_TRUE(system.firstRunDone());
     EXPECT_TRUE(decklab::DeviceStore(config()).all().isEmpty());
+}
+
+// ------------------------------------------------------------ r5-polish --
+// Fake enumerations only: generated USB locations and keys, bundled mappings.
+
+namespace {
+
+decklab::ControllerEndpoint midiPort(const QString& name, const QString& usbPath,
+        const QString& mapping = QString(), bool open = false) {
+    decklab::ControllerEndpoint endpoint;
+    endpoint.name = name;
+    endpoint.usbPath = usbPath;
+    endpoint.mapping = mapping;
+    endpoint.open = open;
+    endpoint.enabled = open;
+    return endpoint;
+}
+
+// A HID interface as Mixxx's HID enumerator names it ("<product> <serial>_<interface>").
+decklab::ControllerEndpoint hidInterface(const QString& product, uint16_t usagePage, int interface,
+        const QString& usbPath, uint16_t vendor = 0x15e4, uint16_t productId = 0x0035) {
+    decklab::ControllerEndpoint endpoint;
+    endpoint.name = QStringLiteral("%1 _%2").arg(product).arg(interface);
+    endpoint.hid = true;
+    endpoint.product = product;
+    endpoint.usagePage = usagePage;
+    endpoint.interfaceNumber = interface;
+    endpoint.vendorId = vendor;
+    endpoint.productId = productId;
+    endpoint.usbPath = usbPath;
+    return endpoint;
+}
+
+// decklabd's report for one USB device: MIDI port, vendor HID, audio card.
+QJsonObject reportedMixTrack(const QString& key, const QString& usbPort) {
+    return QJsonObject{{"key", key}, {"vid", "15e4"}, {"pid", "0035"}, {"serial", QJsonValue()},
+            {"name", "Numark MixTrack Pro 3"}, {"midi_ports", QJsonArray{"MixTrack Pro 3 MIDI 1"}}, {"hid", true},
+            {"audio_card", QJsonObject{{"alsa_id", "M3"}, {"name", "MixTrack Pro 3"}, {"playback_channels", 4},
+                                   {"capture_channels", 0}}},
+            {"usb_port", usbPort}};
+}
+
+QList<decklab::ui::Row*> visibleRows(QWidget* root, const QString& name) {
+    QList<decklab::ui::Row*> rows;
+    for (auto* row : root->findChildren<decklab::ui::Row*>(name)) {
+        if (row->isVisibleTo(root)) {
+            rows.append(row);
+        }
+    }
+    return rows;
+}
+
+void captureWidget(QWidget* widget, const QString& name) {
+    const QString output = qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
+    if (!output.isEmpty()) {
+        EXPECT_TRUE(widget->grab().save(QDir(output).filePath(name))) << name.toStdString();
+    }
+}
+
+void writeFile(const QString& path, const QByteArray& content) {
+    ASSERT_TRUE(QDir().mkpath(QFileInfo(path).absolutePath()));
+    QFile file(path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write(content);
+}
+
+} // namespace
+
+// Issue: one MixTrack Pro 3 showed as two rows, its vendor HID interface as
+// "Ready to set up", and that interface got opened ("Opening HID device ...
+// by HID path"). The MIDI port and the HID interface are one row now, the
+// badge says MIDI, and the HID interface is never opened.
+TEST_F(DeckLabSystemTest, OneControllerIsOneRowAndItsVendorHidInterfaceStaysClosed) {
+    DeckLabFakeService fake;
+    fake.devices = QJsonObject{{"controllers", QJsonArray{reportedMixTrack("15e4:0035", "1-1.2")}},
+            {"audio_cards", QJsonArray{}}};
+    ASSERT_TRUE(fake.listen(socketPath()));
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, socketPath());
+    const QString midiMapping = mappingPath(config(), QStringLiteral("Numark-Mixtrack-3.midi.xml"));
+    ASSERT_TRUE(QFileInfo::exists(midiMapping));
+    const QString location = QStringLiteral("usb-0000:01:00.0-1.2");
+    QList<decklab::ControllerEndpoint> endpoints{
+            midiPort(QStringLiteral("MixTrack Pro 3 MIDI 1"), location, midiMapping, true),
+            hidInterface(QStringLiteral("MixTrack Pro 3"), 0xFFA0, 3, location)};
+    QStringList opened;
+    QStringList disabled;
+    DeckLabSystem::ControllerHooks hooks;
+    hooks.endpoints = [&endpoints] { return endpoints; };
+    hooks.open = [&](const QString& name, const QString& mapping, QString*) {
+        opened.append(name);
+        for (auto& endpoint : endpoints) {
+            if (endpoint.name == name) {
+                endpoint.open = true;
+                endpoint.enabled = true;
+                endpoint.mapping = mapping;
+            }
+        }
+        return true;
+    };
+    // Records only: the real disable is queued on the controller thread.
+    hooks.disable = [&disabled](const decklab::ControllerEndpoint& endpoint) { disabled.append(endpoint.name); };
+    system.setControllerHooksForTesting(hooks);
+    using Kind = decklab::AudioDevice::Kind;
+    system.setAudioDevicesOverride({audioDevice(QStringLiteral("MixTrack Pro 3: USB Audio"), 4, Kind::External, true)});
+    system.start();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.isReady() && !system.devices().isEmpty(); }, 3000));
+
+    // One row: decklabd's device with both interfaces, MIDI in use.
+    auto rows = system.controllers();
+    ASSERT_EQ(1, rows.size());
+    EXPECT_EQ(QStringLiteral("15e4:0035"), rows[0].key);
+    EXPECT_EQ(QStringLiteral("Numark MixTrack Pro 3"), rows[0].name);
+    EXPECT_EQ(QStringLiteral("MixTrack Pro 3 MIDI 1"), rows[0].mixxxName);
+    EXPECT_FALSE(rows[0].hid);
+    EXPECT_TRUE(rows[0].open);
+    EXPECT_EQ((QStringList{"MixTrack Pro 3 MIDI 1", "MixTrack Pro 3 _3"}), rows[0].interfaces);
+    EXPECT_EQ(QStringList{QStringLiteral("MixTrack Pro 3 _3")}, rows[0].suppressed);
+    // Before Mixxx enumerates it, decklabd's device is a MIDI row (it has a
+    // MIDI port), not HID.
+    {
+        const auto saved = endpoints;
+        endpoints.clear();
+        const auto pending = system.controllers();
+        ASSERT_EQ(1, pending.size());
+        EXPECT_TRUE(pending[0].mixxxName.isEmpty());
+        EXPECT_FALSE(pending[0].hid);
+        endpoints = saved;
+    }
+
+    // The wizard's controller step: one row, MIDI badge, working; Next keeps
+    // the working mapping and opens nothing.
+    deckLabLoadFonts(config()->getResourcePath());
+    QWidget host;
+    host.setStyleSheet(QStringLiteral("QPushButton {min-height:28px;padding:5px 9px;} QComboBox {min-height:38px;}"));
+    host.resize(800, 480);
+    host.show();
+    auto* wizard = new DeckLabSetupWizard(&system, &host);
+    wizard->start();
+    QTest::qWait(30);
+    const auto shown = visibleRows(wizard, QStringLiteral("decklab-setup-controller"));
+    ASSERT_EQ(1, shown.size());
+    EXPECT_EQ(QStringLiteral("Numark MixTrack Pro 3"), shown[0]->titleText());
+    EXPECT_EQ(QStringList{QStringLiteral("MIDI")}, shown[0]->tags());
+    EXPECT_TRUE(shown[0]->subtitleText().startsWith(QStringLiteral("Working"))) << shown[0]->subtitleText().toStdString();
+    wizard->findChild<QPushButton*>(QStringLiteral("decklab-setup-next"))->click();
+    EXPECT_EQ(DeckLabSetupWizard::Step::Audio, wizard->step());
+    EXPECT_TRUE(opened.isEmpty()) << opened.join(QStringLiteral(", ")).toStdString();
+    wizard->hide();
+
+    // An earlier build gave the HID interface the MIDI mapping and enabled
+    // it, so Mixxx reopened it at every start: Deck Lab closes and disables it.
+    endpoints[1].open = true;
+    endpoints[1].enabled = true;
+    endpoints[1].mapping = midiMapping;
+    rows = system.controllers();
+    ASSERT_EQ(1, rows.size());
+    EXPECT_FALSE(rows[0].hid); // the badge says what is in use
+    EXPECT_EQ(QStringList{QStringLiteral("MixTrack Pro 3 _3")}, system.closeStrayInterfaces());
+    EXPECT_EQ(QStringList{QStringLiteral("MixTrack Pro 3 _3")}, disabled);
+    // Once Mixxx has applied it (closed, enabled = 0, no mapping), nothing more.
+    endpoints[1].open = false;
+    endpoints[1].enabled = false;
+    endpoints[1].mapping.clear();
+    EXPECT_TRUE(system.closeStrayInterfaces().isEmpty());
+    // Never opened by Deck Lab, with any mapping.
+    QString error;
+    EXPECT_FALSE(system.applyMapping(QStringLiteral("MixTrack Pro 3 _3"), midiMapping, &error));
+    EXPECT_FALSE(error.isEmpty());
+    EXPECT_FALSE(system.applyMapping(QStringLiteral("MixTrack Pro 3 _3"),
+            mappingPath(config(), QStringLiteral("Traktor Kontrol S4 MK3.hid.xml")), &error));
+    // Nor a HID mapping on the MIDI port.
+    EXPECT_FALSE(system.applyMapping(QStringLiteral("MixTrack Pro 3 MIDI 1"),
+            mappingPath(config(), QStringLiteral("Traktor Kontrol S4 MK3.hid.xml")), &error));
+    EXPECT_TRUE(opened.isEmpty());
+
+    // Replugged, with a profile an earlier build saved for the HID interface:
+    // the mapping goes back on the MIDI port only.
+    decklab::DeviceProfile profile;
+    profile.key = QStringLiteral("15e4:0035");
+    profile.name = QStringLiteral("Numark MixTrack Pro 3");
+    profile.controller = QStringLiteral("MixTrack Pro 3 _3");
+    profile.mapping = midiMapping;
+    decklab::DeviceStore(config()).save(profile);
+    endpoints[0].open = false;
+    QJsonObject changed = fake.devices;
+    changed.insert(QStringLiteral("added"), QJsonArray{QStringLiteral("15e4:0035")});
+    fake.pushEvent(QStringLiteral("devices.changed"), changed);
+    ASSERT_TRUE(QTest::qWaitFor([&] { return !opened.isEmpty(); }, 3000));
+    EXPECT_EQ(QStringList{QStringLiteral("MixTrack Pro 3 MIDI 1")}, opened);
+    EXPECT_FALSE(endpoints[1].open);
+
+    // Without decklabd (or on a desktop without USB locations) the name and
+    // the USB ids still make one row.
+    endpoints[0].usbPath.clear();
+    endpoints[1].usbPath.clear();
+    const auto groups = decklab::groupControllers(endpoints, {});
+    ASSERT_EQ(1, groups.size());
+    ASSERT_NE(nullptr, groups[0].primaryEndpoint());
+    EXPECT_FALSE(groups[0].primaryEndpoint()->hid);
+    EXPECT_EQ(QList<int>{1}, groups[0].suppressed);
+}
+
+TEST_F(DeckLabSystemTest, HidOnlyAndTwinControllersKeepTheirOwnRows) {
+    // A HID-only controller (vendor page, as most HID DJ controllers use):
+    // one HID row, opened with its .hid.xml mapping as before.
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, QStringLiteral("/nonexistent/decklabd.sock"));
+    QList<decklab::ControllerEndpoint> endpoints{
+            hidInterface(QStringLiteral("Generated HID Deck"), 0xFF01, 4, QStringLiteral("usb-0000:01:00.0-1.3"),
+                    0x17cc, 0x1720)};
+    QStringList opened;
+    DeckLabSystem::ControllerHooks hooks;
+    hooks.endpoints = [&endpoints] { return endpoints; };
+    hooks.open = [&opened](const QString& name, const QString&, QString*) {
+        opened.append(name);
+        return true;
+    };
+    hooks.disable = [](const decklab::ControllerEndpoint& endpoint) { ADD_FAILURE() << "disabled " << endpoint.name.toStdString(); };
+    system.setControllerHooksForTesting(hooks);
+    auto rows = system.controllers();
+    ASSERT_EQ(1, rows.size());
+    EXPECT_TRUE(rows[0].hid);
+    EXPECT_EQ(QStringLiteral("Generated HID Deck _4"), rows[0].mixxxName);
+    EXPECT_EQ(QStringLiteral("Generated HID Deck"), rows[0].name);
+    EXPECT_EQ(QStringLiteral("17cc:1720"), rows[0].key);
+    EXPECT_TRUE(rows[0].suppressed.isEmpty());
+    EXPECT_TRUE(system.closeStrayInterfaces().isEmpty());
+    QString error;
+    EXPECT_TRUE(system.applyMapping(rows[0].mixxxName,
+            mappingPath(config(), QStringLiteral("Traktor Kontrol S4 MK3.hid.xml")), &error))
+            << error.toStdString();
+    EXPECT_EQ(QStringList{QStringLiteral("Generated HID Deck _4")}, opened);
+
+    // A HID interface with a mapping made for it is used rather than an
+    // unconfigured MIDI port of the same device.
+    const QString shared = QStringLiteral("usb-0000:01:00.0-1.4");
+    const auto withMapping = decklab::groupControllers(
+            {midiPort(QStringLiteral("Generated Deck MIDI 1"), shared),
+                    hidInterface(QStringLiteral("Generated Deck"), 0xFF00, 0, shared, 0x08e4, 0x0001)},
+            {},
+            [](const decklab::ControllerEndpoint& endpoint) { return endpoint.hid; });
+    ASSERT_EQ(1, withMapping.size());
+    ASSERT_NE(nullptr, withMapping[0].primaryEndpoint());
+    EXPECT_TRUE(withMapping[0].primaryEndpoint()->hid);
+    EXPECT_TRUE(withMapping[0].suppressed.isEmpty());
+
+    // Two identical MixTrack Pro 3s: two rows, each its own MIDI port in use
+    // and its own HID interface closed, matched to decklabd by USB port.
+    const QString left = QStringLiteral("usb-0000:01:00.0-1.2");
+    const QString right = QStringLiteral("usb-0000:01:00.0-1.4");
+    const QList<decklab::ControllerEndpoint> twins{midiPort(QStringLiteral("MixTrack Pro 3 MIDI 1"), right),
+            midiPort(QStringLiteral("MixTrack Pro 3 MIDI 1"), left),
+            hidInterface(QStringLiteral("MixTrack Pro 3"), 0xFFA0, 3, left),
+            hidInterface(QStringLiteral("MixTrack Pro 3"), 0xFFA0, 3, right)};
+    const auto reported = decklab::reportedControllers(QJsonObject{{"controllers",
+            QJsonArray{reportedMixTrack(QStringLiteral("15e4:0035"), QStringLiteral("1-1.2")),
+                    reportedMixTrack(QStringLiteral("15e4:0035:1-1.4"), QStringLiteral("1-1.4"))}}});
+    const auto groups = decklab::groupControllers(twins, reported);
+    ASSERT_EQ(2, groups.size());
+    for (int index = 0; index < 2; ++index) {
+        const auto& group = groups.at(index);
+        EXPECT_EQ(index, group.reported);
+        ASSERT_EQ(2, group.endpoints.size());
+        ASSERT_NE(nullptr, group.primaryEndpoint());
+        EXPECT_FALSE(group.primaryEndpoint()->hid);
+        EXPECT_EQ(index == 0 ? left : right, group.primaryEndpoint()->usbPath);
+        ASSERT_EQ(1, group.suppressed.size());
+        EXPECT_EQ(group.primaryEndpoint()->usbPath, group.endpoints.at(group.suppressed.first()).usbPath);
+    }
+    // Without decklabd: still two.
+    EXPECT_EQ(2, decklab::groupControllers(twins, {}).size());
+}
+
+TEST_F(DeckLabSystemTest, UsbLocationsComeFromHidrawAndTheAlsaCard) {
+    QTemporaryDir root;
+    ASSERT_TRUE(root.isValid());
+    writeFile(root.filePath(QStringLiteral("sys/class/hidraw/hidraw0/device/uevent")),
+            "DRIVER=hid-generic\nHID_ID=0003:000015E4:00000035\nHID_NAME=Numark MixTrack Pro 3\n"
+            "HID_PHYS=usb-0000:01:00.0-1.2/input3\nHID_UNIQ=\n");
+    writeFile(root.filePath(QStringLiteral("proc/asound/cards")),
+            " 0 [Headphones     ]: bcm2835_headpho - bcm2835 Headphones\n"
+            "                      bcm2835 Headphones\n"
+            " 1 [M3             ]: USB-Audio - MixTrack Pro 3\n"
+            "                      Numark MixTrack Pro 3 at usb-0000:01:00.0-1.2, full speed\n");
+    writeFile(root.filePath(QStringLiteral("proc/asound/seq/clients")),
+            "Client info\n  cur  clients : 4\n\n"
+            "Client   0 : \"System\" [Kernel Legacy]\n  Port   0 : \"Timer\" (Rwe-) [In/Out]\n"
+            "Client  14 : \"Midi Through\" [Kernel Legacy]\n  Port   0 : \"Midi Through Port-0\" (RWe-) [In/Out]\n"
+            "Client  20 : \"MixTrack Pro 3\" [Kernel Legacy]\n  Port   0 : \"MixTrack Pro 3 MIDI 1\" (RWeX) [In/Out]\n"
+            "Client 128 : \"Generated Client\" [User Legacy]\n  Port   0 : \"port-0\" (Rwe-) [In/Out]\n");
+    EXPECT_EQ(QStringLiteral("usb-0000:01:00.0-1.2"),
+            decklab::usbpath::hidrawLocation(QStringLiteral("/dev/hidraw0"), root.path()));
+    EXPECT_TRUE(decklab::usbpath::hidrawLocation(QStringLiteral("/dev/hidraw7"), root.path()).isEmpty());
+    const auto ports = decklab::usbpath::midiPortLocations(root.path());
+    EXPECT_EQ(QStringLiteral("usb-0000:01:00.0-1.2"), ports.value(QStringLiteral("MixTrack Pro 3 MIDI 1")));
+    EXPECT_FALSE(ports.contains(QStringLiteral("Midi Through Port-0"))); // not a USB card
+    EXPECT_FALSE(ports.contains(QStringLiteral("port-0")));
+    EXPECT_EQ(QStringLiteral("1.2"), decklab::usbPortChain(QStringLiteral("usb-0000:01:00.0-1.2/input3")));
+    EXPECT_EQ(QStringLiteral("1.2"), decklab::usbPortChain(QStringLiteral("1-1.2")));
+    EXPECT_EQ(QStringLiteral("1.4.2"), decklab::usbPortChain(QStringLiteral("usb-3f980000.usb-1.4.2")));
+    EXPECT_TRUE(decklab::usbPortChain(QString()).isEmpty());
+}
+
+// Issue: "Set up later" did not stick; the Welcome flow came back at every start.
+TEST_F(DeckLabSystemTest, SetUpLaterSticksAndSettingsOffersFinishSetup) {
+    DeckLabFakeService fake;
+    ASSERT_TRUE(fake.listen(socketPath()));
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, socketPath());
+    using Kind = decklab::AudioDevice::Kind;
+    system.setAudioDevicesOverride({audioDevice(QStringLiteral("Controller: USB Audio"), 4, Kind::External, true)});
+    system.start();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.isReady(); }, 3000));
+    EXPECT_TRUE(system.firstRunDue());
+    QWidget host;
+    host.setStyleSheet(QStringLiteral("QPushButton {min-height:28px;padding:5px 9px;} QComboBox {min-height:38px;}"));
+    host.resize(800, 480);
+    host.show();
+    DeckLabSystemUi ui(&host, DeckLabSystemUi::Hooks{});
+    QWidget* panel = ui.createSetupPanel(&host);
+    ui.attach(&system);
+    // The first run opens by itself while it is due.
+    ASSERT_TRUE(QTest::qWaitFor([&] { return ui.wizard() != nullptr; }, 4000));
+    QPointer<DeckLabSetupWizard> wizard = ui.wizard();
+    EXPECT_TRUE(wizard->isFirstRun());
+    auto* later = wizard->findChild<QPushButton*>(QStringLiteral("decklab-setup-close"));
+    ASSERT_NE(nullptr, later);
+    EXPECT_EQ(QStringLiteral("Set up later"), later->text());
+    later->click();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    EXPECT_TRUE(wizard.isNull());
+    EXPECT_TRUE(system.firstRunDeferred());
+    EXPECT_FALSE(system.firstRunDone());
+    EXPECT_FALSE(system.firstRunDue());
+    EXPECT_EQ(1, config()->getValue(ConfigKey(QStringLiteral("[DeckLab]"), QStringLiteral("first_run_deferred")), 0));
+    // The next start: no Welcome.
+    {
+        DeckLabSystem again(services, nullptr, QStringLiteral("/nonexistent/decklabd.sock"));
+        QWidget other;
+        other.resize(800, 480);
+        DeckLabSystemUi nextStart(&other, DeckLabSystemUi::Hooks{});
+        nextStart.attach(&again);
+        QTest::qWait(1900);
+        EXPECT_EQ(nullptr, nextStart.wizard());
+    }
+    // Settings › Controller & audio offers Finish setup; so does the status sheet.
+    auto* finish = panel->findChild<QPushButton*>(QStringLiteral("decklab-finish-setup"));
+    ASSERT_NE(nullptr, finish);
+    EXPECT_TRUE(finish->isVisibleTo(panel));
+    decklab::rail::Inputs inputs;
+    ui.fillRailInputs(inputs);
+    EXPECT_TRUE(inputs.setupPending);
+    int finishes = 0;
+    DeckLabStatusSheet::Actions actions;
+    actions.finishSetup = [&finishes] { ++finishes; };
+    auto* sheet = new DeckLabStatusSheet(&host, actions);
+    sheet->refresh(inputs);
+    sheet->show();
+    ASSERT_FALSE(sheet->lines().isEmpty());
+    EXPECT_TRUE(sheet->lines().first().startsWith(QStringLiteral("Setup: Not finished"))) << sheet->lines().first().toStdString();
+    auto* sheetFinish = sheet->findChild<QPushButton*>(QStringLiteral("decklab-status-finish-setup"));
+    ASSERT_NE(nullptr, sheetFinish);
+    ASSERT_TRUE(sheetFinish->isVisibleTo(sheet));
+    sheetFinish->click();
+    EXPECT_EQ(1, finishes);
+    // Finish setup opens the first run; finishing it completes setup.
+    finish->click();
+    wizard = ui.wizard();
+    ASSERT_FALSE(wizard.isNull());
+    EXPECT_TRUE(wizard->isFirstRun());
+    wizard->skipToDone();
+    wizard->findChild<QPushButton*>(QStringLiteral("decklab-setup-next"))->click();
+    EXPECT_TRUE(system.firstRunDone());
+    EXPECT_FALSE(system.firstRunDeferred());
+    QCoreApplication::processEvents();
+    EXPECT_FALSE(finish->isVisibleTo(panel));
+    ui.fillRailInputs(inputs);
+    EXPECT_FALSE(inputs.setupPending);
+    sheet->refresh(inputs);
+    for (const QString& line : sheet->lines()) {
+        EXPECT_FALSE(line.startsWith(QStringLiteral("Setup:"))) << line.toStdString();
+    }
+}
+
+// Issue: "CONTRO…" in the step bar at 800x480.
+TEST_F(DeckLabSystemTest, EveryDeckSetupStepNameFitsAt800) {
+    deckLabLoadFonts(config()->getResourcePath());
+    ASSERT_TRUE(QFontDatabase::families().contains(QStringLiteral("Barlow")));
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, QStringLiteral("/nonexistent/decklabd.sock"));
+    QWidget host;
+    host.setStyleSheet(QStringLiteral("QPushButton {min-height:28px;padding:5px 9px;} QComboBox {min-height:38px;}"));
+    host.resize(800, 480);
+    host.show();
+    auto* wizard = new DeckLabSetupWizard(&system, &host);
+    for (const bool firstRun : {true, false}) {
+        if (firstRun) {
+            wizard->startFirstRun();
+        } else {
+            wizard->start();
+        }
+        QTest::qWait(30);
+        auto* progress = dynamic_cast<DeckLabProgressLine*>(
+                wizard->findChild<QWidget*>(QStringLiteral("decklab-setup-progress")));
+        ASSERT_NE(nullptr, progress);
+        QStringList expected;
+        for (const QString& step : progress->steps()) {
+            expected.append(step.toUpper());
+        }
+        EXPECT_EQ(firstRun ? 7 : 4, expected.size());
+        EXPECT_TRUE(expected.contains(QStringLiteral("CONTROLLER")));
+        EXPECT_EQ(expected, progress->shownSteps());
+        // Brand type: 14 px Barlow caps; each label inside its own cell.
+        const QFont font = progress->stepFont();
+        EXPECT_EQ(14, QFontInfo(font).pixelSize());
+        EXPECT_TRUE(QFontInfo(font).family().startsWith(QStringLiteral("Barlow"))) << QFontInfo(font).family().toStdString();
+        EXPECT_EQ(QFont::AllUppercase, font.capitalization());
+        const QFontMetricsF metrics(font);
+        const auto cells = progress->stepCells();
+        ASSERT_EQ(expected.size(), cells.size());
+        for (int index = 0; index < cells.size(); ++index) {
+            EXPECT_LE(metrics.horizontalAdvance(expected.at(index)), cells.at(index).width()) << expected.at(index).toStdString();
+            EXPECT_LE(cells.at(index).right(), progress->width() + 0.5);
+        }
+        captureWidget(&host, firstRun ? QStringLiteral("setup-step-bar-first-run.png") : QStringLiteral("setup-step-bar.png"));
+    }
+}
+
+// Issue: Browse showed an unlabeled stick as its filesystem UUID.
+TEST_F(DeckLabSystemTest, UsbSticksHaveFriendlyNamesNeverTheirUuid) {
+    using decklab::UsbNameSource;
+    const auto source = [](const QString& id, const QString& label, bool rekordbox, double gigabytes = -1) {
+        UsbNameSource result;
+        result.id = id;
+        result.label = label;
+        result.rekordbox = rekordbox;
+        result.bytes = gigabytes > 0 ? static_cast<qint64>(gigabytes * 1e9) : -1;
+        return result;
+    };
+    // decklabd sends the UUID as the label when there is none.
+    EXPECT_EQ(QStringLiteral("DJ USB"), decklab::usbBaseName(source("3A1F-0C2D", "3A1F-0C2D", true)));
+    EXPECT_EQ(QStringLiteral("USB stick"), decklab::usbBaseName(source("3A1F-0C2D", "", false)));
+    EXPECT_EQ(QStringLiteral("MIX SETS"), decklab::usbBaseName(source("3A1F-0C2D", "MIX SETS", false)));
+    for (const char* uuid : {"6A3F-1C2B", "0123456789ABCDEF", "0e9c1d7a-55aa-4b33-9e3f-2f9d0c4a1b77"}) {
+        EXPECT_TRUE(decklab::usbLabelIsPlaceholder(QString::fromLatin1(uuid))) << uuid;
+    }
+    EXPECT_FALSE(decklab::usbLabelIsPlaceholder(QStringLiteral("DJ USB")));
+    // The size it was sold as.
+    EXPECT_EQ(QStringLiteral("32 GB"), decklab::usbCapacityText(static_cast<qint64>(29.6e9)));
+    EXPECT_EQ(QStringLiteral("32 GB"), decklab::usbCapacityText(static_cast<qint64>(32.4e9)));
+    EXPECT_EQ(QStringLiteral("16 GB"), decklab::usbCapacityText(static_cast<qint64>(15.4e9)));
+    EXPECT_EQ(QStringLiteral("1 TB"), decklab::usbCapacityText(static_cast<qint64>(1.0e12)));
+    EXPECT_TRUE(decklab::usbCapacityText(-1).isEmpty());
+    // Several sticks: different kinds need nothing more; the same name: the
+    // first keeps it, a later one gets its size, or a number when the sizes
+    // match. Never a UUID.
+    {
+        decklab::UsbNameBook book;
+        EXPECT_EQ((QStringList{"DJ USB", "USB stick"}),
+                book.names({source("3A1F-0C2D", "", true, 31), source("55AA-1234", "", false, 31)}));
+    }
+    {
+        decklab::UsbNameBook book;
+        EXPECT_EQ((QStringList{"DJ USB", "DJ USB 16 GB"}),
+                book.names({source("3A1F-0C2D", "", true, 31), source("55AA-1234", "", true, 15.5)}));
+    }
+    {
+        // A name shown stays while the stick is in: A alone is "DJ USB"; B
+        // arriving (its UUID sorts first) is "DJ USB 2", A is not renamed;
+        // A leaving does not rename B; A back gets its name again.
+        decklab::UsbNameBook book;
+        const auto a = source("55AA-1234", "", true, 31);
+        const auto b = source("0B7E-4C11", "", true, 31);
+        EXPECT_EQ(QStringList{"DJ USB"}, book.names({a}));
+        EXPECT_EQ((QStringList{"DJ USB", "DJ USB 2"}), book.names({a, b}));
+        EXPECT_EQ((QStringList{"DJ USB 2", "DJ USB"}), book.names({b, a})); // any order
+        EXPECT_EQ(QStringList{"DJ USB 2"}, book.names({b}));
+        EXPECT_EQ((QStringList{"DJ USB", "DJ USB 2"}), book.names({a, b}));
+        // Without a remembered name, the first by UUID keeps the plain one.
+        decklab::UsbNameBook fresh;
+        EXPECT_EQ((QStringList{"DJ USB 2", "DJ USB"}), fresh.names({a, b}));
+    }
+    decklab::usbNameBook().clear();
+    // The rail and Storage name decklabd's drives the same way.
+    const QJsonArray drives{QJsonObject{{"id", "3A1F-0C2D"}, {"label", "3A1F-0C2D"}, {"mount", "/media/decklab/3A1F-0C2D"},
+                                    {"size_mb", 30528}, {"free_mb", 12402}, {"fs", "exfat"}, {"read_only", true},
+                                    {"rekordbox", true}, {"busy", false}},
+            QJsonObject{{"id", "0e9c1d7a-55aa-4b33-9e3f-2f9d0c4a1b77"}, {"label", "MIX SETS"},
+                    {"mount", "/media/decklab/0e9c1d7a-55aa-4b33-9e3f-2f9d0c4a1b77"}, {"size_mb", 61056},
+                    {"free_mb", 40220}, {"fs", "ext4"}, {"read_only", false}, {"rekordbox", false}, {"busy", false}}};
+    EXPECT_EQ(QStringLiteral("DJ USB"), decklab::usbDriveName(drives.at(0).toObject(), drives));
+    DeckLabFakeService fake;
+    fake.drives = drives;
+    ASSERT_TRUE(fake.listen(socketPath()));
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, socketPath());
+    QWidget host;
+    DeckLabSystemUi ui(&host, DeckLabSystemUi::Hooks{});
+    ui.attach(&system);
+    system.start();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.usbDrives().size() == 2; }, 3000));
+    QCoreApplication::processEvents();
+    decklab::rail::Inputs inputs;
+    ui.fillRailInputs(inputs);
+    EXPECT_EQ(QStringLiteral("DJ USB (read-only) · MIX SETS"), inputs.usbSummary);
+    EXPECT_FALSE(inputs.usbSummary.contains(QStringLiteral("3A1F")));
+    EXPECT_EQ(QStringLiteral("USB 2"), decklab::rail::usbView(inputs).label);
+    EXPECT_TRUE(system.ejectRefusal(drives.at(0).toObject()).isEmpty());
+    // A track playing from the unlabeled stick: the refusal names it.
+    system.setLoadedTracksProvider([] {
+        return QList<decklab::LoadedTrack>{{QStringLiteral("[Channel1]"),
+                QStringLiteral("/media/decklab/3A1F-0C2D/Contents/Generated Track.mp3")}};
+    });
+    const QString refusal = system.ejectRefusal(drives.at(0).toObject());
+    EXPECT_TRUE(refusal.contains(QStringLiteral("DJ USB"))) << refusal.toStdString();
+    EXPECT_FALSE(refusal.contains(QStringLiteral("3A1F"))) << refusal.toStdString();
+    // Settings › Unit › Storage: its card and the home tile.
+    host.resize(800, 480);
+    auto* page = new DeckLabSystemPage(&host);
+    page->resize(800, 480);
+    page->setSystem(&system);
+    host.show();
+    page->showSection(DeckLabSystemPage::Section::Storage);
+    QTest::qWait(50);
+    QStringList cards;
+    for (auto* row : page->findChildren<decklab::ui::Row*>(QStringLiteral("decklab-drive-row"))) {
+        cards.append(row->titleText());
+    }
+    EXPECT_EQ((QStringList{"DJ USB", "MIX SETS"}), cards);
+    page->showSection(DeckLabSystemPage::Section::Home);
+    QTest::qWait(50);
+    auto* tile = dynamic_cast<DeckLabLiveTile*>(page->tile(DeckLabSystemPage::Section::Storage));
+    ASSERT_NE(nullptr, tile);
+    QStringList bars;
+    for (const auto& bar : tile->bars()) {
+        bars.append(bar.name);
+    }
+    EXPECT_EQ((QStringList{"DJ USB", "MIX SETS"}), bars);
+}
+
+// The HID repair through its real triggers: Deck Lab starting after Mixxx
+// opened the armed interface, and a rescan (Detect again). The fake records
+// only, as the real disable is queued on the controller thread.
+TEST_F(DeckLabSystemTest, StrayHidInterfaceIsClosedAtStartAndAfterARescan) {
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, QStringLiteral("/nonexistent/decklabd.sock"));
+    const QString midiMapping = mappingPath(config(), QStringLiteral("Numark-Mixtrack-3.midi.xml"));
+    const QString location = QStringLiteral("usb-0000:01:00.0-1.3");
+    auto hid = hidInterface(QStringLiteral("MixTrack Pro 3"), 0xFFA0, 3, location);
+    hid.devicePath = QStringLiteral("/dev/hidraw4");
+    // As an earlier build left it: enabled with the MIDI mapping (closed: armed).
+    hid.enabled = true;
+    hid.mapping = midiMapping;
+    QList<decklab::ControllerEndpoint> endpoints{
+            midiPort(QStringLiteral("MixTrack Pro 3 MIDI 1"), location, midiMapping, true), hid};
+    QStringList disabled;
+    int rescans = 0;
+    DeckLabSystem::ControllerHooks hooks;
+    hooks.endpoints = [&endpoints] { return endpoints; };
+    hooks.open = [](const QString& name, const QString&, QString*) {
+        ADD_FAILURE() << "opened " << name.toStdString();
+        return false;
+    };
+    hooks.disable = [&disabled](const decklab::ControllerEndpoint& endpoint) {
+        disabled.append(endpoint.name + QLatin1Char('@') + endpoint.devicePath);
+    };
+    hooks.rescan = [&rescans] { ++rescans; };
+    system.setControllerHooksForTesting(hooks);
+    system.start();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return !disabled.isEmpty(); }, 2000));
+    EXPECT_EQ(QStringList{QStringLiteral("MixTrack Pro 3 _3@/dev/hidraw4")}, disabled);
+    // Open after a rescan (Mixxx reopens what is enabled): Detect again closes it.
+    disabled.clear();
+    endpoints[1].open = true;
+    QWidget host;
+    host.resize(800, 480);
+    host.show();
+    auto* wizard = new DeckLabSetupWizard(&system, &host);
+    wizard->start();
+    QTest::qWait(20);
+    QSignalSpy rescanned(&system, &DeckLabSystem::controllersRescanned);
+    auto* detect = wizard->findChild<QPushButton*>(QStringLiteral("decklab-setup-detect"));
+    ASSERT_NE(nullptr, detect);
+    detect->click();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return rescanned.count() == 1; }, 2000));
+    EXPECT_EQ(1, rescans);
+    EXPECT_EQ(QStringList{QStringLiteral("MixTrack Pro 3 _3@/dev/hidraw4")}, disabled);
+    // Neither closed nor armed: nothing to do.
+    disabled.clear();
+    endpoints[1].open = false;
+    endpoints[1].enabled = false;
+    endpoints[1].mapping.clear();
+    detect->click();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return rescanned.count() == 2; }, 2000));
+    EXPECT_TRUE(disabled.isEmpty()) << disabled.join(QStringLiteral(", ")).toStdString();
+}
+
+// Two identical MixTrack Pro 3s as Linux and Mixxx really report them: the
+// MIDI ports share one name, so /proc can't place them (no location), the
+// HID interfaces share a name too but have their own hidraw nodes.
+TEST_F(DeckLabSystemTest, TwinControllersAsLinuxReportThemAreTwoRowsAndBothHidClose) {
+    QTemporaryDir root;
+    ASSERT_TRUE(root.isValid());
+    writeFile(root.filePath(QStringLiteral("sys/class/hidraw/hidraw0/device/uevent")),
+            "HID_ID=0003:000015E4:00000035\nHID_NAME=Numark MixTrack Pro 3\nHID_PHYS=usb-0000:01:00.0-1.2/input3\n");
+    writeFile(root.filePath(QStringLiteral("sys/class/hidraw/hidraw1/device/uevent")),
+            "HID_ID=0003:000015E4:00000035\nHID_NAME=Numark MixTrack Pro 3\nHID_PHYS=usb-0000:01:00.0-1.4/input3\n");
+    writeFile(root.filePath(QStringLiteral("proc/asound/cards")),
+            " 1 [M3             ]: USB-Audio - MixTrack Pro 3\n"
+            "                      Numark MixTrack Pro 3 at usb-0000:01:00.0-1.2, full speed\n"
+            " 2 [M3_1           ]: USB-Audio - MixTrack Pro 3\n"
+            "                      Numark MixTrack Pro 3 at usb-0000:01:00.0-1.4, full speed\n");
+    writeFile(root.filePath(QStringLiteral("proc/asound/seq/clients")),
+            "Client  20 : \"MixTrack Pro 3\" [Kernel Legacy]\n  Port   0 : \"MixTrack Pro 3 MIDI 1\" (RWeX) [In/Out]\n"
+            "Client  24 : \"MixTrack Pro 3\" [Kernel Legacy]\n  Port   0 : \"MixTrack Pro 3 MIDI 1\" (RWeX) [In/Out]\n");
+    const auto ports = decklab::usbpath::midiPortLocations(root.path());
+    EXPECT_FALSE(ports.contains(QStringLiteral("MixTrack Pro 3 MIDI 1"))); // two cards share it
+    const QString midiMapping = mappingPath(config(), QStringLiteral("Numark-Mixtrack-3.midi.xml"));
+    QList<decklab::ControllerEndpoint> endpoints;
+    for (int unit = 0; unit < 2; ++unit) {
+        endpoints.append(midiPort(QStringLiteral("MixTrack Pro 3 MIDI 1"),
+                ports.value(QStringLiteral("MixTrack Pro 3 MIDI 1")), midiMapping, true));
+    }
+    for (int unit = 0; unit < 2; ++unit) {
+        const QString node = QStringLiteral("/dev/hidraw%1").arg(unit);
+        auto hid = hidInterface(QStringLiteral("MixTrack Pro 3"), 0xFFA0, 3,
+                decklab::usbpath::hidrawLocation(node, root.path()));
+        hid.devicePath = node;
+        hid.open = true; // both opened by Mixxx at start (they share one config key)
+        hid.enabled = true;
+        hid.mapping = midiMapping;
+        endpoints.append(hid);
+    }
+    EXPECT_EQ(QStringLiteral("usb-0000:01:00.0-1.2"), endpoints[2].usbPath);
+    EXPECT_EQ(QStringLiteral("usb-0000:01:00.0-1.4"), endpoints[3].usbPath);
+    DeckLabFakeService fake;
+    fake.devices = QJsonObject{{"controllers",
+                                       QJsonArray{reportedMixTrack(QStringLiteral("15e4:0035"), QStringLiteral("1-1.2")),
+                                               reportedMixTrack(QStringLiteral("15e4:0035:1-1.4"), QStringLiteral("1-1.4"))}},
+            {"audio_cards", QJsonArray{}}};
+    ASSERT_TRUE(fake.listen(socketPath()));
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, socketPath());
+    QStringList disabled;
+    DeckLabSystem::ControllerHooks hooks;
+    hooks.endpoints = [&endpoints] { return endpoints; };
+    hooks.disable = [&disabled](const decklab::ControllerEndpoint& endpoint) { disabled.append(endpoint.devicePath); };
+    system.setControllerHooksForTesting(hooks);
+    system.start();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.isReady() && !system.devices().isEmpty(); }, 3000));
+    const auto rows = system.controllers();
+    ASSERT_EQ(2, rows.size());
+    EXPECT_EQ(QStringLiteral("15e4:0035"), rows[0].key);
+    EXPECT_EQ(QStringLiteral("15e4:0035:1-1.4"), rows[1].key);
+    for (const auto& row : rows) {
+        EXPECT_FALSE(row.hid);
+        EXPECT_EQ(QStringLiteral("MixTrack Pro 3 MIDI 1"), row.mixxxName);
+        EXPECT_EQ(QStringList{QStringLiteral("MixTrack Pro 3 _3")}, row.suppressed);
+    }
+    // decklabd's devices claimed the right HID interface each (by USB port).
+    const auto groups = decklab::groupControllers(endpoints, decklab::reportedControllers(system.devices()));
+    ASSERT_EQ(2, groups.size());
+    EXPECT_EQ(QStringLiteral("/dev/hidraw0"), groups[0].endpoints.at(groups[0].suppressed.first()).devicePath);
+    EXPECT_EQ(QStringLiteral("/dev/hidraw1"), groups[1].endpoints.at(groups[1].suppressed.first()).devicePath);
+    // Both HID interfaces are closed, each by its own device path.
+    ASSERT_TRUE(QTest::qWaitFor([&] { return disabled.size() >= 2; }, 2000));
+    disabled.sort();
+    EXPECT_EQ((QStringList{"/dev/hidraw0", "/dev/hidraw1"}), disabled.mid(0, 2));
+}
+
+// Finishing Deck Setup from Settings (not the first run) completes setup.
+TEST_F(DeckLabSystemTest, FinishingANormalDeckSetupCompletesSetup) {
+    config()->setValue(ConfigKey(QStringLiteral("[DeckLab]"), QStringLiteral("first_run_deferred")), 1);
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, QStringLiteral("/nonexistent/decklabd.sock"));
+    QWidget host;
+    host.resize(800, 480);
+    host.show();
+    DeckLabSystemUi ui(&host, DeckLabSystemUi::Hooks{});
+    QWidget* panel = ui.createSetupPanel(&host);
+    ui.attach(&system);
+    auto* finish = panel->findChild<QPushButton*>(QStringLiteral("decklab-finish-setup"));
+    ASSERT_NE(nullptr, finish);
+    EXPECT_TRUE(finish->isVisibleTo(panel));
+    QPointer<DeckLabSetupWizard> wizard = ui.openWizard(0);
+    ASSERT_FALSE(wizard.isNull());
+    EXPECT_FALSE(wizard->isFirstRun());
+    wizard->skipToDone();
+    wizard->findChild<QPushButton*>(QStringLiteral("decklab-setup-next"))->click();
+    QCoreApplication::processEvents();
+    EXPECT_TRUE(system.firstRunDone());
+    EXPECT_FALSE(system.firstRunDeferred());
+    EXPECT_FALSE(finish->isVisibleTo(panel));
+}
+
+// Upgrade: a unit already set up (a remembered Deck Setup) never saw Play in
+// the first run. It counts as set up: no Welcome, no "Not finished".
+TEST_F(DeckLabSystemTest, AUnitAlreadySetUpSkipsWelcomeAfterTheUpdate) {
+    decklab::DeviceProfile profile;
+    profile.key = QStringLiteral("15e4:0035");
+    profile.name = QStringLiteral("Numark MixTrack Pro 3");
+    profile.controller = QStringLiteral("MixTrack Pro 3 MIDI 1");
+    profile.mapping = mappingPath(config(), QStringLiteral("Numark-Mixtrack-3.midi.xml"));
+    profile.mainDevice = QStringLiteral("MixTrack Pro 3: USB Audio");
+    profile.mainBase = 0;
+    decklab::DeviceStore(config()).save(profile);
+    EXPECT_EQ(0, config()->getValue(ConfigKey(QStringLiteral("[DeckLab]"), QStringLiteral("first_run_done")), 0));
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, QStringLiteral("/nonexistent/decklabd.sock"));
+    EXPECT_TRUE(system.firstRunDone());
+    EXPECT_FALSE(system.firstRunDue());
+    QWidget host;
+    host.resize(800, 480);
+    DeckLabSystemUi ui(&host, DeckLabSystemUi::Hooks{});
+    QWidget* panel = ui.createSetupPanel(&host);
+    ui.attach(&system);
+    QTest::qWait(1800);
+    EXPECT_EQ(nullptr, ui.wizard());
+    auto* finish = panel->findChild<QPushButton*>(QStringLiteral("decklab-finish-setup"));
+    ASSERT_NE(nullptr, finish);
+    EXPECT_FALSE(finish->isVisibleTo(panel));
+    // A unit that was never set up still gets the Welcome.
+    {
+        DeckLabSystem::Services fresh;
+        fresh.config = config();
+        decklab::DeviceStore(config()).remove(profile.key);
+        config()->remove(ConfigKey(QStringLiteral("[DeckLab]"), QStringLiteral("first_run_done")));
+        DeckLabSystem untouched(fresh, nullptr, QStringLiteral("/nonexistent/decklabd.sock"));
+        EXPECT_TRUE(untouched.firstRunDue());
+    }
 }

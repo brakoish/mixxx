@@ -13,6 +13,7 @@
 
 #include "controllers/controllermappinginfo.h"
 #include "controllers/controllermappingmatcher.h"
+#include "decklab/decklabcontrollers.h"
 #include "decklab/decklabsetupmodel.h"
 #include "decklab/decklabutilities.h"
 #include "preferences/usersettings.h"
@@ -40,17 +41,31 @@ class DeckLabSystem : public QObject {
         /// Library folders and the quiet rescan after a utility closes.
         std::shared_ptr<TrackCollectionManager> library;
     };
+    /// One physical controller (r5-polish): its MIDI port and HID interfaces
+    /// are one row; mixxxName is the interface Deck Lab uses.
     struct ControllerInfo {
         QString key;       // vid:pid[:serial] (decklabd) or the Mixxx name
         QString name;      // model name for display
         QString mixxxName; // empty while Mixxx has not enumerated it
-        bool hid = false;
-        bool open = false;
+        bool hid = false;  // the interface in use is HID (else MIDI)
+        bool open = false; // that interface is open with a mapping made for it
         QString mapping; // configured mapping file
         std::optional<uint16_t> vendorId;
         std::optional<uint16_t> productId;
         std::optional<int> interfaceNumber;
         QJsonObject audioCard; // decklabd audio_card, may be empty
+        QStringList interfaces; // every Mixxx name of this controller, mixxxName first
+        QStringList suppressed; // interfaces Deck Lab never opens
+    };
+    /// Test seam for Deck Setup (r5-polish): fake Mixxx interfaces, and what
+    /// opening one with a mapping, disabling one or a rescan would do (a
+    /// rescan then finishes as ControllerManager's does). Never set by the
+    /// application.
+    struct ControllerHooks {
+        std::function<QList<decklab::ControllerEndpoint>()> endpoints;
+        std::function<bool(const QString& name, const QString& mappingPath, QString* error)> open;
+        std::function<void(const decklab::ControllerEndpoint& endpoint)> disable;
+        std::function<void()> rescan;
     };
     using Done = std::function<void(bool ok, const QString& message)>;
 
@@ -111,7 +126,17 @@ class DeckLabSystem : public QObject {
     static QString recordingFolderFor(const QString& mountPath);
 
     // Deck Setup.
+    /// One entry per physical controller (decklabd's devices and Mixxx's
+    /// MIDI ports and HID interfaces, grouped).
     QList<ControllerInfo> controllers() const;
+    /// Mixxx's controllers as plain interface records.
+    QList<decklab::ControllerEndpoint> controllerEndpoints() const;
+    void setControllerHooksForTesting(ControllerHooks hooks);
+    /// Closes and disables interfaces Deck Lab must never have open: a HID
+    /// interface beside the MIDI port in use (an earlier build could enable
+    /// one with a MIDI mapping, and Mixxx then reopened it at every start).
+    /// Returns the names it disabled (twins: once each).
+    QStringList closeStrayInterfaces();
     QList<MappingInfo> mappings(bool hid) const;
     QList<ControllerMappingMatcher::Match> suggestMappings(const ControllerInfo& controller) const;
     int suggestedDeckCount(const QString& mappingPath) const;
@@ -148,6 +173,14 @@ class DeckLabSystem : public QObject {
     /// [DeckLab] first_run_done: the first-run flow has been completed.
     bool firstRunDone() const;
     void markFirstRunDone();
+    /// r5-polish: [DeckLab] first_run_deferred: "Set up later" was tapped.
+    /// The flow no longer opens at start; Settings offers Finish setup.
+    bool firstRunDeferred() const;
+    void deferFirstRun();
+    /// Opens by itself at start: neither done nor deferred.
+    bool firstRunDue() const {
+        return !firstRunDone() && !firstRunDeferred();
+    }
     /// Mixxx controller name for decklabd controller key, if enumerated.
     QString mixxxNameForKey(const QString& key) const;
 
@@ -162,6 +195,8 @@ class DeckLabSystem : public QObject {
     void devicesChanged();
     void controllersChanged();
     void controllersRescanned();
+    /// r5-polish: first_run_done or first_run_deferred changed.
+    void firstRunChanged();
     void audioChanged();
     /// A controller decklabd reports as new. `known` ones are re-applied
     /// silently; others should be offered Deck Setup.
@@ -185,6 +220,13 @@ class DeckLabSystem : public QObject {
     void watchPlayers();
     void watchPlayer(BaseTrackPlayer* player);
     bool anyLoading() const;
+    QList<decklab::ControllerGroup> controllerGroups() const;
+    bool hidMappingMatches(const decklab::ControllerEndpoint& endpoint) const;
+    void forgetControllerCache();
+    bool disableInterface(const decklab::ControllerEndpoint& endpoint);
+    /// An upgrade from a build without first_run_deferred: a unit with a
+    /// remembered Deck Setup counts as set up.
+    void migrateFirstRun();
 
     Services m_services;
     DeckLabdClient* m_client;
@@ -202,4 +244,10 @@ class DeckLabSystem : public QObject {
     QList<decklab::AudioDevice> m_audioOverride;
     bool m_hasAudioOverride = false;
     mutable QHash<QString, QList<MappingInfo>> m_ownMappings;
+    ControllerHooks m_controllerHooks;
+    // USB locations and HID mapping matches, per interface, until the
+    // controllers change (read from /proc and /sys, never per frame).
+    mutable std::optional<QHash<QString, QString>> m_midiLocations;
+    mutable QHash<QString, QString> m_hidLocations;
+    mutable QHash<QString, bool> m_hidMatches;
 };

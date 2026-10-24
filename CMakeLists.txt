@@ -1432,6 +1432,7 @@ add_library(
   src/decklab/decklabphrase.cpp
   src/decklab/decklabphraseview.cpp
   src/decklab/decklabusbrelink.cpp
+  src/decklab/decklabusbname.cpp
   src/library/rhythmbox/rhythmboxfeature.cpp
   src/library/scanner/importfilestask.cpp
   src/library/scanner/libraryscanner.cpp
@@ -1764,7 +1765,10 @@ add_library(
   src/widget/decklabbrowsehome.cpp
   src/widget/decklabbrowselegend.cpp
   src/widget/decklabbrowsemix.cpp
+  src/widget/decklabhistory.cpp
+  src/widget/decklabhistoryview.cpp
   src/widget/decklabsmoke.cpp
+  src/decklab/decklabcontrollers.cpp
   src/decklab/decklabdclient.cpp
   src/decklab/decklabfakeservice.cpp
   src/decklab/decklaboverlay.cpp
@@ -2817,6 +2821,7 @@ if(BUILD_TESTING)
     src/test/decklabstemstest.cpp
     src/test/decklabpadstest.cpp
     src/test/decklabdecktoolstest.cpp
+    src/test/decklabhistorytest.cpp
     src/test/decklabvsynctest.cpp
     src/test/decklablabfxtest.cpp
     src/test/decklablanestest.cpp

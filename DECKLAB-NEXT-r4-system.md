@@ -197,9 +197,13 @@ on the first (F-05). The knob drives Deck Setup.
   `boot_progress` 0-1 onto the playhead travelling from the waveform's left edge to **exactly x = 425, under the
   wordmark's playhead** (the cued position), so the frozen `--retain-splash` frame reads "ready" (B-01, B-02). After
   90 s without progress, dim the wave and show one 14 px caps line "Starting is taking long · check the SD card"
-  (B-03). Shutdown's last frame: playhead at the end, all bars dimmed ("track finished") = safe to unplug (B-04).
+  (B-03). Shutdown (B-04, revised in r5-boot): the playhead at the start, "TURNING OFF" and "UNPLUG WHEN THE GREEN
+  LIGHT STOPS BLINKING"; never a finished-track or safe-to-unplug state, because Mixxx and the SD card may still be
+  writing while it shows. The Pi's green activity light is the one unplug signal (as the Power page says). Reference:
+  the appliance's decklab.script and brand/plymouth_frame.py render('shutdown').
   App side: the first frame reproduces the cued picture, then the rail slides down and the wave stretches into deck
-  1's lane in 400 ms (or into Welcome on a first run, F-28); "Restarting…" and "Turning off" reuse the same art
+  1's lane in 400 ms (or into Welcome on a first run, F-28); "Restarting…" and "Turning off" reuse the boot art
+  (Turning off = the shutdown frame above, never a finished track)
   (A-11). Needs: the cued x from `logo/decklab-wordmark.svg`, a full-screen `DeckLabBootFrame` overlay that suppresses
   the waveforms while it animates (overlay rules), and a 400 ms transform-only animation.
 - Wi-Fi/Bluetooth details sheets (Y-11, Y-12, Y-25), the Wi-Fi on/off as a row (Y-07), hidden network first (Y-13).

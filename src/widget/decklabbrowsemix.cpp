@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "widget/decklabhistoryview.h" // r5-history
+
 namespace decklab {
 
 namespace {
@@ -197,12 +199,27 @@ void paintMixRow(QPainter& painter, const QStyleOptionViewItem& option, const QM
     painter.drawText(QRect(x, r.top(), 46, r.height()), Qt::AlignLeft | Qt::AlignVCenter,
             index.data(DeckLabListDelegate::MixDeltaRole).toString());
     x += 52;
+    // r5-history: a played track keeps its mark at the right edge; played in
+    // this set, its title dims to the artist's tone (decklabhistoryview.h).
+    const auto& marks = history::Store::instance();
+    const history::Played played = marks.anyPlayed()
+            ? marks.played(index.data(history::LocationRole).toString())
+            : history::Played::No;
+    const bool dimmed = played == history::Played::Session && marks.dimPlayed() && !selected;
+    int rowRight = r.right() - 12;
+    if (played != history::Played::No) {
+        history::paintPlayedMark(painter,
+                QRectF(rowRight - history::kMarkSize, r.center().y() - history::kMarkSize / 2.0,
+                        history::kMarkSize, history::kMarkSize),
+                played);
+        rowRight -= history::kMarkSize + 10;
+    }
     // The relation in words, right aligned.
     const QFont relationFont = secondaryFont(base);
     const QFontMetrics relationMetrics(relationFont);
     const QString relation = index.data(DeckLabListDelegate::MixRelationRole).toString();
-    const int relationWidth = std::min(relationMetrics.horizontalAdvance(relation) + 2, std::max(0, (r.right() - x) / 2));
-    const int relationLeft = r.right() - 12 - relationWidth;
+    const int relationWidth = std::min(relationMetrics.horizontalAdvance(relation) + 2, std::max(0, (rowRight - x) / 2));
+    const int relationLeft = rowRight - relationWidth;
     painter.setFont(relationFont);
     painter.setPen(match == HarmonicMatch::Same ? colors::keyMatch : colors::muted);
     painter.drawText(QRect(relationLeft, r.top(), relationWidth, r.height()), Qt::AlignRight | Qt::AlignVCenter,
@@ -213,7 +230,7 @@ void paintMixRow(QPainter& painter, const QStyleOptionViewItem& option, const QM
     const QFontMetrics titleMetrics(titleFontRow);
     const QString title = titleMetrics.elidedText(index.data().toString(), Qt::ElideRight, std::max(0, textRight - x));
     painter.setFont(titleFontRow);
-    painter.setPen(colors::ink);
+    painter.setPen(dimmed ? colors::muted : colors::ink); // r5-history
     painter.drawText(QRect(x, r.top(), std::max(0, textRight - x), r.height()), Qt::AlignLeft | Qt::AlignVCenter, title);
     const QString artist = index.data(DeckLabListDelegate::MixArtistRole).toString();
     const int artistLeft = x + titleMetrics.horizontalAdvance(title) + 10;

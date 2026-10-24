@@ -70,6 +70,11 @@ class HidController final : public Controller {
     QString getUsageDescription() const {
         return m_deviceInfo.getUsageDescription();
     }
+    /// The platform path hidapi opens ("/dev/hidraw0" on Linux). Deck Lab
+    /// reads the USB location from it; it never opens the device.
+    QString getDevicePath() const {
+        return QString::fromLocal8Bit(m_deviceInfo.pathRaw());
+    }
     bool isMappable() const override {
         if (!m_pMapping) {
             return false;

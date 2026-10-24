@@ -165,14 +165,22 @@ DeckLabSetupWizard::DeckLabSetupWizard(DeckLabSystem* system, QWidget* host)
     m_heading = title(tr("Deck Setup"), header);
     m_heading->setFixedWidth(140);
     headerRow->addWidget(m_heading);
-    headerRow->addStretch(1);
     m_stepRow = hbox(2);
     m_progress = new DeckLabProgressLine(header);
     m_stepRow->addWidget(m_progress);
-    headerRow->addLayout(m_stepRow, 6);
+    // r5-polish: the progress line takes all the room between the title and
+    // Close, so CONTROLLER fits in the seven-step first run (no stretch).
+    headerRow->addLayout(m_stepRow, 1);
     m_close = button(tr("Close"), header, QStringLiteral("decklab-setup-close"), 44);
     m_close->setFixedWidth(132);
-    connect(m_close, &QPushButton::clicked, this, [this] { finish(false); });
+    connect(m_close, &QPushButton::clicked, this, [this] {
+        // r5-polish: "Set up later" sticks: the first run stops opening at
+        // start, and Settings offers Finish setup instead.
+        if (m_firstRun && m_system) {
+            m_system->deferFirstRun();
+        }
+        finish(false);
+    });
     headerRow->addWidget(m_close);
     root->addWidget(header);
 
@@ -353,7 +361,8 @@ void DeckLabSetupWizard::startFirstRun() {
     m_firstRun = true;
     m_preferredKey.clear();
     setSequence({Step::Welcome, Step::Wifi, Step::Time, Step::Controller, Step::Audio, Step::Layout, Step::Done});
-    // Not finishing keeps the flag unset: the flow returns at next start.
+    // "Set up later" defers it (no more automatic start); only finishing
+    // sets first_run_done.
     m_close->setText(tr("Set up later"));
     show();
     raise();
@@ -528,7 +537,9 @@ void DeckLabSetupWizard::next() {
         profile.headphonesDevice = m_audio.headphones.device;
         profile.headphonesBase = m_audio.headphones.channelBase;
         m_system->rememberSetup(profile);
-        if (m_firstRun) {
+        // r5-polish: finishing Deck Setup completes setup, first run or not
+        // (Wi-Fi and the time zone stay in Settings › Unit).
+        if (!m_system->firstRunDone()) {
             m_system->markFirstRunDone();
         }
         emit layoutChosen(m_decks);
@@ -658,16 +669,19 @@ void DeckLabSetupWizard::buildController(QWidget* page) {
     emptyActions->addWidget(emptyDetect);
     emptyActions->addStretch(1);
     empty->addLayout(emptyActions);
-    auto* skip = muted(tr("No controller yet? Tap Next to set up audio only, or set up later in "
-                          "Settings → Setup → Deck Setup."),
+    // r5-polish: the real path (there is no "Settings → Setup").
+    auto* skip = muted(tr("No controller yet? Tap Next to set up sound only, or add it later in "
+                          "Settings › Controller & audio › Run Deck Setup."),
             m_controllerEmpty);
     skip->setAlignment(Qt::AlignHCenter);
     empty->addWidget(skip);
     auto* laterRow = hbox(10);
     laterRow->addStretch(1);
+    // r5-polish: "set up later" means what the header's Set up later does:
+    // the first run is deferred and Settings offers Finish setup.
     m_skipLater = button(tr("Skip – set up later"), m_controllerEmpty, QStringLiteral("decklab-setup-skip-later"), 48);
     m_skipLater->setFixedWidth(240);
-    connect(m_skipLater, &QPushButton::clicked, this, &DeckLabSetupWizard::skipToDone);
+    connect(m_skipLater, &QPushButton::clicked, m_close, &QPushButton::click);
     laterRow->addWidget(m_skipLater);
     laterRow->addStretch(1);
     empty->addLayout(laterRow);
@@ -1235,5 +1249,5 @@ void DeckLabSetupWizard::renderDone() {
     m_doneTitle->setText(m_firstRun ? tr("Deck Lab is ready") : tr("You're ready to play"));
     setMessage(info && m_mappingApplied
                     ? tr("Saved. %1 is set up automatically when you plug it in.").arg(info->name)
-                    : tr("Add a controller any time: Settings → Setup → Deck Setup."));
+                    : tr("Add a controller any time: Settings › Controller & audio › Run Deck Setup."));
 }
