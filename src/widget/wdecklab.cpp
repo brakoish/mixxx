@@ -13,6 +13,7 @@
 #include <QEvent>
 #include <QGridLayout>
 #include <QHeaderView>
+#include <QJsonObject> // r5-history
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QLabel>
@@ -47,6 +48,8 @@
 #include "control/controlproxy.h"
 #include "decklab/decklabrail.h"
 #include "decklab/decklabsettings.h"
+#include "decklab/decklabdclient.h" // r5-history: is the clock synchronized?
+#include "decklab/decklabsystem.h"  // r5-history
 #include "decklab/decklabsystempages.h"
 #include "decklab/decklabsystemui.h"
 #include "decklab/decklabui.h"
@@ -60,6 +63,7 @@
 #include "library/trackcollection.h"
 #include "library/trackcollectionmanager.h"
 #include "library/trackmodel.h"
+#include "library/playlisttablemodel.h"     // r5-history: the history table LOAD reads
 #include "library/trackset/setlogfeature.h" // r5-history: "New set"
 #include "mixer/basetrackplayer.h"
 #include "mixer/playermanager.h"
@@ -643,6 +647,8 @@ struct DeckLabBrowseState {
     decklab::history::Change historyPending; // listener changes, applied once, queued
     bool historyQueued = false;
     bool historyStale = false; // the History list changed while Browse was hidden
+    QPointer<DeckLabSystem> historySystem; // decklabd: is the clock synchronized?
+    qint64 clockAskedAt = -100000;
 };
 
 WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
@@ -1840,6 +1846,7 @@ QWidget* WDeckLab::buildBrowse() {
     connect(b.items, &QListWidget::clicked, this, [this](const QModelIndex& index) {
         if (!index.isValid()) return;
         auto& state = *m_browseState;
+        if (state.list == DeckLabList::History && !(index.flags() & Qt::ItemIsEnabled)) return; // r5-history: headers are labels
         state.items->setCurrentRow(index.row());
         // r4-browse: "Try again" inside the tile of a stick that could not be read.
         if (state.list == DeckLabList::Home &&
@@ -4008,6 +4015,7 @@ void WDeckLab::setAudioOutputConfigured(bool configured) {
 }
 void WDeckLab::attachSystem(DeckLabSystem* system) {
     if (m_systemUi) m_systemUi->attach(system);
+    historyAttachSystem(system); // r5-history
 }
 void WDeckLab::updateStatus() {
     int overloads = int(value("[App]", "audio_latency_overload_count"));
@@ -5175,14 +5183,15 @@ void WDeckLab::syncMixSelection() {
 // data, Mixxx's own history playlists; decklabhistoryview.h the rows and the
 // mark). The History view is a Browse list level: the sets, then one set's
 // tracks in play order. A track row is the highlighted track: it is selected
-// in the (hidden) table that shows that set's Mixxx history playlist, so LOAD,
-// Preview and every guard use Mixxx's own LoadSelectedTrack, as for Mixes.
+// in the (hidden) table that shows its Mixxx history playlist, matched by
+// position and library id, so LOAD, Preview and every guard use Mixxx's own
+// LoadSelectedTrack, as for Mixes.
 void WDeckLab::initHistory() {
     auto& b = *m_browseState;
     auto& store = decklab::history::Store::instance();
     if (m_library && m_library->trackCollectionManager()) {
         const QPointer<Library> library(m_library);
-        store.setBackend(decklab::history::makeMixxxBackend(m_library->trackCollectionManager(),
+        store.setBackend(decklab::history::makeMixxxBackend(m_library->trackCollectionManager(), m_config,
                                  [library] {
                                      // SetlogFeature's "Finish current and start new".
                                      auto* setlog = library ? library->findChild<SetlogFeature*>() : nullptr;
@@ -5209,6 +5218,18 @@ void WDeckLab::initHistory() {
     connect(b.newSet, &decklab::ui::HoldButton::confirmed, this, [this] { startNewHistorySet(); });
     b.paneLayout->insertWidget(b.paneLayout->indexOf(b.preview), b.newSet);
     b.newSet->hide();
+    // From the knob, on the sets' "New set" row: a controller that reports
+    // the held press (browse_hold) holds it; otherwise press, then press again.
+    watch(kNative, "browse_hold", [this](double v) {
+        if (m_page != 1 || !m_browseState || !m_browseState->newSet) return;
+        const QListWidgetItem* item = m_browseState->items->currentItem();
+        if (m_browseState->list != DeckLabList::History || m_browseStack->currentIndex() != 0 || !item ||
+                static_cast<decklab::history::RowKind>(item->data(decklab::history::RowRole).toInt()) !=
+                        decklab::history::RowKind::NewSet) {
+            return;
+        }
+        m_browseState->newSet->knobHold(v > 0);
+    });
     // The card reads the highlighted track's Track object once the knob
     // settles, never for every row a fast knob passes.
     b.historySelectTimer.setSingleShot(true);
@@ -5222,6 +5243,25 @@ void WDeckLab::initHistory() {
         state.selectedTrack = tracks && rows.size() == 1 ? tracks->getTrack(rows.first()) : TrackPointer();
         refreshBrowseCard();
         refreshPreviewButton();
+    });
+}
+void WDeckLab::historyAttachSystem(DeckLabSystem* system) {
+    if (m_browseState) m_browseState->historySystem = system;
+}
+void WDeckLab::askHistoryClock() {
+    // A Pi 4 has no real-time clock: ask decklabd whether the clock is
+    // synchronized (at most once a minute, only while Browse is shown).
+    auto& b = *m_browseState;
+    DeckLabdClient* client = b.historySystem ? b.historySystem->client() : nullptr;
+    if (!client || !client->isReady() || m_clock.elapsed() - b.clockAskedAt < 60000) return;
+    b.clockAskedAt = m_clock.elapsed();
+    const QPointer<WDeckLab> self(this);
+    client->call(QStringLiteral("time.status"), QJsonObject(), [self](const DeckLabdReply& reply) {
+        if (!self || !reply.ok) return;
+        const bool synced = reply.result.value(QStringLiteral("synced")).toBool() ||
+                reply.result.value(QStringLiteral("rtc")).toBool();
+        decklab::history::Store::instance().setClockState(
+                synced ? decklab::history::ClockState::Synced : decklab::history::ClockState::Unsynced);
     });
 }
 bool WDeckLab::historyTrackLevel() const {
@@ -5244,54 +5284,88 @@ void WDeckLab::fillHistory(bool keepCurrent) {
     auto& b = *m_browseState;
     using namespace decklab::history;
     auto& store = Store::instance();
+    const bool trusted = store.clockTrusted();
     const QListWidgetItem* item = keepCurrent && b.itemsList == DeckLabList::History ? b.items->currentItem() : nullptr;
     const QSignalBlocker blocker(b.items);
     int row = -1;
     if (b.historySession < 0) {
         const int keep = item && item->data(SessionRole).isValid() ? item->data(SessionRole).toInt() : b.historyKeepSession;
-        row = fillSessions(b.items, store.sessions(), QDate::currentDate(), keep);
+        row = fillSessions(b.items, store.sessions(), QDate::currentDate(), keep, trusted);
     } else {
         const Session* session = store.session(b.historySession);
-        const int keep = item && item->data(PositionRole).isValid() ? item->data(PositionRole).toInt() : -1;
-        row = fillTracks(b.items, store.entries(b.historySession), session && session->current, keep);
+        const bool track = item && item->data(PositionRole).isValid();
+        row = fillTracks(b.items, store.entries(b.historySession), session && session->current,
+                track ? item->data(PositionRole).toInt() : -1, trusted, track ? item->data(PlaylistRole).toInt() : -1);
     }
     b.items->setCurrentRow(row);
     if (row >= 0) b.items->scrollToItem(b.items->item(row));
     b.itemsList = DeckLabList::History;
+    b.historyStale = false;
 }
 void WDeckLab::openHistoryRow(int rowIndex) {
     auto& b = *m_browseState;
     using namespace decklab::history;
     const QListWidgetItem* item = b.items->item(rowIndex);
-    if (!item || !(item->flags() & Qt::ItemIsEnabled) ||
-            static_cast<RowKind>(item->data(RowRole).toInt()) != RowKind::Session) {
-        return; // a track: the press previews it (browsePress)
+    if (!item || !(item->flags() & Qt::ItemIsEnabled)) return;
+    const auto kind = static_cast<RowKind>(item->data(RowRole).toInt());
+    if (kind == RowKind::NewSet) {
+        // The knob's hold to confirm: this press arms, the next one starts it.
+        if (b.newSet) b.newSet->knobPress();
+        refreshNewSetRow();
+        refreshHistoryCard();
+        QTimer::singleShot(decklab::ui::HoldButton::kHoldMs + 2000, this, [this] {
+            refreshNewSetRow();
+            if (m_browseState->list == DeckLabList::History) refreshHistoryCard();
+        });
+        return;
     }
-    const int id = item->data(SessionRole).toInt();
-    b.historyKeepSession = id;
-    b.historySession = id;
-    // The set's own Mixxx view holds the rows LOAD and Preview read.
+    if (kind != RowKind::Session) return; // a track: the press previews it (browsePress)
+    b.historyKeepSession = item->data(SessionRole).toInt();
+    b.historySession = b.historyKeepSession;
+    fillHistory(false);
+    showSources();
+    syncHistorySelection();
+}
+void WDeckLab::refreshNewSetRow() {
+    auto& b = *m_browseState;
+    using namespace decklab::history;
+    if (b.itemsList != DeckLabList::History || b.historySession >= 0) return;
+    const bool empty = Store::instance().currentCount() <= 0;
+    for (int row = 0; row < b.items->count(); ++row) {
+        QListWidgetItem* item = b.items->item(row);
+        if (static_cast<RowKind>(item->data(RowRole).toInt()) != RowKind::NewSet) continue;
+        item->setFlags(empty ? Qt::NoItemFlags : Qt::ItemIsSelectable | Qt::ItemIsEnabled);
+        item->setData(DetailRole, empty ? tr("This set is still empty")
+                        : b.newSet && b.newSet->armed() ? tr("Press again to end this set and start another")
+                                                         : tr("Press twice to end this set and start another"));
+        return;
+    }
+}
+void WDeckLab::showHistoryPlaylist(int playlistId) {
+    // A history track row's own Mixxx playlist in the (hidden) track table:
+    // the rows LOAD and Preview read. Nothing to do when it is shown.
+    auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+    if (const auto* shown = table ? dynamic_cast<PlaylistTableModel*>(table->model()) : nullptr;
+            shown && shown->getPlaylist() == playlistId) {
+        return;
+    }
     auto* model = m_sidebar ? qobject_cast<SidebarModel*>(m_sidebar->model()) : nullptr;
     const QModelIndex root = model ? sidebarRoot(model, QStringLiteral("history")) : QModelIndex();
     QModelIndex found;
     for (int row = 0; root.isValid() && !found.isValid() && row < model->rowCount(root); ++row) {
         const QModelIndex child = model->index(row, 0, root);
-        if (child.data(SidebarModel::DataRole).toInt() == id) found = child;
+        if (child.data(SidebarModel::DataRole).toInt() == playlistId) found = child;
         for (int leaf = 0; !found.isValid() && leaf < model->rowCount(child); ++leaf) {
             const QModelIndex year = model->index(leaf, 0, child); // sets grouped under a year
-            if (year.data(SidebarModel::DataRole).toInt() == id) found = year;
+            if (year.data(SidebarModel::DataRole).toInt() == playlistId) found = year;
         }
     }
-    if (found.isValid()) {
-        if (m_search) m_search->slotRestoreSearch(QString());
-        model->clicked(found);
-        auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
-        auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
-        if (tracks && !tracks->currentSearch().isEmpty()) m_libraryWidget->search(QString());
-    }
-    fillHistory(false);
-    showSources();
-    syncHistorySelection();
+    if (!found.isValid()) return;
+    if (m_search) m_search->slotRestoreSearch(QString());
+    model->clicked(found);
+    table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+    auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
+    if (tracks && !tracks->currentSearch().isEmpty()) m_libraryWidget->search(QString());
 }
 void WDeckLab::historyMove(int delta) {
     auto& b = *m_browseState;
@@ -5318,6 +5392,7 @@ void WDeckLab::historyBack() {
         syncHistorySelection();
         return;
     }
+    if (b.newSet) b.newSet->knobCancel();
     if (b.historyFromCategories && b.source.isValid()) {
         activateBrowseSource(); // the Library's own view again (Mixes reads it)
         showCategories();
@@ -5327,20 +5402,26 @@ void WDeckLab::historyBack() {
 }
 void WDeckLab::syncHistorySelection() {
     // The highlighted history track is the one LOAD and Preview act on:
-    // select its row in the set's (hidden) table; nothing else is selected.
+    // select its row in its playlist's (hidden) table; nothing else is.
     auto& b = *m_browseState;
     using namespace decklab::history;
     if (b.list != DeckLabList::History) return;
-    auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
-    auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
     const QListWidgetItem* item = b.items->currentItem();
     const bool track = historyTrackLevel() && item && static_cast<RowKind>(item->data(RowRole).toInt()) == RowKind::Track;
+    const int trackId = track ? item->data(TrackIdRole).toInt() : -1;
+    // The card follows the highlight at once: the row's own facts until the
+    // Track object is read, never the track highlighted before.
+    if (!b.selectedTrack || b.selectedTrack->getId().toVariant().toInt() != trackId) b.selectedTrack.reset();
+    if (track) showHistoryPlaylist(item->data(PlaylistRole).toInt());
+    auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+    auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
+    const auto* playlist = table ? dynamic_cast<PlaylistTableModel*>(table->model()) : nullptr;
     int row = -1;
-    if (track && tracks && table->model()) {
+    if (track && tracks && playlist && playlist->getPlaylist() == item->data(PlaylistRole).toInt()) {
         const QAbstractItemModel& model = *table->model();
         row = modelRowFor(model, tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Position),
-                item->data(PositionRole).toInt(), item->data(LocationRole).toString(),
-                [tracks, &model](int at) { return tracks->getTrackLocation(model.index(at, 0)); });
+                item->data(PositionRole).toInt(), trackId,
+                [tracks, &model](int at) { return tracks->getTrackId(model.index(at, 0)).toVariant().toInt(); });
     }
     if (table && table->selectionModel()) {
         if (row >= 0) {
@@ -5351,22 +5432,23 @@ void WDeckLab::syncHistorySelection() {
         }
     }
     if (row < 0) b.selectedTrack.reset();
-    if (track) b.historySelectTimer.start();
+    if (track && row >= 0) b.historySelectTimer.start();
     refreshLoadButtons();
     refreshBrowseCard();
 }
 QStringList WDeckLab::historySegments() const {
     const auto& b = *m_browseState;
     using namespace decklab::history;
+    const auto& store = Store::instance();
     QStringList path;
     if (b.historyFromCategories) path << tr("Library");
     path << tr("History");
-    const Session* session = b.historySession >= 0 ? Store::instance().session(b.historySession) : nullptr;
+    const Session* session = b.historySession >= 0 ? store.session(b.historySession) : nullptr;
     if (session) {
-        // "This set · 14", "Yesterday 21:04 · 37".
+        // "This set · 14", "Yesterday 21:04 · 37" ("Set 12 · 37" without a clock).
         const QDateTime start = session->first.isValid() ? session->first : session->created;
-        const QString name = session->current
-                ? sessionTitle(*session)
+        const QString name = session->current || !store.clockTrusted()
+                ? sessionTitle(*session, store.clockTrusted())
                 : QStringLiteral("%1 %2").arg(dayLabel(start.date(), QDate::currentDate()), clockText(start));
         path << QStringLiteral("%1 · %2").arg(name, QLocale().toString(session->count));
     }
@@ -5375,17 +5457,20 @@ QStringList WDeckLab::historySegments() const {
 void WDeckLab::refreshHistoryCard() {
     auto& b = *m_browseState;
     using namespace decklab::history;
+    const auto& store = Store::instance();
+    const bool trusted = store.clockTrusted();
     const QListWidgetItem* item = b.items->currentItem();
+    const auto kind = item ? static_cast<RowKind>(item->data(RowRole).toInt()) : RowKind::None;
     const QString joins = tr("A track joins when it plays on a deck the room hears");
     if (historyTrackLevel()) {
         if (b.selectedTrack) {
             b.card->showTrack(b.selectedTrack);
             return;
         }
-        if (!item || static_cast<RowKind>(item->data(RowRole).toInt()) != RowKind::Track) {
-            const Session* session = Store::instance().session(b.historySession);
-            b.card->showItem(decklab::Glyph::History, session ? sessionTitle(*session) : tr("History"),
-                    session ? sessionDetail(*session) : QString(), joins);
+        if (kind != RowKind::Track) {
+            const Session* session = store.session(b.historySession);
+            b.card->showItem(decklab::Glyph::History, session ? sessionTitle(*session, trusted) : tr("History"),
+                    session ? sessionDetail(*session, trusted) : QString(), joins);
             return;
         }
         // Until the Track object is read (or without a table): what the row says.
@@ -5394,14 +5479,29 @@ void WDeckLab::refreshHistoryCard() {
         if (!item->data(KeyRole).toString().isEmpty()) facts << item->data(KeyRole).toString();
         if (item->data(BpmRole).toDouble() > 0) facts << QLocale().toString(item->data(BpmRole).toDouble(), 'f', 1);
         const int deck = item->data(DeckRole).toInt();
-        const QString time = item->data(TimeRole).toString();
+        const QString when = trusted ? tr("Played %1").arg(item->data(TimeRole).toString())
+                                     : tr("Track %1 of the set").arg(b.items->currentRow() + 1);
         b.card->showItem(decklab::Glyph::History, item->text(), facts.join(QStringLiteral(" · ")),
-                deck > 0 ? tr("Played %1 on deck %2").arg(time).arg(deck) : tr("Played %1").arg(time),
+                deck > 0 ? tr("%1 on deck %2").arg(when).arg(deck) : when,
                 deck > 0 ? deckLabDeckColor(deck) : QColor());
         return;
     }
-    if (!item || !(item->flags() & Qt::ItemIsEnabled)) {
-        b.card->showItem(decklab::Glyph::History, tr("History"), tr("Nothing played yet"), joins);
+    if (kind == RowKind::NewSet) {
+        const bool armed = b.newSet && b.newSet->armed();
+        b.card->showItem(decklab::Glyph::Retry, item->text(),
+                armed ? tr("Press again to start it") : tr("Ends this set. It stays in History."),
+                tr("Press twice, or hold the button below"));
+        return;
+    }
+    if (kind != RowKind::Session || !(item->flags() & Qt::ItemIsEnabled)) {
+        // Not a set: say what the history holds, from the store.
+        const Session* current = store.session(store.currentId());
+        if (current) {
+            b.card->showItem(decklab::Glyph::History, sessionTitle(*current, trusted), sessionDetail(*current, trusted),
+                    current->count > 0 ? tr("Press or tap to open") : joins);
+        } else {
+            b.card->showItem(decklab::Glyph::History, tr("History"), tr("Nothing played yet"), joins);
+        }
         return;
     }
     b.card->showItem(decklab::Glyph::History, item->text(), item->data(DetailRole).toString(),
@@ -5410,11 +5510,13 @@ void WDeckLab::refreshHistoryCard() {
 void WDeckLab::applyHistoryPresentation() {
     auto& b = *m_browseState;
     // Read once, when Browse is first shown (never at start-up).
-    if (m_page == 1) decklab::history::Store::instance().ensureLoaded();
+    if (m_page == 1) {
+        decklab::history::Store::instance().ensureLoaded();
+        askHistoryClock();
+    }
     const bool history = m_browseStack && m_browseStack->currentIndex() == 0 && b.list == DeckLabList::History;
     if (history && m_page == 1 && b.historyStale) {
         // Tracks that played while another page was shown join now.
-        b.historyStale = false;
         fillHistory(true);
         QTimer::singleShot(0, this, [this] {
             syncHistorySelection();
@@ -5422,7 +5524,10 @@ void WDeckLab::applyHistoryPresentation() {
         });
     }
     if (!b.newSet) return;
-    if (!history && !b.newSet->result().isEmpty()) b.newSet->setResult(QString());
+    if (!history) {
+        if (!b.newSet->result().isEmpty()) b.newSet->setResult(QString());
+        if (b.newSet->armed()) b.newSet->knobCancel();
+    }
     setVisibleIf(b.newSet, history);
 }
 void WDeckLab::decorateHistoryEntry(decklab::SourceEntry& entry) {
@@ -5439,6 +5544,28 @@ void WDeckLab::decorateHistoryEntry(decklab::SourceEntry& entry) {
                             : tr("Nothing played in this set yet");
     entry.line2 = earlier > 0 ? countText(earlier, tr("1 earlier set"), tr("%1 earlier sets")) : QString();
 }
+void WDeckLab::updateHomeHistoryTile() {
+    // The home's History tile or chip, in place: one item, not the home.
+    auto& b = *m_browseState;
+    if (b.itemsList != DeckLabList::Home || !b.items) return;
+    for (int row = 0; row < b.items->count(); ++row) {
+        QListWidgetItem* item = b.items->item(row);
+        if (item->data(DeckLabListDelegate::KeyRole).toString() != QStringLiteral("root:history")) continue;
+        decklab::SourceEntry entry;
+        entry.line1 = item->data(DeckLabListDelegate::SubtitleRole).toString();
+        entry.line2 = item->data(DeckLabListDelegate::DetailRole).toString();
+        decorateHistoryEntry(entry);
+        const bool chip = item->data(DeckLabListDelegate::TileRole).toInt() == 2;
+        const QString count = chip ? entry.count : QString();
+        const bool resized = count != item->data(DeckLabListDelegate::CountRole).toString();
+        item->setData(DeckLabListDelegate::SubtitleRole, entry.line1);
+        item->setData(DeckLabListDelegate::DetailRole, entry.line2);
+        item->setData(DeckLabListDelegate::CountRole, count);
+        item->setData(Qt::AccessibleTextRole, QString(item->text() + QStringLiteral(", ") + entry.line1));
+        if (resized && b.items->isVisible()) b.items->doItemsLayout(); // a chip's width follows its count
+        return;
+    }
+}
 void WDeckLab::startNewHistorySet() {
     auto& b = *m_browseState;
     auto& store = decklab::history::Store::instance();
@@ -5450,13 +5577,13 @@ void WDeckLab::startNewHistorySet() {
     }
     if (b.newSet) b.newSet->setResult(tr("New set started"));
     if (b.toast) b.toast->showMessage(tr("New set started. The last one stays in History."), 2600);
-    // The sets, on the new one; the last set is listed under its day.
+    // The sets, on the new one, the last set listed below it: the store's
+    // change refills the list once (queued).
     if (b.list == DeckLabList::History) {
         b.historySession = -1;
         b.historyKeepSession = store.currentId();
-        fillHistory(false);
-        showSources();
-        syncHistorySelection();
+        const QSignalBlocker blocker(b.items);
+        b.items->setCurrentRow(-1); // the refill lands on the new set
     }
 }
 void WDeckLab::historyChanged(const decklab::history::Change& change) {
@@ -5464,34 +5591,73 @@ void WDeckLab::historyChanged(const decklab::history::Change& change) {
     auto& b = *m_browseState;
     b.historyPending.locations.unite(change.locations);
     b.historyPending.history = b.historyPending.history || change.history;
+    b.historyPending.reloaded = b.historyPending.reloaded || change.reloaded;
+    b.historyPending.added += change.added;
     if (b.historyQueued) return;
     b.historyQueued = true;
     QTimer::singleShot(0, this, [this] { flushHistoryChange(); });
 }
 void WDeckLab::flushHistoryChange() {
     auto& b = *m_browseState;
+    using namespace decklab::history;
     b.historyQueued = false;
-    const decklab::history::Change change = std::exchange(b.historyPending, decklab::history::Change());
+    const Change change = std::exchange(b.historyPending, Change());
     const bool shown = m_page == 1;
     // Only rows whose mark changed, and only while Browse is on screen.
     if (shown) repaintPlayed(change.locations);
-    if (!change.history || !m_browseStack || m_browseStack->currentIndex() != 0) return;
-    if (b.list == DeckLabList::History && b.itemsList == DeckLabList::History) {
-        if (!shown) {
-            b.historyStale = true; // no work on a hidden page: the next visit refills
-            return;
-        }
-        fillHistory(true); // a set grows in place; the highlight stays
+    if (!change.history) return;
+    updateHomeHistoryTile();
+    if (!m_browseStack || m_browseStack->currentIndex() != 0 || b.list != DeckLabList::History ||
+            b.itemsList != DeckLabList::History) {
+        return;
+    }
+    if (!shown) {
+        b.historyStale = true; // no work on a hidden page: the next visit refills
+        return;
+    }
+    auto& store = Store::instance();
+    const Session* current = store.session(store.currentId());
+    const bool trusted = store.clockTrusted();
+    if (change.reloaded || b.historyStale || !current) {
+        fillHistory(true);
         syncHistorySelection();
         updateBreadcrumb();
-    } else if (b.list == DeckLabList::Home && b.itemsList == DeckLabList::Home) {
-        if (shown) {
-            rebuildHome(QString());
-            refreshBrowseCard();
+        return;
+    }
+    // A track joined this set: change only what shows it.
+    if (b.historySession < 0) {
+        for (int row = 0; row < b.items->count(); ++row) {
+            QListWidgetItem* item = b.items->item(row);
+            if (static_cast<RowKind>(item->data(RowRole).toInt()) == RowKind::Session &&
+                    item->data(SessionRole).toInt() == current->id) {
+                updateSessionItem(item, *current, trusted);
+                break;
+            }
+        }
+        refreshNewSetRow();
+        refreshBrowseCard();
+    } else if (b.historySession == current->id) {
+        const QVector<Entry> entries = store.entries(current->id);
+        int tracks = 0;
+        for (int row = 0; row < b.items->count(); ++row) {
+            tracks += static_cast<RowKind>(b.items->item(row)->data(RowRole).toInt()) == RowKind::Track;
+        }
+        if (tracks == 0 || tracks > entries.size()) {
+            fillHistory(true); // the "Nothing played yet" row goes
+            syncHistorySelection();
         } else {
-            b.homeSignature.clear(); // the next visit rebuilds the chip's count
+            const bool onLatest = b.items->currentRow() == b.items->count() - 1;
+            for (int index = tracks; index < entries.size(); ++index) {
+                appendTrack(b.items, entries.mid(0, index + 1), true, trusted);
+            }
+            // The highlight follows the newest track only from the latest one.
+            if (onLatest && b.items->count() > 0) {
+                b.items->setCurrentRow(b.items->count() - 1);
+                b.items->scrollToItem(b.items->item(b.items->count() - 1));
+            }
         }
     }
+    updateBreadcrumb();
 }
 void WDeckLab::repaintPlayed(const QSet<QString>& locations) {
     if (locations.isEmpty() || !m_browseState || !m_browseStack) return;

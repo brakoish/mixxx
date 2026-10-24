@@ -98,7 +98,8 @@ TrackId BaseExternalTrackModel::getTrackId(const QModelIndex& index) const {
 }
 
 QString BaseExternalTrackModel::getTrackLocation(const QModelIndex& index) const {
-    QString nativeLocation = index.sibling(index.row(), fieldIndex("location")).data().toString();
+    // r5-history: no allocation per call (Deck Lab looks rows up while painting).
+    QString nativeLocation = index.sibling(index.row(), fieldIndex(QStringLiteral("location"))).data().toString();
     return resolveLocation(nativeLocation);
 }
 

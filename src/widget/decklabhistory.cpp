@@ -10,11 +10,13 @@
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QStringList>
 #include <QTimer>
 #include <algorithm>
 #include <initializer_list>
 
 #include "library/dao/playlistdao.h"
+#include "library/dao/trackdao.h"
 #include "library/trackcollection.h"
 #include "library/trackcollectionmanager.h"
 #include "library/trackmodel.h"
@@ -26,6 +28,9 @@
 namespace decklab::history {
 
 namespace {
+
+const ConfigKey kSetStartsKey(QStringLiteral("[DeckLab]"), QStringLiteral("HistorySetStarts"));
+constexpr qint64 kDaySeconds = 24 * 60 * 60;
 
 QString tr(const char* text) {
     return QCoreApplication::translate("DeckLabHistory", text);
@@ -70,21 +75,32 @@ int audibleDeckOf(TrackId trackId) {
 class MixxxBackend final : public Backend {
   public:
     MixxxBackend(TrackCollectionManager* collection,
+            UserSettingsPointer config,
             std::function<bool()> startNewSet,
             std::function<int(TrackId)> deckOf)
             : m_collection(collection),
+              m_config(std::move(config)),
               m_startNewSet(std::move(startNewSet)),
               m_deckOf(std::move(deckOf)) {
-        // Sets that start or go, and tracks taken out of a set, are rare:
-        // read everything again once the event loop runs (never during
+        // Sets that start or go elsewhere, and tracks taken out of a set, are
+        // rare: read everything again once the event loop runs (never during
         // shutdown, when SetlogFeature tidies up the history).
         m_reload.setSingleShot(true);
         m_reload.setInterval(0);
-        QObject::connect(&m_reload, &QTimer::timeout, &m_context, [] { Store::instance().reload(); });
-        PlaylistDAO* playlists = dao();
-        if (!playlists) {
+        QObject::connect(&m_reload, &QTimer::timeout, &m_context, [] {
+            if (Store::instance().loaded()) {
+                Store::instance().reload();
+            }
+        });
+        // Tracks whose file moved (USB relink, Mixxx's relocate): checked
+        // together, a moment later, against the locations the marks use.
+        m_moved.setSingleShot(true);
+        m_moved.setInterval(250);
+        QObject::connect(&m_moved, &QTimer::timeout, &m_context, [this] { checkMoved(); });
+        if (!m_collection || !m_collection->internalCollection()) {
             return;
         }
+        PlaylistDAO* playlists = &m_collection->internalCollection()->getPlaylistDAO();
         QObject::connect(playlists,
                 &PlaylistDAO::trackAdded,
                 &m_context,
@@ -92,7 +108,11 @@ class MixxxBackend final : public Backend {
                     trackAdded(playlistId, trackId, position);
                 });
         QObject::connect(playlists, &PlaylistDAO::added, &m_context, [this](int playlistId) {
-            if (isHistory(playlistId)) {
+            if (m_startingSet) {
+                // Ours ("New set"): the store updates itself, no second read.
+                m_newPlaylist = playlistId;
+                m_history.insert(playlistId);
+            } else if (isHistory(playlistId)) {
                 m_reload.start();
             }
         });
@@ -111,10 +131,17 @@ class MixxxBackend final : public Backend {
         };
         QObject::connect(playlists, &PlaylistDAO::tracksRemoved, &m_context, changed);
         QObject::connect(playlists, &PlaylistDAO::tracksMoved, &m_context, changed);
+        TrackDAO* tracks = &m_collection->internalCollection()->getTrackDAO();
+        const auto moved = [this](const QSet<TrackId>& trackIds) {
+            m_movedIds.unite(trackIds);
+            m_moved.start();
+        };
+        QObject::connect(tracks, &TrackDAO::tracksChanged, &m_context, moved);
+        QObject::connect(tracks, &TrackDAO::tracksRemoved, &m_context, moved);
     }
 
-    QVector<Session> sessions() override {
-        QVector<Session> result;
+    QVector<Playlist> playlists() override {
+        QVector<Playlist> result;
         if (!m_collection) {
             return result;
         }
@@ -133,31 +160,32 @@ class MixxxBackend final : public Backend {
         }
         m_history.clear();
         while (query.next()) {
-            Session session;
-            session.id = query.value(0).toInt();
-            session.name = query.value(1).toString();
-            session.created = localFromUtc(query.value(2));
-            session.count = query.value(3).toInt();
-            session.first = localFromUtc(query.value(4));
-            session.last = localFromUtc(query.value(5));
-            m_history.insert(session.id);
-            result.append(session);
+            Playlist playlist;
+            playlist.id = query.value(0).toInt();
+            playlist.name = query.value(1).toString();
+            playlist.created = localFromUtc(query.value(2));
+            playlist.count = query.value(3).toInt();
+            playlist.first = localFromUtc(query.value(4));
+            playlist.last = localFromUtc(query.value(5));
+            m_history.insert(playlist.id);
+            result.append(playlist);
         }
         return result;
     }
 
-    QVector<Entry> entries(int sessionId) override {
-        return read(sessionId, -1);
+    QVector<Entry> entries(int playlistId) override {
+        return read(playlistId, -1);
     }
 
-    void playedLocations(int currentId, QSet<QString>* session, QSet<QString>* earlier) override {
+    QVector<PlayedRow> playedRows() override {
+        QVector<PlayedRow> result;
         if (!m_collection) {
-            return;
+            return result;
         }
         QSqlQuery query(database());
         query.setForwardOnly(true);
         const QString sql = QStringLiteral(
-                "SELECT PlaylistTracks.playlist_id, track_locations.location FROM PlaylistTracks "
+                "SELECT PlaylistTracks.playlist_id, library.id, track_locations.location FROM PlaylistTracks "
                 "INNER JOIN Playlists ON Playlists.id = PlaylistTracks.playlist_id "
                 "INNER JOIN library ON library.id = PlaylistTracks.track_id "
                 "INNER JOIN track_locations ON track_locations.id = library.location "
@@ -165,24 +193,69 @@ class MixxxBackend final : public Backend {
                                     .arg(static_cast<int>(PlaylistDAO::PLHT_SET_LOG));
         if (!query.exec(sql)) {
             qWarning() << "DeckLab history: could not read played tracks" << query.lastError().text();
-            return;
+            return result;
         }
         while (query.next()) {
-            const QString location = QDir::fromNativeSeparators(query.value(1).toString());
-            (query.value(0).toInt() == currentId ? session : earlier)->insert(location);
+            PlayedRow row;
+            row.playlistId = query.value(0).toInt();
+            row.trackId = query.value(1).toInt();
+            row.location = QDir::fromNativeSeparators(query.value(2).toString());
+            result.append(row);
         }
+        return result;
     }
 
-    bool startNewSet() override {
-        return m_startNewSet && m_startNewSet();
+    int startNewSet() override {
+        if (!m_startNewSet) {
+            return -1;
+        }
+        m_startingSet = true;
+        m_newPlaylist = -1;
+        const bool started = m_startNewSet();
+        m_startingSet = false;
+        if (!started) {
+            return -1;
+        }
+        if (m_newPlaylist < 0 && m_collection) {
+            QSqlQuery query(database());
+            if (query.exec(QStringLiteral("SELECT MAX(id) FROM Playlists WHERE hidden = %1")
+                                    .arg(static_cast<int>(PlaylistDAO::PLHT_SET_LOG))) &&
+                    query.next()) {
+                m_newPlaylist = query.value(0).toInt();
+            }
+        }
+        return m_newPlaylist;
+    }
+
+    QVector<int> setStarts() override {
+        if (!m_config) {
+            return m_starts;
+        }
+        QVector<int> starts;
+        const QStringList parts = m_config->getValueString(kSetStartsKey).split(QLatin1Char(','), Qt::SkipEmptyParts);
+        for (const QString& part : parts) {
+            bool ok = false;
+            const int id = part.trimmed().toInt(&ok);
+            if (ok && id >= 0) {
+                starts.append(id);
+            }
+        }
+        return starts;
+    }
+
+    void saveSetStarts(const QVector<int>& starts) override {
+        m_starts = starts;
+        if (!m_config) {
+            return;
+        }
+        QStringList parts;
+        for (const int id : starts) {
+            parts << QString::number(id);
+        }
+        m_config->setValue(kSetStartsKey, parts.join(QLatin1Char(',')));
     }
 
   private:
-    PlaylistDAO* dao() const {
-        return m_collection && m_collection->internalCollection()
-                ? &m_collection->internalCollection()->getPlaylistDAO()
-                : nullptr;
-    }
     QSqlDatabase database() const {
         return m_collection->internalCollection()->database();
     }
@@ -190,16 +263,16 @@ class MixxxBackend final : public Backend {
         if (m_history.contains(playlistId)) {
             return true;
         }
-        if (m_other.contains(playlistId) || playlistId == kInvalidPlaylistId) {
+        if (m_other.contains(playlistId) || playlistId == kInvalidPlaylistId || !m_collection) {
             return false;
         }
-        PlaylistDAO* playlists = dao();
-        const bool history = playlists && playlists->getHiddenType(playlistId) == PlaylistDAO::PLHT_SET_LOG;
+        const bool history = m_collection->internalCollection()->getPlaylistDAO().getHiddenType(playlistId) ==
+                PlaylistDAO::PLHT_SET_LOG;
         (history ? m_history : m_other).insert(playlistId);
         return history;
     }
-    // Tracks of a set in play order (position < 0), or the one at position.
-    QVector<Entry> read(int sessionId, int position) {
+    // A playlist's tracks in play order (position < 0), or the one at position.
+    QVector<Entry> read(int playlistId, int position) {
         QVector<Entry> result;
         if (!m_collection) {
             return result;
@@ -215,7 +288,7 @@ class MixxxBackend final : public Backend {
                 "WHERE PlaylistTracks.playlist_id = :id%1 ORDER BY PlaylistTracks.position")
                         .arg(position >= 0 ? QStringLiteral(" AND PlaylistTracks.position = :position")
                                            : QString()));
-        query.bindValue(QStringLiteral(":id"), sessionId);
+        query.bindValue(QStringLiteral(":id"), playlistId);
         if (position >= 0) {
             query.bindValue(QStringLiteral(":position"), position);
         }
@@ -225,6 +298,7 @@ class MixxxBackend final : public Backend {
         }
         while (query.next()) {
             Entry entry;
+            entry.playlistId = playlistId;
             entry.position = query.value(0).toInt();
             entry.played = localFromUtc(query.value(1));
             entry.trackId = query.value(2).toInt();
@@ -253,6 +327,7 @@ class MixxxBackend final : public Backend {
         if (!rows.isEmpty()) {
             entry = rows.first();
         } else {
+            entry.playlistId = playlistId;
             entry.position = position;
             entry.trackId = trackId.toVariant().toInt();
             entry.played = QDateTime::currentDateTime();
@@ -260,14 +335,58 @@ class MixxxBackend final : public Backend {
         entry.deck = m_deckOf ? m_deckOf(trackId) : audibleDeckOf(trackId);
         Store::instance().addPlayed(playlistId, entry);
     }
+    void checkMoved() {
+        // Only history tracks, and only when their file really moved: a
+        // track saved after it played (play count, analysis) changes nothing.
+        const auto& store = Store::instance();
+        QHash<int, QString> known;
+        for (const TrackId& id : std::as_const(m_movedIds)) {
+            const int trackId = id.toVariant().toInt();
+            const QString location = store.historyLocation(trackId);
+            if (!location.isNull()) {
+                known.insert(trackId, location);
+            }
+        }
+        m_movedIds.clear();
+        if (known.isEmpty() || !m_collection) {
+            return;
+        }
+        QStringList ids;
+        for (auto it = known.cbegin(); it != known.cend(); ++it) {
+            ids << QString::number(it.key());
+        }
+        QSqlQuery query(database());
+        query.setForwardOnly(true);
+        if (!query.exec(QStringLiteral("SELECT library.id, track_locations.location FROM library "
+                                       "LEFT JOIN track_locations ON track_locations.id = library.location "
+                                       "WHERE library.id IN (%1)")
+                                .arg(ids.join(QLatin1Char(','))))) {
+            return;
+        }
+        int found = 0;
+        bool moved = false;
+        while (query.next()) {
+            ++found;
+            moved = moved || QDir::fromNativeSeparators(query.value(1).toString()) != known.value(query.value(0).toInt());
+        }
+        if (moved || found != known.size()) {
+            Store::instance().reload();
+        }
+    }
 
     QPointer<TrackCollectionManager> m_collection;
+    UserSettingsPointer m_config;
     std::function<bool()> m_startNewSet;
     std::function<int(TrackId)> m_deckOf;
-    QSet<int> m_history; // history playlists seen
-    QSet<int> m_other;   // playlists known not to be history
+    QVector<int> m_starts; // without settings (tests)
+    QSet<int> m_history;   // history playlists seen
+    QSet<int> m_other;     // playlists known not to be history
+    QSet<TrackId> m_movedIds;
+    bool m_startingSet = false;
+    int m_newPlaylist = -1;
     QObject m_context;
     QTimer m_reload;
+    QTimer m_moved;
 };
 
 } // namespace
@@ -281,10 +400,14 @@ void Store::setBackend(std::unique_ptr<Backend> backend, QObject* owner) {
     QObject::disconnect(m_ownerGone);
     m_backend = std::move(backend);
     m_loaded = false;
+    m_clockSuspect = false;
     m_currentId = -1;
+    m_playlists.clear();
+    m_starts.clear();
     m_sessions.clear();
     m_session.clear();
     m_earlier.clear();
+    m_trackLocations.clear();
     m_entries.clear();
     m_decks.clear();
     if (owner && m_backend) {
@@ -301,19 +424,87 @@ void Store::reset() {
     setBackend(nullptr);
     m_listeners.clear();
     m_dim = true;
+    m_clock = ClockState::Unknown;
 }
 
-void Store::read(QVector<Session>* sessions, QSet<QString>* session, QSet<QString>* earlier) {
-    *sessions = m_backend->sessions();
-    m_currentId = sessions->isEmpty() ? -1 : sessions->first().id;
-    for (auto& each : *sessions) {
-        each.current = each.id == m_currentId;
+void Store::read() {
+    m_playlists = m_backend->playlists();
+    // The set starts: drop starts whose playlists are all gone; the first
+    // run starts the set with this run's playlist (older ones stay single).
+    QVector<int> starts = m_backend->setStarts();
+    std::sort(starts.begin(), starts.end());
+    starts.erase(std::unique(starts.begin(), starts.end()), starts.end());
+    const int newest = m_playlists.isEmpty() ? -1 : m_playlists.first().id;
+    bool changed = false;
+    while (!starts.isEmpty() && starts.last() > newest) {
+        starts.removeLast();
+        changed = true;
     }
-    session->clear();
-    earlier->clear();
-    m_backend->playedLocations(m_currentId, session, earlier);
-    session->remove(QString());
-    earlier->remove(QString());
+    if (starts.isEmpty() && newest >= 0) {
+        starts.append(newest);
+        changed = true;
+    }
+    if (changed) {
+        m_backend->saveSetStarts(starts);
+    }
+    m_starts = starts;
+    buildSessions();
+    m_session.clear();
+    m_earlier.clear();
+    m_trackLocations.clear();
+    const int currentStart = m_starts.isEmpty() ? -1 : m_starts.last();
+    for (const PlayedRow& row : m_backend->playedRows()) {
+        if (row.location.isEmpty()) {
+            continue;
+        }
+        (currentStart >= 0 && row.playlistId >= currentStart ? m_session : m_earlier).insert(row.location);
+        m_trackLocations.insert(row.trackId, row.location);
+    }
+    // Times later than now: the clock went back since (no real-time clock).
+    const QDateTime soon = QDateTime::currentDateTime().addSecs(10 * 60);
+    m_clockSuspect = std::any_of(m_playlists.cbegin(), m_playlists.cend(), [&soon](const Playlist& playlist) {
+        return (playlist.last.isValid() && playlist.last > soon) || (playlist.created.isValid() && playlist.created > soon);
+    });
+}
+
+void Store::buildSessions() {
+    QVector<Session> ascending;
+    const int firstStart = m_starts.isEmpty() ? -1 : m_starts.first();
+    for (auto it = m_playlists.crbegin(); it != m_playlists.crend(); ++it) {
+        const Playlist& playlist = *it;
+        int key = playlist.id;
+        bool legacy = firstStart < 0 || playlist.id < firstStart;
+        if (!legacy) {
+            key = *std::prev(std::upper_bound(m_starts.cbegin(), m_starts.cend(), playlist.id));
+        }
+        if (legacy || ascending.isEmpty() || ascending.last().legacy || ascending.last().id != key) {
+            Session session;
+            session.id = key;
+            session.name = playlist.name;
+            session.created = playlist.created;
+            session.legacy = legacy;
+            ascending.append(session);
+        }
+        Session& session = ascending.last();
+        session.playlists.append(playlist.id);
+        session.count += playlist.count;
+        if (playlist.first.isValid() && (!session.first.isValid() || playlist.first < session.first)) {
+            session.first = playlist.first;
+        }
+        if (playlist.last.isValid() && (!session.last.isValid() || playlist.last > session.last)) {
+            session.last = playlist.last;
+        }
+    }
+    m_currentId = -1;
+    for (int n = 0; n < ascending.size(); ++n) {
+        ascending[n].ordinal = n + 1;
+        ascending[n].current = !ascending[n].legacy && !m_starts.isEmpty() && ascending[n].id == m_starts.last();
+        if (ascending[n].current) {
+            m_currentId = ascending[n].id;
+        }
+    }
+    std::reverse(ascending.begin(), ascending.end());
+    m_sessions = ascending;
 }
 
 void Store::ensureLoaded() {
@@ -329,11 +520,12 @@ void Store::reload() {
     const bool first = !m_loaded;
     const QSet<QString> oldSession = m_session;
     const QSet<QString> oldEarlier = m_earlier;
-    read(&m_sessions, &m_session, &m_earlier);
+    read();
     m_entries.clear();
     m_loaded = true;
     Change change;
     change.history = true;
+    change.reloaded = true;
     const auto state = [](const QSet<QString>& session, const QSet<QString>& earlier, const QString& location) {
         return session.contains(location) ? 2 : earlier.contains(location) ? 1 : 0;
     };
@@ -387,16 +579,30 @@ const Session* Store::session(int id) const {
     return nullptr;
 }
 
+Session* Store::mutableSession(int id) {
+    for (auto& each : m_sessions) {
+        if (each.id == id) {
+            return &each;
+        }
+    }
+    return nullptr;
+}
+
 QVector<Entry> Store::entries(int sessionId) {
     ensureLoaded();
-    if (!m_backend || sessionId < 0) {
+    const Session* set = session(sessionId);
+    if (!m_backend || !set) {
         return {};
     }
     auto it = m_entries.find(sessionId);
     if (it == m_entries.end()) {
-        QVector<Entry> rows = m_backend->entries(sessionId);
-        for (auto& entry : rows) {
-            entry.deck = m_decks.value(deckKey(sessionId, entry.position), entry.deck);
+        QVector<Entry> rows;
+        for (const int playlistId : set->playlists) {
+            for (Entry entry : m_backend->entries(playlistId)) {
+                entry.playlistId = playlistId;
+                entry.deck = m_decks.value(deckKey(playlistId, entry.position), entry.deck);
+                rows.append(entry);
+            }
         }
         it = m_entries.insert(sessionId, rows);
     }
@@ -408,39 +614,49 @@ int Store::currentCount() const {
     return current ? current->count : 0;
 }
 
-void Store::addPlayed(int sessionId, const Entry& entry) {
+void Store::addPlayed(int playlistId, const Entry& added) {
     if (!m_backend) {
         return;
     }
+    Entry entry = added;
+    entry.playlistId = playlistId;
     if (entry.deck > 0) {
-        m_decks.insert(deckKey(sessionId, entry.position), entry.deck);
+        m_decks.insert(deckKey(playlistId, entry.position), entry.deck);
     }
-    if (!m_loaded || sessionId != m_currentId) {
-        // Not read yet, a set started elsewhere, or an earlier set edited:
-        // read it all again (rare).
+    Session* current = mutableSession(m_currentId);
+    const int currentStart = m_starts.isEmpty() ? -1 : m_starts.last();
+    if (!m_loaded || !current || playlistId < currentStart) {
+        // Not read yet, or an earlier set edited: read it all again (rare).
         reload();
         return;
     }
+    if (!current->playlists.contains(playlistId)) {
+        // A new history playlist inside this set (Mixxx's own "start new").
+        current->playlists.append(playlistId);
+        Playlist playlist;
+        playlist.id = playlistId;
+        playlist.created = entry.played;
+        m_playlists.prepend(playlist);
+    }
     Change change;
     change.history = true;
+    change.added.append(entry);
     if (!entry.location.isEmpty() && !m_session.contains(entry.location)) {
         m_session.insert(entry.location);
         change.locations.insert(entry.location);
     }
-    for (auto& each : m_sessions) {
-        if (each.id == sessionId) {
-            ++each.count;
-            each.last = entry.played;
-            if (!each.first.isValid()) {
-                each.first = entry.played;
-            }
-            break;
-        }
+    if (entry.trackId >= 0 && !entry.location.isEmpty()) {
+        m_trackLocations.insert(entry.trackId, entry.location);
     }
-    auto it = m_entries.find(sessionId);
+    ++current->count;
+    current->last = entry.played;
+    if (!current->first.isValid()) {
+        current->first = entry.played;
+    }
+    auto it = m_entries.find(current->id);
     if (it != m_entries.end() &&
             std::none_of(it->cbegin(), it->cend(), [&entry](const Entry& known) {
-                return known.position == entry.position;
+                return known.playlistId == entry.playlistId && known.position == entry.position;
             })) {
         it->append(entry);
     }
@@ -449,11 +665,66 @@ void Store::addPlayed(int sessionId, const Entry& entry) {
 
 bool Store::startNewSet() {
     ensureLoaded();
-    if (!m_backend || currentCount() == 0 || !m_backend->startNewSet()) {
+    if (!m_backend || currentCount() == 0) {
         return false;
     }
-    reload();
+    const int playlistId = m_backend->startNewSet();
+    if (playlistId < 0) {
+        return false;
+    }
+    // The new history playlist starts the next set; the last one stays as it
+    // is. Everything needed is in memory: no second read of the history.
+    m_starts.append(playlistId);
+    m_backend->saveSetStarts(m_starts);
+    Playlist playlist;
+    playlist.id = playlistId;
+    playlist.created = QDateTime::currentDateTime();
+    m_playlists.prepend(playlist);
+    for (auto& each : m_sessions) {
+        each.current = false;
+    }
+    Session fresh;
+    fresh.id = playlistId;
+    fresh.playlists = {playlistId};
+    fresh.created = playlist.created;
+    fresh.current = true;
+    fresh.ordinal = static_cast<int>(m_sessions.size()) + 1;
+    m_sessions.prepend(fresh);
+    m_currentId = playlistId;
+    Change change;
+    change.history = true;
+    change.reloaded = true;
+    change.locations = m_session;
+    m_earlier.unite(m_session);
+    m_session.clear();
+    notify(change);
     return true;
+}
+
+void Store::setClockState(ClockState state) {
+    if (m_clock == state) {
+        return;
+    }
+    const bool trusted = clockTrusted();
+    m_clock = state;
+    if (trusted != clockTrusted() && m_loaded) {
+        Change change;
+        change.history = true;
+        change.reloaded = true;
+        notify(change);
+    }
+}
+
+bool Store::clockTrusted() const {
+    switch (m_clock) {
+    case ClockState::Synced:
+        return true;
+    case ClockState::Unsynced:
+        return false;
+    case ClockState::Unknown:
+        break;
+    }
+    return !m_clockSuspect;
 }
 
 void Store::listen(QObject* owner, std::function<void(const Change&)> listener) {
@@ -474,17 +745,23 @@ void Store::notify(const Change& change) {
 }
 
 std::unique_ptr<Backend> makeMixxxBackend(TrackCollectionManager* collection,
+        UserSettingsPointer config,
         std::function<bool()> startNewSet,
         std::function<int(TrackId)> deckOf) {
-    return std::make_unique<MixxxBackend>(collection, std::move(startNewSet), std::move(deckOf));
+    return std::make_unique<MixxxBackend>(collection, std::move(config), std::move(startNewSet), std::move(deckOf));
 }
 
 QString clockText(const QDateTime& time) {
     return time.isValid() ? time.toString(QStringLiteral("HH:mm")) : QString();
 }
 
+QString offsetText(qint64 seconds) {
+    const qint64 minutes = std::max<qint64>(0, seconds) / 60;
+    return QStringLiteral("+%1:%2").arg(minutes / 60).arg(minutes % 60, 2, 10, QLatin1Char('0'));
+}
+
 QString durationText(qint64 seconds) {
-    if (seconds < 60) {
+    if (seconds < 60 || seconds > kDaySeconds) {
         return QString();
     }
     const qint64 minutes = seconds / 60;
@@ -514,9 +791,12 @@ QString dayLabel(const QDate& day, const QDate& today) {
     return QLocale().toString(day, QStringLiteral("d MMM yyyy"));
 }
 
-QString sessionTitle(const Session& session) {
+QString sessionTitle(const Session& session, bool clockTrusted) {
     if (session.current) {
         return tr("This set");
+    }
+    if (!clockTrusted) {
+        return tr("Set %1").arg(session.ordinal);
     }
     if (session.first.isValid() && session.last.isValid() && clockText(session.first) != clockText(session.last)) {
         return QString(clockText(session.first) + QStringLiteral(" – ") + clockText(session.last));
@@ -524,25 +804,36 @@ QString sessionTitle(const Session& session) {
     return clockText(session.first.isValid() ? session.first : session.created);
 }
 
-QString sessionDetail(const Session& session) {
+QString sessionDetail(const Session& session, bool clockTrusted) {
     if (session.count <= 0) {
         return tr("Nothing played yet");
-    }
-    if (session.current) {
-        return session.first.isValid() ? tr("Since %1 · %2").arg(clockText(session.first), countText(session.count))
-                                       : countText(session.count);
     }
     const QString length = session.first.isValid() && session.last.isValid()
             ? durationText(session.first.secsTo(session.last))
             : QString();
+    if (session.current && clockTrusted && session.first.isValid()) {
+        return tr("Since %1 · %2").arg(clockText(session.first), countText(session.count));
+    }
     return length.isEmpty() ? countText(session.count) : QString(countText(session.count) + QStringLiteral(" · ") + length);
 }
 
-QVector<ListRow> sessionRows(const QVector<Session>& sessions, const QDate& today) {
+QVector<ListRow> sessionRows(const QVector<Session>& sessions, const QDate& today, bool clockTrusted) {
     QVector<ListRow> rows;
     QDate shown;
+    bool earlier = false;
     for (const Session& session : sessions) {
-        if (!session.current) {
+        if (session.current) {
+            rows.append(ListRow{RowKind::Session, sessionTitle(session, clockTrusted), session.id});
+            rows.append(ListRow{RowKind::NewSet, tr("New set"), -1});
+            continue;
+        }
+        if (!clockTrusted) {
+            // No clock to trust: earlier sets by order, under one label.
+            if (!earlier) {
+                rows.append(ListRow{RowKind::Header, tr("Earlier sets"), -1});
+                earlier = true;
+            }
+        } else {
             // Earlier sets under the day they started.
             const QDate day = (session.first.isValid() ? session.first : session.created).date();
             if (!shown.isValid() || day != shown) {
@@ -550,7 +841,7 @@ QVector<ListRow> sessionRows(const QVector<Session>& sessions, const QDate& toda
                 shown = day;
             }
         }
-        rows.append(ListRow{RowKind::Session, sessionTitle(session), session.id});
+        rows.append(ListRow{RowKind::Session, sessionTitle(session, clockTrusted), session.id});
     }
     return rows;
 }
@@ -558,18 +849,21 @@ QVector<ListRow> sessionRows(const QVector<Session>& sessions, const QDate& toda
 int modelRowFor(const QAbstractItemModel& model,
         int positionColumn,
         int position,
-        const QString& location,
-        const std::function<QString(int row)>& locationOf) {
+        int trackId,
+        const std::function<int(int row)>& trackIdOf) {
+    if (trackId < 0) {
+        return -1;
+    }
     const int rows = model.rowCount();
     if (positionColumn >= 0) {
         for (int row = 0; row < rows; ++row) {
-            if (model.index(row, positionColumn).data().toInt() == position && locationOf(row) == location) {
+            if (model.index(row, positionColumn).data().toInt() == position && trackIdOf(row) == trackId) {
                 return row;
             }
         }
     }
     for (int row = 0; row < rows; ++row) {
-        if (locationOf(row) == location) {
+        if (trackIdOf(row) == trackId) {
             return row;
         }
     }

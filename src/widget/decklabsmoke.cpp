@@ -39,6 +39,7 @@
 #include "library/library.h"
 #include "library/sidebarmodel.h"
 #include "library/dao/playlistdao.h" // r5-history
+#include "library/playlisttablemodel.h" // r5-history
 #include "library/trackcollection.h" // r5-history
 #include "library/trackcollectionmanager.h"
 #include "library/trackmodel.h"
@@ -746,6 +747,16 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                              surface->browseBack();
                              surface->browseBack();
                              auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
+                             // The stick's files first, so the track table holds no
+                             // history track when History opens.
+                             if (!selectListItem(surface, QStringLiteral("USB stick (3A1F)"))) failures->append(QStringLiteral("No demo stick"));
+                             surface->browsePress();
+                             for (int row = 0; list && row < list->count(); ++row) {
+                                 if (list->item(row)->data(DeckLabListDelegate::KeyRole).toString() == QStringLiteral("tracks")) list->setCurrentRow(row);
+                             }
+                             surface->browsePress();
+                             surface->browseBack();
+                             surface->browseBack();
                              if (!selectListItem(surface, QStringLiteral("History"))) failures->append(QStringLiteral("No History on the home"));
                              surface->browsePress();
                              if (!list || list->count() < 3 || list->item(0)->text() != QStringLiteral("This set"))
@@ -760,7 +771,18 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                          QCoreApplication::processEvents();
                          auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
                          if (!list || list->count() != 3) return false;
-                         QTimer::singleShot(400, surface, [surface, failures] {
+                         QTimer::singleShot(400, surface, [surface, failures, list] {
+                             // LOAD and Preview read the set's own Mixxx history
+                             // playlist, on the highlighted track (by library id).
+                             auto* library = surface->findChild<WLibrary*>();
+                             auto* table = library ? library->getCurrentTrackTableView() : nullptr;
+                             const auto* playlist = table ? dynamic_cast<PlaylistTableModel*>(table->model()) : nullptr;
+                             const QListWidgetItem* item = list->currentItem();
+                             const QModelIndexList rows = table && table->selectionModel() ? table->selectionModel()->selectedRows() : QModelIndexList();
+                             if (!item || !playlist || playlist->getPlaylist() != item->data(decklab::history::PlaylistRole).toInt())
+                                 failures->append(QStringLiteral("History table is not the set's playlist"));
+                             else if (rows.size() != 1 || playlist->getTrackId(rows.first()).toVariant().toInt() != item->data(decklab::history::TrackIdRole).toInt())
+                                 failures->append(QStringLiteral("History selection is not the highlighted track"));
                              auto* tile = static_cast<DeckLabDockTile*>(surface->findChild<QPushButton*>(QStringLiteral("decklab-load-3")));
                              if (!tile || !tile->loadReady()) failures->append(QStringLiteral("History track not loadable from the dock"));
                          });

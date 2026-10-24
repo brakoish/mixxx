@@ -120,9 +120,12 @@ class DeckLabCellDelegate : public DefaultDelegate {
     void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override {
         const QColor before = option->palette.color(QPalette::Text);
         DefaultDelegate::initStyleOption(option, index);
+        decklab::history::styleTrackCell(option, index, before,
+                m_table->palette().color(QPalette::HighlightedText), mixxxPlayedColor());
+    }
+    QColor mixxxPlayedColor() const {
         const auto* view = qobject_cast<const WTrackTableView*>(m_table);
-        decklab::history::styleTrackCell(option, index, before, m_secondary,
-                view ? view->getTrackPlayedColor() : QColor());
+        return view ? view->getTrackPlayedColor() : QColor(WTrackTableView::kDefaultTrackPlayedColor);
     }
 
   protected:
@@ -133,7 +136,9 @@ class DeckLabCellDelegate : public DefaultDelegate {
         opt.font = decklab::numberFont(option.font, 16);
         opt.fontMetrics = QFontMetrics(opt.font);
         opt.features &= ~(QStyleOptionViewItem::HasCheckIndicator | QStyleOptionViewItem::HasDecoration);
-        if (opt.state & QStyle::State_Selected) {
+        // r5-history: never blend Mixxx's per-start played colour in.
+        if ((opt.state & QStyle::State_Selected) &&
+                index.data(Qt::ForegroundRole).value<QColor>() != mixxxPlayedColor()) {
             setTextColor(opt, index);
         }
         QStyleOptionViewItem base = opt;
@@ -263,6 +268,15 @@ class DeckLabKeyDelegate final : public DeckLabCellDelegate {
         painter->restore();
     }
 };
+
+} // anonymous namespace
+
+// r5-history: the Deck Lab cell delegate, for tests that paint through it.
+QAbstractItemDelegate* decklab::history::makeTrackCellDelegate(QTableView* table, bool secondary) {
+    return new DeckLabCellDelegate(table, -1, -1, secondary);
+}
+
+namespace {
 
 // ConfigValue key for QTable vertical scrollbar position
 const ConfigKey kVScrollBarPosConfigKey{

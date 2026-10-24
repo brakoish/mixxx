@@ -20,6 +20,8 @@ namespace decklab::history {
 
 namespace {
 
+constexpr qint64 kDaySeconds = 24 * 60 * 60;
+
 QString tr(const char* text) {
     return QCoreApplication::translate("DeckLabHistory", text);
 }
@@ -50,14 +52,15 @@ void paintHeader(QPainter& painter, const QStyleOptionViewItem& option, const QM
 void paintTwoLines(QPainter& painter,
         const QStyleOptionViewItem& option,
         const QModelIndex& index,
-        bool enabled,
+        Glyph glyph,
         bool chevron) {
     const QRect r = option.rect;
+    const bool enabled = index.flags() & Qt::ItemIsEnabled;
     const bool selected = enabled && (option.state & QStyle::State_Selected);
     paintRowBase(painter, r, selected);
     int x = r.left() + 16;
     const bool current = index.data(CurrentRole).toBool();
-    paintGlyph(painter, QRectF(x, r.center().y() - 12, 24, 24), Glyph::History,
+    paintGlyph(painter, QRectF(x, r.center().y() - 12, 24, 24), glyph,
             !enabled ? colors::dim : current || selected ? colors::ink : colors::muted);
     x += 40;
     int right = r.right() - (chevron ? 30 : 14);
@@ -165,6 +168,48 @@ void paintTrack(QPainter& painter, const QStyleOptionViewItem& option, const QMo
     }
 }
 
+// The track rows' times run forward and within a day (no clock jump).
+bool timesRunForward(const QVector<Entry>& entries) {
+    if (entries.isEmpty() || !entries.first().played.isValid()) {
+        return false;
+    }
+    const QDateTime& first = entries.first().played;
+    for (int n = 1; n < entries.size(); ++n) {
+        const QDateTime& time = entries[n].played;
+        if (!time.isValid() || time < entries[n - 1].played || first.secsTo(time) > kDaySeconds) {
+            return false;
+        }
+    }
+    return true;
+}
+
+QListWidgetItem* makeTrackItem(QListWidget* list, const Entry& entry, const QString& time, bool currentSet) {
+    auto* item = new QListWidgetItem(entry.title, list);
+    item->setData(RowRole, static_cast<int>(RowKind::Track));
+    item->setData(TimeRole, time);
+    item->setData(DeckRole, entry.deck);
+    item->setData(BpmRole, entry.bpm);
+    item->setData(KeyRole, entryKeyText(entry));
+    item->setData(ArtistRole, entry.artist);
+    item->setData(LocationRole, entry.location);
+    item->setData(PositionRole, entry.position);
+    item->setData(PlaylistRole, entry.playlistId);
+    item->setData(TrackIdRole, entry.trackId);
+    item->setData(CurrentRole, currentSet);
+    QStringList spoken{entry.title};
+    if (!entry.artist.isEmpty()) {
+        spoken << entry.artist;
+    }
+    if (!time.isEmpty()) {
+        spoken << tr("played %1").arg(time);
+    }
+    if (entry.deck > 0) {
+        spoken << tr("deck %1").arg(entry.deck);
+    }
+    item->setData(Qt::AccessibleTextRole, spoken.join(QStringLiteral(", ")));
+    return item;
+}
+
 } // namespace
 
 void paintPlayedMark(QPainter& painter, const QRectF& box, Played played) {
@@ -221,32 +266,40 @@ QIcon playedIcon(Played played) {
 void styleTrackCell(QStyleOptionViewItem* option,
         const QModelIndex& index,
         const QColor& before,
-        bool secondary,
+        const QColor& highlighted,
         const QColor& mixxxPlayedColor) {
     // Mixxx's played colour lasts until Mixxx restarts and ignores "New set";
-    // in Deck Lab the history decides.
+    // in Deck Lab the history decides, highlighted rows included (Mixxx
+    // blends that colour into the selected text).
     if (mixxxPlayedColor.isValid() && before.isValid() && before != mixxxPlayedColor &&
             option->palette.color(QPalette::Text) == mixxxPlayedColor) {
         option->palette.setColor(QPalette::Text, before);
+        if (highlighted.isValid()) {
+            option->palette.setColor(QPalette::Normal, QPalette::HighlightedText, highlighted);
+            option->palette.setColor(QPalette::Inactive, QPalette::HighlightedText, highlighted);
+        }
     }
     const Store& store = Store::instance();
-    const Played played = store.playedAt(index);
+    if (!store.anyPlayed()) {
+        return;
+    }
+    // Only the title cell asks: once per row, never for the other columns.
+    const auto* tracks = dynamic_cast<const TrackModel*>(index.model());
+    if (!tracks || tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Title) != index.column()) {
+        return;
+    }
+    const Played played = store.played(tracks->getTrackLocation(index));
     if (played == Played::No) {
         return;
     }
-    // Dimmed: primary text takes the secondary tone. Secondary text (15 px)
-    // stays muted: nothing that small goes darker (brand).
-    if (played == Played::Session && store.dimPlayed() && !secondary) {
+    if (played == Played::Session && store.dimPlayed()) {
         option->palette.setColor(QPalette::Text, colors::muted);
     }
-    const auto* tracks = dynamic_cast<const TrackModel*>(index.model());
-    if (tracks && tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Title) == index.column()) {
-        option->features |= QStyleOptionViewItem::HasDecoration;
-        option->icon = playedIcon(played);
-        option->decorationSize = QSize(kMarkSize, kMarkSize);
-        option->decorationPosition = QStyleOptionViewItem::Right;
-        option->decorationAlignment = Qt::AlignCenter;
-    }
+    option->features |= QStyleOptionViewItem::HasDecoration;
+    option->icon = playedIcon(played);
+    option->decorationSize = QSize(kMarkSize, kMarkSize);
+    option->decorationPosition = QStyleOptionViewItem::Right;
+    option->decorationAlignment = Qt::AlignCenter;
 }
 
 QString entryKeyText(const Entry& entry) {
@@ -259,15 +312,59 @@ QString entryKeyText(const Entry& entry) {
     return entry.keyText;
 }
 
-int fillSessions(QListWidget* list, const QVector<Session>& sessions, const QDate& today, int keepSessionId) {
+QString entryTimeText(const QVector<Entry>& entries, int index, bool clockTrusted) {
+    if (index < 0 || index >= entries.size()) {
+        return QString();
+    }
+    if (clockTrusted) {
+        return clockText(entries[index].played);
+    }
+    if (timesRunForward(entries)) {
+        return offsetText(entries.first().played.secsTo(entries[index].played));
+    }
+    return QStringLiteral("#%1").arg(index + 1);
+}
+
+void updateSessionItem(QListWidgetItem* item, const Session& session, bool clockTrusted) {
+    const QString title = sessionTitle(session, clockTrusted);
+    const QString detail = sessionDetail(session, clockTrusted);
+    item->setText(title);
+    item->setData(SessionRole, session.id);
+    item->setData(DetailRole, detail);
+    item->setData(CountRole, session.count > 0 ? QLocale().toString(session.count) : QString());
+    item->setData(CurrentRole, session.current);
+    item->setData(Qt::AccessibleTextRole, QString(title + QStringLiteral(", ") + detail));
+}
+
+int fillSessions(QListWidget* list,
+        const QVector<Session>& sessions,
+        const QDate& today,
+        int keepSessionId,
+        bool clockTrusted) {
     list->clear();
     int keep = -1;
     int first = -1;
-    for (const ListRow& row : sessionRows(sessions, today)) {
+    const Session* current = nullptr;
+    for (const Session& session : sessions) {
+        if (session.current) {
+            current = &session;
+        }
+    }
+    for (const ListRow& row : sessionRows(sessions, today, clockTrusted)) {
         auto* item = new QListWidgetItem(row.text, list);
         item->setData(RowRole, static_cast<int>(row.kind));
-        if (row.kind != RowKind::Session) {
+        if (row.kind == RowKind::Header) {
             item->setFlags(Qt::NoItemFlags);
+            continue;
+        }
+        if (row.kind == RowKind::NewSet) {
+            // The knob's way to "New set": press, then press again (the
+            // pane's hold button is the touch way).
+            const bool empty = !current || current->count <= 0;
+            item->setData(DetailRole, empty ? tr("This set is still empty") : tr("Press twice to end this set and start another"));
+            if (empty) {
+                item->setFlags(Qt::NoItemFlags);
+            }
             continue;
         }
         const auto session = std::find_if(sessions.cbegin(), sessions.cend(), [&row](const Session& each) {
@@ -276,12 +373,7 @@ int fillSessions(QListWidget* list, const QVector<Session>& sessions, const QDat
         if (session == sessions.cend()) {
             continue;
         }
-        const QString detail = sessionDetail(*session);
-        item->setData(SessionRole, session->id);
-        item->setData(DetailRole, detail);
-        item->setData(CountRole, session->count > 0 ? QLocale().toString(session->count) : QString());
-        item->setData(CurrentRole, session->current);
-        item->setData(Qt::AccessibleTextRole, QString(row.text + QStringLiteral(", ") + detail));
+        updateSessionItem(item, *session, clockTrusted);
         const int at = list->count() - 1;
         if (first < 0) {
             first = at;
@@ -299,33 +391,22 @@ int fillSessions(QListWidget* list, const QVector<Session>& sessions, const QDat
     return keep >= 0 ? keep : first;
 }
 
-int fillTracks(QListWidget* list, const QVector<Entry>& entries, bool currentSet, int keepPosition) {
+int fillTracks(QListWidget* list,
+        const QVector<Entry>& entries,
+        bool currentSet,
+        int keepPosition,
+        bool clockTrusted,
+        int keepPlaylist) {
     list->clear();
     int keep = -1;
-    for (const Entry& entry : entries) {
-        auto* item = new QListWidgetItem(entry.title, list);
-        const QString time = clockText(entry.played);
-        item->setData(RowRole, static_cast<int>(RowKind::Track));
-        item->setData(TimeRole, time);
-        item->setData(DeckRole, entry.deck);
-        item->setData(BpmRole, entry.bpm);
-        item->setData(KeyRole, entryKeyText(entry));
-        item->setData(ArtistRole, entry.artist);
-        item->setData(LocationRole, entry.location);
-        item->setData(PositionRole, entry.position);
-        item->setData(CurrentRole, currentSet);
-        QStringList spoken{entry.title};
-        if (!entry.artist.isEmpty()) {
-            spoken << entry.artist;
-        }
-        if (!time.isEmpty()) {
-            spoken << tr("played %1").arg(time);
-        }
-        if (entry.deck > 0) {
-            spoken << tr("deck %1").arg(entry.deck);
-        }
-        item->setData(Qt::AccessibleTextRole, spoken.join(QStringLiteral(", ")));
-        if (entry.position == keepPosition) {
+    const bool forward = !clockTrusted && timesRunForward(entries);
+    for (int n = 0; n < entries.size(); ++n) {
+        const Entry& entry = entries[n];
+        const QString time = clockTrusted ? clockText(entry.played)
+                : forward                 ? offsetText(entries.first().played.secsTo(entry.played))
+                                          : QStringLiteral("#%1").arg(n + 1);
+        makeTrackItem(list, entry, time, currentSet);
+        if (entry.position == keepPosition && (keepPlaylist < 0 || entry.playlistId == keepPlaylist)) {
             keep = list->count() - 1;
         }
     }
@@ -342,12 +423,21 @@ int fillTracks(QListWidget* list, const QVector<Entry>& entries, bool currentSet
     return keep;
 }
 
+QListWidgetItem* appendTrack(QListWidget* list, const QVector<Entry>& entries, bool currentSet, bool clockTrusted) {
+    if (entries.isEmpty()) {
+        return nullptr;
+    }
+    const int index = static_cast<int>(entries.size()) - 1;
+    return makeTrackItem(list, entries.last(), entryTimeText(entries, index, clockTrusted), currentSet);
+}
+
 int historyRowHeight(const QModelIndex& index) {
     switch (static_cast<RowKind>(index.data(RowRole).toInt())) {
     case RowKind::Header:
         return kHeaderRowHeight;
     case RowKind::Session:
     case RowKind::Empty:
+    case RowKind::NewSet:
         return kSessionRowHeight;
     case RowKind::Track:
         return kTrackRowHeight;
@@ -364,10 +454,13 @@ void paintHistoryRow(QPainter& painter, const QStyleOptionViewItem& option, cons
         paintHeader(painter, option, index);
         return;
     case RowKind::Session:
-        paintTwoLines(painter, option, index, true, true);
+        paintTwoLines(painter, option, index, Glyph::History, true);
         return;
     case RowKind::Empty:
-        paintTwoLines(painter, option, index, false, false);
+        paintTwoLines(painter, option, index, Glyph::History, false);
+        return;
+    case RowKind::NewSet:
+        paintTwoLines(painter, option, index, Glyph::Retry, false);
         return;
     case RowKind::Track:
         paintTrack(painter, option, index);

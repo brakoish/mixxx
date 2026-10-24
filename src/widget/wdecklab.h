@@ -235,6 +235,11 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void historyChanged(const decklab::history::Change& change);
     void flushHistoryChange();
     void repaintPlayed(const QSet<QString>& locations);
+    void historyAttachSystem(DeckLabSystem* system);
+    void askHistoryClock();
+    void refreshNewSetRow();
+    void showHistoryPlaylist(int playlistId);
+    void updateHomeHistoryTile();
     int displayedDeck(int side) const;
     void setDisplayedDeck(int side, int deck);
     QString channel(int deck) const;
