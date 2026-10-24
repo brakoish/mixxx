@@ -2123,7 +2123,7 @@ TEST_F(NativeDeckLabTest, ControllerFxDetailsReadAllRealUnitsWithoutControlWrite
     EXPECT_TRUE(idle.contains(QStringLiteral("Slot 3: %1 [ON]").arg(manifests[2]->name())));
     EXPECT_EQ(0,againText->verticalScrollBar()->maximum())
             << againText->document()->size().height() << " px of text in " << againText->viewport()->height() << " px";
-    if(!output.isEmpty()) EXPECT_TRUE(again->grab().save(QDir(output).filePath("r6-fxstrip-controller-fx-idle.png")));
+    if(!output.isEmpty()) { EXPECT_TRUE(again->grab().save(QDir(output).filePath("r6-fxstrip-controller-fx-idle.png"))); }
     again->findChild<QPushButton*>("decklab-controller-fx-close")->click(); QCoreApplication::processEvents();
     EXPECT_EQ(fourthDryWrites,writes);
 }
