@@ -73,8 +73,26 @@ int DeckLabSync::doublesSource(int deck) const {
     if (deck < 1 || deck > 4 || playing(deck)) {
         return 0;
     }
-    const int source = m_host.reference ? m_host.reference(deck) : 0;
-    return source != deck && loaded(source) ? source : 0;
+    // The tempo master if it plays, else a playing deck (a synced one
+    // first), else a stopped master: the same order as the Numark overlay's
+    // hold (DeckLabNumark.instantDoubles), so touch and controller agree.
+    int source = 0;
+    int best = 0;
+    for (int other = 1; other <= 4; ++other) {
+        if (other == deck || !loaded(other)) {
+            continue;
+        }
+        const bool leads = m_host.read(other, kSyncLeader) > 0;
+        int rank = leads ? 1 : 0;
+        if (playing(other)) {
+            rank = leads ? 4 : m_host.read(other, kSyncEnabled) > 0 ? 3 : 2;
+        }
+        if (rank > best) {
+            source = other;
+            best = rank;
+        }
+    }
+    return source;
 }
 
 bool DeckLabSync::instantDoubles(int deck) {

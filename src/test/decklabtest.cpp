@@ -3770,9 +3770,9 @@ TEST_F(NativeDeckLabTest, OnStatesAreFilledLampsNotOutlines) {
 }
 
 // r6-sync: SYNC is a CDJ BEAT SYNC: a tap turns it on, the lamp stays lit
-// until the next tap. A hold is INST DOUBLES, never BEAT SYNC: with nothing
-// to copy it does nothing, and its release never taps.
-TEST_F(NativeDeckLabTest, SyncTapTogglesBeatSyncAndAHoldNeverToggles) {
+// until the next tap. A hold is INST DOUBLES; one that loads nothing (here
+// nothing plays and there is no master) is still a tap on release.
+TEST_F(NativeDeckLabTest, SyncTapTogglesBeatSyncAndAHoldThatLoadsNothingIsATap) {
     loadGenerated(1, 128); loadGenerated(2, 130); loadGenerated(3, 132); ProcessBuffer(); settle();
     auto* sync = panel->findChild<QPushButton*>("decklab-1-beatsync"); ASSERT_NE(nullptr, sync);
     const auto fill = [](QPushButton* button) { return button->grab().toImage().pixelColor(2, button->height() / 2); };
@@ -3793,18 +3793,16 @@ TEST_F(NativeDeckLabTest, SyncTapTogglesBeatSyncAndAHoldNeverToggles) {
     // Tap again: off.
     sync->click(); settle();
     EXPECT_DOUBLE_EQ(0, locked(1)); EXPECT_FALSE(sync->property("lit").toBool()); EXPECT_FALSE(strip(1)->state().sync);
-    // A hold with nothing to copy (no master, nothing plays) does nothing,
-    // and its release is no tap.
+    // A hold with nothing to copy (no master, nothing plays) loads nothing,
+    // so its release is a tap: on, and the next hold off again.
+    QTest::mousePress(sync, Qt::LeftButton); QTest::qWait(700);
+    EXPECT_DOUBLE_EQ(0, locked(1)) << "nothing happens while held";
+    QTest::mouseRelease(sync, Qt::LeftButton); settle();
+    EXPECT_DOUBLE_EQ(1, locked(1)); EXPECT_TRUE(sync->property("lit").toBool());
+    EXPECT_EQ(QStringLiteral("Generated Tone 128"), strip(1)->state().title) << "no track was replaced";
     QTest::mousePress(sync, Qt::LeftButton); QTest::qWait(700);
     QTest::mouseRelease(sync, Qt::LeftButton); settle();
     EXPECT_DOUBLE_EQ(0, locked(1)); EXPECT_FALSE(sync->property("lit").toBool());
-    EXPECT_EQ(QStringLiteral("Generated Tone 128"), strip(1)->state().title);
-    // Turned on, a hold leaves it on.
-    sync->click(); settle(); ASSERT_DOUBLE_EQ(1, locked(1));
-    QTest::mousePress(sync, Qt::LeftButton); QTest::qWait(700);
-    QTest::mouseRelease(sync, Qt::LeftButton); settle();
-    EXPECT_DOUBLE_EQ(1, locked(1));
-    sync->click(); settle(); ASSERT_DOUBLE_EQ(0, locked(1));
     // A press that slides off is no tap.
     QTest::mousePress(sync, Qt::LeftButton);
     sync->setDown(false);
@@ -3853,8 +3851,8 @@ TEST_F(NativeDeckLabTest, SyncHoldIsInstantDoublesOnlyOntoAStoppedDeck) {
     EXPECT_DOUBLE_EQ(0, get(2, "sync_enabled")) << "the release is no tap";
     EXPECT_DOUBLE_EQ(1, get(2, "play")) << "Mixxx's clone plays with its source";
     EXPECT_NEAR(get(1, "playposition"), get(2, "playposition"), .01);
-    // Deck 2 plays now: a hold there does nothing (never replace a playing
-    // track), and MORE's INST DOUBLES is off.
+    // Deck 2 plays now: a hold there never replaces its track (its release
+    // is a tap: BEAT SYNC on), and MORE's INST DOUBLES is off.
     auto other = Track::newTemporary(getTestDir().filePath(QStringLiteral("sine-30.wav")));
     loadTrack(m_pMixerDeck3.get(), other); ASSERT_TRUE(other->trySetBpm(126));
     settle(); QTest::qWait(150); settle(); // the player finishes its load (cue recall) first
@@ -3869,13 +3867,14 @@ TEST_F(NativeDeckLabTest, SyncHoldIsInstantDoublesOnlyOntoAStoppedDeck) {
     settle();
     EXPECT_EQ(track, m_pMixerDeck2->getLoadedTrack()) << "a playing deck's track is never replaced";
     EXPECT_DOUBLE_EQ(1, get(2, "play"));
+    EXPECT_DOUBLE_EQ(1, get(2, "sync_enabled")) << "the hold loaded nothing: its release is a tap";
     panel->findChild<QPushButton*>("decklab-2-more")->click(); settle();
     auto* doubles = panel->findChild<QPushButton*>("decklab-2-doubles"); ASSERT_NE(nullptr, doubles);
     EXPECT_FALSE(doubles->isEnabled());
     EXPECT_TRUE(doubles->accessibleName().contains("playing")) << doubles->accessibleName().toStdString();
     panel->findChild<QMenu*>("decklab-2-more-menu")->close(); settle();
-    // Stopped, deck 2 offers the tempo master (deck 3, hidden on its layer)
-    // before deck 1, which only plays.
+    // Stopped, deck 2 offers the playing tempo master (deck 3, hidden on its
+    // layer) before deck 1, which only plays.
     ASSERT_GT(get(3, "sync_leader"), 0); ASSERT_DOUBLE_EQ(1, get(3, "play"));
     put(2, "play", 0); ProcessBuffer(); settle(); QTest::qWait(150); settle();
     EXPECT_TRUE(sync2->accessibleDescription().contains("deck 3")) << sync2->accessibleDescription().toStdString();

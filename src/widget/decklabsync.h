@@ -22,9 +22,10 @@
 //  - SYNC hold (and INST DOUBLES in MORE): only onto a stopped deck, empty or
 //    cued, the tempo master's track (else a playing deck's) loads at the same
 //    position, playing if it plays (Mixxx's CloneFromDeck). Never onto a
-//    playing deck: a hold there does nothing. The CDJ has no such limit (its
-//    LOAD LOCK setting only blocks loads while playing); Deck Lab never
-//    replaces a track on air.
+//    playing deck. A hold that loaded nothing (a playing deck, or nothing to
+//    copy) is still a tap on release, as on the Numark overlay. The CDJ has
+//    no such limit (its LOAD LOCK setting only blocks loads while playing);
+//    Deck Lab never replaces a track on air.
 // The tempo fader rules live in the engine (decklabcdjsync.h): a synced deck
 // that is not the master ignores its fader; after sync is off, the fader
 // takes over only once it passes the tempo (a controller's soft takeover).
@@ -36,10 +37,6 @@ class DeckLabSync final {
     struct Host {
         std::function<double(int deck, const QString& item)> read;
         std::function<void(int deck, const QString& item, double value)> write;
-        // The deck a deck compares with: the tempo master when another deck
-        // holds it, none when this deck is the master, else another playing
-        // deck (WDeckLab::referenceDeck, the phase meter's reference). 0: none.
-        std::function<int(int deck)> reference;
     };
 
     explicit DeckLabSync(Host host);
@@ -56,7 +53,9 @@ class DeckLabSync final {
     bool toggleMaster(int deck);
 
     // INST DOUBLES: the deck it would copy, 0 when it cannot (the deck plays,
-    // or no other deck is the master or plays).
+    // or no other loaded deck plays or is the master). The master if it
+    // plays, else a playing synced deck, else a playing deck, else a stopped
+    // master.
     int doublesSource(int deck) const;
     bool canDouble(int deck) const {
         return doublesSource(deck) > 0;

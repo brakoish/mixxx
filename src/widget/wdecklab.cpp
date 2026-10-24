@@ -933,7 +933,6 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
         DeckLabSync::Host host;
         host.read = [this](int deck, const QString& item) { return value(channel(deck), item); };
         host.write = [this](int deck, const QString& item, double v) { set(channel(deck), item, v); };
-        host.reference = [this](int deck) { return referenceDeck(deck); };
         m_sync = std::make_unique<DeckLabSync>(std::move(host));
         const ConfigKey cdjSync = decklab::cdjsync::controlKey();
         control(cdjSync.group, cdjSync.item)->set(1);
@@ -1171,8 +1170,8 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
         // Four-deck Play acts on touch-down, like a player's PLAY; the other
         // actions (toggles, loop sizes, SYNC) act on release.
         const bool onPress = item == QStringLiteral("play") && prefix.startsWith(QStringLiteral("decklab-card-"));
-        // r6-sync: a SYNC press held past kSyncHoldMs was INST DOUBLES (or
-        // nothing, on a playing deck): its release must not also toggle sync.
+        // r6-sync: a SYNC press held past kSyncHoldMs that loaded INST
+        // DOUBLES must not also toggle sync on release.
         auto heldSync = std::make_shared<bool>(false);
         const auto perform = [this, prefix, item](int actual) {
             if (item == "play" || item == "quantize" || item == "keylock" || item == "slip_enabled")
@@ -1223,11 +1222,12 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
                 // Same stale-press guards as a tap: same deck, same epoch,
                 // and the finger still on the button. r6-sync: the hold is
                 // INST DOUBLES, which loads only onto a stopped deck (empty
-                // or cued); on a playing deck it does nothing.
+                // or cued). A hold that loaded nothing (a playing deck, or
+                // nothing to copy) is still a tap on release, as on the
+                // Numark overlay.
                 const int actual = pressed->first;
                 if (!b->isDown() || pressed->second != m_interactionEpoch || actual != target()) return;
-                *heldSync = true;
-                m_sync->instantDoubles(actual);
+                *heldSync = m_sync->instantDoubles(actual);
                 m_transport[prefix].shown = TransportState();
                 refreshTransport(actual, prefix);
             });
