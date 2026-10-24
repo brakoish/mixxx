@@ -3812,7 +3812,9 @@ TEST_F(EngineSyncTest, PlayStartSyncLockOnlyPausedTempoMasterStartsExactlyOnItsC
 
     // Deck 1 goes on air and its SYNC makes it the master: paused deck 2
     // follows it now, and its PLAY lines up with the playing master.
+    // (A deck's audibility follows its fader one buffer late.)
     ControlObject::set(ConfigKey(m_sGroup1, "volume"), 1.0);
+    ProcessBuffer();
     ProcessBuffer();
     pulse(m_sGroup1, "beatsync");
     ProcessBuffer();
@@ -3875,7 +3877,8 @@ TEST_F(EngineSyncTest, CdjSyncFollowerStartsInPhaseWithoutQuantize) {
 TEST_F(EngineSyncTest, CdjSyncLinesUpAPlayingDeckWithoutQuantizeAndKeepsItThere) {
     // BEAT SYNC on a deck that plays out of phase lines its beat up with the
     // master at once and keeps it there, Quantize off: drift is pulled back
-    // and a scratch ends back on the beat.
+    // and a scratch ends back on the beat. (The fake tracks last 5 s, so
+    // the test stays well inside them.)
     ControlObject::set(kCdjSync, 1.0);
     ControlObject::set(kPlayStartAlign, 1.0);
     playDeckOneOverPausedDeckTwo();
@@ -3904,7 +3907,7 @@ TEST_F(EngineSyncTest, CdjSyncLinesUpAPlayingDeckWithoutQuantizeAndKeepsItThere)
     pBuffer2->seekExact(pBuffer2->getExactPlayPos() + 26460 / 20);
     ProcessBuffer();
     ASSERT_GT(phaseOffset(m_sGroup1, m_sGroup2), 0.04);
-    for (int i = 0; i < 400; ++i) {
+    for (int i = 0; i < 150; ++i) {
         ProcessBuffer();
     }
     EXPECT_LT(phaseOffset(m_sGroup1, m_sGroup2), 0.0105);
@@ -3925,7 +3928,7 @@ TEST_F(EngineSyncTest, CdjSyncLinesUpAPlayingDeckWithoutQuantizeAndKeepsItThere)
     ProcessBuffer();
     const double knocked = phaseOffset(m_sGroup1, m_sGroup2);
     ASSERT_GT(knocked, 0.04);
-    for (int i = 0; i < 400; ++i) {
+    for (int i = 0; i < 60; ++i) {
         ProcessBuffer();
     }
     EXPECT_NEAR(knocked, phaseOffset(m_sGroup1, m_sGroup2), 1e-6);
