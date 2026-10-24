@@ -7139,14 +7139,14 @@ TEST_F(NativeDeckLabTest, TouchPlayStartsExactlyWhileAnotherDeckPlaysAndSyncTapL
     EXPECT_GT(std::abs(ControlObject::get(ConfigKey("[Channel1]", "beat_distance")) -
             ControlObject::get(ConfigKey("[Channel2]", "beat_distance"))), .01);
 
-    // Cue it, SYNC, PLAY: the tap on the paused deck matches the tempo at once
-    // and the engine keeps the phase for PLAY.
+    // Cue it, SYNC, PLAY: the tap on the paused deck locks it to the master
+    // (r6-sync: a CDJ BEAT SYNC stays on) and PLAY starts in phase.
     play->click(); settle(); ProcessBuffer();
     ASSERT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel2]", "play")));
     ControlObject::set(ConfigKey("[Channel2]", "playposition"), .21); ProcessBuffer(); settle();
     panel->findChild<QPushButton*>("decklab-2-beatsync")->click(); settle(); ProcessBuffer();
     EXPECT_NEAR(128, ControlObject::get(ConfigKey("[Channel2]", "bpm")), 1e-6);
-    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel2]", "sync_enabled")));
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel2]", "sync_enabled")));
     play->click(); settle(); ProcessBuffer();
     EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel2]", "play")));
     EXPECT_NEAR(ControlObject::get(ConfigKey("[Channel1]", "beat_distance")),
@@ -7180,14 +7180,19 @@ TEST_F(NativeDeckLabTest, TouchSyncTapLinesUpPlayAfterACueHoldAndWithoutQuantize
     ASSERT_DOUBLE_EQ(1, get("[Channel2]", "play"));
     EXPECT_NEAR(get("[Channel1]", "beat_distance"), get("[Channel2]", "beat_distance"), 1e-6);
 
-    // The touch SYNC asks for the phase outright, so it needs no Quantize
-    // (as on a playing deck).
+    // r6-sync: SYNC is a CDJ lock, so deck 2 is still synced. A tap turns it
+    // off and keeps the tempo; then, with Quantize off, PLAY starts exactly
+    // where the deck waits (Mixxx's sync lock needs Quantize for the phase).
+    EXPECT_DOUBLE_EQ(1, get("[Channel2]", "sync_enabled"));
     play->click(); settle(); ProcessBuffer();
     ASSERT_DOUBLE_EQ(0, get("[Channel2]", "play"));
+    sync->click(); settle(); ProcessBuffer();
+    EXPECT_DOUBLE_EQ(0, get("[Channel2]", "sync_enabled"));
+    EXPECT_NEAR(128, get("[Channel2]", "bpm"), 1e-6);
     ControlObject::set(ConfigKey("[Channel2]", "quantize"), 0);
     ControlObject::set(ConfigKey("[Channel2]", "playposition"), .21); ProcessBuffer(); settle();
-    sync->click(); settle(); ProcessBuffer();
+    const double before = get("[Channel2]", "beat_distance");
     play->click(); settle(); ProcessBuffer();
     ASSERT_DOUBLE_EQ(1, get("[Channel2]", "play"));
-    EXPECT_NEAR(get("[Channel1]", "beat_distance"), get("[Channel2]", "beat_distance"), 1e-6);
+    EXPECT_NEAR(before + 512 / (44100 * 60.0 / 128), get("[Channel2]", "beat_distance"), 1e-6);
 }
