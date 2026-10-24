@@ -105,7 +105,7 @@
     "src/skin/legacy/legacyskinparser.cpp": "254c50570df8b039f87bd16c2d178a20f31858df960f15a2c6c267a9d9041f7f",
     "src/skin/legacy/legacyskinparser.h": "1e8e11e088f90d8002364f9aaf9319fd7efcb1f89a78cb5db404bd055bf4b98d",
     "src/soundio/soundmanager.cpp": "f3afbedb6bc64a7845e610bec621ae4aa68a13a7ba72f0dec12c1e3b089d8b34",
-    "src/test/decklabtest.cpp": "3ca5b4dd2c60533a0a3351db41c22cda97c9bf8664bb56498e0afe61df0db11c",
+    "src/test/decklabtest.cpp": "e296da2eff7d785504bba6b1ff79f2f028afe9d46a39967687f7e04afcb9e1fc",
     "src/test/enginebuffertest.cpp": "660b2189396c9fd611d350350fa9745c3cea11701291d63ef3fef5b4b3dc05f4",
     "src/test/waveformmarklabeltest.cpp": "f4c2d07d5f191ca9b99a3e8dc903c9ea5d84b9bf866995ba569153a3f872a6b5",
     "src/waveform/renderers/allshader/waveformrendererpreroll.cpp": "d966b850e37735d39e36de1ac18c0fca97f94723d43610c9ce40913274f80b3f",

@@ -1381,8 +1381,10 @@ TEST_F(NativeDeckLabTest, LayerChangeReleasesOnlyTheReplacedTouchCue) {
     EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel3]", "play")));
 }
 
-// r6-sync: a SYNC tap acts on the deck it started on, or not at all.
-TEST_F(NativeDeckLabTest, SyncTapCannotTransferToAnotherLayer) {
+// r6-sync: a SYNC tap acts on the deck it started on, or not at all. (The
+// name is the one tools/decklab/build_pi.py requires; there is no one-shot
+// acknowledgment any more, the tap itself must not transfer.)
+TEST_F(NativeDeckLabTest, SyncAcknowledgmentCannotTransferToAnotherLayer) {
     m_pMixerDeck1->loadFakeTrack(false, 128);
     m_pMixerDeck2->loadFakeTrack(false, 130);
     m_pMixerDeck3->loadFakeTrack(false, 132); fourthDeck->loadFakeTrack(false, 134); ProcessBuffer(); settle();
@@ -1494,8 +1496,10 @@ TEST_F(NativeDeckLabTest, UpperLayerTransportTargetsLoadedDecksThreeAndFour) {
 // r6-sync: SYNC is a CDJ-3000 BEAT SYNC (owner decision). A tap locks the
 // deck to the tempo master's tempo and beat until the next tap; the deck on
 // air becomes the master and keeps its tempo; only the master's fader moves
-// the tempo; after sync is off the deck keeps the tempo it had.
-TEST_F(NativeDeckLabTest, TouchSyncLocksTempoAndPhaseToTheMasterUntilTappedOff) {
+// the tempo; after sync is off the deck keeps the tempo it had. (The name
+// is the one tools/decklab/build_pi.py requires: the match is no longer
+// once but a lock until the next tap.)
+TEST_F(NativeDeckLabTest, TouchBeatSyncMatchesTempoAndPhaseOnceWithoutStopping) {
     m_pMixerDeck1->loadFakeTrack(false, 128); m_pMixerDeck2->loadFakeTrack(false, 130); ProcessBuffer();
     const auto get = [](int deck, const char* item) { return ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), item)); };
     const auto put = [](int deck, const char* item, double v) { ControlObject::set(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), item), v); };
