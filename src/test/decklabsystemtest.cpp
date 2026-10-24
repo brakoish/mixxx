@@ -33,6 +33,7 @@
 #include "controllers/controllermappingmatcher.h"
 #include "decklab/decklabdclient.h"
 #include "decklab/decklabfakeservice.h"
+#include "decklab/decklabinstruments.h"
 #include "decklab/decklabsetupmodel.h"
 #include "decklab/decklabsetupwizard.h"
 #include "decklab/decklabsignals.h"
@@ -1139,6 +1140,13 @@ QList<decklab::ui::Row*> visibleRows(QWidget* root, const QString& name) {
     return rows;
 }
 
+void captureWidget(QWidget* widget, const QString& name) {
+    const QString output = qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
+    if (!output.isEmpty()) {
+        EXPECT_TRUE(widget->grab().save(QDir(output).filePath(name))) << name.toStdString();
+    }
+}
+
 void writeFile(const QString& path, const QByteArray& content) {
     ASSERT_TRUE(QDir().mkpath(QFileInfo(path).absolutePath()));
     QFile file(path);
@@ -1470,6 +1478,51 @@ TEST_F(DeckLabSystemTest, SetUpLaterSticksAndSettingsOffersFinishSetup) {
     sheet->refresh(inputs);
     for (const QString& line : sheet->lines()) {
         EXPECT_FALSE(line.startsWith(QStringLiteral("Setup:"))) << line.toStdString();
+    }
+}
+
+// Issue: "CONTRO…" in the step bar at 800x480.
+TEST_F(DeckLabSystemTest, EveryDeckSetupStepNameFitsAt800) {
+    deckLabLoadFonts(config()->getResourcePath());
+    ASSERT_TRUE(QFontDatabase::families().contains(QStringLiteral("Barlow")));
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, QStringLiteral("/nonexistent/decklabd.sock"));
+    QWidget host;
+    host.setStyleSheet(QStringLiteral("QPushButton {min-height:28px;padding:5px 9px;} QComboBox {min-height:38px;}"));
+    host.resize(800, 480);
+    host.show();
+    auto* wizard = new DeckLabSetupWizard(&system, &host);
+    for (const bool firstRun : {true, false}) {
+        if (firstRun) {
+            wizard->startFirstRun();
+        } else {
+            wizard->start();
+        }
+        QTest::qWait(30);
+        auto* progress = dynamic_cast<DeckLabProgressLine*>(
+                wizard->findChild<QWidget*>(QStringLiteral("decklab-setup-progress")));
+        ASSERT_NE(nullptr, progress);
+        QStringList expected;
+        for (const QString& step : progress->steps()) {
+            expected.append(step.toUpper());
+        }
+        EXPECT_EQ(firstRun ? 7 : 4, expected.size());
+        EXPECT_TRUE(expected.contains(QStringLiteral("CONTROLLER")));
+        EXPECT_EQ(expected, progress->shownSteps());
+        // Brand type: 14 px Barlow caps; each label inside its own cell.
+        const QFont font = progress->stepFont();
+        EXPECT_EQ(14, QFontInfo(font).pixelSize());
+        EXPECT_TRUE(QFontInfo(font).family().startsWith(QStringLiteral("Barlow"))) << QFontInfo(font).family().toStdString();
+        EXPECT_EQ(QFont::AllUppercase, font.capitalization());
+        const QFontMetricsF metrics(font);
+        const auto cells = progress->stepCells();
+        ASSERT_EQ(expected.size(), cells.size());
+        for (int index = 0; index < cells.size(); ++index) {
+            EXPECT_LE(metrics.horizontalAdvance(expected.at(index)), cells.at(index).width()) << expected.at(index).toStdString();
+            EXPECT_LE(cells.at(index).right(), progress->width() + 0.5);
+        }
+        captureWidget(&host, firstRun ? QStringLiteral("setup-step-bar-first-run.png") : QStringLiteral("setup-step-bar.png"));
     }
 }
 

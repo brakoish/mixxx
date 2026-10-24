@@ -165,11 +165,12 @@ DeckLabSetupWizard::DeckLabSetupWizard(DeckLabSystem* system, QWidget* host)
     m_heading = title(tr("Deck Setup"), header);
     m_heading->setFixedWidth(140);
     headerRow->addWidget(m_heading);
-    headerRow->addStretch(1);
     m_stepRow = hbox(2);
     m_progress = new DeckLabProgressLine(header);
     m_stepRow->addWidget(m_progress);
-    headerRow->addLayout(m_stepRow, 6);
+    // r5-polish: the progress line takes all the room between the title and
+    // Close, so CONTROLLER fits in the seven-step first run (no stretch).
+    headerRow->addLayout(m_stepRow, 1);
     m_close = button(tr("Close"), header, QStringLiteral("decklab-setup-close"), 44);
     m_close->setFixedWidth(132);
     connect(m_close, &QPushButton::clicked, this, [this] {
