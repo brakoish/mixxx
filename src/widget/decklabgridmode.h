@@ -18,18 +18,20 @@ class QKeyEvent;
 //
 //   ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ deck colour ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬
 //   [1] EDITING GRID  PAUSED                     [LOCK][DONE]
-//   [ ◀ GRID ][ GRID ▶ ]  [ ◀ BEAT ][ BEAT ▶ ]
+//   [ ‹ GRID ][ GRID › ]  [ ‹ BEAT ][ BEAT › ]
 //   [−0.1][−0.01]   128.00 BPM  ▮▯▯▯   [+0.01][+0.1]
 //   [  ÷2  ][  ×2  ]  [  TAP  ][ DOWNBEAT ]
 //   KNOB  NUDGE · press for BPM · Shift+press DONE
 //
-//  - ◀ GRID / GRID ▶ nudge the grid 10 ms (beats_translate_earlier/later).
-//  - ◀ BEAT / BEAT ▶ slip the grid a whole beat (Mixxx's translate by
+//  - ‹ GRID / GRID › nudge the grid 10 ms (beats_translate_earlier/later).
+//  - ‹ BEAT / BEAT › slip the grid a whole beat (Mixxx's translate by
 //    beats), so beat 1 of the phase meter moves; constant-tempo grids only.
-//  - ÷2 / ×2 halve or double the grid (beats_set_halve / beats_set_double).
+//  - ÷2 / ×2 halve or double the grid (beats_set_halve / beats_set_double);
+//    ÷2 only where Mixxx can halve the grid.
 //  - TAP: the grid BPM from taps (bpm_tap), on touch-down.
 //  - DOWNBEAT: a beat at the playhead (beats_translate_curpos), counted as
-//    beat 1.
+//    beat 1; constant-tempo grids only (a variable grid, e.g. a rekordbox
+//    import, keeps its own count; the status line says so).
 //  - −0.1 / −0.01 / +0.01 / +0.1: the grid BPM (beats_adjust_slower /
 //    faster, 0.01 each).
 //  - LOCK: the track's BPM lock (bpmlock); a locked grid refuses edits.
@@ -37,11 +39,13 @@ class QKeyEvent;
 // A playing deck can be edited (DJs fix grids live), but never silently:
 // the header reads EDITING GRID in the deck colour with PLAYING beside it.
 // Edits wait while sync is on, or while the same track plays or syncs on
-// another deck; the status line says why.
+// another deck; the status line says why and what to do (DONE first: those
+// controls are under the panel).
 //
-// The browse knob adjusts while GRID mode is shown (decklabknob.h claim):
+// The browse knob adjusts while GRID mode owns it (decklabknob.h claim):
 // turn nudges the grid (or the BPM), press switches NUDGE / BPM, and
-// Shift+press (back) is DONE.
+// Shift+press (back) is DONE. The knob lamps and legend show only while the
+// panel really owns the knob.
 //
 // Pure Qt: the surface supplies the state and performs the actions, so the
 // panel renders offscreen and is unit-tested without the engine.
@@ -51,8 +55,10 @@ struct DeckLabGridState {
     bool loaded = false;
     bool playing = false;
     bool hasBeats = false;
-    // Whole-beat slips need a constant-tempo grid (Mixxx's rule).
+    // Whole-beat slips and DOWNBEAT need a constant-tempo grid (Mixxx's
+    // rule); ÷2 needs a grid Mixxx can halve.
     bool constantTempo = false;
+    bool canHalve = false;
     bool locked = false;
     // Sync lock or tempo master: a grid edit would move other decks.
     bool synced = false;
@@ -121,6 +127,10 @@ class DeckLabGridPanel final : public QWidget {
         return m_knob;
     }
     void setKnob(Knob knob);
+    // The knob is really this panel's (no menu, dialog or later claim).
+    bool ownsKnob() const;
+    // Re-reads who owns the knob (lamps and legend follow it).
+    void refreshKnob();
     // Edits are possible (a grid, unlocked, no sync, no busy alias).
     bool editable() const;
     // The status line: why edits wait, or the knob legend.
@@ -152,5 +162,6 @@ class DeckLabGridPanel final : public QWidget {
     QWidget* m_title = nullptr;   // spacer the header title is painted over
     QWidget* m_statusLine = nullptr;
     Knob m_knob = Knob::Nudge;
+    bool m_ownsKnob = false;
     QString m_shownStatus;
 };

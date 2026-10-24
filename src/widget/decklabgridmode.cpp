@@ -74,8 +74,9 @@ DeckLabGridPanel::DeckLabGridPanel(const QString& name, Host host, QWidget* pare
         m_keys[static_cast<int>(action)] = key;
         return key;
     };
-    const QString left = QString::fromUtf8("◀ ");
-    const QString right = QString::fromUtf8(" ▶");
+    // Barlow has the single guillemets, not the triangles.
+    const QString left = QString::fromUtf8("‹ ");
+    const QString right = QString::fromUtf8(" ›");
     auto* lock = make(Action::Lock, tr("LOCK"), tr("Grid lock"));
     auto* done = make(Action::Done, tr("DONE"), tr("Leave grid editing"));
     auto* earlier = make(Action::NudgeEarlier, QString(left + tr("GRID")), tr("Move the grid earlier"));
@@ -205,7 +206,10 @@ bool DeckLabGridPanel::usable(Action action) const {
         return m_state.loaded && m_state.sharedDeck == 0;
     case Action::BeatEarlier:
     case Action::BeatLater:
+    case Action::Downbeat:
         return editable() && m_state.constantTempo;
+    case Action::Halve:
+        return editable() && m_state.canHalve;
     default:
         return editable();
     }
@@ -220,10 +224,10 @@ QString DeckLabGridPanel::status() const {
         return tr("Deck %1 is empty").arg(m_state.deck);
     }
     if (m_state.sharedDeck > 0) {
-        return tr("Also playing or synced on deck %1. Stop it there first.").arg(m_state.sharedDeck);
+        return tr("Deck %1 plays or syncs it too. DONE, then stop it.").arg(m_state.sharedDeck);
     }
     if (m_state.synced) {
-        return tr("SYNC is on. Turn it off to edit the grid.");
+        return tr("SYNC is on. DONE, then turn SYNC off.");
     }
     if (!m_state.hasBeats) {
         return tr("No beat grid yet. Analyse the track first.");
@@ -231,8 +235,25 @@ QString DeckLabGridPanel::status() const {
     if (m_state.locked) {
         return tr("Grid locked. Touch LOCK to edit.");
     }
+    if (!m_state.constantTempo) {
+        return tr("Variable-tempo grid: no BEAT moves. BPM edits flatten it.");
+    }
+    if (!m_ownsKnob) {
+        return tr("Touch the keys · the knob is in use elsewhere");
+    }
     return m_knob == Knob::Nudge ? tr("KNOB  NUDGE · press for BPM · Shift+press DONE")
                                  : tr("KNOB  BPM ±0.01 · press for NUDGE · Shift+press DONE");
+}
+
+bool DeckLabGridPanel::ownsKnob() const {
+    const decklab::KnobOwner owner = decklab::knobOwner();
+    return isVisible() && owner.claimed && owner.blocker == this;
+}
+
+void DeckLabGridPanel::refreshKnob() {
+    if (ownsKnob() != m_ownsKnob) {
+        refresh();
+    }
 }
 
 void DeckLabGridPanel::setKnob(Knob knob) {
@@ -244,6 +265,7 @@ void DeckLabGridPanel::setKnob(Knob knob) {
 }
 
 void DeckLabGridPanel::refresh() {
+    m_ownsKnob = ownsKnob();
     for (int index = 0; index < static_cast<int>(Action::Count); ++index) {
         auto* key = m_keys[index];
         const bool enabled = usable(static_cast<Action>(index));
@@ -258,11 +280,13 @@ void DeckLabGridPanel::refresh() {
     if (lock->accessibleName() != lockName) {
         lock->setAccessibleName(lockName);
     }
-    // The knob's function is a lamp on the keys it stands for.
-    key(Action::NudgeEarlier)->setArmed(m_knob == Knob::Nudge && editable());
-    key(Action::NudgeLater)->setArmed(m_knob == Knob::Nudge && editable());
-    key(Action::BpmDownFine)->setArmed(m_knob == Knob::Bpm && editable());
-    key(Action::BpmUpFine)->setArmed(m_knob == Knob::Bpm && editable());
+    // The knob's function is a lamp on the keys it stands for, only while
+    // the knob is really this panel's.
+    const bool knob = m_ownsKnob && editable();
+    key(Action::NudgeEarlier)->setArmed(knob && m_knob == Knob::Nudge);
+    key(Action::NudgeLater)->setArmed(knob && m_knob == Knob::Nudge);
+    key(Action::BpmDownFine)->setArmed(knob && m_knob == Knob::Bpm);
+    key(Action::BpmUpFine)->setArmed(knob && m_knob == Knob::Bpm);
     const QString text = status();
     if (text != m_shownStatus) {
         m_shownStatus = text;
@@ -308,7 +332,9 @@ bool DeckLabGridPanel::event(QEvent* event) {
     case QEvent::Show:
         // The browse knob adjusts the grid while GRID mode is shown.
         decklab::claimKnob(this);
-        break;
+        QWidget::event(event);
+        refresh();
+        return true;
     case QEvent::Hide:
         decklab::releaseKnob(this);
         break;

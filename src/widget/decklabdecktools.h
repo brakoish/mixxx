@@ -2,7 +2,6 @@
 #pragma once
 
 #include <QObject>
-#include <QPointer>
 #include <QString>
 #include <array>
 #include <functional>
@@ -16,6 +15,9 @@ class DeckLabDeckStrip;
 class DeckLabPadBlock;
 class QGridLayout;
 class QWidget;
+namespace mixxx {
+class Beats;
+}
 
 // r5-decks: the Decks page's key sheet (owner's pick #3) and GRID mode
 // (pick #5, audit move 6), wired to Mixxx's controls. The widgets are pure Qt
@@ -24,16 +26,20 @@ class QWidget;
 // calls it from a few marked hooks (// r5-decks:), so the surface file only
 // gains one line per hook.
 //
-// Placement (nothing is ever drawn over the GL lanes):
+// Placement (nothing is ever drawn over or under another deck's GL lane):
 //  - key sheet, two decks: in place of the side's pads (DeckLabPadBlock
 //    panel), beside SYNC / MORE;
 //  - key sheet, four decks: in place of the card's overview and transport;
 //  - GRID mode, two decks: the deck's readout, overview and pads (its column
-//    of the deck row); four decks: the half of the deck row that holds it.
+//    of the deck row); four decks: half the deck row, the half under the
+//    deck's lane column when the lanes are side by side.
 //
-// Contexts are checked on every relayout and deck refresh: a sheet closes and
-// GRID mode ends when its deck leaves the screen (layer, layout, page) or its
-// track changes.
+// One knob owner at a time: opening a key sheet leaves GRID mode, entering
+// GRID mode closes the key sheets.
+//
+// Contexts are checked before every relayout and on deck refreshes: a sheet
+// closes and GRID mode ends when its deck leaves the screen (layer, layout,
+// page) or its track changes.
 class DeckLabDeckTools final : public QObject {
     Q_OBJECT
   public:
@@ -45,6 +51,8 @@ class DeckLabDeckTools final : public QObject {
         std::function<int(int side)> displayedDeck;
         std::function<bool()> fourDecks;
         std::function<bool()> onDecks;
+        // The waveform lanes are side by side (two columns).
+        std::function<bool()> sideBySide;
         // The deck's player track now, and the one the readout last showed.
         std::function<TrackPointer(int deck)> track;
         std::function<TrackPointer(int deck)> shownTrack;
@@ -59,6 +67,9 @@ class DeckLabDeckTools final : public QObject {
     // GRID mode zooms the lanes in to Mixxx's closest zoom while it is on
     // (the zoom control only; no GL reallocation) and restores the zoom.
     static constexpr double kGridZoom = 1.0;
+    // MATCHED ends when the matched deck's pitch moves more than this
+    // (semitones), so a drifting target never keeps the green look.
+    static constexpr double kMatchDrift = 0.1;
 
     DeckLabDeckTools(Host host, QGridLayout* deckGrid, QObject* parent = nullptr);
     ~DeckLabDeckTools() override;
@@ -67,7 +78,7 @@ class DeckLabDeckTools final : public QObject {
     void attachSide(int side, DeckLabPadBlock* pads);
     void attachCard(int deck, QWidget* card, DeckLabDeckStrip* strip);
 
-    // Key sheet: the deck's sheet in its current layout.
+    // Key sheet: the deck's sheet in its current layout. Leaves GRID mode.
     void openKeySheet(int deck);
     void closeKeySheets();
     bool keySheetOpen(int deck) const;
@@ -78,22 +89,28 @@ class DeckLabDeckTools final : public QObject {
         return deck >= 1 && deck <= 4 ? m_cardSheets[deck - 1] : nullptr;
     }
 
-    // GRID mode for one deck at a time.
+    // GRID mode for one deck at a time. Closes the key sheets.
     void enterGrid(int deck);
-    // relayoutNow: false inside the surface's own relayout or refresh (the
-    // relayout is queued instead).
-    void leaveGrid(bool relayoutNow = true);
+    enum class Relayout {
+        Now,    // a touch or knob event: relayout at once
+        Queued, // inside a deck refresh: relayout after it
+        None    // inside the surface's own relayout: nothing more
+    };
+    void leaveGrid(Relayout relayout = Relayout::Now);
     int gridDeck() const {
         return m_grid.deck;
     }
     DeckLabGridPanel* gridPanel() const {
         return m_gridPanel;
     }
+
+    // Hooks. updateLayers, before its signature: closes what lost its
+    // context, so one relayout covers it (true: GRID mode is still on).
+    bool validate();
     // Bits for the surface's layout signature: entering or leaving GRID mode
     // relayouts the deck row.
     quint64 layoutSignature() const;
-
-    // Hooks. refreshDeck: the key shift and MATCH result in the readout.
+    // refreshDeck: the key shift and MATCH result in the readout.
     void fillKey(int deck, DeckLabStripState& state);
     // applyDeck / refreshDeckClock (after the deck's readout state is
     // stored): an open sheet or GRID panel follows. Nothing open: no work.
@@ -107,11 +124,15 @@ class DeckLabDeckTools final : public QObject {
     int keySyncTarget(int deck) const;
     // Semitones as the readout writes them: "+1", "−2", "+0.5"; empty at 0.
     static QString shiftText(double semitones);
+    // Key lock was turned on by the sheet (RESET or the next track turns it
+    // back off).
+    bool keylockBySheet(int deck) const;
 
   private:
     struct Match {
         int target = 0;
         double pitch = 0;
+        double targetPitch = 0;
         TrackWeakPointer track;
     };
     struct GridSession {
@@ -123,20 +144,26 @@ class DeckLabDeckTools final : public QObject {
     void keyAction(int deck, DeckLabKeySheet::Action action);
     void gridAction(int deck, DeckLabGridPanel::Action action);
     void pulse(int deck, const QString& item);
-    void ensureKeylock(int deck);
+    // Turns key lock on if it is off and remembers that the sheet did it.
+    // Returns true when it turned it on.
+    bool ensureKeylock(int deck);
+    void restoreKeylock(int deck);
     bool keysMatch(int deck, int target) const;
     bool gridEditable(int deck) const;
     int sharedBusyDeck(int deck) const;
     bool current(int deck) const;
     bool sameTrack(int deck, const TrackWeakPointer& opened) const;
+    bool matchHolds(int deck) const;
     void refreshOpen();
-    // Closes what lost its context; true when GRID mode is still valid.
-    bool validate();
     void closeSideSheet(int side);
     void closeCardSheet(int deck);
+    // Ends the session: hides the panel and restores the zoom (unless the
+    // next session takes it over).
+    void endSession(bool restoreZoom);
     const DeckLabStripState& strip(int deck) const;
     DeckLabKeySheetState keyState(int deck) const;
     DeckLabGridState gridState(int deck) const;
+    bool canHalve(const std::shared_ptr<const mixxx::Beats>& beats) const;
 
     Host m_host;
     QGridLayout* m_deckGrid = nullptr;
@@ -150,6 +177,12 @@ class DeckLabDeckTools final : public QObject {
     std::array<DeckLabKeySheet*, 4> m_cardSheets{};
     std::array<bool, 4> m_cardSheetOpen{};
     std::array<Match, 4> m_matches{};
+    // The track the sheet turned key lock on for (empty: not the sheet's).
+    std::array<TrackWeakPointer, 4> m_keylockTrack{};
+    std::array<bool, 4> m_keylockBySheet{};
     DeckLabGridPanel* m_gridPanel = nullptr;
     GridSession m_grid;
+    // ÷2 is offered where Mixxx can halve the grid; decided once per grid.
+    mutable std::weak_ptr<const mixxx::Beats> m_halveBeats;
+    mutable bool m_halveOk = false;
 };

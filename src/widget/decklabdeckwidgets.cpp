@@ -302,8 +302,14 @@ QRegion DeckLabStripRenderer::setState(const DeckLabStripState& next) {
             previous.keyShift != next.keyShift || previous.keyMatched != next.keyMatched) {
         add(Part::Key);
         if (m_mode == Mode::Full && !rect(Part::Key).isEmpty()) {
-            // r5-decks: the MATCH outline starts 2 px left of the key box.
-            dirty += rect(Part::Key).adjusted(-4, 0, 0, 0);
+            // r5-decks: the MATCH outline reaches 4 px into the gaps either
+            // side of the key box (never the tempo or the clock), also where
+            // a long clock moved the key aside.
+            const QRect outline = rect(Part::Key).adjusted(-4, 0, 4, 0);
+            dirty += outline;
+            if (const int excess = clockExcess(); excess > 0) {
+                dirty += outline.translated(-excess, 0);
+            }
         }
     }
     if (previous.remaining.size() != next.remaining.size()) {
@@ -392,8 +398,7 @@ QStringList DeckLabStripRenderer::overflowingParts() const {
         overflowing << QStringLiteral("time");
     }
     // r5-decks: the key and its shift; the check mark steps aside for them.
-    if ((mini ? readout.horizontalAdvance(m_state.key) : keyTextWidth()) >
-            rect(Part::Key).width() - (mini ? 0 : compact ? 8 : 2)) {
+    if ((mini ? readout.horizontalAdvance(m_state.key) : keyTextWidth()) > (mini ? rect(Part::Key).width() : keyRoom())) {
         overflowing << QStringLiteral("key");
     }
     if (compact &&
@@ -405,12 +410,36 @@ QStringList DeckLabStripRenderer::overflowingParts() const {
     return overflowing;
 }
 
-int DeckLabStripRenderer::keyTextWidth() const {
-    const int key = QFontMetrics(numeralFont(m_mode == Mode::Mini ? kTitle : kReadout)).horizontalAdvance(m_state.key);
-    if (m_mode == Mode::Mini || m_state.keyShift.isEmpty()) {
-        return key;
+int DeckLabStripRenderer::keyRoom() const {
+    return rect(Part::Key).width() - (m_mode == Mode::Compact ? 8 : 2);
+}
+
+DeckLabStripRenderer::KeyText DeckLabStripRenderer::keyText() const {
+    const QFontMetrics readout(numeralFont(m_mode == Mode::Mini ? kTitle : kReadout));
+    KeyText text;
+    const auto measure = [this, &readout](const QString& key, int shiftPixels) {
+        KeyText candidate;
+        candidate.key = key;
+        candidate.shiftPixels = shiftPixels;
+        candidate.keyWidth = readout.horizontalAdvance(key);
+        candidate.width = candidate.keyWidth;
+        if (m_mode != Mode::Mini && !m_state.keyShift.isEmpty()) {
+            candidate.width += 3 + QFontMetrics(numeralFont(shiftPixels)).horizontalAdvance(m_state.keyShift);
+        }
+        return candidate;
+    };
+    text = measure(m_state.key, kSecondary);
+    if (m_mode == Mode::Mini || text.width <= keyRoom()) {
+        return text;
     }
-    return key + 3 + QFontMetrics(numeralFont(kSecondary)).horizontalAdvance(m_state.keyShift);
+    const int slash = m_state.key.indexOf(QLatin1Char('/'));
+    if (slash > 0) {
+        text = measure(m_state.key.mid(slash + 1), kSecondary);
+    }
+    if (text.width > keyRoom() && !m_state.keyShift.isEmpty()) {
+        text = measure(text.key, kLabel);
+    }
+    return text;
 }
 
 QRect DeckLabStripRenderer::keyTarget() const {
@@ -953,23 +982,29 @@ void DeckLabStripRenderer::paintValues(QPainter& painter, const QRect& dirty) co
         const QColor color = matched ? kPlay : m_state.keyColor.isValid() ? m_state.keyColor : kText;
         painter.setFont(readout);
         painter.setPen(color);
-        const int keyWidth = readoutMetrics.horizontalAdvance(m_state.key);
-        const int textWidth = keyTextWidth();
+        const KeyText text = keyText();
+        const int keyWidth = text.keyWidth;
+        const int textWidth = text.width;
         const int baseline = compact ? baselineFor(keyArea, readoutMetrics) : heroBaseline;
         const int keyLeft = mini ? keyArea.right() - keyWidth
                 : compact        ? keyArea.right() - 6 - textWidth
                                  : keyArea.left() + 2;
-        painter.drawText(QPoint(keyLeft, baseline), m_state.key);
+        painter.drawText(QPoint(keyLeft, baseline), text.key);
         if (!mini && !m_state.keyShift.isEmpty()) {
-            painter.setFont(numeralFont(kSecondary));
+            painter.setFont(numeralFont(text.shiftPixels));
             painter.setPen(matched ? kPlay : kText);
             painter.drawText(QPoint(keyLeft + keyWidth + 3, baseline), m_state.keyShift);
         }
         if (matched) {
+            // Inside the area the Key part repaints: the key box's rows, and
+            // at most 4 px into the gaps beside it (two decks).
             const int capTop = baseline - readoutMetrics.capHeight();
+            const int top = std::max(capTop - 4, keyArea.top());
+            const int bottom = std::min(baseline + 4, keyArea.bottom());
+            const int left = std::max(keyLeft - 4, keyArea.left() - (compact ? 0 : 3));
+            const int right = std::min(keyLeft + textWidth + 4, keyArea.right() + (compact ? 0 : 3));
             QPainterPath box;
-            box.addRoundedRect(QRectF(keyLeft - 4, capTop - 4, textWidth + 8, readoutMetrics.capHeight() + 8)
-                                       .adjusted(0.75, 0.75, -0.75, -0.75),
+            box.addRoundedRect(QRectF(left, top, right - left + 1, bottom - top + 1).adjusted(0.75, 0.75, -0.75, -0.75),
                     3,
                     3);
             painter.setPen(QPen(kPlay, 1.5));
@@ -1119,26 +1154,44 @@ void DeckLabDeckStrip::setFlash(bool on) {
 
 void DeckLabDeckStrip::mousePressEvent(QMouseEvent* event) {
     // r5-decks: two zones inside the readout. The KEY readout opens the key
-    // sheet on touch-down (the readout itself never goes down, so no track
-    // information follows); holding the BPM opens GRID mode. Everywhere
-    // else the readout is one target, as before.
+    // sheet: on touch-down while the deck is paused, after a short hold while
+    // it plays (a brush on a live deck never swaps its pads). The readout
+    // itself never goes down there, so no track information follows.
+    // Holding a paused deck's BPM opens GRID mode. Everywhere else the
+    // readout is one target, as before.
     if (event->button() == Qt::LeftButton && isEnabled()) {
         const QPoint at = event->position().toPoint();
         const int deck = m_renderer.state().deck;
         if (m_renderer.keyTarget().contains(at)) {
             event->accept();
-            emit keyTouched(deck);
+            if (!m_renderer.state().playing) {
+                emit keyTouched(deck);
+                return;
+            }
+            if (!m_keyHold) {
+                m_keyHold = new QTimer(this);
+                m_keyHold->setSingleShot(true);
+                m_keyHold->setInterval(kLiveKeyHoldMs);
+                connect(m_keyHold, &QTimer::timeout, this, [this] {
+                    if (m_keyTouch && m_renderer.state().loaded) {
+                        m_keyTouch = false;
+                        emit keyTouched(m_renderer.state().deck);
+                    }
+                });
+            }
+            m_keyTouch = true;
+            m_keyHold->start();
             return;
         }
-        if (m_renderer.bpmTarget().contains(at)) {
+        if (m_renderer.bpmTarget().contains(at) && !m_renderer.state().playing) {
             if (!m_gridHold) {
                 m_gridHold = new QTimer(this);
                 m_gridHold->setSingleShot(true);
                 m_gridHold->setInterval(kGridHoldMs);
                 connect(m_gridHold, &QTimer::timeout, this, [this] {
-                    // Same finger, same deck, still loaded: cancel the press
-                    // (no click on release) and open GRID.
-                    if (!isDown() || !m_renderer.state().loaded) {
+                    // Same finger, same deck, still loaded and paused: cancel
+                    // the press (no click on release) and open GRID.
+                    if (!isDown() || !m_renderer.state().loaded || m_renderer.state().playing) {
                         return;
                     }
                     setDown(false);
@@ -1151,9 +1204,29 @@ void DeckLabDeckStrip::mousePressEvent(QMouseEvent* event) {
     QPushButton::mousePressEvent(event);
 }
 
+void DeckLabDeckStrip::mouseMoveEvent(QMouseEvent* event) {
+    if (m_keyTouch) {
+        // A held KEY touch that slides off the key is not a request.
+        if (!m_renderer.keyTarget().contains(event->position().toPoint())) {
+            m_keyTouch = false;
+            m_keyHold->stop();
+        }
+        event->accept();
+        return;
+    }
+    QPushButton::mouseMoveEvent(event);
+}
+
 void DeckLabDeckStrip::mouseReleaseEvent(QMouseEvent* event) {
     if (m_gridHold) {
         m_gridHold->stop();
+    }
+    if (m_keyTouch || (m_keyHold && m_keyHold->isActive())) {
+        // A KEY touch released before the hold: nothing (no click either).
+        m_keyTouch = false;
+        m_keyHold->stop();
+        event->accept();
+        return;
     }
     QPushButton::mouseReleaseEvent(event);
 }

@@ -865,6 +865,7 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
         tools.displayedDeck = [this](int side) { return displayedDeck(side); };
         tools.fourDecks = [this] { return m_fourDeckLayout; };
         tools.onDecks = [this] { return m_page == 0; };
+        tools.sideBySide = [this] { return m_sideBySideWaveforms; };
         tools.track = [this](int deck) {
             auto* player = m_players ? m_players->getPlayer(channel(deck)) : nullptr;
             return player ? player->getLoadedTrack() : TrackPointer();
@@ -4704,7 +4705,7 @@ void WDeckLab::updateLayers() {
     }
     // r4-decks: stems are a pad mode (decklabpads.h), so a stem track no
     // longer changes the layout (round 3 took a 48 px row from the waveforms).
-    signature |= m_deckTools->layoutSignature(); // r5-decks: GRID mode
+    m_deckTools->validate(); signature |= m_deckTools->layoutSignature(); // r5-decks: GRID mode (one relayout)
     if (signature == m_layoutSignature) {
         for (int deck = 1; deck <= 4; ++deck) markDeckDirty(deck);
         refreshLoadButtons();

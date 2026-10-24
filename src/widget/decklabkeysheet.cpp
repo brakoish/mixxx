@@ -2,32 +2,29 @@
 #include "widget/decklabkeysheet.h"
 
 #include <QEvent>
-#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QVBoxLayout>
+#include <algorithm>
 
 #include "library/decklabknob.h"
 #include "moc_decklabkeysheet.cpp"
 #include "widget/decklabpads.h"
 
 namespace {
-// The info line: 15 px secondary text, muted; the match green once MATCH
-// has landed (#2FD27A, the readout's match colour).
-const QString kInfoSheet = QStringLiteral(
-        "QLabel{color:#9AA3AF;background:transparent;font-family:\"Barlow\";font-size:15px;"
-        "font-weight:600;padding:0px 2px;}");
-const QString kInfoMatchedSheet = QStringLiteral(
-        "QLabel{color:#2FD27A;background:transparent;font-family:\"Barlow\";font-size:15px;"
-        "font-weight:600;padding:0px 2px;}");
-// Knob order: left to right, top to bottom, as the keys are laid out.
-constexpr std::array<DeckLabKeySheet::Action, 6> kOrder{DeckLabKeySheet::Action::Down,
-        DeckLabKeySheet::Action::Match,
-        DeckLabKeySheet::Action::Up,
-        DeckLabKeySheet::Action::Reset,
-        DeckLabKeySheet::Action::KeyLock,
-        DeckLabKeySheet::Action::Done};
+// The info line: 15 px secondary text (two decks) or a 14 px label (the
+// four-deck card), muted; the match green once MATCH has landed (#2FD27A,
+// the readout's match colour).
+QString infoSheet(int pixels, bool matched) {
+    return QStringLiteral("QLabel{color:%1;background:transparent;font-family:\"Barlow\";font-size:%2px;"
+                          "font-weight:600;padding:0px 2px;}")
+            .arg(matched ? QStringLiteral("#2FD27A") : QStringLiteral("#9AA3AF"))
+            .arg(pixels);
+}
+// Barlow has the single guillemets, not the triangles.
+const QString kLeft = QString::fromUtf8("‹ ");
+const QString kRight = QString::fromUtf8(" ›");
 } // namespace
 
 DeckLabKeySheet::DeckLabKeySheet(const QString& name, Shape shape, Host host, QWidget* parent)
@@ -39,23 +36,28 @@ DeckLabKeySheet::DeckLabKeySheet(const QString& name, Shape shape, Host host, QW
     setFixedHeight(kHeight);
     const auto make = [this, &name](Action action, const QString& text) {
         auto* key = new DeckLabPadButton(this);
-        key->setObjectName(name + QLatin1Char('-') + actionName(action));
+        key->setObjectName(QString(name + QLatin1Char('-') + actionName(action)));
         key->setText(text);
         // Touch-down, like every pad on the surface.
         connect(key, &QPushButton::pressed, this, [this, action] { pressed(action); });
         m_keys[static_cast<int>(action)] = key;
         return key;
     };
-    auto* down = make(Action::Down, QString::fromUtf8("◀ −1"));
+    auto* down = make(Action::Down, QString(kLeft + QString::fromUtf8("−1")));
     auto* match = make(Action::Match, tr("MATCH"));
-    auto* up = make(Action::Up, QString::fromUtf8("+1 ▶"));
+    auto* up = make(Action::Up, QString(QStringLiteral("+1") + kRight));
     auto* reset = make(Action::Reset, tr("RESET"));
     auto* done = make(Action::Done, tr("DONE"));
-    down->setAccessibleDescription(tr("Shift the key down a semitone; key lock turns on"));
-    up->setAccessibleDescription(tr("Shift the key up a semitone; key lock turns on"));
+    down->setAccessibleDescription(tr("Shift the key down a semitone from what plays now; key lock turns on"));
+    up->setAccessibleDescription(tr("Shift the key up a semitone from what plays now; key lock turns on"));
     match->setAccessibleDescription(tr("Shift to the nearest key that mixes with the other deck; key lock turns on"));
-    reset->setAccessibleDescription(tr("Back to the track's own key"));
+    reset->setAccessibleDescription(tr("Back to the track's own key, and key lock as it was"));
     done->setAccessibleName(tr("Close the key sheet"));
+    m_info = new QLabel(this);
+    m_info->setObjectName(QString(name + QStringLiteral("-info")));
+    m_info->setFixedHeight(kRowHeight);
+    m_info->setMinimumWidth(0);
+    m_info->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     auto* rows = new QVBoxLayout(this);
     rows->setContentsMargins(0, 0, 0, 0);
     rows->setSpacing(kGap);
@@ -68,14 +70,9 @@ DeckLabKeySheet::DeckLabKeySheet(const QString& name, Shape shape, Host host, QW
     rows->addLayout(top);
     rows->addLayout(bottom);
     if (shape == Shape::Pads) {
-        // [ info ][KEY LOCK][DONE] over [◀ −1][MATCH][+1 ▶][RESET].
-        m_info = new QLabel(this);
-        m_info->setObjectName(name + QStringLiteral("-info"));
-        m_info->setStyleSheet(kInfoSheet);
-        m_info->setFixedHeight(kRowHeight);
+        // [ info ][KEY LOCK][DONE] over [‹ −1][MATCH][+1 ›][RESET].
+        m_info->setStyleSheet(infoSheet(15, false));
         m_info->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
-        m_info->setMinimumWidth(0);
-        m_info->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
         auto* lock = make(Action::KeyLock, tr("KEY LOCK"));
         lock->setAccessibleDescription(tr("Key lock: the key stays put when the tempo moves"));
         lock->setMinimumWidth(84);
@@ -87,13 +84,19 @@ DeckLabKeySheet::DeckLabKeySheet(const QString& name, Shape shape, Host host, QW
             bottom->addWidget(key, 1);
         }
     } else {
-        // Four-deck cards: [◀ −1][MATCH][+1 ▶] over [RESET][DONE]; KEY LOCK
+        // Four-deck cards: [‹ −1][MATCH][+1 ›] over [RESET][info][DONE]. The
+        // short info names MATCH's deck or says why it is off; KEY LOCK
         // stays in MORE, and the compact readout above shows the key.
+        m_info->setStyleSheet(infoSheet(14, false));
+        m_info->setAlignment(Qt::AlignCenter);
         for (auto* key : {down, match, up}) {
             top->addWidget(key, 1);
         }
-        bottom->addWidget(reset, 1);
-        bottom->addWidget(done, 1);
+        reset->setMinimumWidth(52);
+        done->setMinimumWidth(52);
+        bottom->addWidget(reset);
+        bottom->addWidget(m_info, 1);
+        bottom->addWidget(done);
     }
     refresh();
 }
@@ -118,6 +121,14 @@ QString DeckLabKeySheet::actionName(Action action) {
         return QStringLiteral("done");
     }
     return QString();
+}
+
+QList<DeckLabKeySheet::Action> DeckLabKeySheet::knobOrder() const {
+    // Reading order of the layout: left to right, top row first.
+    if (m_shape == Shape::Pads) {
+        return {Action::KeyLock, Action::Done, Action::Down, Action::Match, Action::Up, Action::Reset};
+    }
+    return {Action::Down, Action::Match, Action::Up, Action::Reset, Action::Done};
 }
 
 void DeckLabKeySheet::setState(const DeckLabKeySheetState& state) {
@@ -147,28 +158,43 @@ QString DeckLabKeySheet::infoText() const {
     if (!m_state.loaded) {
         return tr("Deck %1 is empty").arg(m_state.deck);
     }
+    if (m_state.matched && m_state.matchedDeck > 0) {
+        return tr("MATCHED · DECK %1 %2").arg(m_state.matchedDeck).arg(m_state.matchedKey);
+    }
+    if (!m_state.hasKey) {
+        return tr("This track has no key");
+    }
     if (m_state.target <= 0) {
         return tr("No other deck to match");
     }
     if (m_state.targetKey.isEmpty()) {
         return tr("Deck %1 has no key").arg(m_state.target);
     }
-    if (!m_state.hasKey) {
-        return tr("This track has no key");
+    return tr("MATCH TO DECK %1 · %2").arg(m_state.target).arg(m_state.targetKey);
+}
+
+QString DeckLabKeySheet::shortInfoText() const {
+    if (!m_state.loaded) {
+        return QString();
     }
-    return m_state.matched ? tr("MATCHED · DECK %1 %2").arg(m_state.target).arg(m_state.targetKey)
-                           : tr("MATCH TO DECK %1 · %2").arg(m_state.target).arg(m_state.targetKey);
+    if (m_state.matched && m_state.matchedDeck > 0) {
+        return tr("MATCHED %1").arg(m_state.matchedDeck);
+    }
+    if (!m_state.hasKey || (m_state.target > 0 && m_state.targetKey.isEmpty())) {
+        return tr("NO KEY");
+    }
+    if (m_state.target <= 0) {
+        return tr("NO DECK");
+    }
+    return tr("TO %1 · %2").arg(m_state.target).arg(m_state.targetKey);
 }
 
 void DeckLabKeySheet::refresh() {
     const int deck = m_state.deck;
-    for (const Action action : kOrder) {
+    for (const Action action : knobOrder()) {
         auto* key = m_keys[static_cast<int>(action)];
-        if (!key) {
-            continue;
-        }
         const bool enabled = usable(action);
-        if (key->isEnabled() != enabled) {
+        if (key && key->isEnabled() != enabled) {
             key->setEnabled(enabled);
         }
     }
@@ -181,12 +207,13 @@ void DeckLabKeySheet::refresh() {
     }
     // MATCH is lit while the key it set still matches: the readout's key is
     // green and outlined at the same time.
+    const bool matched = m_state.loaded && m_state.matched && m_state.matchedDeck > 0;
     if (auto* match = key(Action::Match)) {
-        match->setLit(m_state.matched && usable(Action::Match));
-        const QString name = !usable(Action::Match)
+        match->setLit(matched);
+        const QString name = matched
+                ? tr("Deck %1 key matched to deck %2 (%3)").arg(deck).arg(m_state.matchedDeck).arg(m_state.matchedKey)
+                : !usable(Action::Match)
                 ? tr("Deck %1 key match, unavailable: %2").arg(deck).arg(infoText())
-                : m_state.matched
-                ? tr("Deck %1 key matched to deck %2 (%3)").arg(deck).arg(m_state.target).arg(m_state.targetKey)
                 : tr("Match deck %1's key to deck %2 (%3)").arg(deck).arg(m_state.target).arg(m_state.targetKey);
         if (match->accessibleName() != name) {
             match->setAccessibleName(name);
@@ -201,20 +228,17 @@ void DeckLabKeySheet::refresh() {
             key(action)->setAccessibleName(name);
         }
     }
-    if (m_info) {
-        const QString text = infoText();
-        if (m_info->text() != text) {
-            m_info->setText(text);
-        }
-        const bool matched = m_state.matched && usable(Action::Match);
-        if (matched != m_infoMatched) {
-            m_infoMatched = matched;
-            m_info->setStyleSheet(matched ? kInfoMatchedSheet : kInfoSheet);
-        }
+    const QString text = m_shape == Shape::Pads ? infoText() : shortInfoText();
+    if (m_info->text() != text) {
+        m_info->setText(text);
+        m_info->setAccessibleName(infoText());
     }
-    // Until the knob moves it, the cursor rests on MATCH (else +1, DONE).
-    if (!m_knobUsed || !usable(m_focus)) {
-        m_focus = usable(Action::Match) ? Action::Match : usable(Action::Up) ? Action::Up : Action::Done;
+    if (matched != m_infoMatched) {
+        m_infoMatched = matched;
+        m_info->setStyleSheet(infoSheet(m_shape == Shape::Pads ? 15 : 14, matched));
+    }
+    if (!usable(m_focus)) {
+        m_focus = Action::Done;
     }
     showFocus();
 }
@@ -239,10 +263,22 @@ void DeckLabKeySheet::pressed(Action action) {
     }
 }
 
+bool DeckLabKeySheet::revealCursor() {
+    if (m_knobUsed) {
+        return false;
+    }
+    // The first knob event shows where the cursor is (DONE, the safe key)
+    // and does nothing else.
+    m_knobUsed = true;
+    m_focus = Action::Done;
+    showFocus();
+    return true;
+}
+
 void DeckLabKeySheet::moveFocus(int steps) {
-    // Only keys that can act take the cursor.
+    // Only keys that can act take the cursor, in reading order.
     QList<Action> keys;
-    for (const Action action : kOrder) {
+    for (const Action action : knobOrder()) {
         if (m_keys[static_cast<int>(action)] && usable(action)) {
             keys << action;
         }
@@ -257,7 +293,7 @@ void DeckLabKeySheet::moveFocus(int steps) {
 }
 
 void DeckLabKeySheet::showFocus() {
-    for (const Action action : kOrder) {
+    for (const Action action : knobOrder()) {
         if (auto* key = m_keys[static_cast<int>(action)]) {
             key->setArmed(m_knobUsed && action == m_focus);
         }
@@ -269,6 +305,7 @@ bool DeckLabKeySheet::event(QEvent* event) {
     case QEvent::Show:
         // The browse knob drives the sheet while it is shown.
         m_knobUsed = false;
+        m_focus = Action::Done;
         refresh();
         decklab::claimKnob(this);
         break;
@@ -288,23 +325,25 @@ void DeckLabKeySheet::keyPressEvent(QKeyEvent* event) {
     case Qt::Key_Up:
     case Qt::Key_Left:
     case Qt::Key_Backtab:
-        m_knobUsed = true;
-        moveFocus(-1);
+        if (!revealCursor()) {
+            moveFocus(-1);
+        }
         event->accept();
         return;
     case Qt::Key_Down:
     case Qt::Key_Right:
     case Qt::Key_Tab:
-        m_knobUsed = true;
-        moveFocus(1);
+        if (!revealCursor()) {
+            moveFocus(1);
+        }
         event->accept();
         return;
     case Qt::Key_Return:
     case Qt::Key_Enter:
     case Qt::Key_Space:
-        m_knobUsed = true;
-        showFocus();
-        pressed(m_focus);
+        if (!revealCursor()) {
+            pressed(m_focus);
+        }
         event->accept();
         return;
     case Qt::Key_Escape:

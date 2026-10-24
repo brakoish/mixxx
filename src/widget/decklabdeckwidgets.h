@@ -50,9 +50,11 @@ inline DeckLabBeatPhase deckLabBeatPhase(long long beatIndex, double fraction) {
     if (!util_isfinite(fraction)) {
         return {};
     }
-    const double whole = std::floor(fraction);
+    // r5-decks: a playhead a hair before a beat (a frame-boundary rounding,
+    // e.g. right after DOWNBEAT put a beat there) counts as on that beat.
+    const double whole = std::floor(fraction + 1e-6);
     beatIndex += static_cast<long long>(whole);
-    return {static_cast<int>(((beatIndex % 4) + 4) % 4), fraction - whole};
+    return {static_cast<int>(((beatIndex % 4) + 4) % 4), std::max(0.0, fraction - whole)};
 }
 
 // r4-decks: how far into the current beat, in eighths (0..7). The phase
@@ -211,6 +213,21 @@ class DeckLabStripRenderer {
     // KEY readout opens the key sheet, a long press on the BPM opens GRID.
     QRect keyTarget() const;
     QRect bpmTarget() const;
+    // r5-decks: how the key and its shift are drawn. When they do not fit,
+    // a two-name key takes its second name ("D♯m/E♭m" reads "E♭m") and then
+    // the shift steps down to 14 px; a check mark that no longer fits is
+    // dropped. Never squeezed, never over the tempo or the clock.
+    struct KeyText {
+        QString key;
+        int shiftPixels = kSecondary;
+        int keyWidth = 0;
+        int width = 0;
+    };
+    KeyText keyText() const;
+    int keyRoom() const;
+    int keyTextWidth() const {
+        return keyText().width;
+    }
     QFont uiFont(int pixels, QFont::Weight weight) const;
     QFont numeralFont(int pixels) const;
     QFont labelFont() const;
@@ -219,8 +236,6 @@ class DeckLabStripRenderer {
     void layout();
     // Key box shifted left when a long clock needs the room.
     int clockExcess() const;
-    // r5-decks: the key, its shift and the room they take at readout size.
-    int keyTextWidth() const;
     void paintBadge(QPainter& painter) const;
     void paintTransport(QPainter& painter, const QRect& area) const;
     void paintTitle(QPainter& painter, const QRect& area) const;
@@ -296,15 +311,20 @@ class DeckLabDeckStrip final : public QPushButton {
     // padding or text metrics.
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override;
-    // r5-decks: how long the BPM readout is held to open GRID mode.
+    // r5-decks: how long the BPM readout of a paused deck is held to open
+    // GRID mode (a playing deck enters GRID from MORE only), and how long a
+    // playing deck's KEY readout is held to open the key sheet (round 4's
+    // stray-thumb rule: a brush on a live deck never swaps its pads).
     static constexpr int kGridHoldMs = 600;
+    static constexpr int kLiveKeyHoldMs = 400;
 
   signals:
-    // r5-decks: a touch-down on the loaded deck's KEY readout (key sheet).
-    // The touch is the sheet's: the readout does not go down or click.
+    // r5-decks: the loaded deck's KEY readout asks for the key sheet: on
+    // touch-down while paused, after kLiveKeyHoldMs while playing. The touch
+    // is the sheet's: the readout does not go down or click.
     void keyTouched(int deck);
-    // r5-decks: the BPM readout was held for kGridHoldMs (GRID mode). The
-    // press is cancelled, so its release never opens track information.
+    // r5-decks: a paused deck's BPM readout was held for kGridHoldMs (GRID
+    // mode). The press is cancelled, so its release opens nothing.
     void bpmHeld(int deck);
 
   protected:
@@ -314,6 +334,7 @@ class DeckLabDeckStrip final : public QPushButton {
     void focusInEvent(QFocusEvent* event) override;
     void focusOutEvent(QFocusEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
 
   private:
@@ -321,8 +342,10 @@ class DeckLabDeckStrip final : public QPushButton {
     DeckLabStripRenderer m_renderer;
     DeckLabLevelMeter* m_meter;
     bool m_keyboardFocus = false;
-    // r5-decks: single shot, runs only while the BPM readout is held.
+    // r5-decks: single shots, running only while a readout zone is held.
     QTimer* m_gridHold = nullptr;
+    QTimer* m_keyHold = nullptr;
+    bool m_keyTouch = false; // a KEY touch the strip owns (no button press)
 };
 
 // One-line readout above a waveform on Browse and FX. Display only.

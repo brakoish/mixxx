@@ -48,17 +48,32 @@ DeckLabDeckTools::DeckLabDeckTools(Host host, QGridLayout* deckGrid, QObject* pa
           m_host(std::move(host)),
           m_deckGrid(deckGrid) {
     setObjectName(QStringLiteral("decklab-deck-tools"));
-    // Key shift, key and grid lock changes refresh the readouts. Change
-    // driven: nothing here runs on the display tick.
+    // Key shift, key, key lock and grid lock changes refresh the readouts.
+    // Change driven: nothing here runs on the display tick.
     if (m_host.watch) {
         for (int deck = 1; deck <= 4; ++deck) {
+            for (const auto& item : {QStringLiteral("pitch_adjust"), QStringLiteral("bpmlock")}) {
+                m_host.watch(deck, item, [this, deck](double) {
+                    if (m_host.refresh) m_host.refresh(deck);
+                });
+            }
             m_host.watch(deck, QStringLiteral("pitch"), [this, deck](double) {
-                if (m_host.refresh) m_host.refresh(deck);
+                if (!m_host.refresh) return;
+                m_host.refresh(deck);
+                // A deck matched to this one checks whether it drifted.
+                for (int other = 1; other <= 4; ++other) {
+                    if (m_matches[other - 1].target == deck) m_host.refresh(other);
+                }
             });
-            m_host.watch(deck, QStringLiteral("bpmlock"), [this, deck](double) {
-                if (m_host.refresh) m_host.refresh(deck);
+            m_host.watch(deck, QStringLiteral("keylock"), [this, deck](double on) {
+                // Key lock turned off by anything: it is no longer the sheet's.
+                if (on <= 0) {
+                    m_keylockBySheet[deck - 1] = false;
+                    m_keylockTrack[deck - 1].reset();
+                }
             });
-            // Another deck's key decides whether this one still matches it.
+            // Another deck's key or pitch decides whether this one still
+            // matches it.
             m_host.watch(deck, QStringLiteral("key"), [this](double) {
                 if (!m_host.refresh) return;
                 for (int other = 1; other <= 4; ++other) m_host.refresh(other);
@@ -76,9 +91,9 @@ QString DeckLabDeckTools::shiftText(double semitones) {
     const QString sign = semitones > 0 ? QStringLiteral("+") : QString::fromUtf8("−");
     const double whole = std::round(semitones);
     if (std::abs(semitones - whole) < 0.05) {
-        return sign + QString::number(static_cast<int>(std::abs(whole)));
+        return QString(sign + QString::number(static_cast<int>(std::abs(whole))));
     }
-    return sign + QString::number(std::abs(semitones), 'f', 1);
+    return QString(sign + QString::number(std::abs(semitones), 'f', 1));
 }
 
 bool DeckLabDeckTools::current(int deck) const {
@@ -141,11 +156,32 @@ bool DeckLabDeckTools::keysMatch(int deck, int target) const {
     return validKey(own) && validKey(other) && KeyUtils::getCompatibleKeys(other).contains(own);
 }
 
-void DeckLabDeckTools::ensureKeylock(int deck) {
-    // A key set by hand stays put when the tempo moves.
-    if (m_host.read(deck, QStringLiteral("keylock")) <= 0) {
-        m_host.write(deck, QStringLiteral("keylock"), 1);
+bool DeckLabDeckTools::ensureKeylock(int deck) {
+    // A key set by hand stays put when the tempo moves. The sheet remembers
+    // that it turned key lock on, so RESET (or the next track) gives the
+    // deck back as it was: Mixxx saves key lock.
+    if (m_host.read(deck, QStringLiteral("keylock")) > 0) {
+        return false;
     }
+    m_host.write(deck, QStringLiteral("keylock"), 1);
+    m_keylockBySheet[deck - 1] = true;
+    m_keylockTrack[deck - 1] = m_host.track(deck);
+    return true;
+}
+
+void DeckLabDeckTools::restoreKeylock(int deck) {
+    if (!m_keylockBySheet[deck - 1]) {
+        return;
+    }
+    m_keylockBySheet[deck - 1] = false;
+    m_keylockTrack[deck - 1].reset();
+    if (m_host.read(deck, QStringLiteral("keylock")) > 0) {
+        m_host.write(deck, QStringLiteral("keylock"), 0);
+    }
+}
+
+bool DeckLabDeckTools::keylockBySheet(int deck) const {
+    return deck >= 1 && deck <= 4 && m_keylockBySheet[deck - 1];
 }
 
 // ----------------------------------------------------------------- key sheet
@@ -187,8 +223,8 @@ void DeckLabDeckTools::attachCard(int deck, QWidget* card, DeckLabDeckStrip* str
     }
     m_cardSheets[deck - 1] = sheet;
     if (strip) {
-        // Touch-down on the KEY readout opens the sheet; holding the BPM
-        // readout opens GRID mode.
+        // The KEY readout opens the sheet (touch-down while paused, a short
+        // hold while playing); holding a paused deck's BPM opens GRID mode.
         connect(strip, &DeckLabDeckStrip::keyTouched, this, [this](int which) { openKeySheet(which); });
         connect(strip, &DeckLabDeckStrip::bpmHeld, this, [this](int which) { enterGrid(which); });
     }
@@ -202,8 +238,12 @@ bool DeckLabDeckTools::keySheetOpen(int deck) const {
 }
 
 void DeckLabDeckTools::openKeySheet(int deck) {
-    if (deck < 1 || deck > 4 || (m_host.onDecks && !m_host.onDecks()) || !current(deck) || m_grid.deck == deck) {
+    if (deck < 1 || deck > 4 || (m_host.onDecks && !m_host.onDecks()) || !current(deck)) {
         return;
+    }
+    if (m_grid.deck) {
+        // One knob owner at a time: the sheet takes over from GRID mode.
+        leaveGrid(Relayout::Now);
     }
     const bool four = m_host.fourDecks && m_host.fourDecks();
     if (four) {
@@ -298,28 +338,47 @@ void DeckLabDeckTools::keyAction(int deck, KeyAction action) {
     }
     switch (action) {
     case KeyAction::Down:
-    case KeyAction::Up:
-        // Mixxx's semitone steps (the pitch knob's step count is 12).
-        ensureKeylock(deck);
-        pulse(deck, action == KeyAction::Up ? QStringLiteral("pitch_up") : QStringLiteral("pitch_down"));
+    case KeyAction::Up: {
+        // A semitone from what plays now. With key lock off the heard pitch
+        // includes the tempo: turning key lock on would snap it back to the
+        // track's key, so the new pitch (heard ± 1) is written right after
+        // key lock in one step, with nothing audible in between. With key
+        // lock on, Mixxx's own semitone step (the pitch knob's 12 steps).
+        const double step = action == KeyAction::Up ? 1 : -1;
+        const double heard = m_host.read(deck, QStringLiteral("pitch"));
+        if (ensureKeylock(deck)) {
+            m_host.write(deck, QStringLiteral("pitch"), std::clamp((util_isfinite(heard) ? heard : 0) + step, -6.0, 6.0));
+        } else {
+            pulse(deck, action == KeyAction::Up ? QStringLiteral("pitch_up") : QStringLiteral("pitch_down"));
+        }
         m_matches[deck - 1] = Match();
         break;
+    }
     case KeyAction::Match: {
-        // Mixxx's KEY SYNC: the nearest key that mixes with the target's.
+        // Mixxx's KEY SYNC: the nearest key that mixes with the target's,
+        // from the track's own key (the heard pitch does not change it).
         ensureKeylock(deck);
         const int target = keySyncTarget(deck);
         pulse(deck, QStringLiteral("sync_key"));
         m_matches[deck - 1] = Match();
         if (target > 0 && keysMatch(deck, target)) {
-            m_matches[deck - 1] = {target, m_host.read(deck, QStringLiteral("pitch")), m_host.track(deck)};
+            m_matches[deck - 1] = {target, m_host.read(deck, QStringLiteral("pitch")),
+                    m_host.read(target, QStringLiteral("pitch")), m_host.track(deck)};
         }
         break;
     }
     case KeyAction::Reset:
+        // The track's own key, then key lock as it was before the sheet
+        // (in this order, a deck that had key lock off plays exactly as it
+        // did: Mixxx's unlock gives the pitch back to the tempo).
         pulse(deck, QStringLiteral("reset_key"));
+        restoreKeylock(deck);
         m_matches[deck - 1] = Match();
         break;
     case KeyAction::KeyLock:
+        // A deliberate choice: no longer the sheet's to undo.
+        m_keylockBySheet[deck - 1] = false;
+        m_keylockTrack[deck - 1].reset();
         m_host.write(deck, QStringLiteral("keylock"), m_host.read(deck, QStringLiteral("keylock")) > 0 ? 0 : 1);
         break;
     case KeyAction::Done:
@@ -330,37 +389,48 @@ void DeckLabDeckTools::keyAction(int deck, KeyAction action) {
     }
 }
 
+bool DeckLabDeckTools::matchHolds(int deck) const {
+    // Still the matched key: the same track, the shift MATCH set, and the
+    // matched deck still loaded, at the pitch it had, in a key that mixes.
+    const Match& match = m_matches[deck - 1];
+    if (match.target <= 0) {
+        return false;
+    }
+    const TrackPointer matched = match.track.lock();
+    const double pitch = m_host.read(deck, QStringLiteral("pitch"));
+    const double targetPitch = m_host.read(match.target, QStringLiteral("pitch"));
+    return matched && matched == m_host.track(deck) && util_isfinite(pitch) && util_isfinite(targetPitch) &&
+            std::abs(pitch - match.pitch) < 0.02 && std::abs(targetPitch - match.targetPitch) <= kMatchDrift &&
+            m_host.read(match.target, QStringLiteral("track_loaded")) > 0 && keysMatch(deck, match.target);
+}
+
 void DeckLabDeckTools::fillKey(int deck, DeckLabStripState& state) {
     if (deck < 1 || deck > 4) {
         return;
     }
     state.keyShift.clear();
     state.keyMatched = false;
-    Match& match = m_matches[deck - 1];
-    if (!state.loaded) {
-        match = Match();
-        return;
-    }
-    const double pitch = m_host.read(deck, QStringLiteral("pitch"));
-    state.keyShift = shiftText(pitch);
-    if (match.target > 0) {
-        // Still the matched key: the same track, the shift MATCH set, and
-        // the target still loaded in a key that mixes with this one.
-        const TrackPointer matched = match.track.lock();
-        const bool holds = matched && matched == m_host.track(deck) && util_isfinite(pitch) &&
-                std::abs(pitch - match.pitch) < 0.02 &&
-                m_host.read(match.target, QStringLiteral("track_loaded")) > 0 && keysMatch(deck, match.target);
-        if (holds) {
-            state.keyMatched = true;
-        } else {
-            match = Match();
+    // A new track gives the deck its key lock back if the sheet turned it on.
+    if (m_keylockBySheet[deck - 1]) {
+        const TrackPointer owner = m_keylockTrack[deck - 1].lock();
+        if (!owner || owner != m_host.track(deck)) {
+            restoreKeylock(deck);
         }
     }
-}
-
-const DeckLabStripState& DeckLabDeckTools::strip(int deck) const {
-    static const DeckLabStripState empty;
-    return m_host.stripState && deck >= 1 && deck <= 4 ? m_host.stripState(deck) : empty;
+    if (!state.loaded) {
+        m_matches[deck - 1] = Match();
+        return;
+    }
+    // The deliberate shift only: from the track's key while key lock holds
+    // it (Mixxx's pitch), and the tweak over the tempo while it does not
+    // (pitch_adjust), so riding the tempo fader never reads as a key shift.
+    const bool keylock = m_host.read(deck, QStringLiteral("keylock")) > 0;
+    state.keyShift = shiftText(m_host.read(deck, keylock ? QStringLiteral("pitch") : QStringLiteral("pitch_adjust")));
+    if (matchHolds(deck)) {
+        state.keyMatched = true;
+    } else {
+        m_matches[deck - 1] = Match();
+    }
 }
 
 DeckLabKeySheetState DeckLabDeckTools::keyState(int deck) const {
@@ -371,18 +441,24 @@ DeckLabKeySheetState DeckLabDeckTools::keyState(int deck) const {
     if (!state.loaded) {
         return state;
     }
+    const auto keyText = [this](int which) {
+        const auto key = chromatic(m_host.read(which, QStringLiteral("key")));
+        return validKey(key) ? KeyUtils::keyToString(key) : QString();
+    };
     state.hasKey = validKey(chromatic(m_host.read(deck, QStringLiteral("file_key"))));
     state.keylock = m_host.read(deck, QStringLiteral("keylock")) > 0;
     state.target = keySyncTarget(deck);
     if (state.target > 0) {
-        const auto key = chromatic(m_host.read(state.target, QStringLiteral("key")));
-        if (validKey(key)) {
-            state.targetKey = KeyUtils::keyToString(key);
-        }
+        state.targetKey = keyText(state.target);
     }
     state.key = strip.key;
     state.shift = strip.keyShift;
-    state.matched = strip.keyMatched;
+    // MATCHED names the deck that was matched, which today's target may not be.
+    state.matched = strip.keyMatched && m_matches[deck - 1].target > 0;
+    if (state.matched) {
+        state.matchedDeck = m_matches[deck - 1].target;
+        state.matchedKey = keyText(state.matchedDeck);
+    }
     return state;
 }
 
@@ -399,8 +475,12 @@ void DeckLabDeckTools::enterGrid(int deck) {
     if (m_grid.deck == deck) {
         return;
     }
+    // Zoom: an active session already zoomed in; its zoom-out comes back
+    // when this one ends.
+    double baseline = m_host.read(deck, QStringLiteral("waveform_zoom"));
     if (m_grid.deck) {
-        leaveGrid(false);
+        baseline = m_grid.zoomBefore;
+        endSession(false);
     }
     if (!m_gridPanel) {
         DeckLabGridPanel::Host host;
@@ -410,23 +490,16 @@ void DeckLabDeckTools::enterGrid(int deck) {
                 m_deckGrid ? m_deckGrid->parentWidget() : nullptr);
         m_gridPanel->hide();
     }
+    // One knob owner at a time.
+    closeKeySheets();
     m_grid.deck = deck;
     m_grid.track = m_host.track(deck);
     m_grid.four = m_host.fourDecks && m_host.fourDecks();
     // A closer look at the grid while editing: Mixxx's zoom control only.
-    m_grid.zoomBefore = m_host.read(deck, QStringLiteral("waveform_zoom"));
-    if (util_isfinite(m_grid.zoomBefore) && m_grid.zoomBefore > kGridZoom) {
+    m_grid.zoomBefore = util_isfinite(baseline) && baseline > kGridZoom ? baseline : 0;
+    if (m_grid.zoomBefore > 0) {
         m_host.write(deck, QStringLiteral("waveform_zoom"), kGridZoom);
-    } else {
-        m_grid.zoomBefore = 0;
     }
-    // The deck's own key sheet gives way to GRID mode.
-    for (int side = 0; side < 2; ++side) {
-        if (m_sideSheetDeck[side] == deck) {
-            closeSideSheet(side);
-        }
-    }
-    closeCardSheet(deck);
     m_gridPanel->setKnob(DeckLabGridPanel::Knob::Nudge);
     m_gridPanel->setState(gridState(deck));
     if (m_host.relayout) {
@@ -434,10 +507,7 @@ void DeckLabDeckTools::enterGrid(int deck) {
     }
 }
 
-void DeckLabDeckTools::leaveGrid(bool relayoutNow) {
-    if (!m_grid.deck) {
-        return;
-    }
+void DeckLabDeckTools::endSession(bool restoreZoom) {
     const GridSession session = m_grid;
     m_grid = GridSession();
     if (m_gridPanel) {
@@ -447,18 +517,30 @@ void DeckLabDeckTools::leaveGrid(bool relayoutNow) {
         m_gridPanel->hide();
     }
     // The zoom comes back unless it was changed meanwhile.
-    if (session.zoomBefore > 0 &&
+    if (restoreZoom && session.zoomBefore > 0 &&
             std::abs(m_host.read(session.deck, QStringLiteral("waveform_zoom")) - kGridZoom) < 1e-6) {
         m_host.write(session.deck, QStringLiteral("waveform_zoom"), session.zoomBefore);
     }
+}
+
+void DeckLabDeckTools::leaveGrid(Relayout relayout) {
+    if (!m_grid.deck) {
+        return;
+    }
+    endSession(true);
     if (!m_host.relayout) {
         return;
     }
-    if (relayoutNow) {
+    switch (relayout) {
+    case Relayout::Now:
         m_host.relayout();
-    } else {
+        break;
+    case Relayout::Queued:
         QMetaObject::invokeMethod(
                 this, [this] { if (m_host.relayout) m_host.relayout(); }, Qt::QueuedConnection);
+        break;
+    case Relayout::None:
+        break;
     }
 }
 
@@ -486,9 +568,22 @@ bool DeckLabDeckTools::gridEditable(int deck) const {
             m_host.read(deck, QStringLiteral("sync_leader")) <= 0 && sharedBusyDeck(deck) == 0;
 }
 
+bool DeckLabDeckTools::canHalve(const mixxx::BeatsPointer& beats) const {
+    // Mixxx refuses to halve some marker grids (odd beat counts between
+    // markers). Ask it once per grid object, not on every refresh.
+    if (!beats) {
+        return false;
+    }
+    if (m_halveBeats.lock() != beats) {
+        m_halveBeats = beats;
+        m_halveOk = static_cast<bool>(beats->tryScale(mixxx::Beats::BpmScale::Halve));
+    }
+    return m_halveOk;
+}
+
 void DeckLabDeckTools::gridAction(int deck, GridAction action) {
     if (action == GridAction::Done) {
-        leaveGrid(true);
+        leaveGrid(Relayout::Now);
         return;
     }
     if (deck != m_grid.deck || !current(deck)) {
@@ -502,7 +597,8 @@ void DeckLabDeckTools::gridAction(int deck, GridAction action) {
         }
     } else if (gridEditable(deck)) {
         // Mixxx's beatgrid controls; their rules (BPM lock, rounding,
-        // constant-tempo moves) are Mixxx's.
+        // constant-tempo moves) are Mixxx's. The live checks above run at
+        // touch-down, ahead of the panel's last refresh.
         const auto slipBeats = [&track](double beats) {
             if (const auto grid = track->getBeats()) {
                 if (const auto moved = grid->tryTranslateBeats(beats)) {
@@ -548,7 +644,12 @@ void DeckLabDeckTools::gridAction(int deck, GridAction action) {
             break;
         case GridAction::Downbeat: {
             // A beat at the playhead, then whole-beat slips so that beat is
-            // beat 1 of the count the phase meter shows.
+            // beat 1 of the count the phase meter shows (constant-tempo
+            // grids only: the panel offers DOWNBEAT nowhere else).
+            const auto before = track->getBeats();
+            if (!before || !before->hasConstantTempo()) {
+                break;
+            }
             pulse(deck, QStringLiteral("beats_translate_curpos"));
             const auto grid = track->getBeats();
             const double samples = m_host.read(deck, QStringLiteral("track_samples"));
@@ -590,6 +691,7 @@ DeckLabGridState DeckLabDeckTools::gridState(int deck) const {
     const auto grid = track->getBeats();
     state.hasBeats = static_cast<bool>(grid);
     state.constantTempo = grid && grid->hasConstantTempo();
+    state.canHalve = canHalve(grid);
     state.locked = track->isBpmLocked();
     state.synced = m_host.read(deck, QStringLiteral("sync_enabled")) > 0 ||
             m_host.read(deck, QStringLiteral("sync_leader")) > 0;
@@ -600,6 +702,11 @@ DeckLabGridState DeckLabDeckTools::gridState(int deck) const {
     }
     state.beat = strip.loaded ? strip.phase : -1;
     return state;
+}
+
+const DeckLabStripState& DeckLabDeckTools::strip(int deck) const {
+    static const DeckLabStripState empty;
+    return m_host.stripState && deck >= 1 && deck <= 4 ? m_host.stripState(deck) : empty;
 }
 
 // --------------------------------------------------------- surface hooks
@@ -643,10 +750,12 @@ void DeckLabDeckTools::refreshOpen() {
     }
     if (const int deck = m_grid.deck; deck && m_gridPanel) {
         if (!sameTrack(deck, m_grid.track)) {
-            // A new track on the edited deck ends GRID mode.
-            leaveGrid(false);
+            // A new track on the edited deck ends GRID mode (this runs in a
+            // deck refresh: the relayout follows it).
+            leaveGrid(Relayout::Queued);
         } else {
             m_gridPanel->setState(gridState(deck));
+            m_gridPanel->refreshKnob();
         }
     }
 }
@@ -675,7 +784,8 @@ bool DeckLabDeckTools::validate() {
         shown = m_host.displayedDeck && (m_host.displayedDeck(0) == deck || m_host.displayedDeck(1) == deck);
     }
     if (!shown || !sameTrack(deck, m_grid.track)) {
-        leaveGrid(false);
+        // Called before the surface's relayout: that one relayout covers it.
+        leaveGrid(Relayout::None);
         return false;
     }
     return true;
@@ -708,8 +818,10 @@ void DeckLabDeckTools::applyLayout() {
     }
     const int deck = m_grid.deck;
     if (four) {
-        // The half of the deck row that holds the deck.
-        const int first = (deck - 1) / 2 * 2;
+        // Half the deck row. With the lanes side by side (1 2 over 3 4) the
+        // half under the deck's lane column, never under another deck's.
+        const bool columns = m_host.sideBySide && m_host.sideBySide();
+        const int first = columns ? (deck - 1) % 2 * 2 : (deck - 1) / 2 * 2;
         for (int column = first; column < first + 2; ++column) {
             cover(m_cards[column]);
             closeCardSheet(column + 1);
