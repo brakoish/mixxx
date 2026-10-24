@@ -398,12 +398,12 @@ TEST_F(DeckLabLabFxTest, BrandLampsAndNoRedOutsideTheWordmark) {
 // r6-fxstrip: the 2-deck layout offers decks 1 and 2, MASTER and SMP, and
 // deck 3 or 4 only while it is in use. Every slot keeps its place.
 TEST_F(DeckLabLabFxTest, TwoDeckLayoutOffersDecksThreeAndFourOnlyWhileInUse) {
-    std::array<QRect, 6> slots;
-    for (int n = 0; n < 6; ++n) slots[n] = targetKey(n + 1)->geometry();
+    std::array<QRect, 6> places;
+    for (int n = 0; n < 6; ++n) places[n] = targetKey(n + 1)->geometry();
     const QRect on = button("decklab-fx-on")->geometry();
     const QRect readout = fx->findChild<QWidget*>("decklab-fx-readout")->geometry();
     const auto unmoved = [&] {
-        for (int n = 0; n < 6; ++n) EXPECT_EQ(slots[n], targetKey(n + 1)->geometry()) << "target " << n + 1;
+        for (int n = 0; n < 6; ++n) EXPECT_EQ(places[n], targetKey(n + 1)->geometry()) << "target " << n + 1;
         EXPECT_EQ(on, button("decklab-fx-on")->geometry());
         EXPECT_EQ(readout, fx->findChild<QWidget*>("decklab-fx-readout")->geometry());
     };
