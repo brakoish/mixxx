@@ -26,12 +26,14 @@
   <MinimumSize>800,480</MinimumSize>
   <!-- Loading screen: the Deck Lab boot screen's last frame (Plymouth leaves it on screen and the
        kiosk keeps it up until this appears), at the same position: ink, the wordmark, and the
-       waveform with the playhead parked on the cue. While Mixxx loads, the waveform after the cue
-       fills with deck 1's colour (the progress bar's chunk uncovers boot/loading.png).
+       waveform with the playhead parked on the cue. Screens of 1600x960 and more are the exception:
+       Plymouth draws its @2x art there and this stays 1x. While Mixxx loads, the waveform after the
+       cue fills with deck 1's colour (the progress bar's chunk uncovers boot/loading.png).
        Both images come from Deck Lab's brand/build_assets.py; the numbers below place the progress
        bar on boot/launch.png: the bar box is the waveform's 720 px span, centred like the
        background, its contents start at the cue (margin-left 385) and on the waveform's first row
-       (margin-top 98 = 2 x 241 + 96 - 480). qproperty-spacing removes the style's layout gap. -->
+       (margin-top 98 = 2 x 241 + 96 - 480). qproperty-spacing removes the style's layout gap.
+       tools/decklab/test_launch_image.py checks the numbers against the image. -->
   <LaunchImageStyle>
     LaunchImage {
       background-color: #0d0f12;
