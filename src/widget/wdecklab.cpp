@@ -937,6 +937,12 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
         m_sync = std::make_unique<DeckLabSync>(std::move(host));
         const ConfigKey cdjSync = decklab::cdjsync::controlKey();
         control(cdjSync.group, cdjSync.item)->set(1);
+        // A mapping's SYNC hold: [DeckLabNative],inst_doubles = N (then 0) is
+        // INST DOUBLES on deck N, with the touch rules (a stopped deck only).
+        createControl(kNative, QStringLiteral("inst_doubles"));
+        watch(kNative, QStringLiteral("inst_doubles"), [this](double v) {
+            if (v >= 1 && v <= 4) m_sync->instantDoubles(static_cast<int>(v));
+        });
     }
     m_deckControls = buildDecks();
     m_pages->addWidget(buildBrowse());

@@ -3845,7 +3845,7 @@ TEST_F(NativeDeckLabTest, SyncHoldIsInstantDoublesOnlyOntoAStoppedDeck) {
     QTest::mousePress(sync2, Qt::LeftButton);
     EXPECT_TRUE(QTest::qWaitFor([&] {
         ProcessBuffer();
-        return m_pMixerDeck2->getLoadedTrack() == track && m_pChannel2->getEngineBuffer()->isTrackLoaded();
+        return m_pChannel2->getEngineBuffer()->getLoadedTrack() == track;
     }, 3000));
     QTest::mouseRelease(sync2, Qt::LeftButton);
     for (int n = 0; n < 4; ++n) ProcessBuffer();
@@ -3884,11 +3884,27 @@ TEST_F(NativeDeckLabTest, SyncHoldIsInstantDoublesOnlyOntoAStoppedDeck) {
     doubles->click();
     EXPECT_TRUE(QTest::qWaitFor([&] {
         ProcessBuffer();
-        return m_pMixerDeck2->getLoadedTrack() == other && m_pChannel2->getEngineBuffer()->isTrackLoaded();
+        // The engine's track: the previous one stays loaded until the new one is.
+        return m_pChannel2->getEngineBuffer()->getLoadedTrack() == other;
     }, 3000));
     for (int n = 0; n < 4; ++n) ProcessBuffer();
     EXPECT_DOUBLE_EQ(1, get(2, "play"));
     EXPECT_NEAR(get(3, "playposition"), get(2, "playposition"), .01);
+    // A mapping's hold ([DeckLabNative] inst_doubles = deck): the same rules.
+    const auto controllerHold = [](int deck) {
+        ControlObject::set(ConfigKey("[DeckLabNative]", "inst_doubles"), deck);
+        ControlObject::set(ConfigKey("[DeckLabNative]", "inst_doubles"), 0);
+        settle();
+    };
+    controllerHold(1);
+    for (int n = 0; n < 4; ++n) ProcessBuffer();
+    EXPECT_EQ(track, m_pChannel1->getEngineBuffer()->getLoadedTrack()) << "deck 1 plays: never replaced";
+    put(1, "play", 0); ProcessBuffer(); settle();
+    controllerHold(1);
+    EXPECT_TRUE(QTest::qWaitFor([&] {
+        ProcessBuffer();
+        return m_pChannel1->getEngineBuffer()->getLoadedTrack() == other;
+    }, 3000)) << "stopped: the master's track (deck 3)";
     for (int deck = 1; deck <= 3; ++deck) { put(deck, "play", 0); put(deck, "sync_enabled", 0); }
     ProcessBuffer();
 }

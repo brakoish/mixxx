@@ -154,9 +154,21 @@ Touch hot cues jump on release while preserving playback state. An empty pad can
 set a cue while paused; it is disabled while playing. This does not replace the
 controller mapping's held-preview behavior. Gesture guards capture the actual
 deck, loaded track and interaction epoch, rejecting stale releases after a page,
-layout, layer, track or touch-context change. One-shot Beat Sync matches tempo and
-phase without enabling persistent Sync Lock. Musical position is grid-relative
+layout, layer, track or touch-context change. Musical position is grid-relative
 BEAT, not an inferred bar or phrase.
+
+SYNC works like a Pioneer CDJ-3000's BEAT SYNC. A tap turns Sync Lock on or off
+and the lamp stays lit while it is on; the deck follows the tempo master's tempo
+and beat, and keeps its tempo when sync goes off. One deck is the tempo master
+(Mixxx's sync leader): the deck on air when sync first goes on, or the deck MORE's
+MASTER picks while it plays; pausing the master hands it on. A synced deck that
+is not the master ignores its tempo fader; after sync is off, the controller's
+soft takeover picks the fader up when it passes the tempo. Holding SYNC (or MORE's
+INST DOUBLES) loads the master's track, else a playing deck's, at the same
+position, only onto a stopped deck. The engine half lives behind
+`[DeckLab],cdj_sync` (`src/engine/sync/decklabcdjsync.h`), which the native
+surface turns on, so every controller mapping that sends `beatsync` gets the
+same SYNC button; without it Mixxx's own sync behaviour applies.
 
 Deck Lab opts into `<HotcueLabelFormat>letters</HotcueLabelFormat>` for waveform
 and overview cue identifiers. Other skins keep numeric labels. Stored cue names
