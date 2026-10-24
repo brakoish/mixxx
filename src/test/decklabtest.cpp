@@ -4024,7 +4024,7 @@ TEST_F(NativeDeckLabTest, SyncOnTheDeckOnAirNeverMatchesADeckNobodyHears) {
     const auto get = [](int deck, const char* item) { return ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), item)); };
     const auto put = [](int deck, const char* item, double v) { ControlObject::set(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), item), v); };
     put(1, "quantize", 1); put(2, "quantize", 1);
-    put(1, "playposition", .11); put(2, "playposition", .23); ProcessBuffer();
+    put(1, "playposition", .11); put(2, "playposition", .26); ProcessBuffer();
     put(2, "volume", 0); // cued in the headphones
     put(1, "play", 1); put(2, "play", 1);
     for (int n = 0; n < 4; ++n) ProcessBuffer();
