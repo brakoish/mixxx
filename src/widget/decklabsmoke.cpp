@@ -729,7 +729,7 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                          list->setCurrentRow(std::min(1, list->count() - 1));
                          return true;
                      }},
-                    {"history", 1800, [surface, failures] {
+                    {"history", 2400, [surface, failures] {
                          // r5-history: Glass Garden is loaded (paused) on deck 2,
                          // the generated history goes in (Mixxx's history
                          // playlists), and the home's History chip opens the sets:
@@ -755,12 +755,15 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                                  if (list->item(row)->data(DeckLabListDelegate::KeyRole).toString() == QStringLiteral("tracks")) list->setCurrentRow(row);
                              }
                              surface->browsePress();
-                             surface->browseBack();
-                             surface->browseBack();
-                             if (!selectListItem(surface, QStringLiteral("History"))) failures->append(QStringLiteral("No History on the home"));
-                             surface->browsePress();
-                             if (!list || list->count() < 3 || list->item(0)->text() != QStringLiteral("This set"))
-                                 failures->append(QStringLiteral("History does not list this set first"));
+                             // A moment on the stick's tracks, as a DJ would, then History.
+                             QTimer::singleShot(500, surface, [surface, failures, list] {
+                                 surface->browseBack();
+                                 surface->browseBack();
+                                 if (!selectListItem(surface, QStringLiteral("History"))) failures->append(QStringLiteral("No History on the home"));
+                                 surface->browsePress();
+                                 if (!list || list->count() < 3 || list->item(0)->text() != QStringLiteral("This set"))
+                                     failures->append(QStringLiteral("History does not list this set first"));
+                             });
                          });
                          return true;
                      }},
