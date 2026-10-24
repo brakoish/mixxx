@@ -8,7 +8,8 @@ heights and its two- and four-deck layouts stay as round 4 left them.
 |---|---|
 | 4324cf0a7e | Decks: key sync and key shift, and GRID mode on the page |
 | 64793b8871 | The first version of this note |
-| (review) | Decks: review fixes (live safety, one knob owner, controller path, key lock, docking) and this note |
+| aebc086c11 | Decks: review fixes (live safety, one knob owner, controller path, key lock, docking) and this note |
+| (review 2) | Decks: second review (one sheet, knob owner changes, held press, transient-free key lock, saved ownership) |
 
 ## What changed
 
@@ -23,9 +24,12 @@ heights and its two- and four-deck layouts stay as round 4 left them.
     compact card's too. When the key and shift still do not fit, a two-name Traditional key takes its second name
     ("D♯m/E♭m" reads "E♭m"), then the shift steps down to 14 px; a ✓ that no longer fits is dropped. All 24
     Traditional names fit with any shift (tested).
-- **The KEY readout opens a small key sheet.** On touch-down while the deck is paused; on a playing deck only after
-  a 400 ms hold (round 4's stray-thumb rule: a brush never swaps a live deck's pads). A second touch closes it.
-  **MORE › KEY** (next to KEY LOCK, both layouts) opens it too. It docks in the deck area, never over the lanes:
+- **The KEY readout opens a small key sheet.** On touch-down while the deck is paused (checked against the live play
+  control); on a playing deck only after a 400 ms hold that outlines the key while it counts (round 4's stray-thumb
+  rule: a brush never swaps a live deck's pads). The hold ends on a slide-off, when the readout hides (page or layer
+  change) and when the track changes: it must still mean the same deck, track and screen. A second touch closes the
+  sheet. **MORE › KEY** (next to KEY LOCK, both layouts) opens it too. **One key sheet at a time:** opening one
+  closes the others. It docks in the deck area, never over the lanes:
   - two decks: in place of the side's pads, beside SYNC / MORE (`DeckLabPadBlock::setPanel`):
     `[ MATCH TO DECK 2 · 9A ][KEY LOCK][DONE]` over `[‹ −1][MATCH][+1 ›][RESET]`;
   - four decks: in place of the card's overview and transport rows: `[‹ −1][MATCH][+1 ›]` over
@@ -33,12 +37,20 @@ heights and its two- and four-deck layouts stay as round 4 left them.
 - **Mixxx's controls, Mixxx's results.**
   - MATCH: `sync_key` (the nearest key that mixes with the target's), from the track's own key.
   - −1 / +1: a semitone from what plays now. With key lock already on, Mixxx's `pitch_down` / `pitch_up`. With it
-    off, key lock turns on and the new pitch (heard ± 1) is written right after it, so a deck at +8% never snaps to
-    the track's key first (the review's live-safety case: +1 used to drop 0.33 st).
-  - RESET: `reset_key`, then key lock as it was before the sheet.
+    off, key lock turns on at the heard pitch (Mixxx's `keylockMode` set to LockCurrentKey for that one write, then
+    the DJ's mode back), then the pitch goes to heard ± 1. The engine only ever holds the heard pitch or the new one
+    (tested with a recorder on `[ChannelN],pitch` at +8%, −8%, a pitch_adjust of +0.5, a sync follower and beyond
+    ±5 st). No clamp: Mixxx's pitch takes values beyond ±6. A step lost to the engine's pending rate update is
+    written again once, on the next refresh.
+  - RESET: when the DJ owns key lock, `reset_key` (the track's key, key lock stays). When the sheet turned it on,
+    the deck goes back to how it played: the pitch goes to the tempo's plus the pre-sheet `pitch_adjust` while still
+    locked, then key lock comes off with `keyunlockMode` KeepLockedKey for that one write (the DJ's mode back), so
+    it never passes through the track's key, under either unlock preference.
   - **Key lock:** MATCH and ±1 turn it on (a key set by hand stays put when the tempo moves). Mixxx saves key lock,
-    so the sheet remembers that it turned it on: RESET, or the next track on the deck, turns it back off. KEY LOCK in
-    the sheet, MORE or a controller makes it the DJ's again.
+    so the sheet records that it turned it on, in `[DeckLab] KeySheetKeylockN` with the track and the pre-sheet
+    adjust: RESET or the next track gives it back, and so does the next start if that track is gone (a skin rebuild
+    with the track still loaded keeps it the sheet's). The DJ's own key lock is never turned off, and any off-on
+    toggle in between (sheet, MORE or a controller) makes it the DJ's (all tested, the restart too).
   - MATCH's deck is Mixxx's `EngineSync::pickNonSyncSyncTarget` choice: the sync leader, else a playing synced deck,
     else a playing deck, else a loaded one (tested with several decks).
 - **The result shows:** after MATCH the key and its shift turn the match green (#2FD27A) inside a green outline (a
@@ -50,7 +62,10 @@ heights and its two- and four-deck layouts stay as round 4 left them.
   sheet.
 - **Knob** (claims the browse knob while shown): the first event, turn or press, only shows the cursor, on DONE, so
   a blind press never shifts a key. Then turns walk the layout in reading order (two decks: KEY LOCK, DONE, −1,
-  MATCH, +1, RESET), a press activates, back (Shift+press) closes.
+  MATCH, +1, RESET), a press activates, back (Shift+press) closes. When the knob goes elsewhere (a MORE popup, a
+  dialog, another claim) the cursor hides at once, and the first event after it comes back only shows it again. A
+  press held on the knob (`browse_hold`) acts on its release, and a turn made while it is held moves and fires
+  nothing (the overlay sends held turns eight times over).
 - Arrows are the single guillemets ‹ ›, which Barlow has (the triangles fell back to another font).
 
 ### Pick #5: GRID mode, the beat grid edited on the waveform (audit move 6)
@@ -89,8 +104,9 @@ waveform and its grid stay in view above:
 - **The lanes zoom in** to Mixxx's closest zoom (`waveform_zoom` 1.0) while GRID mode is on, and the zoom from
   before comes back on leaving unless it was changed meanwhile. Moving GRID straight to another deck keeps the lanes
   zoomed in. The zoom control only: no GL reallocation. (The zoom is linked across decks, as round 3 made it.)
-- **Entering:** MORE › GRID, or holding a **paused** deck's BPM readout for 600 ms. A playing deck enters from MORE
-  only (a stray thumb on a live deck never opens it). **Leaving:** DONE, Shift+press, a page change, a layer or
+- **Entering:** MORE › GRID, or holding a **paused** deck's BPM readout for 600 ms (a hold that turns into a drag
+  opens nothing). A playing deck enters from MORE only (a stray thumb on a live deck never opens it; MORE › GRID on
+  a playing deck is tested). **Leaving:** DONE, Shift+press, a page change, a layer or
   layout change, or a new track on the deck. A context change is handled before the surface's relayout, so it costs
   one relayout, not two.
 - **A playing deck can be edited** (DJs fix grids live), never silently: the header reads EDITING GRID filled in the
@@ -100,20 +116,22 @@ waveform and its grid stay in view above:
   without a grid, or while the grid is locked. The checks run again at touch-down, ahead of the panel's refresh
   (tested with the engine change and the press in the same turn).
 - **One knob owner at a time:** opening a key sheet leaves GRID mode; entering GRID mode closes the key sheets. The
-  knob lamps and the KNOB legend show only while the panel really owns the knob.
+  knob lamps and the KNOB legend show only while the panel really owns the knob, and follow every change of owner
+  as it happens (claims, and menus or dialogs opening and closing, through `decklab::noteKnobOwnerChanged`).
 - **Knob:** turn nudges the grid (one 10 ms step per detent), press switches to the BPM (±0.01) and back,
-  Shift+press is DONE.
+  Shift+press is DONE. A held press switches on its release, and a push-turn edits nothing.
 - **Jog:** not taken over. Mixxx's jog still moves the playhead, which on a paused deck lands it on a transient for
   DOWNBEAT. Grid nudging from the jog needs a controller-script hook (follow-up).
 
 ### The owner's controller (Numark Mixtrack Pro 3)
 
-Verified against the overlay deployed on the Pi (`mixxx/controllers/DeckLab-Numark.js`, appliance branch
-`decklab/round4-app`). In native mode it forwards every turn as `[Playlist] SelectTrackKnob` (or `SelectPlaylist`
+Verified against the overlay on the appliance branch `decklab/round4-app` (`mixxx/controllers/DeckLab-Numark.js`,
+commit f788b73; that this commit is what the Pi runs is for the coordinator to confirm). In native mode it forwards every turn as `[Playlist] SelectTrackKnob` (or `SelectPlaylist`
 while the sidebar list is up), and on every page but Browse a press is `[DeckLabNative] browse_press` and
 Shift+press is `browse_back`. `LibraryControl::nativeKnob` hands turns to the knob claim as Up/Down;
 `browse_press` / `browse_back` reach it as Return / Escape through WDeckLab's watches. `browse_hold` reaches the
-claimant as `Key_Select`, which the sheet and GRID ignore. Native tests drive exactly these controls. **No appliance
+claimant as `Key_Select`, which the sheet and GRID ignore. Native tests drive exactly these controls and sequences,
+including the held press (`browse_hold` 1, `browse_press`, `SelectTrackKnob` 8, `browse_hold` 0). **No appliance
 change is needed.** (An older overlay gated turns on `[Tab] current == 1` and sent `browse_press` for Shift+press;
 that is not what the Pi runs.)
 
@@ -127,6 +145,8 @@ that is not what the Pi runs.)
   fallbacks, the matched look, the readout's touch zones (`keyTarget`, `bpmTarget`; signals `keyTouched`,
   `bpmHeld`; the live-deck hold), and a beat-count tolerance at a beat boundary (`deckLabBeatPhase`).
 - `src/widget/decklabpads.{h,cpp}`: `setPanel` / `showPanel` (the docked sheet) and `DeckLabPadButton::armed()`.
+- `src/library/decklabknob.h`: `onKnobOwnerChanged` / `noteKnobOwnerChanged` (queued listeners; claims and
+  releases call it).
 
 **Performance.** Everything is change-driven: `pitch`, `pitch_adjust`, `key` and `bpmlock` changes mark decks dirty
 (coalesced; a pitch change also refreshes only a deck matched to it). With nothing open, the per-refresh hook is a
@@ -177,6 +197,14 @@ New suites (in the lock's `test_suites`), `src/test/decklabdecktoolstest.cpp`:
   four decks (card rows, short line, Mixxx picks deck 1, compatible result).
 - `KeySheetFollowsMixxxsSyncKeyTargetWithSeveralDecks`: the first loaded deck, then a playing deck before a paused
   one, then the sync leader first; the result mixes with that deck.
+- `KeySheetStepsKeepTheHeardPitchAndGiveKeyLockBack`: the pitch recorder at +8%, −8%, pitch_adjust +0.5, beyond
+  ±5 st and a sync follower; RESET under KeepLockedKey; the DJ's own key lock kept through RESET and the next
+  track; an off-on toggle hands it to the DJ; a restart (a fresh surface reading the saved record) gives it back.
+- `KeySheetAndGridFollowTheKnobOwnerAsTheControllerSendsIt`: one sheet at a time; a MORE popup hides the cursor and
+  the returning knob reveals first; the held press and push-turn through the controller's controls, for the sheet
+  and GRID; GRID's lamps and legend follow a MORE popup with every deck paused.
+- `ReadoutHoldsEndWithTheirContextAndMoreOpensGridOnAPlayingDeck`: a live KEY hold across a layer change or a
+  track load opens nothing; MORE › GRID on a playing deck; a paused BPM hold that becomes a drag opens nothing.
 - **Replaced** `BeatgridEditorUsesRealGridControlsAndRefusesUnsafeRelease` with
   `GridModeEditsTheRealGridBesideItsWaveformAndOwnsTheKnob`: the paused BPM hold enters; placement; every lane at
   zoom 1.0 from 4 and back, a zoom changed meanwhile kept, a switch to another deck keeps it; the knob claim; all
@@ -218,7 +246,12 @@ New suites (in the lock's `test_suites`), `src/test/decklabdecktoolstest.cpp`:
   after `setVisibleIf(m_deckRow, decks)`.
 - Not touched: `kStyle`, Browse, History, the setup wizard, the controller list, the LaunchImage.
 
+- `eventFilter()`: `decklab::noteKnobOwnerChanged()` beside `scheduleKnobLegend()` (menus and dialogs).
+- The host block also passes `epoch`, `setting` and `setSetting` (`[DeckLab]` config).
+
 **`src/widget/wdecklab.h`:** `class DeckLabDeckTools;`, `m_deckTools`, a comment on `showBeatgrid`.
+
+**`src/library/decklabknob.h`:** the knob-owner listeners (round 4's file; additive).
 
 **`src/widget/decklabsmoke.cpp`:** three includes, `captureDeckTools()` after `captureSampler()`, and a `decksDone`
 stage after the Sampler stage (uncounted, like Browse and Sampler).

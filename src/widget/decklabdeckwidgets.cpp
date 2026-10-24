@@ -1162,10 +1162,12 @@ void DeckLabDeckStrip::mousePressEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton && isEnabled()) {
         const QPoint at = event->position().toPoint();
         const int deck = m_renderer.state().deck;
+        m_pressAt = at;
         if (m_renderer.keyTarget().contains(at)) {
             event->accept();
             if (!m_renderer.state().playing) {
-                emit keyTouched(deck);
+                // The surface checks the live play state too.
+                emit keyTouched(deck, false);
                 return;
             }
             if (!m_keyHold) {
@@ -1173,14 +1175,17 @@ void DeckLabDeckStrip::mousePressEvent(QMouseEvent* event) {
                 m_keyHold->setSingleShot(true);
                 m_keyHold->setInterval(kLiveKeyHoldMs);
                 connect(m_keyHold, &QTimer::timeout, this, [this] {
-                    if (m_keyTouch && m_renderer.state().loaded) {
-                        m_keyTouch = false;
-                        emit keyTouched(m_renderer.state().deck);
+                    const bool request = m_keyTouch && isVisible() && isEnabled() && m_renderer.state().loaded;
+                    setKeyTouch(false);
+                    if (request) {
+                        emit keyTouched(m_renderer.state().deck, true);
                     }
                 });
             }
-            m_keyTouch = true;
+            // The hold shows on the key (an outline) while it counts.
+            setKeyTouch(true);
             m_keyHold->start();
+            emit keyHoldStarted(deck);
             return;
         }
         if (m_renderer.bpmTarget().contains(at) && !m_renderer.state().playing) {
@@ -1205,14 +1210,20 @@ void DeckLabDeckStrip::mousePressEvent(QMouseEvent* event) {
 }
 
 void DeckLabDeckStrip::mouseMoveEvent(QMouseEvent* event) {
+    const QPoint at = event->position().toPoint();
     if (m_keyTouch) {
         // A held KEY touch that slides off the key is not a request.
-        if (!m_renderer.keyTarget().contains(event->position().toPoint())) {
-            m_keyTouch = false;
+        if (!m_renderer.keyTarget().contains(at)) {
+            setKeyTouch(false);
             m_keyHold->stop();
         }
         event->accept();
         return;
+    }
+    if (m_gridHold && m_gridHold->isActive() &&
+            (!m_renderer.bpmTarget().contains(at) || (at - m_pressAt).manhattanLength() > 12)) {
+        // A BPM hold that turns into a drag opens nothing.
+        m_gridHold->stop();
     }
     QPushButton::mouseMoveEvent(event);
 }
@@ -1223,12 +1234,37 @@ void DeckLabDeckStrip::mouseReleaseEvent(QMouseEvent* event) {
     }
     if (m_keyTouch || (m_keyHold && m_keyHold->isActive())) {
         // A KEY touch released before the hold: nothing (no click either).
-        m_keyTouch = false;
+        setKeyTouch(false);
         m_keyHold->stop();
         event->accept();
         return;
     }
     QPushButton::mouseReleaseEvent(event);
+}
+
+void DeckLabDeckStrip::cancelHolds() {
+    if (m_gridHold) {
+        m_gridHold->stop();
+    }
+    if (m_keyHold) {
+        m_keyHold->stop();
+    }
+    setKeyTouch(false);
+}
+
+void DeckLabDeckStrip::setKeyTouch(bool on) {
+    if (on == m_keyTouch) {
+        return;
+    }
+    m_keyTouch = on;
+    update(m_renderer.keyTarget());
+}
+
+void DeckLabDeckStrip::hideEvent(QHideEvent* event) {
+    // r5-decks: a page, layer or layout change mid-hold: its release goes
+    // elsewhere, so nothing held here may fire later.
+    cancelHolds();
+    QPushButton::hideEvent(event);
 }
 
 QSize DeckLabDeckStrip::sizeHint() const {
@@ -1248,6 +1284,13 @@ void DeckLabDeckStrip::paintEvent(QPaintEvent* event) {
     QPainter painter(this);
     // A focus frame only for keyboard focus; touch never shows one.
     m_renderer.paint(painter, event->rect(), isDown(), m_keyboardFocus && hasFocus());
+    if (m_keyTouch) {
+        // r5-decks: a live deck's KEY hold shows while it counts.
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setPen(QPen(kText, 1.5));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRoundedRect(QRectF(m_renderer.keyTarget()).adjusted(1, 1, -1, -1), 3, 3);
+    }
 }
 
 void DeckLabDeckStrip::focusInEvent(QFocusEvent* event) {
@@ -1271,6 +1314,9 @@ void DeckLabDeckStrip::changeEvent(QEvent* event) {
     if (event->type() == QEvent::FontChange) {
         m_renderer.setFamily(font().family());
         update();
+    }
+    if (event->type() == QEvent::EnabledChange && !isEnabled()) {
+        cancelHolds(); // r5-decks
     }
     QPushButton::changeEvent(event);
 }

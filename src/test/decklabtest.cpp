@@ -2581,6 +2581,270 @@ TEST_F(NativeDeckLabTest, KeySheetFollowsMixxxsSyncKeyTargetWithSeveralDecks) {
     QTest::mouseClick(sheet->key(DeckLabKeySheet::Action::Done),Qt::LeftButton);
 }
 
+// r5-decks: −1 / +1 keep the heard pitch in every state Mixxx can be in
+// (the engine never holds the track's own key in between: a recorder on
+// [Channel1],pitch sees only the heard pitch and the new one), and key lock
+// goes back only where the sheet turned it on, also after a restart.
+TEST_F(NativeDeckLabTest, KeySheetStepsKeepTheHeardPitchAndGiveKeyLockBack) {
+    loadGenerated(1,126,mixxx::track::io::key::A_MINOR);
+    loadGenerated(2,128,mixxx::track::io::key::B_FLAT_MINOR); ProcessBuffer(); QTest::qWait(150); settle();
+    const auto get=[](int deck,const char* item) { return ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck),item)); };
+    const auto put=[](int deck,const char* item,double v) { ControlObject::set(ConfigKey(QStringLiteral("[Channel%1]").arg(deck),item),v); };
+    auto* tools=panel->findChild<DeckLabDeckTools*>("decklab-deck-tools"); ASSERT_NE(nullptr,tools);
+    tools->openKeySheet(1); settle();
+    auto* sheet=panel->findChild<DeckLabKeySheet*>("decklab-key-1"); ASSERT_NE(nullptr,sheet); ASSERT_TRUE(sheet->isVisible());
+    using K=DeckLabKeySheet::Action;
+    QList<double> seen;
+    ControlProxy recorder("[Channel1]","pitch");
+    recorder.connectValueChanged(panel.get(),[&seen](double v) { seen << v; },Qt::DirectConnection);
+    // Presses +1 (or −1) with key lock off and checks every pitch the
+    // engine could have played on the way, then RESET.
+    const auto step=[&](K action,const char* what) {
+        ASSERT_DOUBLE_EQ(0,get(1,"keylock")) << what;
+        const double heard=get(1,"pitch");
+        const double target=heard+(action==K::Up ? 1 : -1);
+        const double mode=get(1,"keylockMode");
+        seen.clear();
+        QTest::mousePress(sheet->key(action),Qt::LeftButton);
+        EXPECT_DOUBLE_EQ(1,get(1,"keylock")) << what << ": key lock first";
+        EXPECT_NEAR(target,get(1,"pitch"),.02) << what << ": the heard pitch, one semitone on";
+        for(double v:std::as_const(seen)) {
+            EXPECT_TRUE(std::abs(v-heard)<.02 || std::abs(v-target)<.02) << what << ": the engine held " << v
+                    << " between " << heard << " and " << target;
+        }
+        EXPECT_DOUBLE_EQ(mode,get(1,"keylockMode")) << what << ": the DJ's key lock mode comes back";
+        QTest::mouseRelease(sheet->key(action),Qt::LeftButton); settle();
+        seen.clear();
+        QTest::mouseClick(sheet->key(K::Reset),Qt::LeftButton); settle();
+        EXPECT_DOUBLE_EQ(0,get(1,"keylock")) << what << ": RESET gives key lock back";
+        EXPECT_NEAR(heard,get(1,"pitch"),.02) << what << ": and the deck plays as before";
+        for(double v:std::as_const(seen)) {
+            EXPECT_TRUE(std::abs(v-heard)<.02 || std::abs(v-target)<.02) << what << ": RESET passed through " << v;
+        }
+    };
+    put(1,"keylock",0); put(1,"rateRange",.08); settle();
+    put(1,"rate",1); ProcessBuffer(); settle();
+    ASSERT_GT(std::abs(get(1,"pitch")),1.0);
+    step(K::Up,"+8%");
+    put(1,"rate",-1); ProcessBuffer(); settle();
+    ASSERT_GT(std::abs(get(1,"pitch")),1.0);
+    step(K::Up,"−8%");
+    step(K::Down,"−8% down");
+    // pitch_adjust +0.5 at rate 0: heard 0.5, +1 gives 1.5, RESET gives the
+    // 0.5 adjust back.
+    put(1,"rate",0); ProcessBuffer(); settle();
+    put(1,"pitch_adjust",.5); settle();
+    ASSERT_NEAR(.5,get(1,"pitch"),.02);
+    step(K::Up,"adjust +0.5");
+    EXPECT_NEAR(.5,get(1,"pitch_adjust"),.02) << "the pre-sheet adjust is back";
+    put(1,"pitch_adjust",0); settle();
+    // |heard| beyond 5: no clamp shortens or turns the step round.
+    put(1,"rateRange",.5); put(1,"rate",1); ProcessBuffer(); settle();
+    ASSERT_GT(std::abs(get(1,"pitch")),5.0);
+    step(K::Up,"wide range");
+    put(1,"rate",0); put(1,"rateRange",.08); ProcessBuffer(); settle();
+    // A sync follower (126 following 128).
+    put(2,"sync_leader",1); ProcessBuffer();
+    put(1,"sync_enabled",1); put(1,"play",1); put(2,"play",1);
+    for(int pass=0;pass<5;++pass) ProcessBuffer();
+    settle();
+    put(1,"play",0); put(2,"play",0); ProcessBuffer(); settle();
+    ASSERT_GT(std::abs(get(1,"rate_ratio")-1),.005) << "deck 1 follows deck 2";
+    step(K::Up,"sync follower");
+    put(1,"sync_enabled",0); put(2,"sync_leader",0); put(2,"sync_enabled",0); ProcessBuffer();
+    put(1,"rate",0); ProcessBuffer(); settle();
+    // KeepLockedKey (Mixxx Preferences > Decks): RESET still gives back
+    // the pitch the tempo set, not the track's key.
+    put(1,"keyunlockMode",1); put(1,"rate",1); ProcessBuffer(); settle();
+    step(K::Up,"KeepLockedKey");
+    EXPECT_NEAR(0,get(1,"pitch_adjust"),.02);
+    put(1,"keyunlockMode",0); put(1,"rate",0); ProcessBuffer(); settle();
+    // The DJ's own key lock is never turned off: not by RESET, not by the
+    // next track.
+    put(1,"keylock",1); settle();
+    QTest::mouseClick(sheet->key(K::Match),Qt::LeftButton); settle();
+    QTest::mouseClick(sheet->key(K::Up),Qt::LeftButton); settle();
+    EXPECT_FALSE(tools->keylockBySheet(1));
+    QTest::mouseClick(sheet->key(K::Reset),Qt::LeftButton); settle();
+    EXPECT_DOUBLE_EQ(1,get(1,"keylock")) << "the DJ's key lock stays";
+    EXPECT_NEAR(0,get(1,"pitch"),.01) << "RESET: the track's key";
+    deckPlayer(1)->loadFakeTrack(false,124)->setKey(mixxx::track::io::key::A_MINOR,mixxx::track::io::key::USER);
+    ProcessBuffer(); QTest::qWait(150); settle();
+    EXPECT_DOUBLE_EQ(1,get(1,"keylock")) << "and stays with the next track";
+    // A manual toggle in between hands key lock back to the DJ.
+    put(1,"keylock",0); settle();
+    tools->openKeySheet(1); settle(); ASSERT_TRUE(sheet->isVisible());
+    QTest::mouseClick(sheet->key(K::Match),Qt::LeftButton); settle();
+    ASSERT_TRUE(tools->keylockBySheet(1));
+    put(1,"keylock",0); settle(); // a controller's KEY LOCK, off...
+    put(1,"keylock",1); settle(); // ...and on again
+    EXPECT_FALSE(tools->keylockBySheet(1)) << "the DJ's now";
+    QTest::mouseClick(sheet->key(K::Reset),Qt::LeftButton); settle();
+    EXPECT_DOUBLE_EQ(1,get(1,"keylock"));
+    deckPlayer(1)->loadFakeTrack(false,125)->setKey(mixxx::track::io::key::A_MINOR,mixxx::track::io::key::USER);
+    ProcessBuffer(); QTest::qWait(150); settle();
+    EXPECT_DOUBLE_EQ(1,get(1,"keylock")) << "still the DJ's with the next track";
+    // A restart (or a skin rebuild with the track gone): the saved record
+    // gives key lock back when the next surface starts.
+    put(1,"keylock",0); settle();
+    tools->openKeySheet(1); settle(); ASSERT_TRUE(sheet->isVisible());
+    QTest::mouseClick(sheet->key(K::Match),Qt::LeftButton); settle();
+    ASSERT_DOUBLE_EQ(1,get(1,"keylock"));
+    EXPECT_EQ(QStringLiteral("1"),config()->getValueString(ConfigKey("[DeckLab]","KeySheetKeylock1"))) << "saved";
+    {
+        DeckLabDeckTools::Host host;
+        host.read=[](int deck,const QString& item) { return ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck),item)); };
+        host.write=[](int deck,const QString& item,double v) { ControlObject::set(ConfigKey(QStringLiteral("[Channel%1]").arg(deck),item),v); };
+        host.track=[this](int deck) { return deckPlayer(deck)->getLoadedTrack(); };
+        host.setting=[this](const QString& item) { return config()->getValueString(ConfigKey("[DeckLab]",item)); };
+        host.setSetting=[this](const QString& item,const QString& value) { config()->set(ConfigKey("[DeckLab]",item),ConfigValue(value)); };
+        DeckLabDeckTools restarted(host,nullptr);
+        EXPECT_DOUBLE_EQ(0,get(1,"keylock")) << "after a restart, key lock goes back";
+        EXPECT_EQ(QStringLiteral("0"),config()->getValueString(ConfigKey("[DeckLab]","KeySheetKeylock1")));
+        EXPECT_FALSE(restarted.keylockBySheet(1));
+    }
+    settle();
+    EXPECT_FALSE(tools->keylockBySheet(1)) << "the running surface agrees";
+    for(int deck=1;deck<=4;++deck) EXPECT_DOUBLE_EQ(0,get(deck,"play"));
+}
+
+// r5-decks: one knob owner at a time, as the owner's Numark sends it. One
+// key sheet at a time; a sheet whose knob went elsewhere (another sheet, a
+// MORE popup) shows its cursor again before acting; a held press acts on
+// release and a push-turn does nothing; GRID's lamps follow the owner.
+TEST_F(NativeDeckLabTest, KeySheetAndGridFollowTheKnobOwnerAsTheControllerSendsIt) {
+    loadGenerated(1,128,mixxx::track::io::key::A_MINOR);
+    loadGenerated(2,126,mixxx::track::io::key::B_FLAT_MINOR); ProcessBuffer(); QTest::qWait(150); settle();
+    const auto pitch=[](int deck) { return ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck),"pitch")); };
+    auto* tools=panel->findChild<DeckLabDeckTools*>("decklab-deck-tools"); ASSERT_NE(nullptr,tools);
+    using K=DeckLabKeySheet::Action;
+    tools->openKeySheet(1); settle();
+    auto* one=panel->findChild<DeckLabKeySheet*>("decklab-key-1"); ASSERT_NE(nullptr,one);
+    auto* two=panel->findChild<DeckLabKeySheet*>("decklab-key-2"); ASSERT_NE(nullptr,two);
+    ASSERT_TRUE(one->isVisible());
+    r4Pulse("[DeckLabNative]","browse_press"); settle();            // reveal
+    r4Pulse("[Playlist]","SelectTrackKnob",3); settle();             // DONE → +1
+    ASSERT_EQ(K::Up,one->knobFocus());
+    // Deck 2's sheet: deck 1's closes, one sheet at a time.
+    tools->openKeySheet(2); settle();
+    EXPECT_TRUE(two->isVisible()); EXPECT_FALSE(one->isVisible()) << "one key sheet at a time";
+    EXPECT_EQ(two,decklab::knobClaimant());
+    r4Pulse("[DeckLabNative]","browse_back"); settle();
+    EXPECT_FALSE(two->isVisible());
+    EXPECT_FALSE(one->isVisible()) << "no sheet left to act on deck 1";
+    EXPECT_NE(one,decklab::knobClaimant());
+    EXPECT_NEAR(0,pitch(1),.01);
+    // A MORE popup takes the knob: back on the sheet, the next press only
+    // shows the cursor again.
+    tools->openKeySheet(1); settle(); ASSERT_TRUE(one->isVisible());
+    r4Pulse("[DeckLabNative]","browse_press"); settle();
+    r4Pulse("[Playlist]","SelectTrackKnob",3); settle();
+    ASSERT_EQ(K::Up,one->knobFocus()); ASSERT_TRUE(one->knobCursorShown());
+    panel->findChild<QPushButton*>("decklab-2-more")->click(); settle();
+    auto* menu=panel->findChild<QMenu*>("decklab-2-more-menu"); ASSERT_NE(nullptr,menu); ASSERT_TRUE(menu->isVisible());
+    EXPECT_FALSE(one->knobCursorShown()) << "the cursor hides while the menu has the knob";
+    menu->close(); settle();
+    r4Pulse("[DeckLabNative]","browse_press"); settle();
+    EXPECT_NEAR(0,pitch(1),.01) << "a returning knob reveals first";
+    EXPECT_EQ(K::Done,one->knobFocus());
+    // The overlay's held press: browse_hold, the press at once, a turn eight
+    // times over, the release. Nothing moves and nothing fires.
+    r4Pulse("[Playlist]","SelectTrackKnob",3); settle();
+    ASSERT_EQ(K::Up,one->knobFocus());
+    ControlObject::set(ConfigKey("[DeckLabNative]","browse_hold"),1);
+    r4Pulse("[DeckLabNative]","browse_press");
+    r4Pulse("[Playlist]","SelectTrackKnob",8);
+    ControlObject::set(ConfigKey("[DeckLabNative]","browse_hold"),0); settle();
+    EXPECT_NEAR(0,pitch(1),.01) << "a push-turn fires nothing";
+    EXPECT_EQ(K::Up,one->knobFocus()) << "and moves nothing";
+    // Held and released without a turn: +1 on the release.
+    ControlObject::set(ConfigKey("[DeckLabNative]","browse_hold"),1);
+    r4Pulse("[DeckLabNative]","browse_press"); settle();
+    EXPECT_NEAR(0,pitch(1),.01) << "not at press-down";
+    ControlObject::set(ConfigKey("[DeckLabNative]","browse_hold"),0); settle();
+    EXPECT_NEAR(1,pitch(1),.01) << "on the release";
+    QTest::mouseClick(one->key(K::Reset),Qt::LeftButton);
+    QTest::mouseClick(one->key(K::Done),Qt::LeftButton); settle();
+    // GRID mode with every deck paused: the lamps and legend follow a MORE
+    // popup opening and closing, with no deck refresh in between.
+    tools->enterGrid(1); settle();
+    auto* grid=panel->findChild<DeckLabGridPanel*>("decklab-grid-mode"); ASSERT_NE(nullptr,grid);
+    ASSERT_TRUE(grid->ownsKnob());
+    EXPECT_TRUE(grid->key(DeckLabGridPanel::Action::NudgeLater)->armed());
+    EXPECT_TRUE(grid->status().startsWith(QStringLiteral("KNOB")));
+    panel->findChild<QPushButton*>("decklab-2-more")->click(); settle();
+    ASSERT_TRUE(menu->isVisible());
+    EXPECT_FALSE(grid->key(DeckLabGridPanel::Action::NudgeLater)->armed()) << "the menu has the knob";
+    EXPECT_FALSE(grid->status().startsWith(QStringLiteral("KNOB")));
+    menu->close(); settle();
+    EXPECT_TRUE(grid->key(DeckLabGridPanel::Action::NudgeLater)->armed()) << "back with GRID";
+    EXPECT_TRUE(grid->status().startsWith(QStringLiteral("KNOB")));
+    // GRID's push-turn edits nothing; a held press switches on release.
+    auto track=deckPlayer(1)->getLoadedTrack(); ASSERT_TRUE(track);
+    const auto reference=mixxx::audio::FramePos(44100);
+    const double beat=track->getBeats()->findClosestBeat(reference).toEngineSamplePos();
+    const double bpm=track->getBpm();
+    ControlObject::set(ConfigKey("[DeckLabNative]","browse_hold"),1);
+    r4Pulse("[DeckLabNative]","browse_press");
+    r4Pulse("[Playlist]","SelectTrackKnob",8);
+    ControlObject::set(ConfigKey("[DeckLabNative]","browse_hold"),0); settle(); ProcessBuffer();
+    EXPECT_EQ(DeckLabGridPanel::Knob::Nudge,grid->knob());
+    EXPECT_DOUBLE_EQ(beat,track->getBeats()->findClosestBeat(reference).toEngineSamplePos());
+    EXPECT_NEAR(bpm,track->getBpm(),.001);
+    ControlObject::set(ConfigKey("[DeckLabNative]","browse_hold"),1);
+    r4Pulse("[DeckLabNative]","browse_press");
+    ControlObject::set(ConfigKey("[DeckLabNative]","browse_hold"),0); settle();
+    EXPECT_EQ(DeckLabGridPanel::Knob::Bpm,grid->knob());
+    tools->leaveGrid(); settle();
+}
+
+// r5-decks: holds on the readout end with their context: a live deck's KEY
+// hold through a layer change or a track load opens nothing, a paused
+// deck's BPM hold that turns into a drag opens nothing, and MORE › GRID is
+// the deliberate way into GRID mode on a playing deck.
+TEST_F(NativeDeckLabTest, ReadoutHoldsEndWithTheirContextAndMoreOpensGridOnAPlayingDeck) {
+    loadGenerated(1,128,mixxx::track::io::key::A_MINOR);
+    loadGenerated(2,126,mixxx::track::io::key::B_FLAT_MINOR);
+    loadGenerated(3,124,mixxx::track::io::key::C_MAJOR); ProcessBuffer(); QTest::qWait(150); settle();
+    auto* sheet=panel->findChild<DeckLabKeySheet*>("decklab-key-1"); ASSERT_NE(nullptr,sheet);
+    auto* tools=panel->findChild<DeckLabDeckTools*>("decklab-deck-tools"); ASSERT_NE(nullptr,tools);
+    ControlObject::set(ConfigKey("[Channel1]","play"),1); ProcessBuffer(); settle();
+    const QPoint keyAt=strip(1)->renderer().keyTarget().center();
+    // A layer flip mid-hold (and back before the hold would end).
+    QTest::mousePress(strip(1),Qt::LeftButton,Qt::NoModifier,keyAt);
+    ControlObject::set(ConfigKey("[DeckLabLeft]","current"),1); QCoreApplication::processEvents(); settle();
+    ControlObject::set(ConfigKey("[DeckLabLeft]","current"),0); QCoreApplication::processEvents(); settle();
+    QTest::qWait(DeckLabDeckStrip::kLiveKeyHoldMs+100); settle();
+    EXPECT_FALSE(sheet->isVisible()) << "a hold across a layer change opens nothing";
+    QTest::mouseRelease(strip(1),Qt::LeftButton,Qt::NoModifier,keyAt);
+    // A track load mid-hold.
+    QTest::mousePress(strip(1),Qt::LeftButton,Qt::NoModifier,keyAt);
+    auto replacement=deckPlayer(1)->loadFakeTrack(false,132);
+    ASSERT_TRUE(replacement);
+    QTest::qWait(DeckLabDeckStrip::kLiveKeyHoldMs+100); ProcessBuffer(); settle();
+    EXPECT_FALSE(sheet->isVisible()) << "a hold across a track load opens nothing";
+    QTest::mouseRelease(strip(1),Qt::LeftButton,Qt::NoModifier,keyAt);
+    // MORE › GRID on the playing deck: EDITING GRID · PLAYING.
+    ControlObject::set(ConfigKey("[Channel1]","play"),1); ProcessBuffer(); QTest::qWait(150); settle();
+    ASSERT_GT(ControlObject::get(ConfigKey("[Channel1]","play")),0);
+    panel->findChild<QPushButton*>("decklab-1-more")->click(); QCoreApplication::processEvents();
+    panel->findChild<QPushButton*>("decklab-1-grid")->click(); settle();
+    auto* grid=panel->findChild<DeckLabGridPanel*>("decklab-grid-mode"); ASSERT_NE(nullptr,grid);
+    ASSERT_TRUE(grid->isVisible()); EXPECT_EQ(1,tools->gridDeck());
+    EXPECT_EQ(QStringLiteral("PLAYING"),grid->playText());
+    QTest::mouseClick(grid->key(DeckLabGridPanel::Action::Done),Qt::LeftButton); settle();
+    ControlObject::set(ConfigKey("[Channel1]","play"),0); ProcessBuffer(); settle();
+    // A paused deck's BPM hold that turns into a drag.
+    const QPoint bpm=strip(2)->renderer().bpmTarget().center();
+    QTest::mousePress(strip(2),Qt::LeftButton,Qt::NoModifier,bpm);
+    QTest::mouseMove(strip(2),bpm+QPoint(40,0));
+    QTest::qWait(DeckLabDeckStrip::kGridHoldMs+150);
+    QTest::mouseRelease(strip(2),Qt::LeftButton,Qt::NoModifier,bpm+QPoint(40,0)); settle();
+    EXPECT_EQ(0,tools->gridDeck()) << "a drag is not a hold";
+    for(int deck=1;deck<=4;++deck) ControlObject::set(ConfigKey(QStringLiteral("[Channel%1]").arg(deck),"play"),0);
+    ProcessBuffer();
+}
+
 TEST_F(NativeDeckLabTest, SideUtilitiesOperateRealLoopsAndModesWithoutRetargetingHeldActions) {
     m_pMixerDeck1->loadFakeTrack(false, 128);
     m_pMixerDeck3->loadFakeTrack(false, 132); ProcessBuffer();

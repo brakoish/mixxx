@@ -32,7 +32,11 @@ class QLabel;
 // The browse knob drives the sheet while it is shown (decklabknob.h claim).
 // The first knob event (turn or press) only shows the cursor, on DONE; then a
 // turn moves it in reading order and a press activates. Back (Shift+press)
-// closes. A blind press never shifts a key.
+// closes. A blind press never shifts a key. When the knob goes elsewhere (a
+// menu, a dialog, another claim) the cursor hides, and the first event after
+// it comes back only shows it again. A press held on the knob acts on its
+// release, and a turn made while it is held does nothing (the Numark overlay
+// reports the hold as browse_hold and sends held turns eight times over).
 //
 // Pure Qt: the surface supplies the state and performs the actions, so the
 // sheet renders offscreen and is unit-tested without the engine.
@@ -123,6 +127,7 @@ class DeckLabKeySheet final : public QWidget {
   protected:
     bool event(QEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void keyReleaseEvent(QKeyEvent* event) override;
 
   private:
     void pressed(Action action);
@@ -132,6 +137,10 @@ class DeckLabKeySheet final : public QWidget {
     void showFocus();
     // The first knob event only shows the cursor; true when it did.
     bool revealCursor();
+    // The knob is really this sheet's (no menu, dialog or later claim).
+    bool ownsKnob() const;
+    void knobOwnerChanged();
+    void knobPress();
 
     Shape m_shape;
     Host m_host;
@@ -142,4 +151,9 @@ class DeckLabKeySheet final : public QWidget {
     Action m_focus = Action::Done;
     // The knob's cursor shows once the knob is used, not for touch.
     bool m_knobUsed = false;
+    // A knob press held down (browse_hold): the press waits for the release
+    // and is dropped if the knob turned meanwhile.
+    bool m_knobHeld = false;
+    bool m_heldPress = false;
+    bool m_heldTurn = false;
 };

@@ -99,6 +99,8 @@ DeckLabKeySheet::DeckLabKeySheet(const QString& name, Shape shape, Host host, QW
         bottom->addWidget(done);
     }
     refresh();
+    // The cursor follows the knob: hidden the moment it goes elsewhere.
+    decklab::onKnobOwnerChanged(this, [this] { knobOwnerChanged(); });
 }
 
 DeckLabKeySheet::~DeckLabKeySheet() {
@@ -263,6 +265,23 @@ void DeckLabKeySheet::pressed(Action action) {
     }
 }
 
+bool DeckLabKeySheet::ownsKnob() const {
+    const decklab::KnobOwner owner = decklab::knobOwner();
+    return isVisible() && owner.claimed && owner.blocker == this;
+}
+
+void DeckLabKeySheet::knobOwnerChanged() {
+    if (!ownsKnob()) {
+        // The knob went elsewhere: its next event here starts over with a
+        // reveal, and a held press is forgotten.
+        m_knobUsed = false;
+        m_knobHeld = false;
+        m_heldPress = false;
+        m_heldTurn = false;
+        showFocus();
+    }
+}
+
 bool DeckLabKeySheet::revealCursor() {
     if (m_knobUsed) {
         return false;
@@ -295,7 +314,7 @@ void DeckLabKeySheet::moveFocus(int steps) {
 void DeckLabKeySheet::showFocus() {
     for (const Action action : knobOrder()) {
         if (auto* key = m_keys[static_cast<int>(action)]) {
-            key->setArmed(m_knobUsed && action == m_focus);
+            key->setArmed(m_knobUsed && action == m_focus && ownsKnob());
         }
     }
 }
@@ -305,10 +324,12 @@ bool DeckLabKeySheet::event(QEvent* event) {
     case QEvent::Show:
         // The browse knob drives the sheet while it is shown.
         m_knobUsed = false;
+        m_knobHeld = false;
         m_focus = Action::Done;
-        refresh();
         decklab::claimKnob(this);
-        break;
+        QWidget::event(event);
+        refresh();
+        return true;
     case QEvent::Hide:
         decklab::releaseKnob(this);
         break;
@@ -322,27 +343,38 @@ void DeckLabKeySheet::keyPressEvent(QKeyEvent* event) {
     // The knob claim sends Up/Down for a turn, Return for a press and Escape
     // for back (decklab::forwardKnob).
     switch (event->key()) {
+    case Qt::Key_Select:
+        // browse_hold: the knob is held down.
+        m_knobHeld = true;
+        m_heldPress = false;
+        m_heldTurn = false;
+        event->accept();
+        return;
     case Qt::Key_Up:
     case Qt::Key_Left:
     case Qt::Key_Backtab:
-        if (!revealCursor()) {
-            moveFocus(-1);
-        }
-        event->accept();
-        return;
     case Qt::Key_Down:
     case Qt::Key_Right:
-    case Qt::Key_Tab:
-        if (!revealCursor()) {
-            moveFocus(1);
+    case Qt::Key_Tab: {
+        if (m_knobHeld) {
+            // A push-turn moves nothing (it arrives eight times over).
+            m_heldTurn = true;
+        } else if (!revealCursor()) {
+            const bool back = event->key() == Qt::Key_Up || event->key() == Qt::Key_Left ||
+                    event->key() == Qt::Key_Backtab;
+            moveFocus(back ? -1 : 1);
         }
         event->accept();
         return;
+    }
     case Qt::Key_Return:
     case Qt::Key_Enter:
     case Qt::Key_Space:
-        if (!revealCursor()) {
-            pressed(m_focus);
+        if (m_knobHeld) {
+            // Acts on the release, unless the knob turns meanwhile.
+            m_heldPress = true;
+        } else {
+            knobPress();
         }
         event->accept();
         return;
@@ -352,5 +384,26 @@ void DeckLabKeySheet::keyPressEvent(QKeyEvent* event) {
         return;
     default:
         QWidget::keyPressEvent(event);
+    }
+}
+
+void DeckLabKeySheet::keyReleaseEvent(QKeyEvent* event) {
+    if (event->key() != Qt::Key_Select) {
+        QWidget::keyReleaseEvent(event);
+        return;
+    }
+    const bool press = m_knobHeld && m_heldPress && !m_heldTurn;
+    m_knobHeld = false;
+    m_heldPress = false;
+    m_heldTurn = false;
+    if (press) {
+        knobPress();
+    }
+    event->accept();
+}
+
+void DeckLabKeySheet::knobPress() {
+    if (!revealCursor()) {
+        pressed(m_focus);
     }
 }

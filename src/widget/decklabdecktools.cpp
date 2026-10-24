@@ -66,10 +66,10 @@ DeckLabDeckTools::DeckLabDeckTools(Host host, QGridLayout* deckGrid, QObject* pa
                 }
             });
             m_host.watch(deck, QStringLiteral("keylock"), [this, deck](double on) {
-                // Key lock turned off by anything: it is no longer the sheet's.
+                // Key lock turned off by anything: it is no longer the sheet's
+                // (a DJ who turns it back on owns it).
                 if (on <= 0) {
-                    m_keylockBySheet[deck - 1] = false;
-                    m_keylockTrack[deck - 1].reset();
+                    forgetKeylock(deck);
                 }
             });
             // Another deck's key or pitch decides whether this one still
@@ -80,6 +80,8 @@ DeckLabDeckTools::DeckLabDeckTools(Host host, QGridLayout* deckGrid, QObject* pa
             });
         }
     }
+    // Key lock the sheet turned on before a restart or a skin rebuild.
+    restoreSavedKeylocks();
 }
 
 DeckLabDeckTools::~DeckLabDeckTools() = default;
@@ -156,27 +158,99 @@ bool DeckLabDeckTools::keysMatch(int deck, int target) const {
     return validKey(own) && validKey(other) && KeyUtils::getCompatibleKeys(other).contains(own);
 }
 
+QString DeckLabDeckTools::trackKey(const TrackPointer& track) {
+    return track ? track->getLocation() : QString();
+}
+
 bool DeckLabDeckTools::ensureKeylock(int deck) {
     // A key set by hand stays put when the tempo moves. The sheet remembers
-    // that it turned key lock on, so RESET (or the next track) gives the
-    // deck back as it was: Mixxx saves key lock.
+    // that it turned key lock on (and saves it), so RESET or the next track
+    // gives the deck back as it was: Mixxx saves key lock.
     if (m_host.read(deck, QStringLiteral("keylock")) > 0) {
         return false;
     }
+    m_keylockAdjust[deck - 1] = m_host.read(deck, QStringLiteral("pitch_adjust"));
+    // Key lock on at the pitch that plays now: Mixxx's LockCurrentKey for
+    // this one write (keylockMode is a per-deck, unsaved control), so the
+    // engine never holds the track's own key in between, whatever the
+    // preference. The DJ's mode comes straight back.
+    const double mode = m_host.read(deck, QStringLiteral("keylockMode"));
+    m_host.write(deck, QStringLiteral("keylockMode"), 1);
     m_host.write(deck, QStringLiteral("keylock"), 1);
+    m_host.write(deck, QStringLiteral("keylockMode"), mode);
     m_keylockBySheet[deck - 1] = true;
     m_keylockTrack[deck - 1] = m_host.track(deck);
+    saveKeylockOwner(deck);
     return true;
 }
 
-void DeckLabDeckTools::restoreKeylock(int deck) {
+void DeckLabDeckTools::forgetKeylock(int deck) {
     if (!m_keylockBySheet[deck - 1]) {
         return;
     }
     m_keylockBySheet[deck - 1] = false;
     m_keylockTrack[deck - 1].reset();
-    if (m_host.read(deck, QStringLiteral("keylock")) > 0) {
-        m_host.write(deck, QStringLiteral("keylock"), 0);
+    saveKeylockOwner(deck);
+}
+
+void DeckLabDeckTools::restoreKeylock(int deck, double adjust) {
+    if (!m_keylockBySheet[deck - 1]) {
+        return;
+    }
+    forgetKeylock(deck);
+    if (m_host.read(deck, QStringLiteral("keylock")) <= 0) {
+        return;
+    }
+    // Back to how the deck played: the tempo's pitch plus its own adjust.
+    // While still locked the pitch goes there in one step; then key lock
+    // comes off with Mixxx's KeepLockedKey for this one write (keyunlockMode
+    // is a per-deck, unsaved control), which keeps that pitch as the adjust,
+    // whatever the preference. The engine never holds the track's own key,
+    // and the DJ's unlock mode comes straight back.
+    const double ratio = m_host.read(deck, QStringLiteral("rate_ratio"));
+    const double tempo = util_isfinite(ratio) && ratio > 0 ? 12 * std::log2(ratio) : 0;
+    m_host.write(deck, QStringLiteral("pitch"), tempo + (util_isfinite(adjust) ? adjust : 0));
+    const double mode = m_host.read(deck, QStringLiteral("keyunlockMode"));
+    m_host.write(deck, QStringLiteral("keyunlockMode"), 1);
+    m_host.write(deck, QStringLiteral("keylock"), 0);
+    m_host.write(deck, QStringLiteral("keyunlockMode"), mode);
+}
+
+void DeckLabDeckTools::saveKeylockOwner(int deck) {
+    if (!m_host.setSetting) {
+        return;
+    }
+    const QString suffix = QString::number(deck);
+    const bool owned = m_keylockBySheet[deck - 1];
+    m_host.setSetting(QString(QStringLiteral("KeySheetKeylock") + suffix), owned ? QStringLiteral("1") : QStringLiteral("0"));
+    m_host.setSetting(QString(QStringLiteral("KeySheetKeylockTrack") + suffix),
+            owned ? trackKey(m_keylockTrack[deck - 1].lock()) : QString());
+    m_host.setSetting(QString(QStringLiteral("KeySheetKeylockAdjust") + suffix),
+            owned ? QString::number(m_keylockAdjust[deck - 1], 'g', 10) : QString());
+}
+
+void DeckLabDeckTools::restoreSavedKeylocks() {
+    if (!m_host.setting) {
+        return;
+    }
+    for (int deck = 1; deck <= 4; ++deck) {
+        const QString suffix = QString::number(deck);
+        if (m_host.setting(QString(QStringLiteral("KeySheetKeylock") + suffix)) != QStringLiteral("1")) {
+            continue;
+        }
+        const QString saved = m_host.setting(QString(QStringLiteral("KeySheetKeylockTrack") + suffix));
+        const TrackPointer track = m_host.track ? m_host.track(deck) : TrackPointer();
+        m_keylockBySheet[deck - 1] = true;
+        m_keylockTrack[deck - 1] = track;
+        m_keylockAdjust[deck - 1] = m_host.setting(QString(QStringLiteral("KeySheetKeylockAdjust") + suffix)).toDouble();
+        if (track && !saved.isEmpty() && trackKey(track) == saved) {
+            // A skin rebuild with the same track on the deck: still the
+            // sheet's, RESET or the next track gives it back.
+            continue;
+        }
+        // The track it applied to is gone (a restart): key lock goes back,
+        // as for the next track.
+        restoreKeylock(deck, 0);
     }
 }
 
@@ -225,7 +299,25 @@ void DeckLabDeckTools::attachCard(int deck, QWidget* card, DeckLabDeckStrip* str
     if (strip) {
         // The KEY readout opens the sheet (touch-down while paused, a short
         // hold while playing); holding a paused deck's BPM opens GRID mode.
-        connect(strip, &DeckLabDeckStrip::keyTouched, this, [this](int which) { openKeySheet(which); });
+        // A live deck's hold must still mean the same deck, track and screen
+        // when it completes; an instant touch is only for a paused deck
+        // (read live: the readout may not have caught a PLAY yet).
+        connect(strip, &DeckLabDeckStrip::keyHoldStarted, this, [this](int which) {
+            m_keyHold = {which, m_host.track(which), m_host.epoch ? m_host.epoch() : 0};
+        });
+        connect(strip, &DeckLabDeckStrip::keyTouched, this, [this](int which, bool held) {
+            if (held) {
+                const KeyHold hold = m_keyHold;
+                m_keyHold = KeyHold();
+                if (hold.deck != which || hold.track.lock() != m_host.track(which) ||
+                        (m_host.epoch && hold.epoch != m_host.epoch())) {
+                    return;
+                }
+            } else if (m_host.read(which, QStringLiteral("play")) > 0) {
+                return;
+            }
+            openKeySheet(which);
+        });
         connect(strip, &DeckLabDeckStrip::bpmHeld, this, [this](int which) { enterGrid(which); });
     }
 }
@@ -256,6 +348,8 @@ void DeckLabDeckTools::openKeySheet(int deck) {
             closeCardSheet(deck);
             return;
         }
+        // One key sheet at a time: one knob owner, one deck's keys.
+        closeKeySheets();
         m_cardSheetOpen[deck - 1] = true;
         m_cardSheetTrack[deck - 1] = m_host.track(deck);
         sheet->setState(keyState(deck));
@@ -281,6 +375,7 @@ void DeckLabDeckTools::openKeySheet(int deck) {
         closeSideSheet(side);
         return;
     }
+    closeKeySheets();
     m_sideSheetDeck[side] = deck;
     m_sideSheetTrack[side] = m_host.track(deck);
     m_sideSheets[side]->setState(keyState(deck));
@@ -340,14 +435,19 @@ void DeckLabDeckTools::keyAction(int deck, KeyAction action) {
     case KeyAction::Down:
     case KeyAction::Up: {
         // A semitone from what plays now. With key lock off the heard pitch
-        // includes the tempo: turning key lock on would snap it back to the
-        // track's key, so the new pitch (heard ± 1) is written right after
-        // key lock in one step, with nothing audible in between. With key
-        // lock on, Mixxx's own semitone step (the pitch knob's 12 steps).
+        // includes the tempo (and any pitch_adjust): key lock turns on at
+        // that pitch (ensureKeylock), then the pitch goes to heard ± 1, so
+        // the engine only ever holds the heard pitch or the new one. With
+        // key lock already on, Mixxx's own semitone step. No clamp: Mixxx's
+        // pitch takes values beyond ±6, so a step is never shortened or
+        // turned round.
         const double step = action == KeyAction::Up ? 1 : -1;
         const double heard = m_host.read(deck, QStringLiteral("pitch"));
         if (ensureKeylock(deck)) {
-            m_host.write(deck, QStringLiteral("pitch"), std::clamp((util_isfinite(heard) ? heard : 0) + step, -6.0, 6.0));
+            const double target = (util_isfinite(heard) ? heard : 0) + step;
+            m_host.write(deck, QStringLiteral("pitch"), target);
+            m_pendingPitch[deck - 1] = target;
+            m_pitchPending[deck - 1] = true;
         } else {
             pulse(deck, action == KeyAction::Up ? QStringLiteral("pitch_up") : QStringLiteral("pitch_down"));
         }
@@ -368,17 +468,21 @@ void DeckLabDeckTools::keyAction(int deck, KeyAction action) {
         break;
     }
     case KeyAction::Reset:
-        // The track's own key, then key lock as it was before the sheet
-        // (in this order, a deck that had key lock off plays exactly as it
-        // did: Mixxx's unlock gives the pitch back to the tempo).
-        pulse(deck, QStringLiteral("reset_key"));
-        restoreKeylock(deck);
+        if (m_keylockBySheet[deck - 1] && m_host.read(deck, QStringLiteral("keylock")) > 0) {
+            // The sheet turned key lock on: the deck goes back to how it
+            // played before (key lock off, its own pitch_adjust), without
+            // passing through the track's key.
+            restoreKeylock(deck, m_keylockAdjust[deck - 1]);
+        } else {
+            // The DJ's own key lock: the track's key, key lock stays.
+            pulse(deck, QStringLiteral("reset_key"));
+        }
+        m_pitchPending[deck - 1] = false;
         m_matches[deck - 1] = Match();
         break;
     case KeyAction::KeyLock:
         // A deliberate choice: no longer the sheet's to undo.
-        m_keylockBySheet[deck - 1] = false;
-        m_keylockTrack[deck - 1].reset();
+        forgetKeylock(deck);
         m_host.write(deck, QStringLiteral("keylock"), m_host.read(deck, QStringLiteral("keylock")) > 0 ? 0 : 1);
         break;
     case KeyAction::Done:
@@ -414,7 +518,18 @@ void DeckLabDeckTools::fillKey(int deck, DeckLabStripState& state) {
     if (m_keylockBySheet[deck - 1]) {
         const TrackPointer owner = m_keylockTrack[deck - 1].lock();
         if (!owner || owner != m_host.track(deck)) {
-            restoreKeylock(deck);
+            m_pitchPending[deck - 1] = false;
+            restoreKeylock(deck, 0);
+        }
+    }
+    // A −1 / +1 pitch lost to the engine's pending rate update goes in again
+    // (once).
+    if (m_pitchPending[deck - 1]) {
+        m_pitchPending[deck - 1] = false;
+        const double pitch = m_host.read(deck, QStringLiteral("pitch"));
+        if (util_isfinite(pitch) && std::abs(pitch - m_pendingPitch[deck - 1]) > 0.01 &&
+                m_host.read(deck, QStringLiteral("keylock")) > 0) {
+            m_host.write(deck, QStringLiteral("pitch"), m_pendingPitch[deck - 1]);
         }
     }
     if (!state.loaded) {

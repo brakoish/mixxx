@@ -204,6 +204,61 @@ TEST_F(DeckLabKeySheetTest, TheKnobShowsItsCursorFirstAndFollowsTheLayout) {
     EXPECT_TRUE(host.acts.isEmpty());
 }
 
+TEST_F(DeckLabKeySheetTest, TheCursorHidesWhenTheKnobGoesElsewhereAndRevealsAgain) {
+    const auto send = [this](QEvent::Type type, int key) {
+        QKeyEvent event(type, key, Qt::NoModifier);
+        QApplication::sendEvent(sheet.get(), &event);
+    };
+    send(QEvent::KeyPress, Qt::Key_Down); // reveal on DONE
+    send(QEvent::KeyPress, Qt::Key_Down); // -1
+    send(QEvent::KeyPress, Qt::Key_Down); // MATCH
+    ASSERT_EQ(KeyAction::Match, sheet->knobFocus());
+    ASSERT_TRUE(sheet->key(KeyAction::Match)->armed());
+    // Another owner takes the knob (a menu, a dialog, a later claim): the
+    // cursor hides at once.
+    QWidget other;
+    other.show();
+    decklab::claimKnob(&other);
+    QCoreApplication::processEvents();
+    EXPECT_FALSE(sheet->knobCursorShown());
+    EXPECT_FALSE(sheet->key(KeyAction::Match)->armed());
+    // The knob comes back: its first press only shows the cursor (on DONE).
+    other.hide();
+    decklab::releaseKnob(&other);
+    QCoreApplication::processEvents();
+    ASSERT_EQ(sheet.get(), decklab::knobClaimant());
+    send(QEvent::KeyPress, Qt::Key_Return);
+    EXPECT_TRUE(host.acts.isEmpty()) << "no MATCH fired on a returning knob";
+    EXPECT_TRUE(sheet->knobCursorShown());
+    EXPECT_EQ(KeyAction::Done, sheet->knobFocus());
+}
+
+TEST_F(DeckLabKeySheetTest, AHeldKnobPressActsOnReleaseAndAPushTurnDoesNothing) {
+    const auto send = [this](QEvent::Type type, int key, int times = 1) {
+        for (int n = 0; n < times; ++n) {
+            QKeyEvent event(type, key, Qt::NoModifier);
+            QApplication::sendEvent(sheet.get(), &event);
+        }
+    };
+    send(QEvent::KeyPress, Qt::Key_Down); // reveal on DONE
+    send(QEvent::KeyPress, Qt::Key_Down, 2);
+    ASSERT_EQ(KeyAction::Match, sheet->knobFocus());
+    // The Numark overlay: browse_hold (Key_Select), then the press at once,
+    // then turns eight times over while held, then the release.
+    send(QEvent::KeyPress, Qt::Key_Select);
+    send(QEvent::KeyPress, Qt::Key_Return);
+    EXPECT_TRUE(host.acts.isEmpty()) << "a held press waits for its release";
+    send(QEvent::KeyPress, Qt::Key_Down, 8);
+    send(QEvent::KeyRelease, Qt::Key_Select);
+    EXPECT_TRUE(host.acts.isEmpty()) << "a push-turn drops the press";
+    EXPECT_EQ(KeyAction::Match, sheet->knobFocus()) << "and moves nothing";
+    // Held and released without a turn: the press acts on the release.
+    send(QEvent::KeyPress, Qt::Key_Select);
+    send(QEvent::KeyPress, Qt::Key_Return);
+    send(QEvent::KeyRelease, Qt::Key_Select);
+    EXPECT_EQ(QStringList{QStringLiteral("1/match")}, host.acts);
+}
+
 TEST_F(DeckLabKeySheetTest, TargetsFitTheDeckAreaInBothShapes) {
     // Two decks: in the pad block's area (329 px beside SYNC / MORE).
     for (const KeyAction action : {KeyAction::Down, KeyAction::Match, KeyAction::Up, KeyAction::Reset,
@@ -553,19 +608,44 @@ TEST_F(DeckLabGridModeTest, KnobLampsAndLegendFollowTheRealKnobOwner) {
     EXPECT_TRUE(panel->ownsKnob());
     EXPECT_TRUE(panel->key(GridAction::NudgeLater)->armed());
     EXPECT_TRUE(panel->status().startsWith(QStringLiteral("KNOB")));
-    // A later claim (another sheet) takes the knob: no lamps, no legend.
+    // A later claim takes the knob: no lamps, no legend, with no deck
+    // refresh in between (the claim itself tells the panel).
     QWidget other;
     other.show();
     decklab::claimKnob(&other);
-    panel->refreshKnob();
+    QCoreApplication::processEvents();
     EXPECT_FALSE(panel->ownsKnob());
     EXPECT_FALSE(panel->key(GridAction::NudgeLater)->armed());
     EXPECT_FALSE(panel->status().startsWith(QStringLiteral("KNOB")));
     other.hide();
-    panel->refreshKnob();
+    decklab::releaseKnob(&other);
+    QCoreApplication::processEvents();
     EXPECT_TRUE(panel->ownsKnob());
     EXPECT_TRUE(panel->key(GridAction::NudgeLater)->armed());
-    decklab::releaseKnob(&other);
+    EXPECT_TRUE(panel->status().startsWith(QStringLiteral("KNOB")));
+}
+
+TEST_F(DeckLabGridModeTest, AHeldKnobPressActsOnReleaseAndAPushTurnEditsNothing) {
+    const auto send = [this](QEvent::Type type, int key, int times = 1) {
+        for (int n = 0; n < times; ++n) {
+            QKeyEvent event(type, key, Qt::NoModifier);
+            QApplication::sendEvent(panel.get(), &event);
+        }
+    };
+    send(QEvent::KeyPress, Qt::Key_Select);
+    send(QEvent::KeyPress, Qt::Key_Return);
+    send(QEvent::KeyPress, Qt::Key_Down, 8);
+    send(QEvent::KeyRelease, Qt::Key_Select);
+    EXPECT_TRUE(host.acts.isEmpty()) << "a push-turn edits nothing";
+    EXPECT_EQ(DeckLabGridPanel::Knob::Nudge, panel->knob()) << "and the press is dropped";
+    send(QEvent::KeyPress, Qt::Key_Select);
+    send(QEvent::KeyPress, Qt::Key_Return);
+    EXPECT_EQ(DeckLabGridPanel::Knob::Nudge, panel->knob()) << "a held press waits for its release";
+    send(QEvent::KeyRelease, Qt::Key_Select);
+    EXPECT_EQ(DeckLabGridPanel::Knob::Bpm, panel->knob());
+    // Plain turns still adjust.
+    send(QEvent::KeyPress, Qt::Key_Down);
+    EXPECT_EQ(QStringList{QStringLiteral("1/beats_adjust_faster")}, host.acts);
 }
 
 // ------------------------------------------------------- the key readout
@@ -773,6 +853,49 @@ TEST(DeckLabKeyReadoutTest, KeyTouchOpensTheSheetAndBpmHoldOpensGrid) {
     EXPECT_EQ(1, grids) << "no GRID from a live deck's readout";
     EXPECT_EQ(2, clicks) << "the readout's own tap (the surface ignores it while the deck plays, round 4)";
     keys = 1;
+    clicks = 1;
+    // The hold shows on the key while it counts, and goes when it ends.
+    const QRect zone = strip->renderer().keyTarget();
+    const auto outlined = [strip, &zone] {
+        const QImage image = strip->grab().toImage();
+        int count = 0;
+        for (int y = zone.top() + 4; y <= zone.bottom() - 4; ++y) {
+            bool light = false;
+            for (int x = zone.left(); x <= zone.left() + 2; ++x) {
+                const QColor pixel = image.pixelColor(x, y);
+                light |= pixel.red() > 160 && pixel.green() > 160 && pixel.blue() > 160;
+            }
+            count += light;
+        }
+        return count;
+    };
+    EXPECT_EQ(0, outlined());
+    int starts = 0;
+    QObject::connect(strip, &DeckLabDeckStrip::keyHoldStarted, &host, [&starts](int) { ++starts; });
+    mouse(QEvent::MouseButtonPress, key);
+    EXPECT_EQ(1, starts);
+    EXPECT_GT(outlined(), 10) << "visible feedback during the hold";
+    // Sliding off the key cancels it.
+    mouse(QEvent::MouseMove, QPoint(key.x(), 2));
+    EXPECT_EQ(0, outlined());
+    QTest::qWait(DeckLabDeckStrip::kLiveKeyHoldMs + 100);
+    EXPECT_EQ(1, keys) << "a slide-off opens nothing";
+    mouse(QEvent::MouseButtonRelease, QPoint(key.x(), 2));
+    // Hidden mid-hold (a page or layer change), even if shown again before
+    // the hold would end: nothing fires.
+    mouse(QEvent::MouseButtonPress, key);
+    strip->hide();
+    strip->show();
+    QTest::qWait(DeckLabDeckStrip::kLiveKeyHoldMs + 100);
+    EXPECT_EQ(1, keys) << "a hidden strip's hold is gone";
+    mouse(QEvent::MouseButtonRelease, key);
+    // A paused deck's BPM hold that turns into a drag opens nothing.
+    strip->setState(loadedStrip(2));
+    mouse(QEvent::MouseButtonPress, bpm);
+    mouse(QEvent::MouseMove, bpm + QPoint(30, 0));
+    QTest::qWait(DeckLabDeckStrip::kGridHoldMs + 150);
+    EXPECT_EQ(1, grids) << "a drag is not a hold";
+    mouse(QEvent::MouseButtonRelease, bpm + QPoint(30, 0));
     clicks = 1;
     // An empty deck has no zones: the whole readout opens Browse.
     DeckLabStripState empty;

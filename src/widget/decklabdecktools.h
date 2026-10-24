@@ -63,6 +63,11 @@ class DeckLabDeckTools final : public QObject {
         std::function<QWidget*(int deck)> cardTransport;
         // The deck's readout state as last refreshed (no copy per tick).
         std::function<const DeckLabStripState&(int deck)> stripState;
+        // The surface's interaction epoch (page, layer and layout changes).
+        std::function<quint64()> epoch;
+        // [DeckLab] settings that outlive the app (key lock ownership).
+        std::function<QString(const QString& item)> setting;
+        std::function<void(const QString& item, const QString& value)> setSetting;
     };
     // GRID mode zooms the lanes in to Mixxx's closest zoom while it is on
     // (the zoom control only; no GL reallocation) and restores the zoom.
@@ -147,7 +152,13 @@ class DeckLabDeckTools final : public QObject {
     // Turns key lock on if it is off and remembers that the sheet did it.
     // Returns true when it turned it on.
     bool ensureKeylock(int deck);
-    void restoreKeylock(int deck);
+    // Key lock off if the sheet turned it on, then pitch_adjust back to
+    // `adjust` (Mixxx's unlock mode decides what the unlock itself leaves).
+    void restoreKeylock(int deck, double adjust);
+    void forgetKeylock(int deck);
+    void saveKeylockOwner(int deck);
+    void restoreSavedKeylocks();
+    static QString trackKey(const TrackPointer& track);
     bool keysMatch(int deck, int target) const;
     bool gridEditable(int deck) const;
     int sharedBusyDeck(int deck) const;
@@ -177,9 +188,23 @@ class DeckLabDeckTools final : public QObject {
     std::array<DeckLabKeySheet*, 4> m_cardSheets{};
     std::array<bool, 4> m_cardSheetOpen{};
     std::array<Match, 4> m_matches{};
-    // The track the sheet turned key lock on for (empty: not the sheet's).
+    // The track the sheet turned key lock on for (empty: not the sheet's),
+    // and the pitch_adjust the deck had before. Saved in [DeckLab] settings
+    // too, so a restart or skin rebuild still gives key lock back.
     std::array<TrackWeakPointer, 4> m_keylockTrack{};
     std::array<bool, 4> m_keylockBySheet{};
+    std::array<double, 4> m_keylockAdjust{};
+    // A pitch written for −1 / +1, checked once on the next refresh (a race
+    // with the engine's pending rate update can lose it).
+    std::array<double, 4> m_pendingPitch{};
+    std::array<bool, 4> m_pitchPending{};
+    // A live deck's KEY hold: what it started on.
+    struct KeyHold {
+        int deck = 0;
+        TrackWeakPointer track;
+        quint64 epoch = 0;
+    };
+    KeyHold m_keyHold;
     DeckLabGridPanel* m_gridPanel = nullptr;
     GridSession m_grid;
     // ÷2 is offered where Mixxx can halve the grid; decided once per grid.

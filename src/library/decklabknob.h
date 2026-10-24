@@ -18,6 +18,8 @@
 #include <QKeyEvent>
 #include <QList>
 #include <QMenu>
+#include <QMetaObject>
+#include <QPair>
 #include <QPointer>
 #include <QString>
 #include <QWidget>
@@ -55,12 +57,45 @@ inline QList<QPointer<QWidget>>& knobClaims() {
     return claims;
 }
 
+// r5-decks: who owns the knob may have changed (a claim, a release, or a
+// menu or dialog opening or closing, which the surface reports). Listeners
+// run queued, on the GUI thread, once the change has settled, so a sheet can
+// hide its knob cursor and a panel its knob lamps when the knob goes
+// elsewhere, and show them again only after the knob comes back and is used.
+inline QList<QPair<QPointer<QObject>, std::function<void()>>>& knobOwnerListeners() {
+    static QList<QPair<QPointer<QObject>, std::function<void()>>> listeners;
+    return listeners;
+}
+
+inline void onKnobOwnerChanged(QObject* receiver, std::function<void()> callback) {
+    if (receiver && callback) {
+        knobOwnerListeners().append({QPointer<QObject>(receiver), std::move(callback)});
+    }
+}
+
+inline void noteKnobOwnerChanged() {
+    auto& listeners = knobOwnerListeners();
+    for (int index = static_cast<int>(listeners.size()) - 1; index >= 0; --index) {
+        if (listeners.at(index).first.isNull()) {
+            listeners.removeAt(index);
+        }
+    }
+    for (const auto& [receiver, callback] : std::as_const(listeners)) {
+        QMetaObject::invokeMethod(receiver.data(), callback, Qt::QueuedConnection);
+    }
+}
+
 inline void releaseKnob(QWidget* widget) {
     auto& claims = knobClaims();
+    bool changed = false;
     for (int index = static_cast<int>(claims.size()) - 1; index >= 0; --index) {
         if (claims.at(index).isNull() || claims.at(index).data() == widget) {
+            changed |= claims.at(index).data() == widget && widget;
             claims.removeAt(index);
         }
+    }
+    if (changed) {
+        noteKnobOwnerChanged();
     }
 }
 
@@ -68,8 +103,14 @@ inline void claimKnob(QWidget* widget) {
     if (!widget) {
         return;
     }
-    releaseKnob(widget);
-    knobClaims().append(QPointer<QWidget>(widget));
+    auto& claims = knobClaims();
+    for (int index = static_cast<int>(claims.size()) - 1; index >= 0; --index) {
+        if (claims.at(index).isNull() || claims.at(index).data() == widget) {
+            claims.removeAt(index);
+        }
+    }
+    claims.append(QPointer<QWidget>(widget));
+    noteKnobOwnerChanged();
 }
 
 inline QWidget* knobClaimant() {

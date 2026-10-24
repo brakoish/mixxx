@@ -876,6 +876,9 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
         tools.overview = [this](int deck) { return m_overviews[deck - 1]; };
         tools.cardTransport = [this](int deck) { return m_cardTransports[deck - 1]; };
         tools.stripState = [this](int deck) -> const DeckLabStripState& { return m_stripStates[deck - 1]; };
+        tools.epoch = [this] { return m_interactionEpoch; };
+        tools.setting = [this](const QString& item) { return m_config->getValueString(ConfigKey(QStringLiteral("[DeckLab]"), item)); };
+        tools.setSetting = [this](const QString& item, const QString& value) { m_config->set(ConfigKey(QStringLiteral("[DeckLab]"), item), ConfigValue(value)); };
         m_deckTools = new DeckLabDeckTools(tools, m_deckGrid, this);
     }
     m_deckControls = buildDecks();
@@ -4025,6 +4028,7 @@ bool WDeckLab::eventFilter(QObject* watched, QEvent* event) {
         if (widget->isWindow() && (type == Qt::Popup || type == Qt::Dialog || type == Qt::Sheet || type == Qt::Tool)) {
             if (event->type() == QEvent::Hide) scheduleFocusReclaim();
             scheduleKnobLegend(); // r4-browse: the legend says MENU while it owns the knob
+            decklab::noteKnobOwnerChanged(); // r5-decks: key sheet cursor and GRID lamps follow the owner
         }
     } else if (event->type() == QEvent::ApplicationStateChange && watched == qApp &&
             QGuiApplication::applicationState() == Qt::ApplicationActive) {

@@ -132,6 +132,13 @@ DeckLabGridPanel::DeckLabGridPanel(const QString& name, Host host, QWidget* pare
     rows->addWidget(m_statusLine);
     rows->addStretch(1);
     refresh();
+    // Lamps and legend follow the knob's owner as it changes.
+    decklab::onKnobOwnerChanged(this, [this] {
+        if (!ownsKnob()) {
+            m_knobHeld = false;
+        }
+        refreshKnob();
+    });
 }
 
 DeckLabGridPanel::~DeckLabGridPanel() {
@@ -348,19 +355,32 @@ void DeckLabGridPanel::keyPressEvent(QKeyEvent* event) {
     // The knob claim sends Up/Down for a turn, Return for a press and Escape
     // for back (decklab::forwardKnob).
     switch (event->key()) {
-    case Qt::Key_Up:
-    case Qt::Key_Left:
-        knobTurn(-1);
+    case Qt::Key_Select:
+        // browse_hold: the knob is held down.
+        m_knobHeld = true;
+        m_heldPress = false;
+        m_heldTurn = false;
         event->accept();
         return;
+    case Qt::Key_Up:
+    case Qt::Key_Left:
     case Qt::Key_Down:
     case Qt::Key_Right:
-        knobTurn(1);
+        if (m_knobHeld) {
+            // A push-turn edits nothing.
+            m_heldTurn = true;
+        } else {
+            knobTurn(event->key() == Qt::Key_Up || event->key() == Qt::Key_Left ? -1 : 1);
+        }
         event->accept();
         return;
     case Qt::Key_Return:
     case Qt::Key_Enter:
-        setKnob(m_knob == Knob::Nudge ? Knob::Bpm : Knob::Nudge);
+        if (m_knobHeld) {
+            m_heldPress = true;
+        } else {
+            setKnob(m_knob == Knob::Nudge ? Knob::Bpm : Knob::Nudge);
+        }
         event->accept();
         return;
     case Qt::Key_Escape:
@@ -370,6 +390,21 @@ void DeckLabGridPanel::keyPressEvent(QKeyEvent* event) {
     default:
         QWidget::keyPressEvent(event);
     }
+}
+
+void DeckLabGridPanel::keyReleaseEvent(QKeyEvent* event) {
+    if (event->key() != Qt::Key_Select) {
+        QWidget::keyReleaseEvent(event);
+        return;
+    }
+    const bool press = m_knobHeld && m_heldPress && !m_heldTurn;
+    m_knobHeld = false;
+    m_heldPress = false;
+    m_heldTurn = false;
+    if (press) {
+        setKnob(m_knob == Knob::Nudge ? Knob::Bpm : Knob::Nudge);
+    }
+    event->accept();
 }
 
 QRect DeckLabGridPanel::titleRect() const {

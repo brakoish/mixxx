@@ -45,7 +45,9 @@ class QKeyEvent;
 // The browse knob adjusts while GRID mode owns it (decklabknob.h claim):
 // turn nudges the grid (or the BPM), press switches NUDGE / BPM, and
 // Shift+press (back) is DONE. The knob lamps and legend show only while the
-// panel really owns the knob.
+// panel really owns the knob, and follow every change of owner. A press held
+// on the knob acts on its release, and a turn made while it is held does
+// nothing (the Numark overlay sends held turns eight times over).
 //
 // Pure Qt: the surface supplies the state and performs the actions, so the
 // panel renders offscreen and is unit-tested without the engine.
@@ -142,6 +144,7 @@ class DeckLabGridPanel final : public QWidget {
   protected:
     bool event(QEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void keyReleaseEvent(QKeyEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
 
@@ -163,5 +166,9 @@ class DeckLabGridPanel final : public QWidget {
     QWidget* m_statusLine = nullptr;
     Knob m_knob = Knob::Nudge;
     bool m_ownsKnob = false;
+    // A knob press held down (browse_hold).
+    bool m_knobHeld = false;
+    bool m_heldPress = false;
+    bool m_heldTurn = false;
     QString m_shownStatus;
 };

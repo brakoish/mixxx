@@ -320,9 +320,12 @@ class DeckLabDeckStrip final : public QPushButton {
 
   signals:
     // r5-decks: the loaded deck's KEY readout asks for the key sheet: on
-    // touch-down while paused, after kLiveKeyHoldMs while playing. The touch
-    // is the sheet's: the readout does not go down or click.
-    void keyTouched(int deck);
+    // touch-down while paused (held false), after kLiveKeyHoldMs while
+    // playing (held true; keyHoldStarted came at touch-down, so the surface
+    // can check the hold still means the same deck, track and screen). The
+    // touch is the sheet's: the readout does not go down or click.
+    void keyHoldStarted(int deck);
+    void keyTouched(int deck, bool held);
     // r5-decks: a paused deck's BPM readout was held for kGridHoldMs (GRID
     // mode). The press is cancelled, so its release opens nothing.
     void bpmHeld(int deck);
@@ -336,9 +339,13 @@ class DeckLabDeckStrip final : public QPushButton {
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
 
   private:
     void placeMeter();
+    // r5-decks: ends a held KEY or BPM touch (release, slide-off, hide).
+    void cancelHolds();
+    void setKeyTouch(bool on);
     DeckLabStripRenderer m_renderer;
     DeckLabLevelMeter* m_meter;
     bool m_keyboardFocus = false;
@@ -346,6 +353,7 @@ class DeckLabDeckStrip final : public QPushButton {
     QTimer* m_gridHold = nullptr;
     QTimer* m_keyHold = nullptr;
     bool m_keyTouch = false; // a KEY touch the strip owns (no button press)
+    QPoint m_pressAt;
 };
 
 // One-line readout above a waveform on Browse and FX. Display only.
