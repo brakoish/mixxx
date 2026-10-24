@@ -253,6 +253,9 @@ class MixxxBackend final : public Backend {
             parts << QString::number(id);
         }
         m_config->setValue(kSetStartsKey, parts.join(QLatin1Char(',')));
+        // Written now, not when Mixxx next saves: a power cut must not undo
+        // a New set (rare: the first read and each New set).
+        m_config->save();
     }
 
   private:

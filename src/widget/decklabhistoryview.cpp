@@ -358,10 +358,10 @@ int fillSessions(QListWidget* list,
             continue;
         }
         if (row.kind == RowKind::NewSet) {
-            // The knob's way to "New set": press, then press again (the
-            // pane's hold button is the touch way).
+            // The knob's way to "New set": hold and let go, or press twice
+            // (the pane's hold button is the touch way).
             const bool empty = !current || current->count <= 0;
-            item->setData(DetailRole, empty ? tr("This set is still empty") : tr("Press twice to end this set and start another"));
+            item->setData(DetailRole, empty ? tr("This set is still empty") : tr("Hold the knob and let go, or press it twice"));
             if (empty) {
                 item->setFlags(Qt::NoItemFlags);
             }

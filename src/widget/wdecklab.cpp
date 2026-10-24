@@ -650,6 +650,14 @@ struct DeckLabBrowseState {
     bool historyStale = false; // the History list changed while Browse was hidden
     QPointer<DeckLabSystem> historySystem; // decklabd: is the clock synchronized?
     qint64 clockAskedAt = -100000;
+    // r5-fix-history: the knob on "New set": a full hold starts the set on
+    // the gesture's release press (Shift's Back, a turn or another owner of
+    // the knob cancel it); short presses count towards "press twice".
+    bool newSetKnobHeld = false;       // browse_hold 1 on the row while Browse owns the knob
+    bool newSetKnobDone = false;       // ... held long enough
+    bool newSetConfirmOnPress = false; // released after a full hold: the press starts it
+    qint64 newSetReleasedAt = -100000;
+    QTimer newSetReleaseTimer;
 };
 
 WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
@@ -2657,6 +2665,7 @@ void WDeckLab::showTracks() {
 void WDeckLab::browsePress() {
     if (m_page == 2 && m_sampler && m_sampler->knob(decklab::KnobAction::Press, 1)) return; // r4-sampler: pad sheet
     if (m_page != 1) { selectPage(1); return; }
+    if (consumeNewSetRelease()) return; // r5-fix-history: a full knob hold's release press
     // In a track list (r4-browse: or Mixes) the press previews the highlighted track.
     if (browseTrackLevel()) { togglePreview(); return; }
     browseEnter();
@@ -2677,6 +2686,7 @@ void WDeckLab::browseEnter() {
 }
 void WDeckLab::browseMove(int delta, bool listLevel) {
     if (m_page == 2 && m_sampler && m_sampler->knob(decklab::KnobAction::Move, delta)) return; // r4-sampler: pad sheet
+    if (delta != 0) cancelNewSetKnob(); // r5-fix-history: a turn never confirms New set
     if (delta == 0 || !m_sidebar) return;
     auto& b = *m_browseState;
     // A turn on any other page opens Browse where it was left. It never
@@ -2741,6 +2751,7 @@ void WDeckLab::openSource() {
 }
 void WDeckLab::browseBack() {
     if (m_page == 2 && m_sampler && m_sampler->knob(decklab::KnobAction::Back, -1)) return; // r4-sampler: pad sheet
+    cancelNewSetKnob(); // r5-fix-history: nor does Back (Shift+press)
     if (m_keyboard && m_keyboard->isVisible()) { setSearchOpen(false); return; }
     if (m_page != 1) { selectPage(1); return; }
     if (!m_sidebar) return;
@@ -2911,6 +2922,7 @@ void WDeckLab::loadDeck(int deck) {
         if (deck == 2) { m_sampleTarget = 0; selectPage(m_sampleReturnPage); return; }
         const QString group = QStringLiteral("[Sampler%1]").arg(m_sampleTarget);
         if (!browseTrackLevel() || value(group, "play")) return; // r4-browse: Mixes too
+        if (listRowStale()) { resyncBrowseRow(); return; } // r5-fix-history: exactly the highlighted row
         if (auto* table = m_libraryWidget->getCurrentTrackTableView()) table->loadSelectedTrackToGroup(group,
 #ifdef __STEM__
                 mixxx::StemChannelSelection(),
@@ -2923,6 +2935,7 @@ void WDeckLab::loadDeck(int deck) {
     // ON AIR is never replaced from the touch screen; say so instead of ignoring the tap.
     if (value(channel(deck), "play")) { showLoadRefused(deck); return; }
     if (m_page != 1 || !m_libraryWidget || !browseTrackLevel()) return; // r4-browse: Mixes too
+    if (listRowStale()) { resyncBrowseRow(); return; } // r5-fix-history: exactly the highlighted row
     set("[Library]", "focused_widget", 3);
     pulse(channel(deck), "LoadSelectedTrack");
     // Return happens on newTrackLoaded, never merely on a button press.
@@ -2932,7 +2945,9 @@ void WDeckLab::refreshLoadButtons() {
     using Tone = DeckLabActionButton::Tone;
     auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
     const bool tracks = browseTrackLevel(); // r4-browse: a track list or Mixes
-    const bool selected = table && table->selectionModel() && !table->selectionModel()->selectedRows().isEmpty();
+    const bool selected = table && table->selectionModel() && !table->selectionModel()->selectedRows().isEmpty() &&
+            browseRowLoadable(); // r5-fix-history: the table row is the highlighted row
+    setTrackLevel(tracks && selected); // r5-fix-history: controller LOAD on list levels
     // r4-browse (move 3): the dock shows two tiles, four in the four-deck layout.
     if (m_browseState && m_browseState->dock) m_browseState->dock->setShownCount(m_fourDeckLayout && !m_sampleTarget ? 4 : 2);
     for (int deck = 1; deck <= 4; ++deck) {
@@ -3383,6 +3398,7 @@ void WDeckLab::togglePreview() {
     auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
     const bool selected = table && table->selectionModel() && !table->selectionModel()->selectedRows().isEmpty();
     // Same track: Mixxx toggles play/pause; another track: load and play it.
+    if (tracks && selected && listRowStale()) { resyncBrowseRow(); return; } // r5-fix-history
     if (tracks && selected) pulse(load.group, load.item);
     else stopPreview();
 }
@@ -5184,21 +5200,39 @@ void WDeckLab::initHistory() {
     connect(b.newSet, &decklab::ui::HoldButton::refused, this, [this](const QString& reason) {
         if (m_browseState->toast) m_browseState->toast->showMessage(reason, 2400);
     });
-    connect(b.newSet, &decklab::ui::HoldButton::confirmed, this, [this] { startNewHistorySet(); });
+    connect(b.newSet, &decklab::ui::HoldButton::confirmed, this, [this] {
+        auto& state = *m_browseState;
+        if (state.newSetKnobHeld) {
+            // A knob hold: the set starts on the release press, so Shift+press
+            // (Back) or a turn can still call it off.
+            state.newSetKnobDone = true;
+            state.newSet->setResult(tr("Let go to start"));
+            refreshNewSetRow();
+            refreshHistoryCard();
+            return;
+        }
+        startNewHistorySet();
+    });
     b.paneLayout->insertWidget(b.paneLayout->indexOf(b.preview), b.newSet);
     b.newSet->hide();
     // From the knob, on the sets' "New set" row: a controller that reports
-    // the held press (browse_hold) holds it; otherwise press, then press again.
-    watch(kNative, "browse_hold", [this](double v) {
-        if (m_page != 1 || !m_browseState || !m_browseState->newSet) return;
-        const QListWidgetItem* item = m_browseState->items->currentItem();
-        if (m_browseState->list != DeckLabList::History || m_browseStack->currentIndex() != 0 || !item ||
-                static_cast<decklab::history::RowKind>(item->data(decklab::history::RowRole).toInt()) !=
-                        decklab::history::RowKind::NewSet) {
-            return;
-        }
-        m_browseState->newSet->knobHold(v > 0);
+    // the held press (browse_hold) holds it and lets go; press twice works
+    // with every controller.
+    watch(kNative, "browse_hold", [this](double v) { historyKnobHold(v > 0); });
+    b.newSetReleaseTimer.setSingleShot(true);
+    b.newSetReleaseTimer.setInterval(500);
+    connect(&b.newSetReleaseTimer, &QTimer::timeout, this, [this] {
+        // No release press came (a turn): nothing starts.
+        cancelNewSetKnob();
     });
+    // Controller LOAD on a Browse list level (History, Mixes): 1 exactly
+    // when the table row LOAD reads is the highlighted track row.
+    createControl(kNative, QStringLiteral("track_level"));
+    // A table shown under a highlighted row (a rekordbox read finishing, for
+    // example) never becomes the one LOAD or Preview acts on.
+    if (m_library) {
+        connect(m_library, &Library::showTrackModel, this, [this] { historyTableChanged(); }, Qt::QueuedConnection);
+    }
     // The card reads the highlighted track's Track object once the knob
     // settles, never for every row a fast knob passes.
     b.historySelectTimer.setSingleShot(true);
@@ -5206,10 +5240,25 @@ void WDeckLab::initHistory() {
     connect(&b.historySelectTimer, &QTimer::timeout, this, [this] {
         auto& state = *m_browseState;
         if (!historyTrackLevel()) return;
+        // r5-fix-history: the row's own playlist and row, once the knob settles
+        // (switching Mixxx's table is SQL and a model reset: never per step).
+        const QListWidgetItem* item = state.items->currentItem();
+        if (item && static_cast<decklab::history::RowKind>(item->data(decklab::history::RowRole).toInt()) ==
+                        decklab::history::RowKind::Track) {
+            showHistoryPlaylist(item->data(decklab::history::PlaylistRole).toInt());
+            selectHistoryRow();
+        }
+        if (!browseRowLoadable()) {
+            state.selectedTrack.reset();
+            refreshLoadButtons();
+            refreshBrowseCard();
+            return;
+        }
         auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
         auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
         const QModelIndexList rows = table && table->selectionModel() ? table->selectionModel()->selectedRows() : QModelIndexList();
         state.selectedTrack = tracks && rows.size() == 1 ? tracks->getTrack(rows.first()) : TrackPointer();
+        refreshLoadButtons();
         refreshBrowseCard();
         refreshPreviewButton();
     });
@@ -5305,8 +5354,9 @@ void WDeckLab::refreshNewSetRow() {
         if (static_cast<RowKind>(item->data(RowRole).toInt()) != RowKind::NewSet) continue;
         item->setFlags(empty ? Qt::NoItemFlags : Qt::ItemIsSelectable | Qt::ItemIsEnabled);
         item->setData(DetailRole, empty ? tr("This set is still empty")
+                        : b.newSetKnobDone              ? tr("Let go to end this set and start another")
                         : b.newSet && b.newSet->armed() ? tr("Press again to end this set and start another")
-                                                         : tr("Press twice to end this set and start another"));
+                                                         : tr("Hold the knob and let go, or press it twice"));
         return;
     }
 }
@@ -5376,20 +5426,40 @@ void WDeckLab::syncHistorySelection() {
     using namespace decklab::history;
     if (b.list != DeckLabList::History) return;
     const QListWidgetItem* item = b.items->currentItem();
-    const bool track = historyTrackLevel() && item && static_cast<RowKind>(item->data(RowRole).toInt()) == RowKind::Track;
+    const auto kind = item ? static_cast<RowKind>(item->data(RowRole).toInt()) : RowKind::None;
+    if (kind != RowKind::NewSet) cancelNewSetKnob(); // r5-fix-history: the highlight left "New set"
+    const bool track = historyTrackLevel() && kind == RowKind::Track;
     const int trackId = track ? item->data(TrackIdRole).toInt() : -1;
     // The card follows the highlight at once: the row's own facts until the
     // Track object is read, never the track highlighted before.
     if (!b.selectedTrack || b.selectedTrack->getId().toVariant().toInt() != trackId) b.selectedTrack.reset();
-    if (track) showHistoryPlaylist(item->data(PlaylistRole).toInt());
+    // r5-fix-history: select at once only when the row's playlist is already
+    // in the table; switching it waits for the knob to settle (the timer).
+    const int row = track ? selectHistoryRow() : -1;
+    if (!track) {
+        auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+        if (table && table->selectionModel()) table->selectionModel()->clearSelection();
+    }
+    if (row < 0) b.selectedTrack.reset();
+    if (track) b.historySelectTimer.start();
+    refreshLoadButtons();
+    refreshBrowseCard();
+}
+int WDeckLab::selectHistoryRow() {
+    // r5-fix-history: the highlighted history track's row in the table when
+    // the table shows its playlist (by position and library id); otherwise
+    // nothing is selected, so LOAD and Preview can act on nothing else.
+    auto& b = *m_browseState;
+    using namespace decklab::history;
+    const QListWidgetItem* item = b.items->currentItem();
     auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
     auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
     const auto* playlist = table ? dynamic_cast<PlaylistTableModel*>(table->model()) : nullptr;
     int row = -1;
-    if (track && tracks && playlist && playlist->getPlaylist() == item->data(PlaylistRole).toInt()) {
+    if (item && tracks && playlist && playlist->getPlaylist() == item->data(PlaylistRole).toInt()) {
         const QAbstractItemModel& model = *table->model();
         row = modelRowFor(model, tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Position),
-                item->data(PositionRole).toInt(), trackId,
+                item->data(PositionRole).toInt(), item->data(TrackIdRole).toInt(),
                 [tracks, &model](int at) { return tracks->getTrackId(model.index(at, 0)).toVariant().toInt(); });
     }
     if (table && table->selectionModel()) {
@@ -5400,10 +5470,122 @@ void WDeckLab::syncHistorySelection() {
             table->selectionModel()->clearSelection();
         }
     }
-    if (row < 0) b.selectedTrack.reset();
-    if (track && row >= 0) b.historySelectTimer.start();
-    refreshLoadButtons();
-    refreshBrowseCard();
+    return row;
+}
+bool WDeckLab::browseRowLoadable() {
+    // r5-fix-history: LOAD and Preview read the hidden table's selected row.
+    // On History and Mixes it must be the highlighted row's own track: the
+    // set's playlist with the row's library id, or the Mixes row's index.
+    if (!m_browseState || !browseTrackLevel()) return false;
+    auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+    const QModelIndexList rows = table && table->selectionModel() ? table->selectionModel()->selectedRows() : QModelIndexList();
+    if (m_browseStack->currentIndex() != 0) return !rows.isEmpty(); // a track table: its own highlight
+    if (rows.size() != 1) return false;
+    const auto& b = *m_browseState;
+    const QListWidgetItem* item = b.items->currentItem();
+    if (!item) return false;
+    if (b.list == DeckLabList::History) {
+        const auto* playlist = dynamic_cast<PlaylistTableModel*>(table->model());
+        return playlist && playlist->getPlaylist() == item->data(decklab::history::PlaylistRole).toInt() &&
+                playlist->getTrackId(rows.first()).toVariant().toInt() == item->data(decklab::history::TrackIdRole).toInt();
+    }
+    if (b.list == DeckLabList::Mixes) {
+        const QPersistentModelIndex source = item->data(DeckLabListDelegate::MixIndexRole).value<QPersistentModelIndex>();
+        return source.isValid() && source.model() == table->model() && source.row() == rows.first().row();
+    }
+    return false;
+}
+bool WDeckLab::listRowStale() {
+    // A History or Mixes row whose table row is not (yet) its own track.
+    return m_browseStack && m_browseStack->currentIndex() == 0 && !browseRowLoadable();
+}
+void WDeckLab::resyncBrowseRow() {
+    if (!m_browseState) return;
+    if (m_browseState->list == DeckLabList::History) syncHistorySelection();
+    else if (m_browseState->list == DeckLabList::Mixes) syncMixSelection();
+}
+void WDeckLab::setTrackLevel(bool loadable) {
+    // r5-fix-history: [DeckLabNative] track_level tells a controller's LOAD
+    // (the appliance overlay) that the highlighted list row is a loadable track.
+    // Read through the key: the Browse refresh runs before the control exists.
+    static const ConfigKey key(kNative, QStringLiteral("track_level"));
+    const double level = loadable ? 1 : 0;
+    if (ControlObject::exists(key) && ControlObject::get(key) != level) ControlObject::set(key, level);
+}
+void WDeckLab::historyTableChanged() {
+    // r5-fix-history: Mixxx showed another model in the hidden table (a
+    // rekordbox read finishing, say). Under a History or Mixes row, LOAD and
+    // Preview refuse until the row's own table and row are back.
+    if (!m_browseState || m_browseStack->currentIndex() != 0) return;
+    if (m_browseState->list == DeckLabList::History || m_browseState->list == DeckLabList::Mixes) resyncBrowseRow();
+}
+bool WDeckLab::onNewSetRow() const {
+    if (!m_browseState || !m_browseStack || m_browseStack->currentIndex() != 0 ||
+            m_browseState->list != DeckLabList::History || m_browseState->historySession >= 0) {
+        return false;
+    }
+    const QListWidgetItem* item = m_browseState->items->currentItem();
+    return item && (item->flags() & Qt::ItemIsEnabled) &&
+            static_cast<decklab::history::RowKind>(item->data(decklab::history::RowRole).toInt()) ==
+            decklab::history::RowKind::NewSet;
+}
+void WDeckLab::historyKnobHold(bool down) {
+    // r5-fix-history: browse_hold from a controller that reports the held
+    // press (Numark, SB2). Only a hold Browse owns, on "New set", counts.
+    auto& b = *m_browseState;
+    if (!b.newSet) return;
+    if (!down) {
+        if (!b.newSetKnobHeld) return;
+        b.newSetKnobHeld = false;
+        b.newSet->knobHold(false); // a sweep still running snaps back
+        // The gesture's release press follows: after a full hold it starts
+        // the set; after a short one it is a press of "press twice".
+        b.newSetConfirmOnPress = b.newSetKnobDone;
+        b.newSetKnobDone = false;
+        b.newSetReleasedAt = m_clock.elapsed();
+        b.newSetReleaseTimer.start();
+        return;
+    }
+    b.newSetKnobDone = false;
+    b.newSetConfirmOnPress = false;
+    b.newSetReleasedAt = -100000;
+    if (m_page != 1 || !onNewSetRow() || !decklab::knobOwner().browse() ||
+            decklab::history::Store::instance().currentCount() <= 0) {
+        return; // a menu, dialog, sheet or the wizard owns this hold, or nothing to end
+    }
+    b.newSetKnobHeld = true;
+    // Armed by a first press: this press completes "press twice" on release.
+    if (!b.newSet->armed()) b.newSet->knobHold(true);
+}
+bool WDeckLab::consumeNewSetRelease() {
+    // r5-fix-history: the press that ends a knob hold on "New set". After a
+    // full hold it starts the set and goes no further (it never opens the
+    // new set); after a short hold it acts as a press on the row.
+    auto& b = *m_browseState;
+    if (b.newSetReleasedAt < 0) return false;
+    const bool confirm = b.newSetConfirmOnPress && m_clock.elapsed() - b.newSetReleasedAt < 500 && onNewSetRow();
+    b.newSetReleasedAt = -100000;
+    b.newSetConfirmOnPress = false;
+    b.newSetReleaseTimer.stop();
+    if (!confirm) return false;
+    startNewHistorySet();
+    return true;
+}
+void WDeckLab::cancelNewSetKnob() {
+    // r5-fix-history: a turn, Back, the highlight leaving the row or the end
+    // of History calls a knob hold (or a first press) off.
+    if (!m_browseState || !m_browseState->newSet) return;
+    auto& b = *m_browseState;
+    const bool pending = b.newSetKnobHeld || b.newSetKnobDone || b.newSetConfirmOnPress || b.newSetReleasedAt >= 0;
+    if (!pending && !b.newSet->armed() && !(b.newSetKnobHeld && b.newSet->holding())) return;
+    b.newSetKnobHeld = false;
+    b.newSetKnobDone = false;
+    b.newSetConfirmOnPress = false;
+    b.newSetReleasedAt = -100000;
+    b.newSetReleaseTimer.stop();
+    b.newSet->knobCancel();
+    if (b.newSet->result() == tr("Let go to start")) b.newSet->setResult(QString());
+    refreshNewSetRow();
 }
 QStringList WDeckLab::historySegments() const {
     const auto& b = *m_browseState;
@@ -5458,8 +5640,10 @@ void WDeckLab::refreshHistoryCard() {
     if (kind == RowKind::NewSet) {
         const bool armed = b.newSet && b.newSet->armed();
         b.card->showItem(decklab::Glyph::Retry, item->text(),
-                armed ? tr("Press again to start it") : tr("Ends this set. It stays in History."),
-                tr("Press twice, or hold the button below"));
+                b.newSetKnobDone ? tr("Let go to start it")
+                        : armed  ? tr("Press again to start it")
+                                 : tr("Ends this set. It stays in History."),
+                tr("Hold the knob and let go, or press it twice"));
         return;
     }
     if (kind != RowKind::Session || !(item->flags() & Qt::ItemIsEnabled)) {
@@ -5494,8 +5678,8 @@ void WDeckLab::applyHistoryPresentation() {
     }
     if (!b.newSet) return;
     if (!history) {
+        cancelNewSetKnob(); // r5-fix-history
         if (!b.newSet->result().isEmpty()) b.newSet->setResult(QString());
-        if (b.newSet->armed()) b.newSet->knobCancel();
     }
     setVisibleIf(b.newSet, history);
 }

@@ -79,6 +79,27 @@ fixes everything the 6-lens review confirmed (see "Review fixes").
   list updates, one lookup per row without allocations. UX: New set from the knob; order and offsets without a
   trusted clock. Tests: below.
 
+## Integration fixes (decklab/r5-fix-history, on merged round 5)
+- **New set from the knob, as a whole.** A knob hold counts only when Browse owns the knob
+  (`decklab::knobOwner().browse()`: never behind the status sheet, a dialog, a menu or the wizard). Any turn, Back
+  or the highlight leaving the row cancels it. A full hold no longer fires at 1.2 s: the row says "Let go to end
+  this set", and the gesture's release press starts it, then stops (it never opens the new, empty set). So Shift+press
+  (Back on release for the Numark, at once for the SB2) never counts, and a push-turn never ends a set. "Press twice"
+  now works with the Numark's (browse_hold 1, 0, press) sequence. Copy: "Hold the knob and let go, or press it twice".
+- **Controller LOAD on list levels.** `[DeckLabNative] track_level` is 1 exactly when Browse highlights a loadable
+  track row (a track table, a Mixes row, a History track row whose table row is its own track) and 0 on sources,
+  categories, set lists and headers; the appliance overlay (`decklab/round5-app`) lets LOAD through on it.
+- **Exactly the highlighted row.** LOAD (dock, sampler pad, controller) and Preview at History and Mixes track level
+  check that the hidden table is the row's own playlist and its selected row the row's track; otherwise they resync
+  and refuse. A table Mixxx swaps in underneath (a rekordbox read finishing) triggers the same resync.
+- **Persistence.** `[DeckLab] HistorySetStarts` is written to disk at once (first run and each New set).
+- **Pi budget.** A History knob step selects at once only within the playlist already shown; switching Mixxx's
+  hidden playlist table waits for the knob to settle (120 ms, with the Track read). LOAD is not offered meanwhile.
+- Tests: `NativeDeckLabTest.NewSetKnobFollowsTheControllersRealSequences` (push-turn, Numark and SB2 Shift+press,
+  a hold under a menu, press twice, full hold with its release press, hold then turn), `track_level` assertions;
+  the smoke checks `track_level` (0 on the sets, 1 on a set's track) and loads through the controller path
+  (`LoadSelectedTrack`, into the preview deck, never played), expecting exactly the highlighted track.
+
 ## Renders
 `local/wt/audit/screens/r5-history/` (not committed):
 - `after/` from the real app smoke (generated demo library, 800x480): `app-browse-12-history.png` (sets),
