@@ -1429,7 +1429,7 @@ void WDeckLab::showControllerFxInfo() {
             // r6-fxstrip: the full list keeps all four units; in the 2-deck
             // layout an idle unit 3 or 4 (no rail lamp) says why.
             const bool wet = slotOn && value(group, "enabled") > 0 && util_isfinite(mix) && mix > 0 && !routes.isEmpty();
-            if (!m_fourDeckLayout && unit > 2 && !wet) block += QStringLiteral(" · ") + tr("not used by the 2-deck layout").toHtmlEscaped();
+            if (!m_fourDeckLayout && unit > 2 && !wet) block += QStringLiteral("<br>") + tr("Not used by the 2-deck layout").toHtmlEscaped();
             blocks << block + detail;
         }
         text->setHtml(QStringLiteral("<table width='100%' cellspacing='8'><tr><td width='50%' valign='top'>%1</td><td width='50%' valign='top'>%2</td></tr><tr><td valign='top'>%3</td><td valign='top'>%4</td></tr></table>")

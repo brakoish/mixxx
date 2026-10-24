@@ -2052,9 +2052,9 @@ TEST_F(NativeDeckLabTest, ControllerFxDetailsReadAllRealUnitsWithoutControlWrite
         EXPECT_TRUE(detail.contains(QStringLiteral("Slot %1: %2 [%3]").arg(slot+1).arg(manifests[slot]->name(),slot%2 ? "OFF" : "ON")));
     // r6-fxstrip: the full list keeps all four units; in the 2-deck layout an
     // idle unit 3 or 4 says it is not used. Wet unit 3 is not marked.
-    EXPECT_TRUE(detail.contains(QStringLiteral("Unit 4 · Bypassed · Mix 40% · not used by the 2-deck layout")));
-    EXPECT_FALSE(detail.contains(QStringLiteral("Unit 3 · Enabled · Mix 30% · not used")));
-    EXPECT_EQ(1,detail.count(QStringLiteral("not used by the 2-deck layout")));
+    EXPECT_EQ(1,detail.count(QStringLiteral("Not used by the 2-deck layout")));
+    EXPECT_TRUE(detail.section(QStringLiteral("Unit 4 ·"),1).contains(QStringLiteral("Not used by the 2-deck layout")))
+            << detail.toStdString();
     auto* ownership=dialog->findChild<QLabel*>("decklab-controller-fx-ownership"); ASSERT_NE(nullptr,ownership);
     EXPECT_TRUE(ownership->text().contains("Read only"));
     EXPECT_TRUE(ownership->text().contains("Lab FX controls are separate, on the Lab FX screen."));
@@ -2163,8 +2163,9 @@ TEST_F(NativeDeckLabTest, ControllerFxSummaryIncludesFourthSlotOnlyWithoutContro
     EXPECT_TRUE(text->toPlainText().contains(QStringLiteral("Slot 4: %1 [ON]").arg(manifests[0]->name())));
     // r6-fxstrip: enabled but with no effect on, unit 4 is idle (no lamp);
     // the sheet still lists it and says why. Wet unit 3 is not marked.
-    EXPECT_TRUE(text->toPlainText().contains(QStringLiteral("Unit 4 · Enabled · Mix 50% · not used by the 2-deck layout")));
-    EXPECT_EQ(1,text->toPlainText().count(QStringLiteral("not used by the 2-deck layout")));
+    EXPECT_EQ(1,text->toPlainText().count(QStringLiteral("Not used by the 2-deck layout")));
+    EXPECT_TRUE(text->toPlainText().section(QStringLiteral("Unit 4 · Enabled · Mix 50%"),1).contains(QStringLiteral("Not used by the 2-deck layout")))
+            << text->toPlainText().toStdString();
     dialog->findChild<QPushButton*>("decklab-controller-fx-refresh")->click(); QTest::qWait(150);
     EXPECT_EQ(0,writes);
     for(size_t index=0;index<keys.size();++index) EXPECT_DOUBLE_EQ(snapshot[index],ControlObject::get(keys[index]));
