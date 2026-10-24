@@ -368,6 +368,8 @@ class EngineBuffer : public EngineObject {
     FRIEND_TEST(EngineSyncTest, UserTweakPreservedInSeek);
     FRIEND_TEST(EngineSyncTest, FollowerUserTweakPreservedInLeaderChange);
     FRIEND_TEST(EngineSyncTest, BeatMapQuantizePlay);
+    // Deck Lab: wraps a loop the way ReadAheadManager does (m_playPos).
+    FRIEND_TEST(EngineSyncTest, CdjSyncWithoutQuantizeKeepsTheTempoInALoopOfPartBeats);
     FRIEND_TEST(EngineBufferTest, ScalerNoTransport);
     EngineSync* m_pEngineSync;
     SyncControl* m_pSyncControl;

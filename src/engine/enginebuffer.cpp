@@ -913,13 +913,6 @@ void EngineBuffer::slotControlPlayRequest(double v) {
                 // whatever Quantize is set to when it follows the master
                 // under the CDJ BEAT SYNC rules (decklabcdjsync.h).
                 if (m_quantize.toBool() || syncedStartLinesUp(syncTap)) {
-                    if (!m_quantize.toBool() && m_pSyncControl->phaseFollowsMaster()) {
-                        // With Quantize off, the beat offset that a jump
-                        // left holds only while the deck plays
-                        // (BpmControl::keepsJumpOffsets): PLAY lines the
-                        // deck up on the master's beat again.
-                        m_pBpmControl->resetSyncAdjustment();
-                    }
                     requestSyncPhase();
                 }
             } else if (!m_pSyncControl->isSynchronized() && syncTapLinesUp(syncTap)) {

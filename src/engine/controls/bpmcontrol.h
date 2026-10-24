@@ -153,6 +153,8 @@ class BpmControl : public EngineControl {
     PollingControlProxy m_reverseButton;
     std::unique_ptr<ControlProxy> m_pRateRatio;
     PollingControlProxy m_quantize;
+    // Deck Lab: whether the deck plays (updateBeatDistance).
+    PollingControlProxy m_playButton;
 
     // ControlObjects that come from QuantizeControl
     PollingControlProxy m_nextBeat;

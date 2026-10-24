@@ -69,6 +69,7 @@ BpmControl::BpmControl(const QString& group,
         : EngineControl(group, pConfig),
           m_reverseButton(group, QStringLiteral("reverse")),
           m_quantize(group, QStringLiteral("quantize")),
+          m_playButton(group, QStringLiteral("play")),
           m_nextBeat(group, QStringLiteral("beat_next")),
           m_prevBeat(group, QStringLiteral("beat_prev")),
           m_loopEnabled(group, QStringLiteral("loop_enabled")),
@@ -1352,6 +1353,12 @@ double BpmControl::updateBeatDistance() {
 }
 
 double BpmControl::updateBeatDistance(mixxx::audio::FramePos playpos) {
+    // Deck Lab: a CDJ follower with Quantize off keeps the beat offset that a
+    // jump left only while it plays (keepsJumpOffsets). Paused it waits on
+    // its own beat, and PLAY lines it up on the master's again.
+    if (keepsJumpOffsets() && !m_playButton.toBool() && m_dUserOffset.getValue() != 0.0) {
+        m_dUserOffset.setValue(0.0);
+    }
     double beatDistance = getBeatDistance(playpos);
     m_pThisBeatDistance.set(beatDistance);
     if (!isSynchronized() && m_dUserOffset.getValue() != 0.0) {

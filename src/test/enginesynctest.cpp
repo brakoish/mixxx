@@ -4029,9 +4029,10 @@ TEST_F(EngineSyncTest, CdjSyncWithoutQuantizeKeepsAFreeJumpWhereItLands) {
 
 TEST_F(EngineSyncTest, CdjSyncWithoutQuantizeKeepsTheTempoInALoopOfPartBeats) {
     // Quantize off: a manual loop 3.5 beats long moves the follower's beat
-    // half a beat every pass. It keeps the master's tempo there, as Mixxx's
-    // lock does without Quantize, instead of bending back at up to 5 % speed
-    // every pass, and plays on from the loop at that tempo when it ends.
+    // half a beat every pass, one 3.97 beats long 0.03 beat. The follower
+    // keeps the master's tempo there, as Mixxx's lock does without Quantize,
+    // instead of bending back every pass (at up to 5 % speed), and plays on
+    // from the loop at that tempo when it ends.
     ControlObject::set(kCdjSync, 1.0);
     ControlObject::set(kPlayStartAlign, 1.0);
     EngineBuffer* pBuffer1 = m_pChannel1->getEngineBuffer();
@@ -4054,41 +4055,50 @@ TEST_F(EngineSyncTest, CdjSyncWithoutQuantizeKeepsTheTempoInALoopOfPartBeats) {
     ASSERT_TRUE(isFollower(m_sGroup2));
     ASSERT_LT(std::abs(audibleOffset()), 0.001);
 
-    // LOOP IN here, LOOP OUT 3.5 beats on (engine samples are frames x 2).
-    const double loopIn = pBuffer2->getExactPlayPos().value();
-    ControlObject::set(ConfigKey(m_sGroup2, "loop_start_position"), 2.0 * loopIn);
-    ControlObject::set(ConfigKey(m_sGroup2, "loop_end_position"),
-            2.0 * (loopIn + 3.5 * kBeatFrames100));
-    pulse(m_sGroup2, "reloop_toggle");
-    ProcessBuffer();
-    ASSERT_DOUBLE_EQ(1.0, ControlObject::get(ConfigKey(m_sGroup2, "loop_enabled")));
-    // About 139 buffers a pass: two passes.
-    double maxSpeedError = 0.0;
-    double latestPosition = 0.0;
-    bool wrapped = false;
-    for (int i = 0; i < 300; ++i) {
+    for (const double beats : {3.5, 3.97}) {
+        SCOPED_TRACE(beats);
+        // LOOP IN here, LOOP OUT `beats` on (engine samples are frames x 2).
+        const double loopIn = pBuffer2->getExactPlayPos().value();
+        const double length = beats * kBeatFrames100;
+        ControlObject::set(ConfigKey(m_sGroup2, "loop_start_position"), 2.0 * loopIn);
+        ControlObject::set(ConfigKey(m_sGroup2, "loop_end_position"), 2.0 * (loopIn + length));
+        pulse(m_sGroup2, "reloop_toggle");
         ProcessBuffer();
-        maxSpeedError = std::max(maxSpeedError, std::abs(pBuffer2->getSpeed() - 1.3));
-        const double position = pBuffer2->getExactPlayPos().value();
-        wrapped = wrapped || position < latestPosition;
-        latestPosition = position;
-    }
-    ASSERT_TRUE(wrapped);
-    EXPECT_LT(maxSpeedError, 1e-9);
+        ASSERT_DOUBLE_EQ(1.0, ControlObject::get(ConfigKey(m_sGroup2, "loop_enabled")));
+        // Two passes. The mocked scaler reads no audio, so the engine never
+        // wraps a loop itself: wrap it as ReadAheadManager does at LOOP OUT,
+        // back to LOOP IN without a seek.
+        double maxSpeedError = 0.0;
+        int passes = 0;
+        for (int i = 0; i < 400 && passes < 2; ++i) {
+            ProcessBuffer();
+            maxSpeedError = std::max(maxSpeedError, std::abs(pBuffer2->getSpeed() - 1.3));
+            if (pBuffer2->m_playPos.value() >= loopIn + length) {
+                pBuffer2->m_playPos = pBuffer2->m_playPos - length;
+                ++passes;
+            }
+        }
+        ASSERT_EQ(2, passes);
+        for (int i = 0; i < 40; ++i) {
+            ProcessBuffer();
+            maxSpeedError = std::max(maxSpeedError, std::abs(pBuffer2->getSpeed() - 1.3));
+        }
+        EXPECT_LT(maxSpeedError, 1e-9);
 
-    // Out of the loop: it plays on at the master's tempo from where the loop
-    // left it, without bending back.
-    pulse(m_sGroup2, "reloop_toggle");
-    ProcessBuffer();
-    ASSERT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup2, "loop_enabled")));
-    const double left = audibleOffset();
-    maxSpeedError = 0.0;
-    for (int i = 0; i < 60; ++i) {
+        // Out of the loop: it plays on at the master's tempo from where the
+        // loop left it, without bending back.
+        pulse(m_sGroup2, "reloop_toggle");
         ProcessBuffer();
-        maxSpeedError = std::max(maxSpeedError, std::abs(pBuffer2->getSpeed() - 1.3));
+        ASSERT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup2, "loop_enabled")));
+        const double left = audibleOffset();
+        maxSpeedError = 0.0;
+        for (int i = 0; i < 40; ++i) {
+            ProcessBuffer();
+            maxSpeedError = std::max(maxSpeedError, std::abs(pBuffer2->getSpeed() - 1.3));
+        }
+        EXPECT_LT(maxSpeedError, 1e-9);
+        EXPECT_LT(phaseError(audibleOffset() - left), 1e-6);
     }
-    EXPECT_LT(maxSpeedError, 1e-9);
-    EXPECT_LT(phaseError(audibleOffset() - left), 1e-6);
 }
 
 TEST_F(EngineSyncTest, CdjSyncWithoutQuantizeFollowerHoldsWhenTheMasterJumps) {
@@ -4153,6 +4163,10 @@ TEST_F(EngineSyncTest, PlayStartSyncLockOnlyPausedTempoMasterIgnoresASyncedSampl
     ControlObject::set(kCdjSync, 1.0);
     ControlObject::set(kPlayStartAlign, 1.0);
     auto pHotCue2Activate = std::make_unique<ControlProxy>(m_sGroup2, "hotcue_1_activate");
+    // A start is one buffer at deck 2's speed: with the master paused, Mixxx's
+    // sync lock hands the group the tempo of the one synced player left
+    // playing, the sampler (EngineSync::notifyPlayingAudible).
+    EngineBuffer* pBuffer2 = m_pChannel2->getEngineBuffer();
     playDeckOneOverPausedDeckTwo();
     ControlObject::set(ConfigKey(m_sGroup1, "volume"), 0.0);
     // The main cue and a hot cue at 0:00, where deck 2 waits.
@@ -4188,7 +4202,7 @@ TEST_F(EngineSyncTest, PlayStartSyncLockOnlyPausedTempoMasterIgnoresASyncedSampl
     // PLAY: exactly one buffer after the cue.
     ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
     ProcessBuffer();
-    EXPECT_DOUBLE_EQ(kOneBufferAt100Bpm, beatDistance(m_sGroup2));
+    EXPECT_NEAR(kOneBufferAt100Bpm * pBuffer2->getSpeed(), beatDistance(m_sGroup2), 1e-9);
     EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
 
     // CUE held on the cue: the preview starts on it.
@@ -4196,7 +4210,7 @@ TEST_F(EngineSyncTest, PlayStartSyncLockOnlyPausedTempoMasterIgnoresASyncedSampl
     ControlObject::set(ConfigKey(m_sGroup2, "cue_default"), 1.0);
     ProcessBuffer();
     ASSERT_DOUBLE_EQ(1.0, ControlObject::get(ConfigKey(m_sGroup2, "play")));
-    EXPECT_DOUBLE_EQ(kOneBufferAt100Bpm, beatDistance(m_sGroup2));
+    EXPECT_NEAR(kOneBufferAt100Bpm * pBuffer2->getSpeed(), beatDistance(m_sGroup2), 1e-9);
     EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
     ControlObject::set(ConfigKey(m_sGroup2, "cue_default"), 0.0);
     ProcessBuffer();
@@ -4209,7 +4223,7 @@ TEST_F(EngineSyncTest, PlayStartSyncLockOnlyPausedTempoMasterIgnoresASyncedSampl
     ASSERT_NEAR(0.3, beatDistance(m_sGroup2), 1e-9);
     pHotCue2Activate->set(1.0);
     ProcessBuffer();
-    EXPECT_DOUBLE_EQ(kOneBufferAt100Bpm, beatDistance(m_sGroup2));
+    EXPECT_NEAR(kOneBufferAt100Bpm * pBuffer2->getSpeed(), beatDistance(m_sGroup2), 1e-9);
     EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
     pHotCue2Activate->set(0.0);
     ProcessBuffer();
