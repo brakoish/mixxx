@@ -4035,11 +4035,14 @@ TEST_F(NativeDeckLabTest, SyncOnTheDeckOnAirNeverMatchesADeckNobodyHears) {
     settle();
     ASSERT_NEAR(.11, get(1, "playposition"), .02); ASSERT_NEAR(.26, get(2, "playposition"), .02);
     ASSERT_GT(std::abs(get(1, "beat_distance") - get(2, "beat_distance")), .05);
-    const double start = get(1, "playposition");
+    // The engine's own position, updated every buffer (playposition is only
+    // published a few times a second).
+    const auto exact = [this] { return m_pChannel1->getEngineBuffer()->getExactPlayPos().value(); };
+    const double start = exact();
     for (int n = 0; n < 4; ++n) ProcessBuffer();
-    const double step = (get(1, "playposition") - start) / 4;
+    const double step = (exact() - start) / 4;
     ASSERT_GT(step, 0);
-    const double tapped = get(1, "playposition");
+    const double tapped = exact();
     auto* sync1 = panel->findChild<QPushButton*>("decklab-1-beatsync"); ASSERT_NE(nullptr, sync1);
     sync1->click();
     for (int n = 0; n < 8; ++n) ProcessBuffer();
@@ -4049,7 +4052,7 @@ TEST_F(NativeDeckLabTest, SyncOnTheDeckOnAirNeverMatchesADeckNobodyHears) {
     EXPECT_DOUBLE_EQ(0, get(2, "sync_enabled")) << "the headphone deck is not synced";
     EXPECT_NEAR(124, get(1, "bpm"), 1e-6) << "the deck on air keeps its tempo";
     EXPECT_NEAR(128, get(2, "bpm"), 1e-6);
-    EXPECT_NEAR(tapped + 8 * step, get(1, "playposition"), step / 2) << "no phase seek on air";
+    EXPECT_NEAR(tapped + 8 * step, exact(), step / 2) << "no phase seek on air";
     EXPECT_TRUE(sync1->property("lit").toBool()); EXPECT_TRUE(strip(1)->state().master);
     // The headphone deck's SYNC: it follows the deck on air, which stays the
     // master however quiet the headphone deck is.
