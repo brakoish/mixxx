@@ -4065,12 +4065,13 @@ TEST_F(EngineSyncTest, CdjSyncWithoutQuantizeKeepsTheTempoInALoopOfPartBeats) {
         pulse(m_sGroup2, "reloop_toggle");
         ProcessBuffer();
         ASSERT_DOUBLE_EQ(1.0, ControlObject::get(ConfigKey(m_sGroup2, "loop_enabled")));
-        // Two passes. The mocked scaler reads no audio, so the engine never
-        // wraps a loop itself: wrap it as ReadAheadManager does at LOOP OUT,
-        // back to LOOP IN without a seek.
+        // One pass, and on past LOOP OUT. The mocked scaler reads no audio, so
+        // the engine never wraps a loop itself: wrap it as ReadAheadManager
+        // does at LOOP OUT, back to LOOP IN without a seek. (The fake tracks
+        // last 5 s, so the test stays well inside the master's.)
         double maxSpeedError = 0.0;
         int passes = 0;
-        for (int i = 0; i < 400 && passes < 2; ++i) {
+        for (int i = 0; i < 200 && passes < 1; ++i) {
             ProcessBuffer();
             maxSpeedError = std::max(maxSpeedError, std::abs(pBuffer2->getSpeed() - 1.3));
             if (pBuffer2->m_playPos.value() >= loopIn + length) {
@@ -4078,8 +4079,8 @@ TEST_F(EngineSyncTest, CdjSyncWithoutQuantizeKeepsTheTempoInALoopOfPartBeats) {
                 ++passes;
             }
         }
-        ASSERT_EQ(2, passes);
-        for (int i = 0; i < 40; ++i) {
+        ASSERT_EQ(1, passes);
+        for (int i = 0; i < 20; ++i) {
             ProcessBuffer();
             maxSpeedError = std::max(maxSpeedError, std::abs(pBuffer2->getSpeed() - 1.3));
         }
@@ -4092,7 +4093,7 @@ TEST_F(EngineSyncTest, CdjSyncWithoutQuantizeKeepsTheTempoInALoopOfPartBeats) {
         ASSERT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup2, "loop_enabled")));
         const double left = audibleOffset();
         maxSpeedError = 0.0;
-        for (int i = 0; i < 40; ++i) {
+        for (int i = 0; i < 20; ++i) {
             ProcessBuffer();
             maxSpeedError = std::max(maxSpeedError, std::abs(pBuffer2->getSpeed() - 1.3));
         }
