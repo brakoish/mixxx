@@ -18,6 +18,12 @@
 //    none, a deck that is itself on air becomes the master at its own tempo
 //    (never matched to a deck nobody hears). Every controller mapping that
 //    sends beatsync gets the CDJ button unchanged.
+//  - a deck that follows the master follows its beat as well as its tempo,
+//    whatever the deck's Quantize is set to (Mixxx's sync lock keeps the
+//    phase only with Quantize on): BEAT SYNC on a playing deck lines the beat
+//    up at once, every start of a paused follower lines up while the master
+//    plays (decklabplaystart.h), the lock keeps it there, and a scratch ends
+//    back on the beat. Quantize still governs hot cues, loops and beat jumps.
 //  - a synced deck that is not the tempo master ignores its tempo controls
 //    (rate, the rate_perm_* buttons, and bpm with bpm_up/bpm_down and
 //    tempo_tap): only the master moves the tempo, for every synced deck.

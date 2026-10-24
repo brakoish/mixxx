@@ -54,9 +54,11 @@ constexpr int kPlaypositionUpdateRate = 15; // updates per second
 
 const QString kAppGroup = QStringLiteral("[App]");
 
-// Deck Lab: what a SYNC tap on a paused deck asked of its next PLAY start.
-// beatsync and beatsync_tempo line it up with Quantize on, like sync lock;
-// beatsync_phase asks for the phase outright, as it does on a playing deck.
+// Deck Lab: what a one-shot SYNC tap on a paused deck asked of its next PLAY
+// start. Mixxx's beatsync and beatsync_tempo line it up with Quantize on,
+// like sync lock; beatsync_phase asks for the phase outright, as it does on a
+// playing deck. (The CDJ BEAT SYNC arms none: its follower lines up every
+// start, see slotControlPlayRequest.)
 constexpr int kSyncTapQuantized = 1;
 constexpr int kSyncTapPhase = 2;
 
@@ -461,10 +463,24 @@ void EngineBuffer::restorePhaseAfterPreview() {
 }
 
 bool EngineBuffer::alignsPlayStart() const {
-    // Samplers and preview decks, and decks that sync, keep Mixxx's start.
+    // Samplers and preview decks, and decks that start with their sync
+    // group, keep Mixxx's start.
     return decklab::playStartAlignFromValue(m_playStartAlign.get()) ==
             decklab::PlayStartAlign::Quantize ||
-            !m_bPrimaryDeck || m_pSyncControl->isSynchronized();
+            !m_bPrimaryDeck || startsWithSyncGroup();
+}
+
+bool EngineBuffer::startsWithSyncGroup() const {
+    // A synced deck follows only synced decks. A paused tempo master is still
+    // synced, but with no synced deck playing it has nobody to follow: as on
+    // a CDJ it starts exactly at its playhead, cue or hot cue, never on the
+    // phase of an unsynced deck (one in the headphones, say).
+    return m_pSyncControl->isSynchronized() && m_pEngineSync->otherSyncedPlaying(getGroup());
+}
+
+bool EngineBuffer::syncedStartLinesUp(int syncTap) const {
+    return startsWithSyncGroup() &&
+            (m_pSyncControl->phaseFollowsMaster() || (syncTap & kSyncTapPhase));
 }
 
 bool EngineBuffer::syncTapLinesUp(int syncTap) const {
@@ -885,13 +901,18 @@ void EngineBuffer::slotControlPlayRequest(double v) {
         if (phaseSeekAllowed) {
             if (alignsPlayStart()) {
                 // Mixxx: a quantized start lands on the playing deck's beat.
-                if (m_quantize.toBool()) {
+                // A deck that starts with its sync group lines up with it
+                // whatever Quantize is set to when it follows the master
+                // under the CDJ BEAT SYNC rules (decklabcdjsync.h).
+                if (m_quantize.toBool() || syncedStartLinesUp(syncTap)) {
                     requestSyncPhase();
                 }
-            } else if (syncTapLinesUp(syncTap)) {
+            } else if (!m_pSyncControl->isSynchronized() && syncTapLinesUp(syncTap)) {
                 requestSyncPhase();
             } else {
                 // CDJ: start exactly here, or at the cue a preview seeks to.
+                // So does a synced deck with no synced deck playing: a SYNC
+                // tap would line it up with an unsynced one.
                 m_iPlayStartExact = 1;
             }
         }
@@ -1431,9 +1452,10 @@ void EngineBuffer::processSeek(bool paused) {
     m_previousBufferSeek = false;
 
     // Deck Lab: taken before any early return, so it only covers the seek
-    // queued with this PLAY start (hot cue or cue preview from pause).
+    // queued with this PLAY start (hot cue or cue preview from pause). The
+    // same rule as the start's: only a sync group lines a synced deck up.
     const bool exactStart = m_iPlayStartExact.fetchAndStoreRelaxed(0) != 0 &&
-            !m_pSyncControl->isSynchronized();
+            !startsWithSyncGroup();
     // A preview that ended other than back to pause (CueControl hands that
     // one back first) has used the SYNC tap it held.
     if (atomicLoadRelaxed(m_iPhaseHeldByPreview) != 0 && !m_pCueControl->isPreviewing()) {

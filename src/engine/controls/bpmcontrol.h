@@ -130,6 +130,11 @@ class BpmControl : public EngineControl {
         return m_cdjSync.toBool() && getSyncMode() == SyncMode::Follower &&
                 !m_internalClockLeader.toBool();
     }
+    // Deck Lab: a follower under the CDJ BEAT SYNC rules stays on the
+    // master's beat whatever Quantize is set to (SyncControl's twin).
+    bool phaseFollowsMaster() const {
+        return m_cdjSync.toBool() && getSyncMode() == SyncMode::Follower;
+    }
     double calcSyncAdjustment(bool userTweakingSync);
     void adjustBeatsBpm(double deltaBpm);
     void slotScaleBpm(mixxx::Beats::BpmScale bpmScale);

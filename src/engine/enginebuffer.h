@@ -139,10 +139,12 @@ class EngineBuffer : public EngineObject {
     // Queues a new seek position. Use SEEK_EXACT or SEEK_STANDARD as seekType
     void queueNewPlaypos(mixxx::audio::FramePos newpos, enum SeekRequest seekType);
     void requestSyncPhase();
-    /// Deck Lab: a SYNC tap (beatsync, beatsync_phase, beatsync_tempo) on a
-    /// paused deck. The next PLAY start is phase-aligned even when Settings
-    /// say PLAY starts exactly where it is (decklabplaystart.h). An explicit
-    /// phase request (beatsync_phase) needs no Quantize; the others do.
+    /// Deck Lab: a one-shot SYNC tap (Mixxx's beatsync, beatsync_phase,
+    /// beatsync_tempo) on a paused deck. The next PLAY start is phase-aligned
+    /// even when Settings say PLAY starts exactly where it is
+    /// (decklabplaystart.h). An explicit phase request (beatsync_phase) needs
+    /// no Quantize; the others do. The CDJ BEAT SYNC needs no tap: a synced
+    /// deck lines up every start with its sync group (decklabcdjsync.h).
     void requestPhaseOnNextStart(bool explicitPhase);
     /// Deck Lab: CueControl calls it just before a cue or hot cue preview is
     /// released back to pause. The SYNC tap that the preview's start used
@@ -325,6 +327,14 @@ class EngineBuffer : public EngineObject {
     bool alignsPlayStart() const;
     /// Deck Lab: whether the SYNC tap a PLAY start took lines this deck up.
     bool syncTapLinesUp(int syncTap) const;
+    /// Deck Lab: this deck syncs and another synced deck plays, so a start
+    /// has a sync group to line up with. A synced deck with none (a paused
+    /// tempo master beside an unsynced deck) starts like any other.
+    bool startsWithSyncGroup() const;
+    /// Deck Lab: whether a start of a deck that starts with its sync group
+    /// lines up whatever Quantize is set to: a CDJ BEAT SYNC follower, or a
+    /// SYNC tap that asked for the phase.
+    bool syncedStartLinesUp(int syncTap) const;
     // For debugging / testing -- returns true if the previous buffer call resulted in a seek.
     FRIEND_TEST(EngineSyncTest, FollowerUserTweakPreservedInSyncDisable);
     bool previousBufferSeek() const {

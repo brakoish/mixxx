@@ -15,16 +15,21 @@
 // mapping, CUE preview, hot cues) ends up as the same [ChannelN],play write.
 // The engine default is Mixxx's behaviour; the native Deck Lab surface writes
 // the CDJ default the first time it runs. Only primary decks are affected.
-// Synchronized decks (sync lock leader or follower) keep the aligned start
-// (with Quantize on, as in Mixxx). Quantized seeks while a deck plays (hot
-// cues, loops, beat jumps) are unchanged.
+// A synchronized deck (sync lock leader or follower) that starts while
+// another synced deck plays keeps the aligned start: with Quantize on, as in
+// Mixxx, and whatever Quantize is set to for a follower under the CDJ BEAT
+// SYNC rules (engine/sync/decklabcdjsync.h). A synced deck with no synced
+// deck playing, such as a paused tempo master beside an unsynced deck in the
+// headphones, starts exactly: it has nobody to follow, and it is never lined
+// up with an unsynced deck. Quantized seeks while a deck plays (hot cues,
+// loops, beat jumps) are unchanged.
 //
-// A SYNC tap made while the deck is paused, with another deck to sync to,
-// lines up its next start with the playing deck: beatsync and beatsync_tempo
-// with Quantize on, beatsync_phase (the touch SYNC) always. A cue or hot cue
-// preview released back to pause leaves the tap for the next start; PLAY, a
-// preview latched into play, a load or an eject uses it up. With no other
-// deck playing the start stays exact.
+// A one-shot SYNC tap made while an unsynced deck is paused, with another
+// deck to sync to, lines up its next start with the playing deck: Mixxx's
+// beatsync and beatsync_tempo with Quantize on, beatsync_phase always. A cue
+// or hot cue preview released back to pause leaves the tap for the next
+// start; PLAY, a preview latched into play, a load or an eject uses it up.
+// With no other deck playing the start stays exact.
 namespace decklab {
 
 enum class PlayStartAlign {

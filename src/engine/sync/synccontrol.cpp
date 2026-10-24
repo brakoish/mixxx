@@ -188,11 +188,13 @@ void SyncControl::requestSync() {
         kLogger.trace() << "requestSync" << this->getGroup()
                         << isPlaying() << m_pQuantize->toBool();
     }
-    if (isPlaying() && m_pQuantize->toBool()) {
+    if (isPlaying() && (m_pQuantize->toBool() || phaseFollowsMaster())) {
         // only sync phase if the deck is playing and if quantize is enabled.
         // this way the it is up to the user to decide if a seek is desired or not.
         // This is helpful if the beatgrid of the track does not fit at the current
         // playposition
+        // Deck Lab: a CDJ BEAT SYNC follower lines up whatever Quantize is
+        // set to; Quantize still governs hot cues, loops and beat jumps.
         m_pChannel->getEngineBuffer()->requestSyncPhase();
     }
 }
@@ -206,7 +208,13 @@ bool SyncControl::isAudible() const {
 }
 
 bool SyncControl::isQuantized() const {
-    return m_pQuantize->toBool();
+    // Deck Lab: EngineSync asks this to put a deck back on the beat after a
+    // scratch; a CDJ BEAT SYNC follower goes back on the master's beat too.
+    return m_pQuantize->toBool() || phaseFollowsMaster();
+}
+
+bool SyncControl::phaseFollowsMaster() const {
+    return m_pCdjSync->toBool() && getSyncMode() == SyncMode::Follower;
 }
 
 double SyncControl::adjustSyncBeatDistance(double beatDistance) const {
@@ -468,16 +476,26 @@ void SyncControl::slotControlBeatSync(double value) {
             // if it is on air, is the master itself at its own tempo: Mixxx
             // would match it to a deck nobody hears (one in the headphones),
             // retuning and seeking the deck on air.
-            if (!m_pEngineSync->playingLeaderDeck()) {
-                Syncable* pOnAir = m_pEngineSync->pickAudiblePlayingDeck(m_pChannel);
-                if (pOnAir) {
-                    pOnAir->getChannel()->getEngineBuffer()->requestSyncMode(SyncMode::LeaderSoft);
+            Syncable* pMaster = m_pEngineSync->playingLeaderDeck();
+            if (!pMaster) {
+                pMaster = m_pEngineSync->pickAudiblePlayingDeck(m_pChannel);
+                if (pMaster) {
+                    pMaster->getChannel()->getEngineBuffer()->requestSyncMode(SyncMode::LeaderSoft);
                 } else if (isPlaying() && isAudible()) {
                     m_pChannel->getEngineBuffer()->requestSyncMode(SyncMode::LeaderSoft);
                     return;
                 }
             }
             m_pChannel->getEngineBuffer()->requestEnableSync(true);
+            // BEAT SYNC lines the beat up with the playing master at once,
+            // whatever Quantize is set to (Mixxx's sync lock seeks the phase
+            // only with Quantize). Asked here, not when the deck becomes a
+            // follower: the deck on air may take the master role after this
+            // deck's queued enable has run. A paused deck lines up when it
+            // starts (EngineBuffer::slotControlPlayRequest).
+            if (pMaster && isPlaying()) {
+                m_pChannel->getEngineBuffer()->requestSyncPhase();
+            }
         }
         return;
     }

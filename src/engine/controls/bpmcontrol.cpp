@@ -508,7 +508,10 @@ double BpmControl::calcSyncedRate(double userTweak) {
 
     // If we are not quantized, or there are no beats, or we're leader,
     // or we're in reverse, just return the rate as-is.
-    if (!m_quantize.toBool() || !m_pBeats || m_reverseButton.toBool()) {
+    // Deck Lab: a CDJ BEAT SYNC follower keeps the master's beat with
+    // Quantize off too (decklabcdjsync.h).
+    if ((!m_quantize.toBool() && !phaseFollowsMaster()) || !m_pBeats ||
+            m_reverseButton.toBool()) {
         m_resetSyncAdjustment = true;
         return rate + userTweak;
     }

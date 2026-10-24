@@ -240,9 +240,10 @@ void DeckLabSettingsPage::buildDecks(QWidget* content) {
             static_cast<int>(decklab::PlayStartAlign::SyncLockOnly));
     m_playStart->addOption(tr("ON BEAT"), tr("On the other deck's beat (Mixxx)"),
             static_cast<int>(decklab::PlayStartAlign::Quantize));
-    // What still lines decks up when PLAY starts exactly. Sync lock and a
-    // controller's SYNC need Quantize for the phase (a touch SYNC does not).
-    m_playStart->setHint(tr("Quantize on: sync lock or SYNC before PLAY still lines up"));
+    // What still lines decks up when PLAY starts exactly: SYNC, touch or
+    // controller, which follows the master's beat whatever Quantize is set
+    // to (engine/sync/decklabcdjsync.h).
+    m_playStart->setHint(tr("SYNC on before PLAY still lines up, Quantize or not"));
     const ConfigKey playStartControl = decklab::playStartAlignControlKey();
     const auto showPlayStart = [this](double v) {
         auto* model = m_playStart->model();

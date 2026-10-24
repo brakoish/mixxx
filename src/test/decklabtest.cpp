@@ -7125,11 +7125,10 @@ TEST_F(NativeDeckLabTest, SettingsPlayStartsRowSwitchesLiveByTouchAndKnob) {
     EXPECT_EQ(QStringLiteral("On the other deck's beat (Mixxx)"), row->model()->itemText(1));
     EXPECT_EQ(0, row->model()->itemData(1).toInt());
     EXPECT_EQ(0, row->currentIndex()) << "the native default: exactly where it is";
-    // The reason line tells what still lines decks up, and that it takes
-    // Quantize (sync lock and a controller's SYNC need it for the phase).
-    EXPECT_TRUE(row->hint().startsWith(QStringLiteral("Quantize on:")));
-    EXPECT_TRUE(row->hint().contains(QStringLiteral("sync lock")));
-    EXPECT_TRUE(row->hint().contains(QStringLiteral("SYNC before PLAY")));
+    // The reason line tells what still lines decks up: SYNC, touch or
+    // controller, which follows the master's beat whatever Quantize is set to.
+    EXPECT_TRUE(row->hint().startsWith(QStringLiteral("SYNC on before PLAY")));
+    EXPECT_TRUE(row->hint().contains(QStringLiteral("Quantize or not")));
     capture(QStringLiteral("settings-decks-play-start.png"));
 
     // A tap on the second segment: saved and live, no restart.
@@ -7231,21 +7230,46 @@ TEST_F(NativeDeckLabTest, TouchSyncTapLinesUpPlayAfterACueHoldAndWithoutQuantize
     ASSERT_DOUBLE_EQ(1, get("[Channel2]", "play"));
     EXPECT_NEAR(get("[Channel1]", "beat_distance"), get("[Channel2]", "beat_distance"), 1e-6);
 
-    // r6-sync: SYNC is a CDJ lock, so deck 2 is still synced. A tap turns it
-    // off and keeps the tempo; then, with Quantize off, PLAY starts exactly
-    // where the deck waits (Mixxx's sync lock needs Quantize for the phase).
+    // r6-sync: SYNC is a CDJ lock, so deck 2 is still synced. Like a CDJ's
+    // BEAT SYNC it follows the master's beat with Quantize off too: PLAY
+    // starts in phase again (Mixxx's own sync lock needs Quantize for that).
     EXPECT_DOUBLE_EQ(1, get("[Channel2]", "sync_enabled"));
+    play->click(); settle(); ProcessBuffer();
+    ASSERT_DOUBLE_EQ(0, get("[Channel2]", "play"));
+    ControlObject::set(ConfigKey("[Channel2]", "quantize"), 0);
+    ControlObject::set(ConfigKey("[Channel2]", "playposition"), .21); ProcessBuffer(); settle();
+    play->click(); settle(); ProcessBuffer();
+    ASSERT_DOUBLE_EQ(1, get("[Channel2]", "play"));
+    EXPECT_NEAR(get("[Channel1]", "beat_distance"), get("[Channel2]", "beat_distance"), 1e-6);
+
+    // A tap turns SYNC off and keeps the tempo; PLAY then starts exactly
+    // where the deck waits.
     play->click(); settle(); ProcessBuffer();
     ASSERT_DOUBLE_EQ(0, get("[Channel2]", "play"));
     sync->click(); settle(); ProcessBuffer();
     EXPECT_DOUBLE_EQ(0, get("[Channel2]", "sync_enabled"));
     EXPECT_NEAR(128, get("[Channel2]", "bpm"), 1e-6);
-    ControlObject::set(ConfigKey("[Channel2]", "quantize"), 0);
     ControlObject::set(ConfigKey("[Channel2]", "playposition"), .21); ProcessBuffer(); settle();
     const double before = get("[Channel2]", "beat_distance");
     play->click(); settle(); ProcessBuffer();
     ASSERT_DOUBLE_EQ(1, get("[Channel2]", "play"));
     EXPECT_NEAR(before + 512 / (44100 * 60.0 / 128), get("[Channel2]", "beat_distance"), 1e-6);
+
+    // The next tap turns SYNC on, still with Quantize off: PLAY starts in
+    // phase. SYNC never touches the deck's Quantize, which still governs hot
+    // cues, loops and beat jumps.
+    play->click(); settle(); ProcessBuffer();
+    ASSERT_DOUBLE_EQ(0, get("[Channel2]", "play"));
+    ControlObject::set(ConfigKey("[Channel2]", "playposition"), .21); ProcessBuffer(); settle();
+    sync->click(); settle(); ProcessBuffer();
+    EXPECT_DOUBLE_EQ(1, get("[Channel2]", "sync_enabled"));
+    EXPECT_DOUBLE_EQ(0, get("[Channel2]", "quantize"));
+    play->click(); settle(); ProcessBuffer();
+    ASSERT_DOUBLE_EQ(1, get("[Channel2]", "play"));
+    EXPECT_NEAR(get("[Channel1]", "beat_distance"), get("[Channel2]", "beat_distance"), 1e-6);
+    play->click(); settle(); ProcessBuffer();
+    sync->click(); settle(); ProcessBuffer();
+    ControlObject::set(ConfigKey("[Channel1]", "play"), 0); ProcessBuffer();
 }
 
 // r6-keys: the Key format setting (Settings › Library) reaches every key on

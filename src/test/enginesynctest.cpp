@@ -9,6 +9,7 @@
 #include "control/controlobject.h"
 #include "engine/controls/bpmcontrol.h"
 #include "engine/decklabplaystart.h"
+#include "engine/sync/decklabcdjsync.h"
 #include "engine/sync/synccontrol.h"
 #include "mixer/basetrackplayer.h"
 #include "preferences/usersettings.h"
@@ -3733,4 +3734,199 @@ TEST_F(EngineSyncTest, PlayStartSyncLockOnlySyncTapDoesNotCarryOverALoadAndPlay)
     ASSERT_DOUBLE_EQ(100.0, ControlObject::get(ConfigKey(m_sGroup2, "bpm")));
     EXPECT_NEAR(kOneBufferAt100Bpm, beatDistance(m_sGroup2), 1e-9);
     EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
+}
+
+// Deck Lab's CDJ BEAT SYNC rules (engine/sync/decklabcdjsync.h), as the
+// native surface turns them on, with the CDJ PLAY start.
+namespace {
+
+const ConfigKey kCdjSync = decklab::cdjsync::controlKey();
+
+// How far apart the beats of two decks at the same tempo are, in beats.
+double phaseOffset(const QString& reference, const QString& group) {
+    return phaseError(beatDistance(group) - beatDistance(reference));
+}
+
+} // namespace
+
+TEST_F(EngineSyncTest, PlayStartSyncLockOnlyPausedTempoMasterStartsExactlyOnItsCue) {
+    // Deck 2, on air, is the tempo master at its own tempo; the only other
+    // playing deck, 1, is unsynced in the headphones. Paused on its cue, the
+    // master has no synced deck to follow: PLAY, a CUE preview and a hot cue
+    // preview start exactly on the cue, as on a CDJ, never on the beat of a
+    // deck nobody hears.
+    ControlObject::set(kCdjSync, 1.0);
+    ControlObject::set(kPlayStartAlign, 1.0);
+    auto pHotCue2Activate = std::make_unique<ControlProxy>(m_sGroup2, "hotcue_1_activate");
+    playDeckOneOverPausedDeckTwo();
+    ControlObject::set(ConfigKey(m_sGroup1, "volume"), 0.0);
+    // The main cue and a hot cue at 0:00, where deck 2 waits.
+    pulse(m_sGroup2, "cue_set");
+    pHotCue2Activate->set(1.0);
+    ProcessBuffer();
+    pHotCue2Activate->set(0.0);
+    ProcessBuffer();
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    pulse(m_sGroup2, "beatsync");
+    ProcessBuffer();
+    ProcessBuffer();
+    ASSERT_TRUE(isSoftLeader(m_sGroup2));
+    ASSERT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup1, "sync_enabled")));
+    ASSERT_DOUBLE_EQ(100.0, ControlObject::get(ConfigKey(m_sGroup2, "bpm")));
+    // Back on the cue, paused: still the master.
+    parkDeckTwo();
+    ASSERT_TRUE(isSoftLeader(m_sGroup2));
+
+    // PLAY: exactly one buffer after the cue.
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_DOUBLE_EQ(kOneBufferAt100Bpm, beatDistance(m_sGroup2));
+    EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
+
+    // CUE held on the cue: the preview starts on it, and ends back on it.
+    parkDeckTwo();
+    ControlObject::set(ConfigKey(m_sGroup2, "cue_default"), 1.0);
+    ProcessBuffer();
+    ASSERT_DOUBLE_EQ(1.0, ControlObject::get(ConfigKey(m_sGroup2, "play")));
+    EXPECT_DOUBLE_EQ(kOneBufferAt100Bpm, beatDistance(m_sGroup2));
+    EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
+    ControlObject::set(ConfigKey(m_sGroup2, "cue_default"), 0.0);
+    ProcessBuffer();
+    ASSERT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup2, "play")));
+    ASSERT_DOUBLE_EQ(0.0, beatDistance(m_sGroup2));
+
+    // Paused between beats (2.3 beats in), the hot cue held: the preview
+    // starts on the hot cue.
+    ControlObject::set(ConfigKey(m_sGroup2, "playposition"), 0.276);
+    ProcessBuffer();
+    ASSERT_NEAR(0.3, beatDistance(m_sGroup2), 1e-9);
+    pHotCue2Activate->set(1.0);
+    ProcessBuffer();
+    EXPECT_DOUBLE_EQ(kOneBufferAt100Bpm, beatDistance(m_sGroup2));
+    EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
+    pHotCue2Activate->set(0.0);
+    ProcessBuffer();
+    ASSERT_DOUBLE_EQ(0.0, beatDistance(m_sGroup2));
+    ASSERT_TRUE(isSoftLeader(m_sGroup2));
+
+    // Deck 1 goes on air and its SYNC makes it the master: paused deck 2
+    // follows it now, and its PLAY lines up with the playing master.
+    ControlObject::set(ConfigKey(m_sGroup1, "volume"), 1.0);
+    ProcessBuffer();
+    pulse(m_sGroup1, "beatsync");
+    ProcessBuffer();
+    ProcessBuffer();
+    ASSERT_TRUE(isSoftLeader(m_sGroup1));
+    ASSERT_TRUE(isFollower(m_sGroup2));
+    ASSERT_DOUBLE_EQ(130.0, ControlObject::get(ConfigKey(m_sGroup2, "bpm")));
+    ASSERT_DOUBLE_EQ(0.0, beatDistance(m_sGroup2));
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_GT(std::abs(beatDistance(m_sGroup2) - kOneBufferAt100Bpm * 130 / 100), 0.01);
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+}
+
+TEST_F(EngineSyncTest, CdjSyncFollowerStartsInPhaseWithoutQuantize) {
+    // A CDJ's BEAT SYNC follows the master's beat whatever Quantize is set
+    // to: a paused follower starts in phase with the playing master, every
+    // time it starts.
+    ControlObject::set(kCdjSync, 1.0);
+    ControlObject::set(kPlayStartAlign, 1.0);
+    playDeckOneOverPausedDeckTwo();
+    ControlObject::set(ConfigKey(m_sGroup1, "quantize"), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "quantize"), 0.0);
+    // BEAT SYNC on paused deck 2: deck 1, on air, becomes the master at its
+    // own tempo, and deck 2 follows it.
+    pulse(m_sGroup2, "beatsync");
+    ProcessBuffer();
+    ProcessBuffer();
+    ASSERT_TRUE(isSoftLeader(m_sGroup1));
+    ASSERT_TRUE(isFollower(m_sGroup2));
+    ASSERT_DOUBLE_EQ(130.0, ControlObject::get(ConfigKey(m_sGroup1, "bpm")));
+    ASSERT_DOUBLE_EQ(130.0, ControlObject::get(ConfigKey(m_sGroup2, "bpm")));
+    ASSERT_DOUBLE_EQ(0.0, beatDistance(m_sGroup2));
+
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_GT(std::abs(beatDistance(m_sGroup2) - kOneBufferAt100Bpm * 130 / 100), 0.01);
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+
+    // Paused and started again while it stays synced: in phase again.
+    parkDeckTwo();
+    ASSERT_TRUE(isFollower(m_sGroup2));
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_TRUE(beatsAligned(m_sGroup1, m_sGroup2));
+    // SYNC never turns the deck's Quantize on: it still governs hot cues,
+    // loops and beat jumps.
+    EXPECT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup2, "quantize")));
+
+    // Without the CDJ rules Mixxx's sync lock is unchanged: with Quantize off
+    // a follower starts where it waits.
+    parkDeckTwo();
+    ControlObject::set(kCdjSync, 0.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    EXPECT_NEAR(kOneBufferAt100Bpm * 130 / 100, beatDistance(m_sGroup2), 1e-9);
+    EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
+}
+
+TEST_F(EngineSyncTest, CdjSyncLinesUpAPlayingDeckWithoutQuantizeAndKeepsItThere) {
+    // BEAT SYNC on a deck that plays out of phase lines its beat up with the
+    // master at once and keeps it there, Quantize off: drift is pulled back
+    // and a scratch ends back on the beat.
+    ControlObject::set(kCdjSync, 1.0);
+    ControlObject::set(kPlayStartAlign, 1.0);
+    playDeckOneOverPausedDeckTwo();
+    ControlObject::set(ConfigKey(m_sGroup1, "quantize"), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "quantize"), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
+    ProcessBuffer();
+    ProcessBuffer();
+    ASSERT_GT(phaseOffset(m_sGroup1, m_sGroup2), 0.05);
+
+    // Deck 1, on air, becomes the master at its own tempo; deck 2 follows it.
+    pulse(m_sGroup2, "beatsync");
+    for (int i = 0; i < 8; ++i) {
+        ProcessBuffer();
+    }
+    ASSERT_TRUE(isSoftLeader(m_sGroup1));
+    ASSERT_TRUE(isFollower(m_sGroup2));
+    ASSERT_DOUBLE_EQ(130.0, ControlObject::get(ConfigKey(m_sGroup1, "bpm")));
+    ASSERT_DOUBLE_EQ(130.0, ControlObject::get(ConfigKey(m_sGroup2, "bpm")));
+    EXPECT_LT(phaseOffset(m_sGroup1, m_sGroup2), 0.001);
+    EXPECT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup2, "quantize")));
+
+    // Knocked off the beat (a twentieth of a beat, with no phase seek): the
+    // lock pulls it back within Mixxx's sync tolerance of 0.01 beat.
+    EngineBuffer* pBuffer2 = m_pChannel2->getEngineBuffer();
+    pBuffer2->seekExact(pBuffer2->getExactPlayPos() + 26460 / 20);
+    ProcessBuffer();
+    ASSERT_GT(phaseOffset(m_sGroup1, m_sGroup2), 0.04);
+    for (int i = 0; i < 400; ++i) {
+        ProcessBuffer();
+    }
+    EXPECT_LT(phaseOffset(m_sGroup1, m_sGroup2), 0.0105);
+
+    // A scratch: back on the master's beat when it ends.
+    ControlObject::set(ConfigKey(m_sGroup2, "scratch2_enable"), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup2, "scratch2"), 20.0);
+    ProcessBuffer();
+    ControlObject::set(ConfigKey(m_sGroup2, "scratch2_enable"), 0.0);
+    ProcessBuffer();
+    ProcessBuffer();
+    EXPECT_LT(phaseOffset(m_sGroup1, m_sGroup2), 0.001);
+
+    // Without the CDJ rules Mixxx's sync lock keeps only the tempo when
+    // Quantize is off: the same knock stays.
+    ControlObject::set(kCdjSync, 0.0);
+    pBuffer2->seekExact(pBuffer2->getExactPlayPos() + 26460 / 20);
+    ProcessBuffer();
+    const double knocked = phaseOffset(m_sGroup1, m_sGroup2);
+    ASSERT_GT(knocked, 0.04);
+    for (int i = 0; i < 400; ++i) {
+        ProcessBuffer();
+    }
+    EXPECT_NEAR(knocked, phaseOffset(m_sGroup1, m_sGroup2), 1e-6);
 }
