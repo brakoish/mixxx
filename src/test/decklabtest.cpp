@@ -4021,6 +4021,7 @@ TEST_F(NativeDeckLabTest, MasterInMoreTakesAndHandsOnTheTempoMaster) {
 // hears. The headphone deck's SYNC then follows the deck on air.
 TEST_F(NativeDeckLabTest, SyncOnTheDeckOnAirNeverMatchesADeckNobodyHears) {
     m_pMixerDeck1->loadFakeTrack(false, 124); m_pMixerDeck2->loadFakeTrack(false, 128); ProcessBuffer();
+    settle(); ProcessBuffer(); // the loads finish (cue recall) before the positions are set
     const auto get = [](int deck, const char* item) { return ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), item)); };
     const auto put = [](int deck, const char* item, double v) { ControlObject::set(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), item), v); };
     put(1, "quantize", 1); put(2, "quantize", 1);
@@ -4029,6 +4030,7 @@ TEST_F(NativeDeckLabTest, SyncOnTheDeckOnAirNeverMatchesADeckNobodyHears) {
     put(1, "play", 1); put(2, "play", 1);
     for (int n = 0; n < 4; ++n) ProcessBuffer();
     settle();
+    ASSERT_NEAR(.11, get(1, "playposition"), .02); ASSERT_NEAR(.26, get(2, "playposition"), .02);
     ASSERT_GT(std::abs(get(1, "beat_distance") - get(2, "beat_distance")), .05);
     const double start = get(1, "playposition");
     for (int n = 0; n < 4; ++n) ProcessBuffer();
