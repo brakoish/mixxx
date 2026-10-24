@@ -667,6 +667,11 @@ struct DeckLabBrowseState {
     QPersistentModelIndex listClearedRow; // a track table's row a list level unselected
     QPointer<QItemSelectionModel> levelSelection;
     QList<QMetaObject::Connection> levelConnections;
+    // r5-fix3-history: the Mixes cache is read again after any refill or
+    // reorder of its model (a select(): the source shown again, a rescan).
+    bool mixDirty = false;
+    QPointer<QAbstractItemModel> mixWatched;
+    QList<QMetaObject::Connection> mixModelConnections;
 };
 
 WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
@@ -2007,13 +2012,8 @@ QWidget* WDeckLab::buildBrowse() {
         if (state.list != DeckLabList::Mixes) return;
         auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
         auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
-        const QListWidgetItem* item = state.items->currentItem();
-        const QPersistentModelIndex source = item
-                ? item->data(DeckLabListDelegate::MixIndexRole).value<QPersistentModelIndex>()
-                : QPersistentModelIndex();
-        state.selectedTrack = tracks && source.isValid() && source.model() == table->model() // r5-fix2-history
-                ? tracks->getTrack(source)
-                : TrackPointer();
+        const QModelIndex source = mixTableRow(state.items->currentItem()); // r5-fix3-history: by its file
+        state.selectedTrack = tracks && source.isValid() ? tracks->getTrack(source) : TrackPointer();
         refreshBrowseCard();
         refreshPreviewButton();
     });
@@ -2937,7 +2937,10 @@ void WDeckLab::loadDeck(int deck) {
         if (deck == 2) { m_sampleTarget = 0; selectPage(m_sampleReturnPage); return; }
         const QString group = QStringLiteral("[Sampler%1]").arg(m_sampleTarget);
         if (!browseTrackLevel() || value(group, "play")) return; // r4-browse: Mixes too
-        if (listRowStale() && !browseLoadableNow()) return; // r5-fix2-history: exactly the highlighted row, settled now
+        if (listRowStale() && !browseLoadableNow()) { // r5-fix2-history: exactly the highlighted row, settled now
+            if (m_browseState->toast) m_browseState->toast->showMessage(tr("This track can't be loaded right now"), 2000);
+            return;
+        }
         if (auto* table = m_libraryWidget->getCurrentTrackTableView()) table->loadSelectedTrackToGroup(group,
 #ifdef __STEM__
                 mixxx::StemChannelSelection(),
@@ -2950,7 +2953,10 @@ void WDeckLab::loadDeck(int deck) {
     // ON AIR is never replaced from the touch screen; say so instead of ignoring the tap.
     if (value(channel(deck), "play")) { showLoadRefused(deck); return; }
     if (m_page != 1 || !m_libraryWidget || !browseTrackLevel()) return; // r4-browse: Mixes too
-    if (listRowStale() && !browseLoadableNow()) return; // r5-fix2-history: exactly the highlighted row, settled now
+    if (listRowStale() && !browseLoadableNow()) { // r5-fix2-history: exactly the highlighted row, settled now
+        if (m_browseState->toast) m_browseState->toast->showMessage(tr("This track can't be loaded right now"), 2000);
+        return;
+    }
     set("[Library]", "focused_widget", 3);
     pulse(channel(deck), "LoadSelectedTrack");
     // Return happens on newTrackLoaded, never merely on a button press.
@@ -2960,9 +2966,12 @@ void WDeckLab::refreshLoadButtons() {
     using Tone = DeckLabActionButton::Tone;
     auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
     const bool tracks = browseTrackLevel(); // r4-browse: a track list or Mixes
-    const bool selected = table && table->selectionModel() && !table->selectionModel()->selectedRows().isEmpty() &&
+    const bool loadable = table && table->selectionModel() && !table->selectionModel()->selectedRows().isEmpty() &&
             browseRowLoadable(); // r5-fix-history: the table row is the highlighted row
-    setTrackLevel(tracks && selected); // r5-fix-history: controller LOAD on list levels
+    setTrackLevel(tracks && loadable); // r5-fix-history: controller LOAD on list levels
+    // r5-fix3-history: a History or Mixes track row still waiting for its
+    // table is offered too: the tap settles it, then loads exactly that row.
+    const bool selected = loadable || listTrackRow();
     // r4-browse (move 3): the dock shows two tiles, four in the four-deck layout.
     if (m_browseState && m_browseState->dock) m_browseState->dock->setShownCount(m_fourDeckLayout && !m_sampleTarget ? 4 : 2);
     for (int deck = 1; deck <= 4; ++deck) {
@@ -3404,7 +3413,7 @@ void WDeckLab::refreshPreviewButton() {
     b.preview->setGlyph(same ? decklab::Glyph::Stop : decklab::Glyph::Play);
     b.preview->setTone(same ? Tone::Active : Tone::Neutral);
     b.preview->setDetail(playing ? (same ? tr("Playing in headphones") : tr("Another track playing")) : tr("Headphones"));
-    b.preview->setEnabled(available && ((tracks && b.selectedTrack) || playing));
+    b.preview->setEnabled(available && ((tracks && (b.selectedTrack || listTrackRow())) || playing)); // r5-fix3-history
 }
 void WDeckLab::togglePreview() {
     const ConfigKey load(QStringLiteral("[PreviewDeck1]"), QStringLiteral("LoadSelectedTrackAndPlay"));
@@ -3534,7 +3543,9 @@ void WDeckLab::showLoadUnavailable(int slot) {
     // r4-browse: above the tile that was tapped.
     QWidget* tile = m_loadButtons[slot - 1];
     const QRect anchor = tile && tile->isVisible() ? QRect(tile->mapTo(this, QPoint()), tile->size()) : QRect();
-    m_browseState->toast->showMessage(browseTrackLevel() ? tr("Pick a track first") : tr("Open a list, then pick a track"),
+    m_browseState->toast->showMessage(listTrackRow()        ? tr("This track can't be loaded right now") // r5-fix3-history
+                    : browseTrackLevel() ? tr("Pick a track first")
+                                         : tr("Open a list, then pick a track"),
             2000, false, anchor);
 }
 void WDeckLab::refreshDeck(int deck) {
@@ -5052,7 +5063,23 @@ void WDeckLab::refreshMixCandidates() {
         return;
     }
     const int rows = model->rowCount();
-    if (b.mixModel == model && b.mixModelRows == rows && b.mixSource == b.source) return;
+    if (b.mixModel == model && b.mixModelRows == rows && b.mixSource == b.source && !b.mixDirty) return;
+    if (b.mixWatched.data() != model) {
+        // r5-fix3-history: a select() on the model (the source shown again, a
+        // rescan, a sort) moves or refills its rows: read them again then.
+        for (const auto& connection : std::as_const(b.mixModelConnections)) disconnect(connection);
+        b.mixModelConnections.clear();
+        b.mixWatched = model;
+        const auto dirty = [this] {
+            if (m_browseState) m_browseState->mixDirty = true;
+        };
+        b.mixModelConnections << connect(model, &QAbstractItemModel::modelReset, this, dirty)
+                              << connect(model, &QAbstractItemModel::rowsInserted, this, dirty)
+                              << connect(model, &QAbstractItemModel::rowsRemoved, this, dirty)
+                              << connect(model, &QAbstractItemModel::rowsMoved, this, dirty)
+                              << connect(model, &QAbstractItemModel::layoutChanged, this, dirty);
+    }
+    b.mixDirty = false;
     b.mixModel = model;
     b.mixModelRows = rows;
     b.mixSource = b.source;
@@ -5128,9 +5155,11 @@ void WDeckLab::fillMixes(bool keepCurrent) {
     const QAbstractItemModel* model = table ? table->model() : nullptr;
     const auto reference = mixReference();
     b.mixShown = reference;
-    QPersistentModelIndex keep;
+    // r5-fix3-history: the highlighted row is kept by its file (its index is
+    // gone after a select() on the source model).
+    QString keep;
     if (keepCurrent && b.itemsList == DeckLabList::Mixes && b.items->currentItem()) {
-        keep = b.items->currentItem()->data(DeckLabListDelegate::MixIndexRole).value<QPersistentModelIndex>();
+        keep = b.items->currentItem()->data(decklab::history::LocationRole).toString();
     }
     const QSignalBlocker blocker(b.items);
     b.items->clear();
@@ -5157,7 +5186,7 @@ void WDeckLab::fillMixes(bool keepCurrent) {
             item->setData(decklab::history::LocationRole, tracks->getTrackLocation(index)); // r5-history: its played mark
             if (artistColumn >= 0) item->setData(DeckLabListDelegate::MixArtistRole, model->index(mix.row, artistColumn).data().toString().trimmed());
             item->setData(Qt::AccessibleTextRole, QString(title + QStringLiteral(", ") + relation));
-            if (keep.isValid() && QPersistentModelIndex(index) == keep) current = b.items->count() - 1;
+            if (!keep.isEmpty() && item->data(decklab::history::LocationRole).toString() == keep) current = b.items->count() - 1;
         }
     }
     if (!b.items->count()) {
@@ -5168,25 +5197,34 @@ void WDeckLab::fillMixes(bool keepCurrent) {
     b.items->setCurrentRow(current);
     b.itemsList = DeckLabList::Mixes;
 }
-void WDeckLab::syncMixSelection() {
+void WDeckLab::syncMixSelection(bool pressed) {
     // The highlighted Mixes row is the track LOAD and Preview act on: select
     // it in the (hidden) track table at once, read its Track object once the
     // knob settles (never for every row a fast knob passes).
     auto& b = *m_browseState;
-    // r5-fix2-history: rows of the source's own table: shown again when Mixxx
-    // swapped another one in, and ranked again if the reference moved meanwhile.
-    if (b.list == DeckLabList::Mixes && b.itemsList == DeckLabList::Mixes && mixTableForeign() && ensureMixTable() &&
-            !mixReference().sameAs(b.mixShown)) {
-        fillMixes(true);
-        updateBreadcrumb();
+    if (b.list == DeckLabList::Mixes && b.itemsList == DeckLabList::Mixes) {
+        // r5-fix2-history: rows of the source's own table: shown again when
+        // Mixxx swapped another one in, and ranked again if the reference
+        // moved meanwhile. r5-fix3-history: a row is its track's file; when
+        // its table row went (any select() on the source model: the source
+        // shown again, a rescan, a sort) the rows are read again, keeping the
+        // highlighted file. A press does this on any page.
+        const bool foreign = mixTableForeign();
+        if (!foreign || ensureMixTable(pressed)) {
+            const QListWidgetItem* current = b.items->currentItem();
+            const bool lost = current && current->data(DeckLabListDelegate::MixRole).toBool() &&
+                    !mixTableRow(current).isValid();
+            if (lost || (foreign && !mixReference().sameAs(b.mixShown))) {
+                fillMixes(true);
+                updateBreadcrumb();
+            }
+        }
     }
     auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
     const QListWidgetItem* item = b.items->currentItem();
-    const QPersistentModelIndex source = item
-            ? item->data(DeckLabListDelegate::MixIndexRole).value<QPersistentModelIndex>()
-            : QPersistentModelIndex();
+    const QModelIndex source = b.list == DeckLabList::Mixes ? mixTableRow(item) : QModelIndex();
     if (table && table->selectionModel()) {
-        if (source.isValid() && source.model() == table->model()) {
+        if (source.isValid()) {
             table->selectionModel()->setCurrentIndex(source,
                     QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
         } else {
@@ -5285,16 +5323,17 @@ void WDeckLab::initHistory() {
     b.historySelectTimer.setInterval(120);
     connect(&b.historySelectTimer, &QTimer::timeout, this, [this] { settleHistoryRow(); });
 }
-void WDeckLab::settleHistoryRow() {
+void WDeckLab::settleHistoryRow(bool pressed) {
     auto& state = *m_browseState;
     if (!historyTrackLevel()) return;
     // r5-fix-history: the row's own playlist and row, once the knob settles
     // (switching Mixxx's table is SQL and a model reset: never per step).
     // r5-fix2-history: and never while Browse is hidden; the next visit does.
+    // r5-fix3-history: except for a deliberate load, on any page.
     const QListWidgetItem* item = state.items->currentItem();
     if (item && static_cast<decklab::history::RowKind>(item->data(decklab::history::RowRole).toInt()) ==
                     decklab::history::RowKind::Track) {
-        if (m_page == 1) {
+        if (m_page == 1 || pressed) {
             showHistoryPlaylist(item->data(decklab::history::PlaylistRole).toInt());
             selectHistoryRow();
         } else if (!browseRowLoadable()) {
@@ -5544,8 +5583,8 @@ bool WDeckLab::browseRowLoadable() {
                 playlist->getTrackId(rows.first()).toVariant().toInt() == item->data(decklab::history::TrackIdRole).toInt();
     }
     if (b.list == DeckLabList::Mixes) {
-        const QPersistentModelIndex source = item->data(DeckLabListDelegate::MixIndexRole).value<QPersistentModelIndex>();
-        return source.isValid() && source.model() == table->model() && source.row() == rows.first().row();
+        const QModelIndex source = mixTableRow(item); // r5-fix3-history: by the row's file
+        return source.isValid() && source.row() == rows.first().row();
     }
     return false;
 }
@@ -5603,16 +5642,19 @@ void WDeckLab::historyTableShown() {
 void WDeckLab::flushBrowseRow() {
     // r5-fix2-history: a deliberate press (LOAD, Preview, a controller's
     // LOAD) shows the knob has settled: a History or Mixes row still waiting
-    // for its table gets it now, once, and on Browse only (never per step).
-    if (!m_browseState || !m_browseStack || m_page != 1 || m_browseStack->currentIndex() != 0) return;
+    // for its table gets it now, once (never per knob step).
+    // r5-fix3-history: on any page, as a CDJ loads from every screen: one
+    // table switch at press time.
+    if (!m_browseState || !m_browseStack || m_browseStack->currentIndex() != 0) return;
     if (browseRowLoadable()) return;
     auto& b = *m_browseState;
     if (b.list == DeckLabList::History && historyTrackLevel()) {
         b.historySelectTimer.stop();
-        settleHistoryRow();
+        settleHistoryRow(true);
     } else if (b.list == DeckLabList::Mixes) {
-        syncMixSelection();
+        syncMixSelection(true);
     }
+    if (browseRowLoadable()) b.browseRowStale = false;
 }
 bool WDeckLab::browseLoadableNow() {
     // r5-fix2-history: may LOAD take the table's selected row now? Exactly
@@ -5631,8 +5673,8 @@ bool WDeckLab::listTrackRow() const {
         return historyTrackLevel() && static_cast<decklab::history::RowKind>(item->data(decklab::history::RowRole).toInt()) ==
                 decklab::history::RowKind::Track;
     }
-    return m_browseState->list == DeckLabList::Mixes &&
-            item->data(DeckLabListDelegate::MixIndexRole).value<QPersistentModelIndex>().isValid();
+    return m_browseState->list == DeckLabList::Mixes && item->data(DeckLabListDelegate::MixRole).toBool() &&
+            !item->data(decklab::history::LocationRole).toString().isEmpty(); // r5-fix3-history: its file
 }
 void WDeckLab::updateTrackLevel() {
     // r5-fix2-history: [DeckLabNative] track_level is 1 exactly while Browse
@@ -5692,24 +5734,39 @@ bool WDeckLab::mixTableForeign() const {
     return table && table->model() && b.mixModel && table->model() != b.mixModel && b.source.isValid() &&
             b.mixSource == b.source;
 }
-bool WDeckLab::ensureMixTable() {
+bool WDeckLab::ensureMixTable(bool pressed) {
     // r5-fix2-history: show the Mixes source again when another table was
     // swapped in: on Browse only, once per swap. True when its table shows.
+    // r5-fix3-history: a deliberate load does it on any page, every time.
     auto& b = *m_browseState;
     if (!mixTableForeign()) {
         b.mixReactivated = false;
         return true;
     }
-    if (m_page != 1) {
+    if (m_page != 1 && !pressed) {
         b.browseRowStale = true;
         return false;
     }
-    if (b.mixReactivated) return false;
+    if (b.mixReactivated && !pressed) return false;
     b.mixReactivated = true;
     activateBrowseSource();
     if (mixTableForeign()) return false;
     b.mixReactivated = false;
     return true;
+}
+QModelIndex WDeckLab::mixTableRow(const QListWidgetItem* item) const {
+    // r5-fix3-history: a Mixes row is its track's file (LocationRole); the
+    // index kept with it is only a shortcut into the source's table, checked
+    // against that file. Never a row of another model; invalid when the index
+    // went (a select() on the model: syncMixSelection reads the rows again).
+    if (!item || !item->data(DeckLabListDelegate::MixRole).toBool()) return {};
+    auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+    const auto* tracks = table ? dynamic_cast<const TrackModel*>(table->model()) : nullptr;
+    const QString location = item->data(decklab::history::LocationRole).toString();
+    if (!tracks || location.isEmpty()) return {};
+    const QPersistentModelIndex cached = item->data(DeckLabListDelegate::MixIndexRole).value<QPersistentModelIndex>();
+    if (!cached.isValid() || cached.model() != table->model() || tracks->getTrackLocation(cached) != location) return {};
+    return QModelIndex(cached);
 }
 bool WDeckLab::onNewSetRow() const {
     if (!m_browseState || !m_browseStack || m_browseStack->currentIndex() != 0 ||
@@ -5935,7 +5992,14 @@ void WDeckLab::startNewHistorySet() {
         return;
     }
     if (b.newSet) b.newSet->setResult(tr("New set started"));
-    if (b.toast) b.toast->showMessage(tr("New set started. The last one stays in History."), 2600);
+    // r5-fix3-history: a start that could not be written stays for this
+    // session; say so (a restart may join the two sets).
+    if (b.toast) {
+        b.toast->showMessage(store.startsSaved()
+                        ? tr("New set started. The last one stays in History.")
+                        : tr("New set started, but it couldn't be saved: a restart may join it to the last set."),
+                2600);
+    }
     // The sets, on the new one, the last set listed below it: the store's
     // change refills the list once (queued).
     if (b.list == DeckLabList::History) {

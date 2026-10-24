@@ -43,6 +43,7 @@ class WSearchLineEdit;
 class QBoxLayout;
 class QComboBox;
 class QLabel;
+class QListWidgetItem; // r5-fix3-history
 class QPushButton;
 class QSlider;
 class QProgressBar;
@@ -219,7 +220,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void updateMixesRow();
     void showMixes();
     void fillMixes(bool keepCurrent);
-    void syncMixSelection();
+    void syncMixSelection(bool pressed = false);
     // r5-history: the History view, "New set" and played marks
     // (decklabhistory.h, decklabhistoryview.h).
     void initHistory();
@@ -256,7 +257,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void cancelNewSetKnob();
     // r5-fix2-history: track_level exactly, a press settles the row, Mixes
     // on its own table, the controller load guard.
-    void settleHistoryRow();
+    void settleHistoryRow(bool pressed = false);
     void flushBrowseRow();
     bool browseLoadableNow();
     bool listTrackRow() const;
@@ -266,7 +267,9 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void clearTableSelection(bool remember);
     void restoreTableSelection();
     bool mixTableForeign() const;
-    bool ensureMixTable();
+    bool ensureMixTable(bool pressed = false);
+    // r5-fix3-history: a Mixes row's table row, found by the row's file.
+    QModelIndex mixTableRow(const QListWidgetItem* item) const;
     int displayedDeck(int side) const;
     void setDisplayedDeck(int side, int deck);
     QString channel(int deck) const;

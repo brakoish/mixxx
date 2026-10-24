@@ -152,7 +152,18 @@ class Backend {
     virtual int startNewSet() = 0;
     // The set starts, kept across restarts.
     virtual QVector<int> setStarts() = 0;
-    virtual void saveSetStarts(const QVector<int>& starts) = 0;
+    // r5-fix3-history: false when they could not be kept on disk (they stay
+    // in memory for this session and the backend tries again).
+    virtual bool saveSetStarts(const QVector<int>& starts) = 0;
+    // The last playlists() read worked ("no history" and "could not read"
+    // differ: a failed read never prunes or saves set starts).
+    virtual bool readOk() const {
+        return true;
+    }
+    // The set starts on disk are the ones in memory.
+    virtual bool startsSaved() const {
+        return true;
+    }
 };
 
 // What a listener hears.
@@ -212,6 +223,11 @@ class Store {
     // starts the next set; the old set stays. No second read of the history.
     // false when the current set is still empty or it failed.
     bool startNewSet();
+    // r5-fix3-history: the set starts are on disk (a New set whose start
+    // could not be written stays for this session; the surface says so).
+    bool startsSaved() const {
+        return !m_backend || m_backend->startsSaved();
+    }
 
     void setClockState(ClockState state);
     ClockState clockState() const {

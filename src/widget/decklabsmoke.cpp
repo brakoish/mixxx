@@ -901,7 +901,7 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                          });
                          return true;
                      }},
-                    {"history-set", 1800, [surface, failures] {
+                    {"history-set", 2800, [surface, failures] {
                          // This set in play order (time, deck, BPM, key), on its
                          // latest track; the paused decks offer LOAD from history.
                          surface->browsePress();
@@ -940,13 +940,39 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                                  failures->append(QStringLiteral("A table swapped in under a History row keeps a selection"));
                              ControlObject::set(ConfigKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("LoadSelectedTrack")), 1);
                              ControlObject::set(ConfigKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("LoadSelectedTrack")), 0);
+                             // r5-fix3-history: the overlay forwards an empty pad as
+                             // it is; inside the settle after another swap it loads
+                             // exactly this row too.
+                             const ConfigKey pad(QStringLiteral("[Sampler3]"), QStringLiteral("LoadSelectedTrack"));
+                             if (!ControlObject::exists(pad)) failures->append(QStringLiteral("No sampler LOAD control"));
+                             if (Library* mixxx = surface->library()) emit mixxx->showTrackModel(mixxx->trackTableModel());
+                             ControlObject::set(pad, 1);
+                             ControlObject::set(pad, 0);
                              QTimer::singleShot(700, surface, [surface, failures, wanted] {
                                  const TrackPointer loaded = PlayerInfo::instance().getTrackInfo(QStringLiteral("[PreviewDeck1]"));
                                  if (!loaded || loaded->getId().toVariant().toInt() != wanted)
                                      failures->append(QStringLiteral("Controller LOAD from History loaded another track"));
-                                 ControlObject::set(ConfigKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("eject")), 1);
-                                 ControlObject::set(ConfigKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("eject")), 0);
-                                 if (surface->currentPage() != 1) surface->selectPage(1);
+                                 const TrackPointer sample = PlayerInfo::instance().getTrackInfo(QStringLiteral("[Sampler3]"));
+                                 if (!sample || sample->getId().toVariant().toInt() != wanted)
+                                     failures->append(QStringLiteral("Controller pad LOAD from History loaded another track"));
+                                 for (const auto& group : {QStringLiteral("[PreviewDeck1]"), QStringLiteral("[Sampler3]")}) {
+                                     ControlObject::set(ConfigKey(group, QStringLiteral("eject")), 1);
+                                     ControlObject::set(ConfigKey(group, QStringLiteral("eject")), 0);
+                                 }
+                                 // Off Browse (CDJ habit: LOAD from the Decks page): a table
+                                 // swapped in while Browse is hidden; the deck's LOAD
+                                 // settles the row at the press and loads exactly it.
+                                 surface->selectPage(0);
+                                 if (Library* mixxx = surface->library()) emit mixxx->showTrackModel(mixxx->trackTableModel());
+                                 QCoreApplication::processEvents();
+                                 ControlObject::set(ConfigKey(QStringLiteral("[Channel2]"), QStringLiteral("LoadSelectedTrack")), 1);
+                                 ControlObject::set(ConfigKey(QStringLiteral("[Channel2]"), QStringLiteral("LoadSelectedTrack")), 0);
+                                 QTimer::singleShot(700, surface, [surface, failures, wanted] {
+                                     const TrackPointer deck = PlayerInfo::instance().getTrackInfo(QStringLiteral("[Channel2]"));
+                                     if (!deck || deck->getId().toVariant().toInt() != wanted)
+                                         failures->append(QStringLiteral("Controller LOAD from History off Browse loaded another track"));
+                                     if (surface->currentPage() != 1) surface->selectPage(1);
+                                 });
                              });
                          });
                          return true;
@@ -969,7 +995,7 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                          surface->browsePress();
                          return selectTrack(surface, "Late Checkout");
                      }},
-                    {"history-mixes", 900, [surface] {
+                    {"history-mixes", 1800, [surface, failures] {
                          // The marks reach "Mixes with deck 1" too. Browse ends
                          // on the Library, as before, for the Sampler captures.
                          surface->browseBack();
@@ -978,6 +1004,24 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                          auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
                          if (!list || !list->count() || !list->item(0)->data(DeckLabListDelegate::MixRole).toBool()) return false;
                          list->setCurrentRow(0);
+                         QTimer::singleShot(300, surface, [surface, failures, list] {
+                             // r5-fix3-history: a select() on the source's model (a
+                             // rescan, the source shown again) leaves the Mixes rows
+                             // loadable: the controller's LOAD then loads exactly the
+                             // highlighted row, found by its file.
+                             const QListWidgetItem* item = list->currentItem();
+                             const QString wanted = item ? item->data(decklab::history::LocationRole).toString() : QString();
+                             if (Library* mixxx = surface->library()) mixxx->trackTableModel()->select();
+                             ControlObject::set(ConfigKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("LoadSelectedTrack")), 1);
+                             ControlObject::set(ConfigKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("LoadSelectedTrack")), 0);
+                             QTimer::singleShot(700, surface, [failures, wanted] {
+                                 const TrackPointer loaded = PlayerInfo::instance().getTrackInfo(QStringLiteral("[PreviewDeck1]"));
+                                 if (wanted.isEmpty() || !loaded || loaded->getLocation() != wanted)
+                                     failures->append(QStringLiteral("Controller LOAD from Mixes after a re-select loaded another track"));
+                                 ControlObject::set(ConfigKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("eject")), 1);
+                                 ControlObject::set(ConfigKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("eject")), 0);
+                             });
+                         });
                          return true;
                      }},
             });

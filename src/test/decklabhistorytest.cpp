@@ -79,8 +79,9 @@ class GeneratedHistory final : public Backend {
     QVector<int> setStarts() override {
         return starts;
     }
-    void saveSetStarts(const QVector<int>& value) override {
+    bool saveSetStarts(const QVector<int>& value) override {
         starts = value;
+        return true;
     }
 };
 
@@ -427,6 +428,88 @@ TEST_F(DeckLabHistoryDbTest, SetStartsLiveInTheirOwnFileAndMoveOnceFromTheConfig
     store.ensureLoaded();
     EXPECT_EQ(run2, store.currentId());
     EXPECT_EQ(std::optional<QVector<int>>(QVector<int>{run2}), readSetStarts(file));
+    store.setBackend(nullptr);
+}
+
+// r5-fix3-history: the set file never loses a set. A start that cannot be
+// written stays for the session (a reload keeps it), is written as soon as it
+// can be, and the store says it is not saved meanwhile; a failed history read
+// never prunes the starts or writes over a good file; a file that is there but
+// unreadable is copied aside before anything replaces it; and when Mixxx makes
+// no new playlist, no existing one becomes a set start.
+TEST_F(DeckLabHistoryDbTest, TheSetFileNeverLosesASet) {
+    QTemporaryDir settings;
+    ASSERT_TRUE(settings.isValid());
+    const TrackId opener = addTrack(QStringLiteral("Generated Tone 150"), 150, mixxx::track::io::key::A_MINOR);
+    const int run1 = history(QStringLiteral("2026-10-22"));
+    ASSERT_TRUE(playlists().appendTrackToPlaylist(opener, run1));
+    Store& store = Store::instance();
+
+    // A folder that is not there yet: nothing can be written.
+    const QString later = QDir(settings.path()).filePath(QStringLiteral("profile"));
+    UserSettingsPointer missing(new UserSettings(QDir(later).filePath(QStringLiteral("generated.cfg"))));
+    store.setBackend(backend(missing));
+    store.ensureLoaded();
+    EXPECT_EQ(run1, store.currentId());
+    EXPECT_FALSE(store.startsSaved());
+    ASSERT_TRUE(store.startNewSet());
+    const int run2 = store.currentId();
+    EXPECT_GT(run2, run1);
+    EXPECT_FALSE(store.startsSaved());
+    store.reload();
+    EXPECT_EQ(run2, store.currentId()); // not undone by the reload
+    EXPECT_EQ(Played::Earlier, store.played(location(QStringLiteral("Generated Tone 150"))));
+    // The folder appears: the next read writes what memory holds.
+    ASSERT_TRUE(QDir().mkpath(later));
+    store.reload();
+    EXPECT_TRUE(store.startsSaved());
+    const QString laterFile = setStartsFile(later);
+    EXPECT_EQ(std::optional<QVector<int>>(QVector<int>{run1, run2}), readSetStarts(laterFile));
+    store.setBackend(nullptr);
+
+    // A history read that fails prunes nothing and writes nothing.
+    UserSettingsPointer config(new UserSettings(QDir(settings.path()).filePath(QStringLiteral("generated.cfg"))));
+    const QString file = setStartsFile(settings.path());
+    ASSERT_TRUE(writeSetStarts(file, QVector<int>{run1, run2}));
+    store.setBackend(backend(config));
+    store.ensureLoaded();
+    EXPECT_EQ(run2, store.currentId());
+    QSqlQuery query(internalCollection()->database());
+    ASSERT_TRUE(query.exec(QStringLiteral("ALTER TABLE Playlists RENAME TO PlaylistsAside")))
+            << query.lastError().text().toStdString();
+    store.reload();
+    ASSERT_TRUE(query.exec(QStringLiteral("ALTER TABLE PlaylistsAside RENAME TO Playlists")))
+            << query.lastError().text().toStdString();
+    EXPECT_EQ(std::optional<QVector<int>>(QVector<int>{run1, run2}), readSetStarts(file));
+    store.reload();
+    EXPECT_EQ(run2, store.currentId());
+    ASSERT_EQ(2, store.sessions().size());
+    EXPECT_EQ(std::optional<QVector<int>>(QVector<int>{run1, run2}), readSetStarts(file));
+
+    // When Mixxx makes no new playlist, nothing starts and nothing is kept.
+    const TrackId closer = addTrack(QStringLiteral("Generated Tone 152"), 152, mixxx::track::io::key::A_MINOR);
+    ASSERT_TRUE(playlists().appendTrackToPlaylist(closer, run2));
+    store.setBackend(makeMixxxBackend(trackCollectionManager(), config, [] { return true; }, [](TrackId) { return 1; }));
+    store.ensureLoaded();
+    EXPECT_EQ(run2, store.currentId());
+    EXPECT_FALSE(store.startNewSet());
+    EXPECT_EQ(run2, store.currentId());
+    EXPECT_EQ(std::optional<QVector<int>>(QVector<int>{run1, run2}), readSetStarts(file));
+    store.setBackend(nullptr);
+
+    // A file that is there but cannot be read is copied aside first.
+    {
+        QFile damaged(file);
+        ASSERT_TRUE(damaged.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        damaged.write("{\"starts\": [4,");
+    }
+    store.setBackend(backend(config));
+    store.ensureLoaded();
+    QFile copy(file + QStringLiteral(".bad"));
+    ASSERT_TRUE(copy.open(QIODevice::ReadOnly));
+    EXPECT_EQ(QByteArray("{\"starts\": [4,"), copy.readAll());
+    EXPECT_EQ(std::optional<QVector<int>>(QVector<int>{run2}), readSetStarts(file));
+    EXPECT_TRUE(store.startsSaved());
     store.setBackend(nullptr);
 }
 

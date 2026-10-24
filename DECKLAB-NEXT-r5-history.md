@@ -144,6 +144,40 @@ fixes everything the 6-lens review confirmed (see "Review fixes").
   `loadDeck`, `togglePreview`, `showTracks`, the Mixes functions, `initHistory`, new functions in the History block),
   `decklabhistory.{h,cpp}`, `decklabsmoke.cpp`; the lock's hashes refreshed.
 
+## Pre-deploy fixes (decklab/r5-fix3-history, on round 5 at f1cf2c36d0)
+- **The load-time check is the authority.** The appliance overlay (`decklab/round5-app` 51df24a) no longer gates
+  LOAD, empty-deck PLAY, empty pads, eject or Shift+LOAD on `track_level` in native mode; only the playing-deck check
+  stays. `LibraryControl`'s check (`decklab::nativeLoadGuard()`) therefore settles and allows every legitimate load:
+  a highlighted History or Mixes track row still waiting for its table gets it at the press, on any page (Browse,
+  Decks, Sampler, Lab FX: one table switch at press time, as a CDJ loads from every screen), then exactly that row
+  loads. A turn still never switches the table while Browse is hidden. `track_level` keeps its exact meaning.
+- **Mixes rows by file (major).** A Mixes row is its track's file (`LocationRole`); the index kept with it is only a
+  checked shortcut. Any `select()` on the source model (the swapped table undone, a rescan, a sort) used to kill every
+  row's persistent index, leaving the list unloadable until it was rebuilt. Now a row whose index went reads the
+  rows again (the cache is marked stale by the model's resets, inserts, removals, moves and layout changes), keeping
+  the highlighted file.
+- **Touch.** While a History or Mixes track row waits for its table, the dock and pad LOAD tiles (and Preview) stay
+  offered; the tap settles the row and loads it. "Pick a track first" is never shown while a track is highlighted;
+  a row that still cannot load says "This track can't be loaded right now".
+- **Set file.** The file is read once per session; the starts in memory are the truth afterwards, so a New set
+  whose write failed is never undone by a reload. The write is retried on each later read, and the toast says when
+  a New set could not be saved. A failed history read never prunes the starts or writes. A file that is there but
+  unreadable (read twice) is copied to `decklab-history-sets.json.bad` before anything replaces it; without a copy
+  nothing writes it this session. When Mixxx makes no new history playlist, nothing starts (only a playlist newer
+  than every history playlist before the call counts, and never one the history already holds).
+- Tests: `NativeDeckLabTest.OverlayLoadsSettleTheHighlightedRowOnEveryPage` drives LibraryControl's own controls
+  as the overlay sends them (`[Channel1] LoadSelectedTrack`, `[Channel2] LoadSelectedTrackAndPlay`, `[Sampler1]
+  LoadSelectedTrack`) on the sets list (refused, nothing settled), on a History track waiting for its table (each
+  press settles the row first) and off Browse on Decks and Lab FX; `HistoryIsAFirstClassBrowseViewInPlayOrder` checks
+  the offered tile and its message. `DeckLabHistoryDbTest.TheSetFileNeverLosesASet` covers a failed write kept and
+  retried, a failed history read, an unreadable file copied aside, and Mixxx making no playlist. The smoke loads
+  through the real controls after a swapped-in table: the preview deck and a pad inside the settle, and deck 2 off
+  Browse from the Decks page, each expecting exactly the highlighted History track; and in Mixes it re-selects the
+  Library's model, then the controller LOAD loads exactly the highlighted row.
+- Hooks, marked `r5-fix3-history`: `wdecklab.{h,cpp}` (Mixes functions, `refreshLoadButtons`, `refreshPreviewButton`,
+  `showLoadUnavailable`, `loadDeck`, `startNewHistorySet`, the History block), `decklabhistory.{h,cpp}` (the Backend
+  gains `bool saveSetStarts`, `readOk`, `startsSaved`), `decklabsmoke.cpp`; the lock's hashes refreshed.
+
 ## Renders
 `local/wt/audit/screens/r5-history/` (not committed):
 - `after/` from the real app smoke (generated demo library, 800x480): `app-browse-12-history.png` (sets),

@@ -167,8 +167,10 @@ class MixxxBackend final : public Backend {
                                     .arg(static_cast<int>(PlaylistDAO::PLHT_SET_LOG));
         if (!query.exec(sql)) {
             qWarning() << "DeckLab history: could not read the sets" << query.lastError().text();
+            m_readOk = false; // r5-fix3-history
             return result;
         }
+        m_readOk = true;
         m_history.clear();
         while (query.next()) {
             Playlist playlist;
@@ -220,6 +222,10 @@ class MixxxBackend final : public Backend {
         if (!m_startNewSet) {
             return -1;
         }
+        // r5-fix3-history: only a playlist newer than every history playlist
+        // before the call starts the set; when Mixxx could not create one,
+        // nothing does (never this set's own playlist).
+        const int before = newestHistoryPlaylist();
         m_startingSet = true;
         m_newPlaylist = -1;
         const bool started = m_startNewSet();
@@ -227,55 +233,108 @@ class MixxxBackend final : public Backend {
         if (!started) {
             return -1;
         }
-        if (m_newPlaylist < 0 && m_collection) {
-            QSqlQuery query(database());
-            if (query.exec(QStringLiteral("SELECT MAX(id) FROM Playlists WHERE hidden = %1")
-                                    .arg(static_cast<int>(PlaylistDAO::PLHT_SET_LOG))) &&
-                    query.next()) {
-                m_newPlaylist = query.value(0).toInt();
-            }
+        if (m_newPlaylist < 0) {
+            m_newPlaylist = newestHistoryPlaylist();
         }
-        return m_newPlaylist;
+        return m_newPlaylist > before ? m_newPlaylist : -1;
     }
 
     QVector<int> setStarts() override {
         if (m_file.isEmpty()) {
             return m_starts;
         }
-        if (const auto starts = readSetStarts(m_file)) {
-            return *starts;
+        // r5-fix3-history: the file is read once; afterwards the starts in
+        // memory are the truth for this session (a New set whose write
+        // failed is never undone by a later reload), and a failed write is
+        // tried again here.
+        if (!m_startsRead) {
+            m_startsRead = true;
+            loadSetStarts();
+        } else if (m_startsDirty && m_fileWritable && writeSetStarts(m_file, m_starts)) {
+            m_startsDirty = false;
+        }
+        return m_starts;
+    }
+
+    bool saveSetStarts(const QVector<int>& starts) override {
+        m_starts = starts;
+        m_startsRead = true;
+        if (m_file.isEmpty()) {
+            return true;
+        }
+        // Their own small file, replaced atomically and synced: never
+        // Mixxx's config save (a power cut during it can empty mixxx.cfg).
+        m_startsDirty = !m_fileWritable || !writeSetStarts(m_file, starts);
+        if (m_startsDirty) {
+            qWarning() << "DeckLab history: could not save the set starts; kept for this session";
+        }
+        return !m_startsDirty;
+    }
+
+    bool readOk() const override {
+        return m_readOk;
+    }
+
+    bool startsSaved() const override {
+        return !m_startsDirty;
+    }
+
+  private:
+    QSqlDatabase database() const {
+        return m_collection->internalCollection()->database();
+    }
+    int newestHistoryPlaylist() {
+        if (!m_collection) {
+            return -1;
+        }
+        QSqlQuery query(database());
+        if (query.exec(QStringLiteral("SELECT MAX(id) FROM Playlists WHERE hidden = %1")
+                                .arg(static_cast<int>(PlaylistDAO::PLHT_SET_LOG))) &&
+                query.next() && !query.value(0).isNull()) {
+            return query.value(0).toInt();
+        }
+        return -1;
+    }
+    void loadSetStarts() {
+        // r5-fix3-history: a file that is there but cannot be read (a passing
+        // read error, a damaged file) is never taken for "no file yet": it is
+        // read twice, then copied aside before anything replaces it, and the
+        // session goes on from memory. Without a copy nothing writes it.
+        if (QFileInfo::exists(m_file)) {
+            auto starts = readSetStarts(m_file);
+            if (!starts) {
+                starts = readSetStarts(m_file);
+            }
+            if (starts) {
+                m_starts = *starts;
+                return;
+            }
+            const QString copy = m_file + QStringLiteral(".bad");
+            QFile::remove(copy);
+            m_fileWritable = QFile::copy(m_file, copy);
+            qWarning() << "DeckLab history: the set starts file could not be read;"
+                       << (m_fileWritable ? "a copy was kept beside it" : "it is left as it is");
+            m_starts.clear();
+            return;
         }
         // Once: a round-5 build kept them in the config. Move them into the
         // file; the config value goes with Mixxx's own next save.
-        QVector<int> legacy;
+        m_starts.clear();
         if (m_config && m_config->exists(kSetStartsKey)) {
             const QStringList parts = m_config->getValueString(kSetStartsKey).split(QLatin1Char(','), Qt::SkipEmptyParts);
             for (const QString& part : parts) {
                 bool ok = false;
                 const int id = part.trimmed().toInt(&ok);
                 if (ok && id >= 0) {
-                    legacy.append(id);
+                    m_starts.append(id);
                 }
             }
-            if (writeSetStarts(m_file, legacy)) {
+            if (writeSetStarts(m_file, m_starts)) {
                 m_config->remove(kSetStartsKey);
+            } else {
+                m_startsDirty = true;
             }
         }
-        return legacy;
-    }
-
-    void saveSetStarts(const QVector<int>& starts) override {
-        m_starts = starts;
-        // Their own small file, replaced atomically and synced: never
-        // Mixxx's config save (a power cut during it can empty mixxx.cfg).
-        if (!m_file.isEmpty() && !writeSetStarts(m_file, starts)) {
-            qWarning() << "DeckLab history: could not save the set starts to" << m_file;
-        }
-    }
-
-  private:
-    QSqlDatabase database() const {
-        return m_collection->internalCollection()->database();
     }
     bool isHistory(int playlistId) {
         if (m_history.contains(playlistId)) {
@@ -395,6 +454,10 @@ class MixxxBackend final : public Backend {
     QPointer<TrackCollectionManager> m_collection;
     UserSettingsPointer m_config;
     QString m_file; // decklab-history-sets.json in the profile
+    bool m_startsRead = false;  // r5-fix3-history: the file is read once
+    bool m_startsDirty = false; // the starts in memory are not on disk yet
+    bool m_fileWritable = true; // false: an unreadable file that could not be copied aside
+    bool m_readOk = true;       // the last playlists() read worked
     std::function<bool()> m_startNewSet;
     std::function<int(TrackId)> m_deckOf;
     QVector<int> m_starts; // without settings (tests)
@@ -455,11 +518,14 @@ void Store::read() {
     starts.erase(std::unique(starts.begin(), starts.end()), starts.end());
     const int newest = m_playlists.isEmpty() ? -1 : m_playlists.first().id;
     bool changed = false;
-    while (!starts.isEmpty() && starts.last() > newest) {
+    // r5-fix3-history: only a read that worked prunes or seeds the starts (a
+    // failed one looks like "no history" and would drop every set boundary).
+    const bool readOk = m_backend->readOk();
+    while (readOk && !starts.isEmpty() && starts.last() > newest) {
         starts.removeLast();
         changed = true;
     }
-    if (starts.isEmpty() && newest >= 0) {
+    if (readOk && starts.isEmpty() && newest >= 0) {
         starts.append(newest);
         changed = true;
     }
@@ -688,7 +754,10 @@ bool Store::startNewSet() {
         return false;
     }
     const int playlistId = m_backend->startNewSet();
-    if (playlistId < 0) {
+    // r5-fix3-history: never a playlist the history already holds.
+    if (playlistId < 0 || std::any_of(m_playlists.cbegin(), m_playlists.cend(), [playlistId](const Playlist& each) {
+            return each.id == playlistId;
+        })) {
         return false;
     }
     // The new history playlist starts the next set; the last one stays as it
