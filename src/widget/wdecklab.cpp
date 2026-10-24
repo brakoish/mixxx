@@ -5504,8 +5504,10 @@ void WDeckLab::resyncBrowseRow() {
 void WDeckLab::setTrackLevel(bool loadable) {
     // r5-fix-history: [DeckLabNative] track_level tells a controller's LOAD
     // (the appliance overlay) that the highlighted list row is a loadable track.
+    // Read through the key: the Browse refresh runs before the control exists.
+    static const ConfigKey key(kNative, QStringLiteral("track_level"));
     const double level = loadable ? 1 : 0;
-    if (value(kNative, QStringLiteral("track_level")) != level) set(kNative, QStringLiteral("track_level"), level);
+    if (ControlObject::exists(key) && ControlObject::get(key) != level) ControlObject::set(key, level);
 }
 void WDeckLab::historyTableChanged() {
     // r5-fix-history: Mixxx showed another model in the hidden table (a

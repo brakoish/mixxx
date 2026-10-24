@@ -915,6 +915,9 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                                  const TrackPointer loaded = PlayerInfo::instance().getTrackInfo(QStringLiteral("[Channel3]"));
                                  if (!loaded || loaded->getId().toVariant().toInt() != wanted)
                                      failures->append(QStringLiteral("Controller LOAD from History loaded another track"));
+                                 // Empty again, so later captures see the decks as before.
+                                 ControlObject::set(ConfigKey(QStringLiteral("[Channel3]"), QStringLiteral("eject")), 1);
+                                 ControlObject::set(ConfigKey(QStringLiteral("[Channel3]"), QStringLiteral("eject")), 0);
                                  surface->selectPage(1); // a load returns to Decks
                              });
                          });
