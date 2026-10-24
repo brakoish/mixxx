@@ -36,6 +36,7 @@
 #include "util/dnd.h"
 #include "util/time.h"
 #include "widget/decklabbrowse.h"
+#include "widget/decklabhistoryview.h" // r5-history
 #include "widget/wtrackmenu.h"
 #include "widget/wtracktableviewheader.h"
 
@@ -114,6 +115,18 @@ class DeckLabCellDelegate : public DefaultDelegate {
     bool editorEvent(QEvent*, QAbstractItemModel*, const QStyleOptionViewItem&, const QModelIndex&) override {
         return false;
     }
+    // r5-history: the played look comes from the history (a dimmed row and a
+    // check on the title, decklabhistoryview.h), not Mixxx's per-start colour.
+    void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override {
+        const QColor before = option->palette.color(QPalette::Text);
+        DefaultDelegate::initStyleOption(option, index);
+        decklab::history::styleTrackCell(option, index, before,
+                m_table->palette().color(QPalette::HighlightedText), mixxxPlayedColor());
+    }
+    QColor mixxxPlayedColor() const {
+        const auto* view = qobject_cast<const WTrackTableView*>(m_table);
+        return view ? view->getTrackPlayedColor() : QColor(WTrackTableView::kDefaultTrackPlayedColor);
+    }
 
   protected:
     // Paints the styled cell (selection, played/missing colors) without text.
@@ -123,7 +136,9 @@ class DeckLabCellDelegate : public DefaultDelegate {
         opt.font = decklab::numberFont(option.font, 16);
         opt.fontMetrics = QFontMetrics(opt.font);
         opt.features &= ~(QStyleOptionViewItem::HasCheckIndicator | QStyleOptionViewItem::HasDecoration);
-        if (opt.state & QStyle::State_Selected) {
+        // r5-history: never blend Mixxx's per-start played colour in.
+        if ((opt.state & QStyle::State_Selected) &&
+                index.data(Qt::ForegroundRole).value<QColor>() != mixxxPlayedColor()) {
             setTextColor(opt, index);
         }
         QStyleOptionViewItem base = opt;
@@ -253,6 +268,15 @@ class DeckLabKeyDelegate final : public DeckLabCellDelegate {
         painter->restore();
     }
 };
+
+} // anonymous namespace
+
+// r5-history: the Deck Lab cell delegate, for tests that paint through it.
+QAbstractItemDelegate* decklab::history::makeTrackCellDelegate(QTableView* table, bool secondary) {
+    return new DeckLabCellDelegate(table, -1, -1, secondary);
+}
+
+namespace {
 
 // ConfigValue key for QTable vertical scrollbar position
 const ConfigKey kVScrollBarPosConfigKey{

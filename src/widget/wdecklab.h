@@ -5,6 +5,7 @@
 #include <QHash>
 #include <QPersistentModelIndex>
 #include <QPointer>
+#include <QSet> // r5-history
 #include <QStringList>
 #include <QTimer>
 #include <array>
@@ -52,6 +53,10 @@ namespace decklab {
 struct UsbStick;
 struct MatchReference; // r4-browse
 enum class SourceState; // r4-browse
+struct SourceEntry; // r5-history
+namespace history {
+struct Change; // r5-history
+} // namespace history
 } // namespace decklab
 
 // A native appliance surface. All audio remains in Mixxx's existing engine.
@@ -214,6 +219,29 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void showMixes();
     void fillMixes(bool keepCurrent);
     void syncMixSelection();
+    // r5-history: the History view, "New set" and played marks
+    // (decklabhistory.h, decklabhistoryview.h).
+    void initHistory();
+    bool historyTrackLevel() const;
+    void showHistory(bool fromCategories);
+    void fillHistory(bool keepCurrent);
+    void openHistoryRow(int row);
+    void historyMove(int delta);
+    void historyBack();
+    void syncHistorySelection();
+    QStringList historySegments() const;
+    void refreshHistoryCard();
+    void applyHistoryPresentation();
+    void decorateHistoryEntry(decklab::SourceEntry& entry);
+    void startNewHistorySet();
+    void historyChanged(const decklab::history::Change& change);
+    void flushHistoryChange();
+    void repaintPlayed(const QSet<QString>& locations);
+    void historyAttachSystem(DeckLabSystem* system);
+    void askHistoryClock();
+    void refreshNewSetRow();
+    void showHistoryPlaylist(int playlistId);
+    void updateHomeHistoryTile();
     int displayedDeck(int side) const;
     void setDisplayedDeck(int side, int deck);
     QString channel(int deck) const;

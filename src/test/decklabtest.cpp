@@ -67,6 +67,8 @@
 #include "widget/decklabbrowselegend.h"
 #include "widget/decklabbrowsemix.h"
 #include "widget/decklabdeckwidgets.h"
+#include "widget/decklabhistory.h"     // r5-history
+#include "widget/decklabhistoryview.h" // r5-history
 #include "widget/decklablabfx.h"
 #include "widget/decklablanes.h"
 #include "widget/decklabtempopresenter.h"
@@ -4014,6 +4016,303 @@ TEST_F(NativeDeckLabTest, MixesWithDeckRowLeadsTheCategoriesAndOpensItsList) {
     panel->browseBack(); QCoreApplication::processEvents();
     ASSERT_NE(nullptr, list->currentItem());
     EXPECT_EQ(QStringLiteral("All Tracks"), list->currentItem()->text());
+}
+
+// r5-history: a generated history (no database): the history playlists and
+// tracks a test sets up, and what Mixxx's setlog does when a track becomes
+// audible.
+namespace {
+class GeneratedSets final : public decklab::history::Backend {
+  public:
+    QVector<decklab::history::Playlist> lists; // newest first
+    QHash<int, QVector<decklab::history::Entry>> tracks;
+    QVector<int> starts;
+    int newSets = 0;
+    QVector<decklab::history::Playlist> playlists() override {
+        for (auto& list : lists) {
+            const auto rows = tracks.value(list.id);
+            list.count = static_cast<int>(rows.size());
+            list.first = rows.isEmpty() ? QDateTime() : rows.first().played;
+            list.last = rows.isEmpty() ? QDateTime() : rows.last().played;
+        }
+        return lists;
+    }
+    QVector<decklab::history::Entry> entries(int playlistId) override {
+        return tracks.value(playlistId);
+    }
+    QVector<decklab::history::PlayedRow> playedRows() override {
+        QVector<decklab::history::PlayedRow> rows;
+        for (auto it = tracks.cbegin(); it != tracks.cend(); ++it) {
+            for (const auto& entry : it.value()) rows.append({it.key(), entry.trackId, entry.location});
+        }
+        return rows;
+    }
+    int startNewSet() override {
+        ++newSets;
+        decklab::history::Playlist list;
+        list.id = lists.isEmpty() ? 1 : lists.first().id + 1;
+        list.created = QDateTime::currentDateTime();
+        lists.prepend(list);
+        return list.id;
+    }
+    QVector<int> setStarts() override {
+        return starts;
+    }
+    void saveSetStarts(const QVector<int>& value) override {
+        starts = value;
+    }
+    decklab::history::Entry add(int playlistId, int deck, double bpm, const QDateTime& when) {
+        decklab::history::Entry entry;
+        entry.playlistId = playlistId;
+        entry.position = static_cast<int>(tracks.value(playlistId).size()) + 1;
+        entry.played = when;
+        entry.deck = deck;
+        entry.trackId = static_cast<int>(bpm);
+        entry.title = QStringLiteral("Generated Tone %1").arg(bpm, 0, 'f', 0);
+        entry.artist = QStringLiteral("Deck Lab Fixture");
+        entry.bpm = bpm;
+        entry.key = mixxx::track::io::key::A_MINOR;
+        entry.location = QStringLiteral("/generated/history/%1.wav").arg(bpm, 0, 'f', 0);
+        tracks[playlistId].append(entry);
+        return entry;
+    }
+    // Deck N became the audible deck: the setlog appends its track.
+    decklab::history::Entry play(int deck, double bpm) {
+        const auto entry = add(lists.first().id, deck, bpm, QDateTime::currentDateTime());
+        decklab::history::Store::instance().addPlayed(lists.first().id, entry);
+        return entry;
+    }
+};
+// Last night's history playlist (three tracks, older than any set start),
+// then this run's (two, on decks 1 and 2), and a History source on the
+// sidebar (Mixxx's setlog feature stand-in).
+GeneratedSets* installGeneratedSets(SidebarModel* sidebar, UserSettingsPointer config, QObject* owner) {
+    // Generated stand-in, kept for the process (the per-test sidebar model holds it).
+    sidebar->addLibraryFeature(new TestSource(config, QStringLiteral("history"), QStringLiteral("History"), false));
+    auto sets = std::make_unique<GeneratedSets>();
+    decklab::history::Playlist lastNight;
+    lastNight.id = 4;
+    lastNight.created = QDateTime(QDate::currentDate().addDays(-1), QTime(21, 0));
+    decklab::history::Playlist tonight;
+    tonight.id = 5;
+    tonight.created = QDateTime(QDate::currentDate(), QTime(0, 0));
+    sets->lists = {tonight, lastNight};
+    for (int n = 0; n < 3; ++n) sets->add(4, n % 2 + 1, 118 + n, lastNight.created.addSecs(n * 400));
+    sets->add(5, 1, 122, QDateTime(QDate::currentDate(), QTime(0, 5)));
+    sets->add(5, 2, 124, QDateTime(QDate::currentDate(), QTime(0, 10)));
+    GeneratedSets* raw = sets.get();
+    decklab::history::Store::instance().setBackend(std::move(sets), owner);
+    return raw;
+}
+int historyKind(QListWidget* list, int row) {
+    return list->item(row)->data(decklab::history::RowRole).toInt();
+}
+} // namespace
+
+// r5-history: History is a first-class Browse view: the home's tile counts
+// this set; the sets list puts this set and "New set" first and earlier sets
+// under their day; the knob and taps skip the date headers; this set opens
+// in play order with time, deck and BPM; the card follows the highlight at
+// once; a track that plays joins the open list in place (the highlight
+// follows the newest only from the latest row), on a hidden page at the next
+// visit. Without the set's own table nothing is offered to LOAD: the smoke
+// checks the real table (decklabsmoke.cpp, "history-set").
+TEST_F(NativeDeckLabTest, HistoryIsAFirstClassBrowseViewInPlayOrder) {
+    using decklab::history::RowKind;
+    GeneratedSets* sets = installGeneratedSets(model.get(), config(), panel.get());
+    panel->selectPage(1); QCoreApplication::processEvents(); settle();
+    auto* list = browseList(); ASSERT_NE(nullptr, list);
+    // The History source joined the sidebar after the home was built: the
+    // home lists it once it is built again (Library, then Back).
+    ASSERT_TRUE(selectRow(QStringLiteral("Library")));
+    panel->browsePress(); panel->browseBack(); QCoreApplication::processEvents();
+    // The home's History tile says what this set holds (read on the first visit).
+    ASSERT_TRUE(selectRow(QStringLiteral("History")));
+    EXPECT_EQ(QStringLiteral("This set · 2 tracks"), list->currentItem()->data(DeckLabListDelegate::SubtitleRole).toString());
+    EXPECT_EQ(QStringLiteral("1 earlier set"), list->currentItem()->data(DeckLabListDelegate::DetailRole).toString());
+    // The first run starts a set at this run's history playlist.
+    EXPECT_EQ(QVector<int>{5}, sets->starts);
+    panel->browsePress(); QCoreApplication::processEvents();
+    EXPECT_EQ(QStringList{QStringLiteral("History")}, crumbs());
+    ASSERT_EQ(4, list->count());
+    EXPECT_EQ(static_cast<int>(RowKind::Session), historyKind(list, 0));
+    EXPECT_EQ(QStringLiteral("This set"), list->item(0)->text());
+    EXPECT_EQ(static_cast<int>(RowKind::NewSet), historyKind(list, 1));
+    EXPECT_TRUE(list->item(1)->flags() & Qt::ItemIsEnabled);
+    EXPECT_EQ(static_cast<int>(RowKind::Header), historyKind(list, 2));
+    EXPECT_EQ(QStringLiteral("Yesterday"), list->item(2)->text());
+    EXPECT_FALSE(list->item(2)->flags() & Qt::ItemIsEnabled);
+    EXPECT_EQ(0, list->currentRow());
+    auto* card = static_cast<DeckLabTrackCard*>(panel->findChild<QWidget*>("decklab-track-card"));
+    ASSERT_NE(nullptr, card);
+    EXPECT_EQ(QStringLiteral("This set"), card->title());
+    auto* legend = dynamic_cast<DeckLabKnobLegend*>(panel->findChild<QWidget*>("decklab-knob-legend"));
+    ASSERT_NE(nullptr, legend);
+    EXPECT_EQ(decklab::LegendLevel::List, legend->level());
+    capture(QStringLiteral("browse-history-sets.png"));
+    // The knob and taps never land on a date header.
+    pulseControl("[Library]", "MoveVertical", 1);
+    EXPECT_EQ(1, list->currentRow());
+    pulseControl("[Library]", "MoveVertical", 1);
+    EXPECT_EQ(3, list->currentRow());
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, list->visualItemRect(list->item(2)).center());
+    QCoreApplication::processEvents();
+    EXPECT_EQ(3, list->currentRow());
+    EXPECT_FALSE(card->title().isEmpty());
+    pulseControl("[Library]", "MoveVertical", -1);
+    pulseControl("[Library]", "MoveVertical", -1);
+    EXPECT_EQ(0, list->currentRow());
+    // This set, in play order, opening on its latest track.
+    panel->browsePress(); QCoreApplication::processEvents();
+    EXPECT_EQ((QStringList{QStringLiteral("History"), QStringLiteral("This set · 2")}), crumbs());
+    ASSERT_EQ(2, list->count());
+    EXPECT_EQ(QStringLiteral("Generated Tone 122"), list->item(0)->text());
+    EXPECT_EQ(QStringLiteral("Generated Tone 124"), list->item(1)->text());
+    EXPECT_EQ(1, list->item(0)->data(decklab::history::DeckRole).toInt());
+    EXPECT_EQ(2, list->item(1)->data(decklab::history::DeckRole).toInt());
+    EXPECT_EQ(5, list->item(1)->data(decklab::history::PlaylistRole).toInt());
+    EXPECT_EQ(124, list->item(1)->data(decklab::history::TrackIdRole).toInt());
+    EXPECT_DOUBLE_EQ(124, list->item(1)->data(decklab::history::BpmRole).toDouble());
+    EXPECT_EQ(QStringLiteral("00:10"), list->item(1)->data(decklab::history::TimeRole).toString());
+    EXPECT_EQ(1, list->currentRow());
+    EXPECT_EQ(decklab::LegendLevel::Tracks, legend->level());
+    EXPECT_TRUE(panel->findChild<QPushButton*>("decklab-preview")->isVisible());
+    // The card follows the highlight at once (the row's facts, no table here).
+    EXPECT_EQ(QStringLiteral("Generated Tone 124"), card->title());
+    pulseControl("[Library]", "MoveVertical", -1);
+    EXPECT_EQ(QStringLiteral("Generated Tone 122"), card->title());
+    pulseControl("[Library]", "MoveVertical", 1);
+    capture(QStringLiteral("browse-history-set.png"));
+    // No set table in this fixture: nothing is offered to LOAD, and a tap on
+    // a deck tile loads nothing (never another track).
+    std::unique_ptr<ControlObject> missing2;
+    if (!ControlObject::getControl(ConfigKey("[Channel2]", "LoadSelectedTrack"))) {
+        missing2 = std::make_unique<ControlObject>(ConfigKey("[Channel2]", "LoadSelectedTrack"));
+    }
+    ControlProxy second("[Channel2]", "LoadSelectedTrack");
+    int requests = 0;
+    ASSERT_TRUE(second.connectValueChanged(panel.get(), [&requests](double v) { if (v > 0) ++requests; }, Qt::DirectConnection));
+    auto* load2 = static_cast<DeckLabDockTile*>(panel->findChild<QPushButton*>("decklab-load-2")); ASSERT_NE(nullptr, load2);
+    EXPECT_FALSE(load2->loadReady());
+    QTest::mouseClick(load2, Qt::LeftButton); QCoreApplication::processEvents();
+    EXPECT_EQ(0, requests);
+    // Deck 3 becomes audible while the list is open: the set grows in place,
+    // the highlight (on the latest) follows, the track is marked.
+    QListWidgetItem* before = list->item(0);
+    const auto joined = sets->play(3, 126);
+    QCoreApplication::processEvents(); settle();
+    ASSERT_EQ(3, list->count());
+    EXPECT_EQ(before, list->item(0)); // appended, not rebuilt
+    EXPECT_EQ(2, list->currentRow());
+    EXPECT_EQ(3, list->item(2)->data(decklab::history::DeckRole).toInt());
+    EXPECT_EQ(QStringLiteral("This set · 3"), crumbs().value(1));
+    EXPECT_EQ(decklab::history::Played::Session, decklab::history::Store::instance().played(joined.location));
+    EXPECT_EQ(decklab::history::Played::Earlier,
+            decklab::history::Store::instance().played(sets->tracks.value(4).first().location));
+    // Not on the latest row: the highlight stays.
+    pulseControl("[Library]", "MoveVertical", -1);
+    EXPECT_EQ(1, list->currentRow());
+    sets->play(1, 127);
+    QCoreApplication::processEvents(); settle();
+    ASSERT_EQ(4, list->count());
+    EXPECT_EQ(1, list->currentRow());
+    // A track that plays while Decks is shown joins on the next visit: no
+    // work on a hidden page.
+    panel->selectPage(0); QCoreApplication::processEvents();
+    sets->play(4, 128);
+    QCoreApplication::processEvents(); settle();
+    EXPECT_EQ(4, list->count());
+    panel->selectPage(1); QCoreApplication::processEvents(); settle();
+    EXPECT_EQ(5, list->count());
+    EXPECT_EQ(1, list->currentRow());
+    EXPECT_EQ(QStringLiteral("This set · 5"), crumbs().value(1));
+    // Back: the sets, on this set; Back again: the home, its tile in place.
+    panel->browseBack(); QCoreApplication::processEvents();
+    EXPECT_EQ(QStringList{QStringLiteral("History")}, crumbs());
+    EXPECT_EQ(0, list->currentRow());
+    panel->browseBack(); QCoreApplication::processEvents();
+    EXPECT_EQ(QStringList{QStringLiteral("Sources")}, crumbs());
+    ASSERT_NE(nullptr, list->currentItem());
+    EXPECT_EQ(QStringLiteral("History"), list->currentItem()->text());
+    EXPECT_EQ(QStringLiteral("This set · 5 tracks"), list->currentItem()->data(DeckLabListDelegate::SubtitleRole).toString());
+    QListWidgetItem* tile = list->currentItem();
+    sets->play(1, 129);
+    QCoreApplication::processEvents(); settle();
+    EXPECT_EQ(tile, list->currentItem()); // updated in place, not rebuilt
+    EXPECT_EQ(QStringLiteral("This set · 6 tracks"), tile->data(DeckLabListDelegate::SubtitleRole).toString());
+}
+
+// r5-history: "New set" ends the set from the knob (press, then press again;
+// or a held press when the controller reports browse_hold) and by touch (a
+// hold, the System kit). The last set stays listed with a quieter mark, the
+// new start is kept in the settings, and an empty set refuses another.
+TEST_F(NativeDeckLabTest, NewSetHoldStartsAnotherHistorySetAndKeepsTheLastOne) {
+    using decklab::history::Played;
+    using decklab::history::RowKind;
+    GeneratedSets* sets = installGeneratedSets(model.get(), config(), panel.get());
+    auto& store = decklab::history::Store::instance();
+    panel->selectPage(1); QCoreApplication::processEvents(); settle();
+    auto* list = browseList(); ASSERT_NE(nullptr, list);
+    ASSERT_TRUE(selectRow(QStringLiteral("Library")));
+    panel->browsePress(); panel->browseBack(); QCoreApplication::processEvents();
+    ASSERT_TRUE(selectRow(QStringLiteral("History")));
+    panel->browsePress(); QCoreApplication::processEvents();
+    auto* newSet = panel->findChild<decklab::ui::HoldButton*>("decklab-history-new-set");
+    ASSERT_NE(nullptr, newSet);
+    ASSERT_TRUE(newSet->isVisible());
+    EXPECT_GE(newSet->height(), 44);
+    const QString played = sets->tracks.value(5).first().location;
+    EXPECT_EQ(Played::Session, store.played(played));
+    // The knob: to "New set", press (armed), press again (started).
+    pulseControl("[Library]", "MoveVertical", 1);
+    ASSERT_EQ(static_cast<int>(RowKind::NewSet), historyKind(list, list->currentRow()));
+    panel->browsePress(); QCoreApplication::processEvents();
+    EXPECT_TRUE(newSet->armed());
+    EXPECT_EQ(0, sets->newSets);
+    panel->browsePress(); QCoreApplication::processEvents(); settle();
+    EXPECT_EQ(1, sets->newSets);
+    EXPECT_EQ((QVector<int>{5, 6}), sets->starts);
+    EXPECT_EQ(Played::Earlier, store.played(played));
+    ASSERT_GE(list->count(), 5);
+    EXPECT_EQ(QStringLiteral("This set"), list->item(0)->text());
+    EXPECT_EQ(QStringLiteral("Nothing played yet"), list->item(0)->data(decklab::history::DetailRole).toString());
+    EXPECT_FALSE(list->item(1)->flags() & Qt::ItemIsEnabled); // nothing to end yet
+    EXPECT_EQ(static_cast<int>(RowKind::Header), historyKind(list, 2));
+    EXPECT_EQ(QStringLiteral("Today"), list->item(2)->text());
+    EXPECT_EQ(5, list->item(3)->data(decklab::history::SessionRole).toInt());
+    EXPECT_EQ(0, list->currentRow());
+    // Touch: a tap is not a hold; a 1.2 s hold is.
+    sets->play(1, 131);
+    QCoreApplication::processEvents(); settle();
+    EXPECT_TRUE(list->item(1)->flags() & Qt::ItemIsEnabled);
+    QTest::mouseClick(newSet, Qt::LeftButton); QCoreApplication::processEvents();
+    EXPECT_EQ(1, sets->newSets);
+    QTest::mousePress(newSet, Qt::LeftButton);
+    QTest::qWait(decklab::ui::HoldButton::kHoldMs + 250);
+    QTest::mouseRelease(newSet, Qt::LeftButton);
+    QCoreApplication::processEvents(); settle();
+    EXPECT_EQ(2, sets->newSets);
+    EXPECT_EQ(QStringLiteral("New set started"), newSet->result());
+    EXPECT_EQ(0, list->currentRow()); // on the new set
+    capture(QStringLiteral("browse-history-new-set.png"));
+    // A controller that reports the held press: hold it on the row.
+    sets->play(2, 132);
+    QCoreApplication::processEvents(); settle();
+    list->setCurrentRow(1); QCoreApplication::processEvents();
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_hold"), 1); QCoreApplication::processEvents();
+    QTest::qWait(decklab::ui::HoldButton::kHoldMs + 250);
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_hold"), 0); QCoreApplication::processEvents(); settle();
+    EXPECT_EQ(3, sets->newSets);
+    // An empty set does not start another: the hold is refused and says why.
+    auto* toast = panel->findChild<QLabel*>("decklab-toast"); ASSERT_NE(nullptr, toast);
+    QTest::mousePress(newSet, Qt::LeftButton); QCoreApplication::processEvents();
+    QTest::mouseRelease(newSet, Qt::LeftButton); QCoreApplication::processEvents();
+    EXPECT_EQ(3, sets->newSets);
+    EXPECT_TRUE(toast->isVisible());
+    EXPECT_EQ(QStringLiteral("This set is still empty"), toast->text());
+    // Only on the History levels.
+    panel->browseBack(); QCoreApplication::processEvents();
+    EXPECT_FALSE(newSet->isVisible());
 }
 
 // r4-browse: the pure parts of the round-4 Browse moves.

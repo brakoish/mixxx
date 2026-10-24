@@ -1765,6 +1765,8 @@ add_library(
   src/widget/decklabbrowsehome.cpp
   src/widget/decklabbrowselegend.cpp
   src/widget/decklabbrowsemix.cpp
+  src/widget/decklabhistory.cpp
+  src/widget/decklabhistoryview.cpp
   src/widget/decklabsmoke.cpp
   src/decklab/decklabcontrollers.cpp
   src/decklab/decklabdclient.cpp
@@ -2815,6 +2817,7 @@ if(BUILD_TESTING)
     src/test/decklabsamplertest.cpp
     src/test/decklabstemstest.cpp
     src/test/decklabpadstest.cpp
+    src/test/decklabhistorytest.cpp
     src/test/decklabvsynctest.cpp
     src/test/decklablabfxtest.cpp
     src/test/decklablanestest.cpp
