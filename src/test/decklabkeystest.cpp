@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <QListWidget>
+#include <QSet>
 #include <QStandardItemModel>
 #include <QTableView>
 #include <algorithm>
