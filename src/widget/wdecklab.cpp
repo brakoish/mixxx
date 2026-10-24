@@ -1393,6 +1393,29 @@ void WDeckLab::showTrackInfo(int actual) {
     dialog->setWindowModality(Qt::WindowModal); dialog->open();
 }
 
+namespace {
+// r6-fxstrip: a controller unit's routes other than decks 1-4 (the main mix,
+// headphones, samplers, aux, mics, buses) sound too. Named for the rail and
+// the details sheet.
+bool isDeckRoute(const QString& group) {
+    return group.size() == 10 && group.startsWith(QLatin1String("[Channel")) &&
+            group[8] >= QLatin1Char('1') && group[8] <= QLatin1Char('4');
+}
+QStringList offDeckRoutes(const EffectChainPointer& chain) {
+    QStringList names;
+    if (!chain) return names;
+    for (const auto& input : chain->getActiveChannels()) {
+        const QString& group = input.name();
+        if (isDeckRoute(group)) continue;
+        names << (group == QLatin1String("[Master]")    ? WDeckLab::tr("main")
+                : group == QLatin1String("[Headphone]") ? WDeckLab::tr("headphones")
+                                                        : QString(group).remove(QLatin1Char('[')).remove(QLatin1Char(']')));
+    }
+    names.sort();
+    return names;
+}
+} // namespace
+
 void WDeckLab::showControllerFxInfo() {
     auto* dialog = new QDialog(this, Qt::Dialog | Qt::FramelessWindowHint);
     dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->setObjectName(QStringLiteral("decklab-controller-fx-info"));
@@ -1419,18 +1442,32 @@ void WDeckLab::showControllerFxInfo() {
             QStringList routes;
             for (int deck = 1; deck <= 4; ++deck)
                 if (value(group, QStringLiteral("group_[Channel%1]_enable").arg(deck)) > 0) routes << QString::number(deck);
-            block += QStringLiteral("<br>") + tr("Routed decks: %1").arg(routes.isEmpty() ? tr("none") : routes.join(QStringLiteral(", "))).toHtmlEscaped();
+            QString routed = tr("Routed decks: %1").arg(routes.isEmpty() ? tr("none") : routes.join(QStringLiteral(", ")));
+            const QStringList others = offDeckRoutes(chain); // r6-fxstrip
+            if (!others.isEmpty()) routed += tr(" · also %1").arg(others.join(QStringLiteral(", ")));
+            QString detail;
+            bool slotOn = false;
             const auto& effectSlots = chain->getEffectSlots();
             for (int slot = 0; slot < effectSlots.size(); ++slot) {
                 const auto effect = effectSlots[slot];
                 const bool loaded = effect && effect->isLoaded() && effect->getManifest();
-                const QString state = loaded ? (value(QStringLiteral("[EffectRack1_EffectUnit%1_Effect%2]").arg(unit).arg(slot + 1), "enabled") > 0 ? tr("ON") : tr("OFF")) : tr("EMPTY");
-                block += QStringLiteral("<br>") + tr("Slot %1: %2 [%3]").arg(slot + 1)
+                const bool enabled = loaded && value(QStringLiteral("[EffectRack1_EffectUnit%1_Effect%2]").arg(unit).arg(slot + 1), "enabled") > 0;
+                slotOn |= enabled;
+                const QString state = loaded ? (enabled ? tr("ON") : tr("OFF")) : tr("EMPTY");
+                detail += QStringLiteral("<br>") + tr("Slot %1: %2 [%3]").arg(slot + 1)
                         .arg(loaded ? effect->getManifest()->name() : tr("No effect"), state).toHtmlEscaped();
             }
-            blocks << block;
+            // r6-fxstrip: the full list keeps all four units; in the 2-deck
+            // layout an idle unit 3 or 4 (no rail lamp) says why, on its
+            // routing line, so the sheet gains no line.
+            const bool wet = slotOn && value(group, "enabled") > 0 && util_isfinite(mix) && mix > 0 &&
+                    (!routes.isEmpty() || !others.isEmpty());
+            if (!m_fourDeckLayout && unit > 2 && !wet) routed += tr(" · not used in 2-deck layout");
+            blocks << block + QStringLiteral("<br>") + routed.toHtmlEscaped() + detail;
         }
-        text->setHtml(QStringLiteral("<table width='100%' cellspacing='8'><tr><td width='50%' valign='top'>%1</td><td width='50%' valign='top'>%2</td></tr><tr><td valign='top'>%3</td><td valign='top'>%4</td></tr></table>")
+        // r6-fxstrip: 4 px cell spacing, so every line fits at 760x420 with
+        // no scrolling (8 px left the last line a few pixels short).
+        text->setHtml(QStringLiteral("<table width='100%' cellspacing='4'><tr><td width='50%' valign='top'>%1</td><td width='50%' valign='top'>%2</td></tr><tr><td valign='top'>%3</td><td valign='top'>%4</td></tr></table>")
                               .arg(blocks[0], blocks[1], blocks[2], blocks[3]));
     };
     auto* actions = row(nullptr, 8);
@@ -1762,6 +1799,8 @@ QWidget* WDeckLab::buildBrowse() {
         resetColumns->setEnabled(table != nullptr);
         auto* unload = menu->addMenu(tr("Unload stopped deck"));
         for (int deck = 1; deck <= 4; ++deck) {
+            // r6-fxstrip: the 2-deck layout lists decks 3 and 4 only when loaded.
+            if (!m_fourDeckLayout && deck > 2 && value(channel(deck), "track_loaded") <= 0) continue;
             auto* action = unload->addAction(tr("Deck %1").arg(deck), this, [this, deck] {
                 if (value(channel(deck), "track_loaded") && !value(channel(deck), "play")) pulse(channel(deck), "eject");
             });
@@ -2244,6 +2283,7 @@ QWidget* WDeckLab::buildEffects() {
     // r4-waveforms: with lanes and their DECKS row above, the footer only
     // names the target.
     m_labFx->setLanesShown(decklab::lanes::presentationFor(3) == decklab::lanes::Presentation::Compact);
+    m_labFx->setDeckLayout(m_fourDeckLayout ? 4 : 2); // r6-fxstrip: then updateLayers keeps it
     return m_labFx;
 }
 
@@ -3769,17 +3809,30 @@ void WDeckLab::refreshControllerFx() {
         const double mix = util_isfinite(rawMix) ? std::clamp(rawMix, 0.0, 1.0) : 0.0;
         const int mixPercent = int(mix * 100);
         const QString route = targets.isEmpty() ? QStringLiteral("—") : targets.join(QLatin1Char('/'));
+        // r6-fxstrip: a route to the main mix, headphones, a sampler... is
+        // wet too.
+        const QStringList others = offDeckRoutes(chain);
         // A real controller step below one percent is still wet: never DRY.
-        const bool on = effectOn && value(group, "enabled") > 0 && mix > 0 && !targets.isEmpty();
+        const bool on = effectOn && value(group, "enabled") > 0 && mix > 0 && (!targets.isEmpty() || !others.isEmpty());
         const QString state = on ? (mixPercent > 0 ? tr("%1%").arg(mixPercent) : tr("<1%")) : tr("DRY");
-        chips.append(DeckLabChipButton::Chip{QString::number(unit), kFxLamp, on});
-        if (on) active << QString::number(unit);
-        details << tr("FX %1; decks %2; %3; %4").arg(unit).arg(route, name, state);
+        // r6-fxstrip: the 2-deck layout shows units 1 and 2 (a two-deck
+        // controller's FX sections), 3 and 4 only while wet: nothing sounding
+        // is hidden. A lamp reads the deck its unit feeds (after a layer flip
+        // the left lamp reads 3), else the unit. The width stays as built.
+        if (!m_fourDeckLayout && unit > 2 && !on) continue;
+        QStringList places;
+        if (!targets.isEmpty()) places << (targets.size() == 1 ? tr("deck %1") : tr("decks %1")).arg(route);
+        places << others;
+        const QString where = places.isEmpty() ? tr("FX unit %1 on no deck").arg(unit)
+                                               : tr("FX unit %1 on %2").arg(unit).arg(places.join(QStringLiteral(", ")));
+        chips.append(DeckLabChipButton::Chip{targets.size() == 1 ? route : QString::number(unit), kFxLamp, on});
+        if (on) active << where;
+        details << tr("%1; %2; %3").arg(where, name, state);
     }
     m_fxChips->setChips(chips);
     setToolTipIf(m_fxChips, details.join(QLatin1Char('\n')));
     setAccessibleDescriptionIf(m_fxChips, active.isEmpty() ? tr("No controller effect unit is wet")
-                                                           : tr("Wet controller effect units: %1").arg(active.join(QStringLiteral(", "))));
+                                                           : tr("Wet: %1").arg(active.join(QStringLiteral(", "))));
 }
 
 void WDeckLab::connectControllerFx() {
@@ -3794,6 +3847,9 @@ void WDeckLab::connectControllerFx() {
         watch(group, QStringLiteral("enabled"), dirty);
         watch(group, QStringLiteral("mix"), dirty);
         for (int deck = 1; deck <= 4; ++deck) watch(group, QStringLiteral("group_[Channel%1]_enable").arg(deck), dirty);
+        // r6-fxstrip: the other routes (main, headphones, samplers...) too.
+        for (const auto& input : m_effects->registeredInputChannels())
+            if (!isDeckRoute(input.name())) watch(group, QStringLiteral("group_%1_enable").arg(input.name()), dirty);
         for (int slot = 1; slot <= 4; ++slot) {
             const QString effect = QStringLiteral("[EffectRack1_EffectUnit%1_Effect%2]").arg(unit).arg(slot);
             for (const auto& item : {"enabled", "loaded", "loaded_effect"}) watch(effect, QString::fromLatin1(item), dirty);
@@ -4828,6 +4884,7 @@ void WDeckLab::updateLayers() {
     }
     m_layoutSignature = signature;
     m_fxSummaryDirty = true; markDeckDirty(0);
+    if (m_labFx) m_labFx->setDeckLayout(four ? 4 : 2); // r6-fxstrip
     m_deckControls->hide();
     const bool decks = m_page == 0;
     // r4-waveforms: compact lanes keep the Decks arrangement, so a lane's

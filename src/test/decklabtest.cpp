@@ -2054,6 +2054,10 @@ TEST_F(NativeDeckLabTest, ControllerFxDetailsReadAllRealUnitsWithoutControlWrite
     }
     for(int slot=0;slot<3;++slot)
         EXPECT_TRUE(detail.contains(QStringLiteral("Slot %1: %2 [%3]").arg(slot+1).arg(manifests[slot]->name(),slot%2 ? "OFF" : "ON")));
+    // r6-fxstrip: the full list keeps all four units; in the 2-deck layout an
+    // idle unit 3 or 4 says so on its routing line. Wet unit 3 is not marked.
+    EXPECT_EQ(1,detail.count(QStringLiteral("not used in 2-deck layout")));
+    EXPECT_TRUE(detail.contains(QStringLiteral("Routed decks: 4 · not used in 2-deck layout"))) << detail.toStdString();
     auto* ownership=dialog->findChild<QLabel*>("decklab-controller-fx-ownership"); ASSERT_NE(nullptr,ownership);
     EXPECT_TRUE(ownership->text().contains("Read only"));
     EXPECT_TRUE(ownership->text().contains("Lab FX controls are separate, on the Lab FX screen."));
@@ -2068,19 +2072,26 @@ TEST_F(NativeDeckLabTest, ControllerFxDetailsReadAllRealUnitsWithoutControlWrite
     ControlObject::set(ConfigKey("[EffectRack1_EffectUnit4]","mix"),.73); const int externalWrites=writes;
     refresh->click(); QCoreApplication::processEvents(); EXPECT_EQ(externalWrites,writes);
     EXPECT_TRUE(text->toPlainText().contains("Unit 4 · Bypassed · Mix 73%"));
+    // r6-fxstrip: every line of all four units fits; the sheet never scrolls.
+    QCoreApplication::processEvents();
+    EXPECT_EQ(0,text->verticalScrollBar()->maximum())
+            << text->document()->size().height() << " px of text in " << text->viewport()->height() << " px";
     const QString output=qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
     if(!output.isEmpty()) EXPECT_TRUE(dialog->grab().save(QDir(output).filePath("controller-fx-details.png")));
     close->click(); QCoreApplication::processEvents(); EXPECT_EQ(externalWrites,writes);
     QTest::qWait(150);
-    // Rail lamps: one per controller unit, lit while it is audibly wet.
+    // Rail lamps, lit while a unit is audibly wet. r6-fxstrip: the 2-deck
+    // layout shows units 1 and 2, and 3 or 4 only while wet.
     const auto lamps=[board] {
         QString lit; for(const auto& chip:board->chips()) lit+=chip.on ? QLatin1Char('1') : QLatin1Char('0'); return lit;
     };
-    EXPECT_EQ(QStringLiteral("1010"),lamps());
+    const int railWidth=board->width();
+    EXPECT_EQ(QStringLiteral("101"),lamps());
     ControlObject::set(ConfigKey("[EffectRack1_EffectUnit4]","enabled"),1); const int enabledWrites=writes;
     QTest::qWait(150); EXPECT_EQ(enabledWrites,writes);
     EXPECT_EQ(QStringLiteral("1011"),lamps());
-    EXPECT_TRUE(board->toolTip().contains("FX 4; decks 4;"));
+    EXPECT_TRUE(board->toolTip().contains("FX unit 4 on deck 4;"));
+    EXPECT_TRUE(board->accessibleDescription().contains("FX unit 4 on deck 4"));
     // A real MIDI step below one percent is still wet. Display rounding must
     // never turn it into a false DRY indication.
     ControlObject::set(ConfigKey("[EffectRack1_EffectUnit1]","mix"),1.0/127);
@@ -2092,12 +2103,33 @@ TEST_F(NativeDeckLabTest, ControllerFxDetailsReadAllRealUnitsWithoutControlWrite
     EXPECT_FALSE(board->toolTip().section('\n',0,0).contains("DRY"));
     ControlObject::set(ConfigKey("[EffectRack1_EffectUnit3]","mix"),0); const int dryWrites=writes;
     QTest::qWait(150); EXPECT_EQ(dryWrites,writes);
-    EXPECT_EQ(QStringLiteral("1001"),lamps());
+    EXPECT_EQ(QStringLiteral("101"),lamps()) << "units 1, 2 and wet unit 4";
+    EXPECT_EQ(QStringLiteral("4"),board->chips().last().text);
     ControlObject::set(ConfigKey("[EffectRack1_EffectUnit4]","mix"),0); const int fourthDryWrites=writes;
     QTest::qWait(150); EXPECT_EQ(fourthDryWrites,writes);
-    EXPECT_EQ(QStringLiteral("1000"),lamps());
+    EXPECT_EQ(QStringLiteral("10"),lamps());
+    EXPECT_FALSE(board->toolTip().contains("FX unit 3")) << "idle units 3 and 4 have no lamp";
     // No unit names are ever cut short on the rail: the lamps carry numbers only.
     for(const auto& chip:board->chips()) EXPECT_EQ(1,chip.text.size());
+    // Fewer lamps never reflow the rail.
+    EXPECT_EQ(railWidth,board->width());
+    // r6-fxstrip: both idle (the usual two-deck case), units 3 and 4 are
+    // still listed, each marked on its routing line; still no scrolling.
+    board->click(); QCoreApplication::processEvents(); QTest::qWait(20);
+    QDialog* again=nullptr;
+    for(auto* candidate:panel->findChildren<QDialog*>("decklab-controller-fx-info")) if(candidate->isVisible()) again=candidate;
+    ASSERT_NE(nullptr,again);
+    auto* againText=again->findChild<QTextBrowser*>("decklab-controller-fx-text"); ASSERT_NE(nullptr,againText);
+    QCoreApplication::processEvents();
+    const QString idle=againText->toPlainText();
+    EXPECT_EQ(2,idle.count(QStringLiteral("not used in 2-deck layout"))) << idle.toStdString();
+    for(int unit:{3,4}) EXPECT_TRUE(idle.contains(QStringLiteral("Routed decks: %1 · not used in 2-deck layout").arg(unit)));
+    EXPECT_TRUE(idle.contains(QStringLiteral("Slot 3: %1 [ON]").arg(manifests[2]->name())));
+    EXPECT_EQ(0,againText->verticalScrollBar()->maximum())
+            << againText->document()->size().height() << " px of text in " << againText->viewport()->height() << " px";
+    if(!output.isEmpty()) { EXPECT_TRUE(again->grab().save(QDir(output).filePath("r6-fxstrip-controller-fx-idle.png"))); }
+    again->findChild<QPushButton*>("decklab-controller-fx-close")->click(); QCoreApplication::processEvents();
+    EXPECT_EQ(fourthDryWrites,writes);
 }
 
 TEST_F(NativeDeckLabTest, ControllerFxSummaryIncludesFourthSlotOnlyWithoutControlWrites) {
@@ -2135,21 +2167,169 @@ TEST_F(NativeDeckLabTest, ControllerFxSummaryIncludesFourthSlotOnlyWithoutContro
     }
     auto* choice=panel->findChild<QComboBox*>("decklab-deck-layout"); ASSERT_NE(nullptr,choice);
     auto* board=panel->findChild<DeckLabChipButton*>("decklab-performance-board-fx"); ASSERT_NE(nullptr,board);
+    const auto lamps=[board] {
+        QString lit; for(const auto& chip:board->chips()) lit+=chip.on ? QLatin1Char('1') : QLatin1Char('0'); return lit;
+    };
+    const int railWidth=board->width();
+    // r6-fxstrip: four decks, four lamps; two decks, units 1 and 2 plus wet unit 3.
     QMetaObject::invokeMethod(choice,"activated",Q_ARG(int,2)); QTest::qWait(150);
-    QString lit; for(const auto& chip:board->chips()) lit+=chip.on ? QLatin1Char('1') : QLatin1Char('0');
-    EXPECT_EQ(QStringLiteral("1010"),lit);
+    EXPECT_EQ(QStringLiteral("1010"),lamps());
     for(int unit:{1,3})
-        EXPECT_TRUE(board->toolTip().contains(QStringLiteral("FX %1; decks %1; %2; 50%").arg(unit).arg(manifests[0]->name())));
+        EXPECT_TRUE(board->toolTip().contains(QStringLiteral("FX unit %1 on deck %1; %2; 50%").arg(unit).arg(manifests[0]->name())));
     QMetaObject::invokeMethod(choice,"activated",Q_ARG(int,1)); QTest::qWait(150);
+    EXPECT_EQ(QStringLiteral("101"),lamps());
+    EXPECT_EQ(railWidth,board->width());
     EXPECT_TRUE(board->toolTip().section('\n',0,0).endsWith("50%"));
     EXPECT_FALSE(board->toolTip().section('\n',0,0).contains("DRY"));
     board->click(); QCoreApplication::processEvents();
     auto* dialog=panel->findChild<QDialog*>("decklab-controller-fx-info"); ASSERT_NE(nullptr,dialog);
     auto* text=dialog->findChild<QTextBrowser*>("decklab-controller-fx-text"); ASSERT_NE(nullptr,text);
     EXPECT_TRUE(text->toPlainText().contains(QStringLiteral("Slot 4: %1 [ON]").arg(manifests[0]->name())));
+    // r6-fxstrip: enabled but with no effect on, unit 4 is idle (no lamp);
+    // the sheet still lists it and says why. Wet unit 3 is not marked.
+    EXPECT_EQ(1,text->toPlainText().count(QStringLiteral("not used in 2-deck layout")));
+    EXPECT_TRUE(text->toPlainText().section(QStringLiteral("Unit 4 · Enabled · Mix 50%"),1).startsWith(QStringLiteral("\nRouted decks: 4 · not used in 2-deck layout\n")))
+            << text->toPlainText().toStdString();
     dialog->findChild<QPushButton*>("decklab-controller-fx-refresh")->click(); QTest::qWait(150);
     EXPECT_EQ(0,writes);
     for(size_t index=0;index<keys.size();++index) EXPECT_DOUBLE_EQ(snapshot[index],ControlObject::get(keys[index]));
+}
+
+TEST_F(NativeDeckLabTest, TwoDeckLayoutFxSurfacesFollowTheLayoutAndTheRouting) {
+    // r6-fxstrip: in the 2-deck layout the rail shows controller FX units 1
+    // and 2, each named by the deck it feeds; Lab FX offers decks 1 and 2,
+    // MASTER and SMP, and 3 or 4 only while in use, in slots that never move.
+    m_pEffectsManager->setup(); m_pEffectsManager->ensureDeckLabEffects();
+    m_pEngineMixer->prepareAudio(mixxx::audio::SampleRate(44100));
+    m_pMixerDeck1->loadFakeTrack(false, 128); m_pMixerDeck2->loadFakeTrack(false, 126);
+    ProcessBuffer(); QCoreApplication::processEvents();
+    const auto route=[](int unit,int deck) {
+        return ConfigKey(QStringLiteral("[EffectRack1_EffectUnit%1]").arg(unit),QStringLiteral("group_[Channel%1]_enable").arg(deck));
+    };
+    for(int unit=1;unit<=4;++unit)
+        for(int deck=1;deck<=4;++deck) ControlObject::set(route(unit,deck),unit<=2 && deck==unit ? 1 : 0);
+    QTest::qWait(150);
+    auto* board=panel->findChild<DeckLabChipButton*>("decklab-performance-board-fx"); ASSERT_NE(nullptr,board);
+    const auto lamps=[board] {
+        QStringList texts; for(const auto& chip:board->chips()) texts<<chip.text; return texts.join(QLatin1Char(' '));
+    };
+    const int railWidth=board->width();
+    EXPECT_EQ(QStringLiteral("1 2"),lamps());
+    // A layer flip on the controller (the Numark's Shift+Tap) moves unit 1
+    // to deck 3: its lamp reads 3.
+    ControlObject::set(route(1,1),0); ControlObject::set(route(1,3),1); QTest::qWait(150);
+    EXPECT_EQ(QStringLiteral("3 2"),lamps());
+    EXPECT_TRUE(board->toolTip().contains(QStringLiteral("FX unit 1 on deck 3;"))) << board->toolTip().toStdString();
+    EXPECT_TRUE(board->toolTip().contains(QStringLiteral("FX unit 2 on deck 2;")));
+    EXPECT_EQ(railWidth,board->width());
+    // Lab FX: 1, 2, MASTER and SMP; the slots of 3 and 4 stay reserved.
+    panel->selectPage(3); QCoreApplication::processEvents();
+    auto* fx=panel->findChild<DeckLabLabFx*>("decklab-labfx"); ASSERT_NE(nullptr,fx);
+    const auto key=[this](int n) { return panel->findChild<QPushButton*>(QStringLiteral("decklab-fx-target-%1").arg(n)); };
+    auto* onKey=panel->findChild<QPushButton*>("decklab-fx-on"); ASSERT_NE(nullptr,onKey);
+    EXPECT_EQ(2,fx->deckLayout());
+    for(int n:{1,2,5,6}) EXPECT_TRUE(key(n)->isVisible()) << n;
+    for(int n:{3,4}) EXPECT_FALSE(key(n)->isVisible()) << n;
+    const QRect master=key(5)->geometry(), on=onKey->geometry(), third=key(3)->geometry();
+    capture(QStringLiteral("r6-fxstrip-labfx-two-deck.png"));
+    auto* choice=panel->findChild<QComboBox*>("decklab-deck-layout"); ASSERT_NE(nullptr,choice);
+    QMetaObject::invokeMethod(choice,"activated",Q_ARG(int,2)); QTest::qWait(150);
+    EXPECT_EQ(4,fx->deckLayout());
+    for(int n=1;n<=6;++n) EXPECT_TRUE(key(n)->isVisible()) << n;
+    EXPECT_EQ(QStringLiteral("3 2 3 4"),lamps()) << "four decks: four lamps";
+    EXPECT_EQ(master,key(5)->geometry()); EXPECT_EQ(on,onKey->geometry()); EXPECT_EQ(third,key(3)->geometry());
+    capture(QStringLiteral("r6-fxstrip-labfx-four-deck.png"));
+    QMetaObject::invokeMethod(choice,"activated",Q_ARG(int,1)); QTest::qWait(150);
+    EXPECT_EQ(QStringLiteral("3 2"),lamps());
+    EXPECT_FALSE(key(3)->isVisible());
+    // A loaded deck 3 gets its key back, in its own slot.
+    m_pMixerDeck3->loadFakeTrack(false, 124); ProcessBuffer(); QTest::qWait(50); settle();
+    EXPECT_TRUE(key(3)->isVisible()); EXPECT_FALSE(key(4)->isVisible());
+    EXPECT_EQ(QStringLiteral("3"),key(3)->text());
+    EXPECT_EQ(third,key(3)->geometry()); EXPECT_EQ(master,key(5)->geometry()); EXPECT_EQ(on,onKey->geometry());
+    capture(QStringLiteral("r6-fxstrip-labfx-deck3-loaded.png"));
+    // ECHO latched on deck 1, then the left side flips to deck 3. Nothing is
+    // retargeted: after the lift, the next touch plays deck 1 again and deck
+    // 3 never gets the effect.
+    const ConfigKey onDeck1("[DeckLabEffectUnit1]","group_[Channel1]_enable"), onDeck3("[DeckLabEffectUnit1]","group_[Channel3]_enable");
+    ASSERT_EQ(1,fx->target());
+    onKey->click(); ASSERT_TRUE(fx->isLatched());
+    auto* laneRow=dynamic_cast<DeckLabLaneDecks*>(panel->findChild<QWidget*>("decklab-lane-decks")); ASSERT_NE(nullptr,laneRow);
+    const auto lane=[this](int deck) { return panel->findChild<QWidget*>(QStringLiteral("decklab-detail-%1").arg(deck)); };
+    ASSERT_EQ(1,laneRow->choice().lanes[0]); ASSERT_TRUE(lane(1)->isVisible()); ASSERT_FALSE(lane(3)->isVisible());
+    ControlObject::set(ConfigKey("[DeckLabLeft]","current"),1); QTest::qWait(50); settle();
+    // The flip really happened: the left side's lane is deck 3's now.
+    EXPECT_EQ(3,laneRow->choice().lanes[0]);
+    EXPECT_TRUE(lane(3)->isVisible()); EXPECT_FALSE(lane(1)->isVisible());
+    EXPECT_EQ(1,fx->target()); EXPECT_TRUE(fx->isLatched());
+    EXPECT_DOUBLE_EQ(1,ControlObject::get(onDeck1)); EXPECT_DOUBLE_EQ(0,ControlObject::get(onDeck3));
+    onKey->click();
+    EXPECT_EQ(DeckLabLabFx::Lamp::Tail,fx->lamp()) << "lift: deck 1's echo tail rings out";
+    auto* xy=panel->findChild<QWidget*>("decklab-fx-xy"); ASSERT_NE(nullptr,xy);
+    const QPoint point(xy->width()*3/4,xy->height()/4);
+    QTest::mousePress(xy,Qt::LeftButton,Qt::NoModifier,point);
+    EXPECT_TRUE(fx->isOn()); EXPECT_EQ(1,fx->target());
+    EXPECT_DOUBLE_EQ(1,ControlObject::get(onDeck1)) << "the touch plays the deck the DJ selected";
+    EXPECT_DOUBLE_EQ(0,ControlObject::get(onDeck3));
+    QTest::mouseRelease(xy,Qt::LeftButton,Qt::NoModifier,point);
+    panel->findChild<QPushButton*>("decklab-fx-cut")->click();
+    EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[DeckLabEffectUnit1]","mix")));
+    ControlObject::set(ConfigKey("[DeckLabLeft]","current"),0); QCoreApplication::processEvents();
+}
+
+TEST_F(NativeDeckLabTest, TwoDeckLayoutKeepsAUnitWetOffTheDecksOnTheRail) {
+    // r6-fxstrip: a unit 3 or 4 that is wet only on the main mix (or the
+    // headphones, a sampler...) is sounding: the 2-deck rail keeps its lamp,
+    // lit, and the details sheet does not call it unused.
+    m_pEffectsManager->setup();
+    const auto manifests=m_pEffectsManager->getBackendManager()->getManifestsForBackend(EffectBackendType::BuiltIn);
+    ASSERT_GT(manifests.size(),0);
+    const auto unitKey=[](int unit,const QString& item) {
+        return ConfigKey(QStringLiteral("[EffectRack1_EffectUnit%1]").arg(unit),item);
+    };
+    const QString main=QStringLiteral("group_[Master]_enable"), phones=QStringLiteral("group_[Headphone]_enable");
+    for(int unit=1;unit<=4;++unit) {
+        for(int deck=1;deck<=4;++deck)
+            ControlObject::set(unitKey(unit,QStringLiteral("group_[Channel%1]_enable").arg(deck)),unit<=2 && deck==unit ? 1 : 0);
+        for(const QString& other:{main,phones}) {
+            ASSERT_NE(nullptr,ControlObject::getControl(unitKey(unit,other))) << other.toStdString();
+            ControlObject::set(unitKey(unit,other),0);
+        }
+    }
+    auto chain=m_pEffectsManager->getEffectChain(QStringLiteral("[EffectRack1_EffectUnit3]")); ASSERT_FALSE(chain.isNull());
+    chain->getEffectSlot(0)->loadEffectWithDefaults(manifests[0]);
+    for(int slot=1;slot<chain->getEffectSlots().size();++slot) chain->getEffectSlot(slot)->loadEffectWithDefaults(EffectManifestPointer());
+    ControlObject::set(ConfigKey("[EffectRack1_EffectUnit3_Effect1]","enabled"),1);
+    ControlObject::set(unitKey(3,"enabled"),1); ControlObject::set(unitKey(3,"mix"),.5);
+    QTest::qWait(150);
+    auto* board=panel->findChild<DeckLabChipButton*>("decklab-performance-board-fx"); ASSERT_NE(nullptr,board);
+    const auto lamps=[board] {
+        QStringList texts; for(const auto& chip:board->chips()) texts<<chip.text; return texts.join(QLatin1Char(' '));
+    };
+    const int railWidth=board->width();
+    EXPECT_EQ(QStringLiteral("1 2"),lamps()) << "armed but routed nowhere: silent, no lamp";
+    // Routed to the main mix only: wet. Its lamp shows, lit, by unit number.
+    ControlObject::set(unitKey(3,main),1); QTest::qWait(150);
+    EXPECT_EQ(QStringLiteral("1 2 3"),lamps());
+    ASSERT_EQ(3,board->chips().size()); EXPECT_TRUE(board->chips().last().on);
+    EXPECT_TRUE(board->toolTip().contains(QStringLiteral("FX unit 3 on main; %1; 50%").arg(manifests[0]->name())))
+            << board->toolTip().toStdString();
+    EXPECT_TRUE(board->accessibleDescription().contains(QStringLiteral("FX unit 3 on main")));
+    EXPECT_EQ(railWidth,board->width());
+    board->click(); QCoreApplication::processEvents();
+    auto* dialog=panel->findChild<QDialog*>("decklab-controller-fx-info"); ASSERT_NE(nullptr,dialog);
+    auto* text=dialog->findChild<QTextBrowser*>("decklab-controller-fx-text"); ASSERT_NE(nullptr,text);
+    const QString sheet=text->toPlainText();
+    EXPECT_TRUE(sheet.contains(QStringLiteral("Routed decks: none · also main\n"))) << sheet.toStdString();
+    EXPECT_FALSE(sheet.section(QStringLiteral("Unit 3 ·"),1).section(QStringLiteral("Unit 4 ·"),0,0).contains(QStringLiteral("not used")));
+    dialog->findChild<QPushButton*>("decklab-controller-fx-close")->click(); QCoreApplication::processEvents();
+    // The headphones count too; with no route left the lamp goes.
+    ControlObject::set(unitKey(3,main),0); ControlObject::set(unitKey(3,phones),1); QTest::qWait(150);
+    EXPECT_EQ(QStringLiteral("1 2 3"),lamps());
+    EXPECT_TRUE(board->toolTip().contains(QStringLiteral("FX unit 3 on headphones;"))) << board->toolTip().toStdString();
+    ControlObject::set(unitKey(3,phones),0); QTest::qWait(150);
+    EXPECT_EQ(QStringLiteral("1 2"),lamps());
+    EXPECT_EQ(railWidth,board->width());
 }
 
 TEST_F(NativeDeckLabTest, LinkedZoomFollowsTheLastStableExternalChangeWithoutFeedback) {
@@ -3269,6 +3449,10 @@ TEST_F(NativeDeckLabTest, BrowseToolsMatchPlayingFourthDeckAndGuardStaleUnload) 
     auto* unload = menu->findChild<QAction*>("decklab-unload-4"); ASSERT_NE(nullptr, unload);
     EXPECT_FALSE(unload->isEnabled());
     EXPECT_TRUE(fourthDeck->getEngineDeck()->getEngineBuffer()->isTrackLoaded());
+    // r6-fxstrip: the 2-deck layout lists decks 3 and 4 only when loaded.
+    EXPECT_NE(nullptr, menu->findChild<QAction*>("decklab-unload-1"));
+    EXPECT_NE(nullptr, menu->findChild<QAction*>("decklab-unload-2"));
+    EXPECT_EQ(nullptr, menu->findChild<QAction*>("decklab-unload-3"));
     menu->close(); QCoreApplication::processEvents();
 
     ControlObject::set(ConfigKey("[Channel4]", "play"), 0); ProcessBuffer(); QCoreApplication::processEvents();

@@ -68,6 +68,9 @@ class DeckLabLabFxTest : public ::testing::Test {
     QPushButton* button(const char* name) const {
         return fx->findChild<QPushButton*>(QString::fromLatin1(name));
     }
+    QPushButton* targetKey(int target) const {
+        return fx->findChild<QPushButton*>(QStringLiteral("decklab-fx-target-%1").arg(target));
+    }
     QPoint at(double x, double y) const {
         QWidget* pad = fx->pad();
         return {int(x * pad->width()), int((1 - y) * pad->height())};
@@ -390,6 +393,118 @@ TEST_F(DeckLabLabFxTest, BrandLampsAndNoRedOutsideTheWordmark) {
         EXPECT_GE(key->height(), 44) << key->objectName().toStdString();
         EXPECT_GE(key->width(), 44) << key->objectName().toStdString();
     }
+}
+
+// r6-fxstrip: the 2-deck layout offers decks 1 and 2, MASTER and SMP, and
+// deck 3 or 4 only while it is in use. Every slot keeps its place.
+TEST_F(DeckLabLabFxTest, TwoDeckLayoutOffersDecksThreeAndFourOnlyWhileInUse) {
+    std::array<QRect, 6> places;
+    for (int n = 0; n < 6; ++n) places[n] = targetKey(n + 1)->geometry();
+    const QRect on = button("decklab-fx-on")->geometry();
+    const QRect readout = fx->findChild<QWidget*>("decklab-fx-readout")->geometry();
+    const auto unmoved = [&] {
+        for (int n = 0; n < 6; ++n) EXPECT_EQ(places[n], targetKey(n + 1)->geometry()) << "target " << n + 1;
+        EXPECT_EQ(on, button("decklab-fx-on")->geometry());
+        EXPECT_EQ(readout, fx->findChild<QWidget*>("decklab-fx-readout")->geometry());
+    };
+    fx->setDeckLayout(2);
+    EXPECT_EQ(2, fx->deckLayout());
+    for (int target : {1, 2, 5, 6}) {
+        EXPECT_TRUE(fx->targetShown(target)) << target;
+        EXPECT_TRUE(targetKey(target)->isVisible()) << target;
+    }
+    for (int target : {3, 4}) {
+        EXPECT_FALSE(fx->targetShown(target)) << target;
+        EXPECT_FALSE(targetKey(target)->isVisible()) << target;
+    }
+    unmoved();
+    // A deck loaded from the controller gets its key back (the surface
+    // refreshes Lab FX on every load), in its own slot.
+    load(3, 126, false);
+    fx->refresh();
+    EXPECT_TRUE(targetKey(3)->isVisible());
+    EXPECT_FALSE(targetKey(4)->isVisible());
+    EXPECT_EQ(QStringLiteral("3"), targetKey(3)->text());
+    unmoved();
+    // It plays deck 3 on deck 3's unit.
+    tap("decklab-fx-target-3");
+    EXPECT_EQ(3, fx->target());
+    tap("decklab-fx-on");
+    EXPECT_EQ(1, get(kUnit1, "group_[Channel3]_enable"));
+    EXPECT_EQ(0, get(kUnit1, "group_[Channel1]_enable"));
+    tap("decklab-fx-cut");
+    // Ejected while it is the target: the key stays (never a silent
+    // retarget); choosing another deck lets it go.
+    values[key("[Channel3]", "track_loaded")] = 0;
+    fx->refresh();
+    EXPECT_EQ(3, fx->target());
+    EXPECT_TRUE(targetKey(3)->isVisible()) << "the target keeps its key";
+    tap("decklab-fx-target-1");
+    EXPECT_FALSE(targetKey(3)->isVisible());
+    // Four decks: all six keys, same places.
+    fx->setDeckLayout(4);
+    for (int target = 1; target <= 6; ++target) {
+        EXPECT_TRUE(fx->targetShown(target)) << target;
+        EXPECT_TRUE(targetKey(target)->isVisible()) << target;
+    }
+    unmoved();
+}
+
+TEST_F(DeckLabLabFxTest, TwoDeckLayoutNeverHidesOrRetargetsASoundingDeck) {
+    const QColor violet(0xc7, 0x7d, 0xff);
+    // ECHO latched on deck 4 with four decks, then the layout drops to two.
+    load(4, 126, true);
+    fx->refresh();
+    tap("decklab-fx-target-4");
+    tap("decklab-fx-on");
+    ASSERT_TRUE(fx->isLatched());
+    fx->setDeckLayout(2);
+    EXPECT_EQ(4, fx->target()) << "never retargeted";
+    EXPECT_TRUE(fx->isLatched()) << "still sounding";
+    EXPECT_EQ(1, get(kUnit2, "group_[Channel4]_enable"));
+    QPushButton* fourth = targetKey(4);
+    ASSERT_TRUE(fourth->isVisible());
+    EXPECT_EQ(violet, fourth->grab().toImage().pixelColor(4, fourth->height() / 2))
+            << "lit: the selected key fills with its deck colour";
+    // Deck 1 next: deck 4's tail rings out on its own unit, and its key
+    // stays while it rings, even once the track is gone.
+    tap("decklab-fx-target-1");
+    EXPECT_EQ(Lamp::Tail, fx->lamp());
+    values[key("[Channel4]", "track_loaded")] = 0;
+    fx->refresh();
+    EXPECT_EQ(1, get(kSlot2, "enabled")) << "the tail plays on";
+    EXPECT_TRUE(fourth->isVisible()) << "a deck still ringing out keeps its key";
+    ticks(40);
+    EXPECT_EQ(Lamp::Dry, fx->lamp());
+    EXPECT_FALSE(fourth->isVisible()) << "dry, empty and not the target: the key goes";
+    EXPECT_EQ(1, fx->target());
+}
+
+TEST_F(DeckLabLabFxTest, TwoDeckLayoutTouchPlaysTheSelectedDeckAfterALayerFlip) {
+    fx->setDeckLayout(2);
+    load(3, 126, true);
+    fx->refresh();
+    tap("decklab-fx-on");
+    ASSERT_TRUE(fx->isLatched());
+    ASSERT_EQ(1, fx->target());
+    // The controller's left layer flips to deck 3: the surface passes on the
+    // deck change and the (unchanged) layout. Lab FX has no notion of a
+    // layer, so nothing moves.
+    fx->refresh();
+    fx->setDeckLayout(2);
+    EXPECT_EQ(1, fx->target());
+    EXPECT_TRUE(fx->isLatched());
+    EXPECT_EQ(1, get(kUnit1, "group_[Channel1]_enable"));
+    tap("decklab-fx-on"); // lift: deck 1's tail rings out
+    EXPECT_EQ(Lamp::Tail, fx->lamp());
+    clock += 1000;
+    press(0.5, 0.5); // engage() refreshes first: still deck 1
+    EXPECT_TRUE(fx->isOn());
+    EXPECT_EQ(1, fx->target());
+    EXPECT_EQ(1, get(kUnit1, "group_[Channel1]_enable")) << "the deck the DJ selected";
+    EXPECT_EQ(0, get(kUnit1, "group_[Channel3]_enable")) << "deck 3 never gets the effect";
+    release(0.5, 0.5);
+    tap("decklab-fx-cut");
 }
 
 } // namespace
