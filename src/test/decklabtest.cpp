@@ -9,6 +9,7 @@
 #include <QFile>
 #include <QFontDatabase>
 #include <QFontInfo>
+#include <QHeaderView> // r6-keys
 #include <QDialog>
 #include <QComboBox>
 #include <QLabel>
