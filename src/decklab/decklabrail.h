@@ -58,6 +58,7 @@ struct Inputs {
     Controller controller = Controller::None;
     QString controllerName;
     bool controllerNew = false; // an unknown controller waits for Deck Setup
+    bool setupPending = false;  // r5-polish: first-run setup not finished
     QString soundSummary;       // "DDJ-FLX4 1-2 · phones 3-4"
     double temperature = -1;
     QString heat; // "", "warm" or "hot"
@@ -217,6 +218,7 @@ class DeckLabStatusSheet : public QWidget {
         std::function<void(int section)> system; // DeckLabSystemPage::Section
         std::function<void()> toggleRecording;
         std::function<void()> browseUsb;
+        std::function<void()> finishSetup; // r5-polish: the first-run flow
     };
     DeckLabStatusSheet(QWidget* surface, Actions actions);
     void refresh(const decklab::rail::Inputs& inputs);
@@ -240,6 +242,7 @@ class DeckLabStatusSheet : public QWidget {
     QPushButton* m_storage = nullptr;
     QPushButton* m_wifi = nullptr;
     QPushButton* m_controller = nullptr;
+    QWidget* m_setupLine = nullptr;
     decklab::ui::KnobNavigator* m_knob = nullptr;
 };
 
@@ -252,6 +255,7 @@ class DeckLabRail : public QObject {
         std::function<void(int step)> deckSetup;  // 0 controller, 1 sound
         std::function<void(int section)> system;  // a System page
         std::function<void()> toggleRecording;    // [Recording] toggle_recording
+        std::function<void()> finishSetup;        // r5-polish: the first-run flow
     };
     DeckLabRail(QWidget* surface, QWidget* rail, Hooks hooks);
     DeckLabUsbLamp* usb() const {

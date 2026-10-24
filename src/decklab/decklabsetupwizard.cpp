@@ -172,7 +172,14 @@ DeckLabSetupWizard::DeckLabSetupWizard(DeckLabSystem* system, QWidget* host)
     headerRow->addLayout(m_stepRow, 6);
     m_close = button(tr("Close"), header, QStringLiteral("decklab-setup-close"), 44);
     m_close->setFixedWidth(132);
-    connect(m_close, &QPushButton::clicked, this, [this] { finish(false); });
+    connect(m_close, &QPushButton::clicked, this, [this] {
+        // r5-polish: "Set up later" sticks: the first run stops opening at
+        // start, and Settings offers Finish setup instead.
+        if (m_firstRun && m_system) {
+            m_system->deferFirstRun();
+        }
+        finish(false);
+    });
     headerRow->addWidget(m_close);
     root->addWidget(header);
 
@@ -353,7 +360,8 @@ void DeckLabSetupWizard::startFirstRun() {
     m_firstRun = true;
     m_preferredKey.clear();
     setSequence({Step::Welcome, Step::Wifi, Step::Time, Step::Controller, Step::Audio, Step::Layout, Step::Done});
-    // Not finishing keeps the flag unset: the flow returns at next start.
+    // "Set up later" defers it (no more automatic start); only finishing
+    // sets first_run_done.
     m_close->setText(tr("Set up later"));
     show();
     raise();
@@ -528,7 +536,9 @@ void DeckLabSetupWizard::next() {
         profile.headphonesDevice = m_audio.headphones.device;
         profile.headphonesBase = m_audio.headphones.channelBase;
         m_system->rememberSetup(profile);
-        if (m_firstRun) {
+        // r5-polish: finishing Deck Setup completes setup, first run or not
+        // (Wi-Fi and the time zone stay in Settings › Unit).
+        if (!m_system->firstRunDone()) {
             m_system->markFirstRunDone();
         }
         emit layoutChosen(m_decks);

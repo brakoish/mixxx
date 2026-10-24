@@ -1263,7 +1263,23 @@ void DeckLabSystem::markFirstRunDone() {
         return;
     }
     m_services.config->setValue(ConfigKey(kDeckLab, QStringLiteral("first_run_done")), 1);
+    m_services.config->remove(ConfigKey(kDeckLab, QStringLiteral("first_run_deferred")));
     m_services.config->save();
+    emit firstRunChanged();
+}
+
+bool DeckLabSystem::firstRunDeferred() const {
+    return m_services.config &&
+            m_services.config->getValue(ConfigKey(kDeckLab, QStringLiteral("first_run_deferred")), 0) == 1;
+}
+
+void DeckLabSystem::deferFirstRun() {
+    if (!m_services.config || firstRunDone()) {
+        return;
+    }
+    m_services.config->setValue(ConfigKey(kDeckLab, QStringLiteral("first_run_deferred")), 1);
+    m_services.config->save();
+    emit firstRunChanged();
 }
 
 void DeckLabSystem::onDevicesChanged(const QJsonObject& data, const QStringList& added) {

@@ -39,6 +39,7 @@
 #include "decklab/decklabsystem.h"
 #include "decklab/decklabrail.h"
 #include "decklab/decklabsystempages.h"
+#include "decklab/decklabsystemui.h"
 #include "decklab/decklabui.h"
 #include "decklab/decklabui.h"
 #include "test/mixxxtest.h"
@@ -1388,5 +1389,87 @@ TEST_F(DeckLabSystemTest, UsbLocationsComeFromHidrawAndTheAlsaCard) {
     EXPECT_EQ(QStringLiteral("1.2"), decklab::usbPortChain(QStringLiteral("1-1.2")));
     EXPECT_EQ(QStringLiteral("1.4.2"), decklab::usbPortChain(QStringLiteral("usb-3f980000.usb-1.4.2")));
     EXPECT_TRUE(decklab::usbPortChain(QString()).isEmpty());
+}
+
+// Issue: "Set up later" did not stick; the Welcome flow came back at every start.
+TEST_F(DeckLabSystemTest, SetUpLaterSticksAndSettingsOffersFinishSetup) {
+    DeckLabFakeService fake;
+    ASSERT_TRUE(fake.listen(socketPath()));
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, socketPath());
+    using Kind = decklab::AudioDevice::Kind;
+    system.setAudioDevicesOverride({audioDevice(QStringLiteral("Controller: USB Audio"), 4, Kind::External, true)});
+    system.start();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.isReady(); }, 3000));
+    EXPECT_TRUE(system.firstRunDue());
+    QWidget host;
+    host.setStyleSheet(QStringLiteral("QPushButton {min-height:28px;padding:5px 9px;} QComboBox {min-height:38px;}"));
+    host.resize(800, 480);
+    host.show();
+    DeckLabSystemUi ui(&host, DeckLabSystemUi::Hooks{});
+    QWidget* panel = ui.createSetupPanel(&host);
+    ui.attach(&system);
+    // The first run opens by itself while it is due.
+    ASSERT_TRUE(QTest::qWaitFor([&] { return ui.wizard() != nullptr; }, 4000));
+    QPointer<DeckLabSetupWizard> wizard = ui.wizard();
+    EXPECT_TRUE(wizard->isFirstRun());
+    auto* later = wizard->findChild<QPushButton*>(QStringLiteral("decklab-setup-close"));
+    ASSERT_NE(nullptr, later);
+    EXPECT_EQ(QStringLiteral("Set up later"), later->text());
+    later->click();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    EXPECT_TRUE(wizard.isNull());
+    EXPECT_TRUE(system.firstRunDeferred());
+    EXPECT_FALSE(system.firstRunDone());
+    EXPECT_FALSE(system.firstRunDue());
+    EXPECT_EQ(1, config()->getValue(ConfigKey(QStringLiteral("[DeckLab]"), QStringLiteral("first_run_deferred")), 0));
+    // The next start: no Welcome.
+    {
+        DeckLabSystem again(services, nullptr, QStringLiteral("/nonexistent/decklabd.sock"));
+        QWidget other;
+        other.resize(800, 480);
+        DeckLabSystemUi nextStart(&other, DeckLabSystemUi::Hooks{});
+        nextStart.attach(&again);
+        QTest::qWait(1900);
+        EXPECT_EQ(nullptr, nextStart.wizard());
+    }
+    // Settings › Controller & audio offers Finish setup; so does the status sheet.
+    auto* finish = panel->findChild<QPushButton*>(QStringLiteral("decklab-finish-setup"));
+    ASSERT_NE(nullptr, finish);
+    EXPECT_TRUE(finish->isVisibleTo(panel));
+    decklab::rail::Inputs inputs;
+    ui.fillRailInputs(inputs);
+    EXPECT_TRUE(inputs.setupPending);
+    int finishes = 0;
+    DeckLabStatusSheet::Actions actions;
+    actions.finishSetup = [&finishes] { ++finishes; };
+    auto* sheet = new DeckLabStatusSheet(&host, actions);
+    sheet->refresh(inputs);
+    sheet->show();
+    ASSERT_FALSE(sheet->lines().isEmpty());
+    EXPECT_TRUE(sheet->lines().first().startsWith(QStringLiteral("Setup: Not finished"))) << sheet->lines().first().toStdString();
+    auto* sheetFinish = sheet->findChild<QPushButton*>(QStringLiteral("decklab-status-finish-setup"));
+    ASSERT_NE(nullptr, sheetFinish);
+    ASSERT_TRUE(sheetFinish->isVisibleTo(sheet));
+    sheetFinish->click();
+    EXPECT_EQ(1, finishes);
+    // Finish setup opens the first run; finishing it completes setup.
+    finish->click();
+    wizard = ui.wizard();
+    ASSERT_FALSE(wizard.isNull());
+    EXPECT_TRUE(wizard->isFirstRun());
+    wizard->skipToDone();
+    wizard->findChild<QPushButton*>(QStringLiteral("decklab-setup-next"))->click();
+    EXPECT_TRUE(system.firstRunDone());
+    EXPECT_FALSE(system.firstRunDeferred());
+    QCoreApplication::processEvents();
+    EXPECT_FALSE(finish->isVisibleTo(panel));
+    ui.fillRailInputs(inputs);
+    EXPECT_FALSE(inputs.setupPending);
+    sheet->refresh(inputs);
+    for (const QString& line : sheet->lines()) {
+        EXPECT_FALSE(line.startsWith(QStringLiteral("Setup:"))) << line.toStdString();
+    }
 }
 

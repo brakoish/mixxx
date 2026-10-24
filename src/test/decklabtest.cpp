@@ -4713,6 +4713,43 @@ TEST_F(DeckLabOverlayTest, EveryOverlayOverTheWaveformsHidesThemOrIsNativeAndRai
     EXPECT_TRUE(waveform->isVisible()); EXPECT_TRUE(laterWaveform->isVisible());
 }
 
+// r5-polish: after "Set up later", Settings and the status sheet offer
+// Finish setup until setup is done.
+TEST_F(NativeDeckLabTest, SettingsAndStatusSheetOfferFinishSetupAfterSetUpLater) {
+    config()->setValue(ConfigKey("[DeckLab]", "first_run_deferred"), 1);
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, QStringLiteral("/nonexistent/decklabd.sock"));
+    panel->attachSystem(&system);
+    auto* ui = panel->findChild<DeckLabSystemUi*>(); ASSERT_NE(nullptr, ui);
+    EXPECT_TRUE(ui->setupPending());
+    panel->selectPage(4); QCoreApplication::processEvents();
+    auto* settings = panel->findChild<DeckLabSettingsPage*>(); ASSERT_NE(nullptr, settings);
+    settings->showCategory(DeckLabSettingsPage::ControllerAudio); QTest::qWait(30);
+    auto* finish = panel->findChild<QPushButton*>(QStringLiteral("decklab-finish-setup")); ASSERT_NE(nullptr, finish);
+    EXPECT_TRUE(finish->isVisible());
+    capture(QStringLiteral("settings-finish-setup.png"));
+    // Not opened by itself at start.
+    QTest::qWait(1700);
+    EXPECT_EQ(nullptr, ui->wizard());
+    // The status sheet's first line.
+    auto* rail = panel->findChild<DeckLabRail*>(); ASSERT_NE(nullptr, rail);
+    panel->selectPage(0); QCoreApplication::processEvents();
+    auto* sheet = rail->openSheet(); ASSERT_NE(nullptr, sheet); QTest::qWait(30);
+    ASSERT_FALSE(sheet->lines().isEmpty());
+    EXPECT_TRUE(sheet->lines().first().startsWith(QStringLiteral("Setup: "))) << sheet->lines().first().toStdString();
+    capture(QStringLiteral("status-sheet-finish-setup.png"));
+    auto* sheetFinish = sheet->findChild<QPushButton*>(QStringLiteral("decklab-status-finish-setup")); ASSERT_NE(nullptr, sheetFinish);
+    sheetFinish->click(); QCoreApplication::processEvents();
+    QPointer<DeckLabSetupWizard> wizard = ui->wizard(); ASSERT_FALSE(wizard.isNull());
+    EXPECT_TRUE(wizard->isFirstRun());
+    wizard->skipToDone();
+    wizard->findChild<QPushButton*>(QStringLiteral("decklab-setup-next"))->click(); QCoreApplication::processEvents();
+    EXPECT_TRUE(system.firstRunDone());
+    EXPECT_FALSE(ui->setupPending());
+    EXPECT_FALSE(finish->isVisibleTo(settings));
+}
+
 // r5-polish: a MIDI + vendor HID controller is one Deck Setup row with the
 // MIDI badge (fake enumeration and decklabd report; generated USB location).
 TEST_F(NativeDeckLabTest, DeckSetupListsAMidiAndHidControllerOnce) {

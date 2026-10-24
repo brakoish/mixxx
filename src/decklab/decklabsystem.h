@@ -171,6 +171,14 @@ class DeckLabSystem : public QObject {
     /// [DeckLab] first_run_done: the first-run flow has been completed.
     bool firstRunDone() const;
     void markFirstRunDone();
+    /// r5-polish: [DeckLab] first_run_deferred: "Set up later" was tapped.
+    /// The flow no longer opens at start; Settings offers Finish setup.
+    bool firstRunDeferred() const;
+    void deferFirstRun();
+    /// Opens by itself at start: neither done nor deferred.
+    bool firstRunDue() const {
+        return !firstRunDone() && !firstRunDeferred();
+    }
     /// Mixxx controller name for decklabd controller key, if enumerated.
     QString mixxxNameForKey(const QString& key) const;
 
@@ -185,6 +193,8 @@ class DeckLabSystem : public QObject {
     void devicesChanged();
     void controllersChanged();
     void controllersRescanned();
+    /// r5-polish: first_run_done or first_run_deferred changed.
+    void firstRunChanged();
     void audioChanged();
     /// A controller decklabd reports as new. `known` ones are re-applied
     /// silently; others should be offered Deck Setup.

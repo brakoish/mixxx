@@ -521,6 +521,17 @@ DeckLabStatusSheet::DeckLabStatusSheet(QWidget* surface, Actions actions)
             }
         };
     };
+    // r5-polish: while setup is unfinished ("Set up later"), the first line
+    // offers it. Hidden once it is done.
+    Line* setup = addLine(QStringLiteral("setup"), tr("Setup"));
+    auto* finish = button(tr("Finish setup"), setup->widget, QStringLiteral("decklab-status-finish-setup"), 44);
+    connect(finish, &QPushButton::clicked, this, go([this] {
+        if (m_actions.finishSetup) {
+            m_actions.finishSetup();
+        }
+    }));
+    action(setup, finish);
+    m_setupLine = setup->widget;
     Line* sound = addLine(QStringLiteral("sound"), tr("Sound"));
     m_soundAction = button(tr("Deck Setup"), sound->widget, QStringLiteral("decklab-status-sound"), 44);
     connect(m_soundAction, &QPushButton::clicked, this, go([this] {
@@ -615,7 +626,9 @@ void DeckLabStatusSheet::paintEvent(QPaintEvent*) {
 QStringList DeckLabStatusSheet::lines() const {
     QStringList result;
     for (const auto* line : m_lines) {
-        result.append(line->name + QStringLiteral(": ") + line->detail);
+        if (line->widget->isVisibleTo(m_panel)) {
+            result.append(line->name + QStringLiteral(": ") + line->detail);
+        }
     }
     return result;
 }
@@ -630,6 +643,9 @@ void DeckLabStatusSheet::refresh(const Inputs& in) {
             }
         }
     };
+    // Setup (r5-polish): only while it is unfinished.
+    m_setupLine->setVisible(in.setupPending && m_actions.finishSetup);
+    set(QStringLiteral("setup"), Lamp::On, tr("Not finished · Wi-Fi, time zone, controller, sound"));
     // Sound.
     if (!in.outputWorking && !in.outputPending) {
         set(QStringLiteral("sound"), Lamp::LiveOutline, tr("No sound output. Choose one in Deck Setup."));
@@ -795,6 +811,7 @@ DeckLabStatusSheet* DeckLabRail::openSheet() {
         actions.system = m_hooks.system;
         actions.toggleRecording = m_hooks.toggleRecording;
         actions.browseUsb = m_hooks.browseUsb;
+        actions.finishSetup = m_hooks.finishSetup;
         m_sheet = new DeckLabStatusSheet(m_surface, actions);
     }
     m_sheet->refresh(m_inputs);

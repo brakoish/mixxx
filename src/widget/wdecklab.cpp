@@ -781,6 +781,8 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
         if (m_settings) m_settings->showUnit(static_cast<DeckLabSystemPage::Section>(section));
     };
     railHooks.toggleRecording = [this] { set(QStringLiteral("[Recording]"), QStringLiteral("toggle_recording"), 1); };
+    // r5-polish: the status sheet's Finish setup line opens the first-run flow.
+    railHooks.finishSetup = [this] { if (m_systemUi) m_systemUi->openFirstRun(); };
     m_railUi = new DeckLabRail(this, m_rail, railHooks);
     rail->addWidget(m_railUi->usb());
     m_status = m_railUi->zone();
