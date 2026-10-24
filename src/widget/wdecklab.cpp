@@ -4640,6 +4640,9 @@ void WDeckLab::updateMatchBar() {
     const bool keyboard = m_keyboard && m_keyboard->isVisible();
     const bool shown = b.matchEnabled && tracks && (!keyboard || b.matchOnly);
     setVisibleIf(b.matchBar, shown);
+    // r5-history: re-lay the column now; a layout request taken while Browse
+    // was hidden left the bar's 46 px reserved over the list (History, home).
+    if (QLayout* column = b.matchBar->parentWidget() ? b.matchBar->parentWidget()->layout() : nullptr) column->activate();
     if (!shown) return;
     using Tone = DeckLabActionButton::Tone;
     const auto& reference = decklab::matchReference();
