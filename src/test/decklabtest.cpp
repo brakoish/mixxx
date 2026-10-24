@@ -4149,6 +4149,16 @@ TEST_F(NativeDeckLabTest, HistoryIsAFirstClassBrowseViewInPlayOrder) {
     EXPECT_EQ(decklab::history::Played::Session, decklab::history::Store::instance().played(joined.location));
     EXPECT_EQ(decklab::history::Played::Earlier,
             decklab::history::Store::instance().played(sets->tracks.value(4).first().location));
+    // A track that plays while Decks is shown joins on the next visit: no
+    // work on a hidden page.
+    panel->selectPage(0); QCoreApplication::processEvents();
+    sets->play(4, 128);
+    QCoreApplication::processEvents(); settle();
+    EXPECT_EQ(3, list->count());
+    panel->selectPage(1); QCoreApplication::processEvents(); settle();
+    EXPECT_EQ(4, list->count());
+    EXPECT_EQ(1, list->currentRow());
+    EXPECT_EQ(QStringLiteral("This set · 4"), crumbs().value(1));
     // Back: the sets, on this set; Back again: the home.
     panel->browseBack(); QCoreApplication::processEvents();
     EXPECT_EQ(QStringList{QStringLiteral("History")}, crumbs());
@@ -4157,7 +4167,7 @@ TEST_F(NativeDeckLabTest, HistoryIsAFirstClassBrowseViewInPlayOrder) {
     EXPECT_EQ(QStringList{QStringLiteral("Sources")}, crumbs());
     ASSERT_NE(nullptr, list->currentItem());
     EXPECT_EQ(QStringLiteral("History"), list->currentItem()->text());
-    EXPECT_EQ(QStringLiteral("This set · 3 tracks"), list->currentItem()->data(DeckLabListDelegate::SubtitleRole).toString());
+    EXPECT_EQ(QStringLiteral("This set · 4 tracks"), list->currentItem()->data(DeckLabListDelegate::SubtitleRole).toString());
 }
 
 // r5-history: "New set" is a hold (the System kit): a tap does nothing, a

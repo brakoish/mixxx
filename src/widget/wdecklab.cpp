@@ -642,6 +642,7 @@ struct DeckLabBrowseState {
     decklab::ui::HoldButton* newSet = nullptr;
     decklab::history::Change historyPending; // listener changes, applied once, queued
     bool historyQueued = false;
+    bool historyStale = false; // the History list changed while Browse was hidden
 };
 
 WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
@@ -5411,6 +5412,15 @@ void WDeckLab::applyHistoryPresentation() {
     // Read once, when Browse is first shown (never at start-up).
     if (m_page == 1) decklab::history::Store::instance().ensureLoaded();
     const bool history = m_browseStack && m_browseStack->currentIndex() == 0 && b.list == DeckLabList::History;
+    if (history && m_page == 1 && b.historyStale) {
+        // Tracks that played while another page was shown join now.
+        b.historyStale = false;
+        fillHistory(true);
+        QTimer::singleShot(0, this, [this] {
+            syncHistorySelection();
+            updateBreadcrumb();
+        });
+    }
     if (!b.newSet) return;
     if (!history && !b.newSet->result().isEmpty()) b.newSet->setResult(QString());
     setVisibleIf(b.newSet, history);
@@ -5467,6 +5477,10 @@ void WDeckLab::flushHistoryChange() {
     if (shown) repaintPlayed(change.locations);
     if (!change.history || !m_browseStack || m_browseStack->currentIndex() != 0) return;
     if (b.list == DeckLabList::History && b.itemsList == DeckLabList::History) {
+        if (!shown) {
+            b.historyStale = true; // no work on a hidden page: the next visit refills
+            return;
+        }
         fillHistory(true); // a set grows in place; the highlight stays
         syncHistorySelection();
         updateBreadcrumb();

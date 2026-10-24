@@ -356,7 +356,18 @@ Played Store::played(const QString& location) const {
     if (m_session.contains(location)) {
         return Played::Session;
     }
-    return m_earlier.contains(location) ? Played::Earlier : Played::No;
+    if (m_earlier.contains(location)) {
+        return Played::Earlier;
+    }
+    // Mixxx keeps a loaded file's location clean; an export's own list may
+    // join "mount/" and "/Contents/..." with a doubled slash.
+    if (location.contains(QLatin1String("//"))) {
+        const QString clean = QDir::cleanPath(location);
+        if (clean != location) {
+            return played(clean);
+        }
+    }
+    return Played::No;
 }
 
 Played Store::playedAt(const QModelIndex& index) const {

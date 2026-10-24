@@ -728,42 +728,30 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                          list->setCurrentRow(std::min(1, list->count() - 1));
                          return true;
                      }},
-                    {"history-marks", 1500, [surface, failures] {
-                         // r5-history: played marks in a track list. Glass Garden
-                         // is loaded (paused) on deck 2, then the generated history
-                         // goes in: this set's rows dim with a check, last night's
-                         // carry a quieter ring.
+                    {"history", 1800, [surface, failures] {
+                         // r5-history: Glass Garden is loaded (paused) on deck 2,
+                         // the generated history goes in (Mixxx's history
+                         // playlists), and the home's History chip opens the sets:
+                         // this set first, last night's under "Yesterday".
                          surface->browseBack();
                          if (!selectListItem(surface, decklab::categoryName(decklab::Category::AllTracks))) return false;
                          surface->browsePress();
                          if (!selectTrack(surface, "Glass Garden")) return false;
                          ControlObject::set(ConfigKey("[Channel2]", "LoadSelectedTrack"), 1);
                          ControlObject::set(ConfigKey("[Channel2]", "LoadSelectedTrack"), 0);
-                         QTimer::singleShot(600, surface, [surface, failures] {
+                         // A load returns to Decks; come back once it is in.
+                         QTimer::singleShot(1000, surface, [surface, failures] {
                              if (!seedDemoHistory(surface->library())) failures->append(QStringLiteral("Demo history could not be seeded"));
-                             selectTrack(surface, "Late Checkout");
+                             surface->selectPage(1);
+                             surface->browseBack();
+                             surface->browseBack();
+                             auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
+                             if (!selectListItem(surface, QStringLiteral("History"))) failures->append(QStringLiteral("No History on the home"));
+                             surface->browsePress();
+                             if (!list || list->count() < 3 || list->item(0)->text() != QStringLiteral("This set"))
+                                 failures->append(QStringLiteral("History does not list this set first"));
                          });
                          return true;
-                     }},
-                    {"history-mixes", 900, [surface] {
-                         // The marks reach "Mixes with deck 1" too.
-                         surface->browseBack();
-                         if (!selectListItem(surface, decklab::mixesTitle(1))) return false;
-                         surface->browsePress();
-                         auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
-                         if (!list || !list->count() || !list->item(0)->data(DeckLabListDelegate::MixRole).toBool()) return false;
-                         list->setCurrentRow(0);
-                         return true;
-                     }},
-                    {"history", 700, [surface] {
-                         // The home's History chip counts this set; it opens the
-                         // sets: this set first, last night's under "Yesterday".
-                         surface->browseBack();
-                         surface->browseBack();
-                         if (!selectListItem(surface, QStringLiteral("History"))) return false;
-                         surface->browsePress();
-                         auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
-                         return list && list->count() >= 3 && list->item(0)->text() == QStringLiteral("This set");
                      }},
                     {"history-set", 1200, [surface, failures] {
                          // This set in play order (time, deck, BPM, key), on its
@@ -776,6 +764,28 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                              auto* tile = static_cast<DeckLabDockTile*>(surface->findChild<QPushButton*>(QStringLiteral("decklab-load-3")));
                              if (!tile || !tile->loadReady()) failures->append(QStringLiteral("History track not loadable from the dock"));
                          });
+                         return true;
+                     }},
+                    {"history-marks", 900, [surface] {
+                         // Played marks in a track list: this set's rows dim with
+                         // a check, last night's carry a quieter ring.
+                         surface->browseBack();
+                         surface->browseBack();
+                         if (!selectListItem(surface, QStringLiteral("Library"))) return false;
+                         surface->browsePress();
+                         if (!selectListItem(surface, decklab::categoryName(decklab::Category::AllTracks))) return false;
+                         surface->browsePress();
+                         return selectTrack(surface, "Late Checkout");
+                     }},
+                    {"history-mixes", 900, [surface] {
+                         // The marks reach "Mixes with deck 1" too. Browse ends
+                         // on the Library, as before, for the Sampler captures.
+                         surface->browseBack();
+                         if (!selectListItem(surface, decklab::mixesTitle(1))) return false;
+                         surface->browsePress();
+                         auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
+                         if (!list || !list->count() || !list->item(0)->data(DeckLabListDelegate::MixRole).toBool()) return false;
+                         list->setCurrentRow(0);
                          return true;
                      }},
             });

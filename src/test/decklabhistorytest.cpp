@@ -381,6 +381,9 @@ TEST(DeckLabBrowseTest, PlayedMarksAreQuietNeverRedAndReachTheMixesRows) {
     generated->tracks.insert(1, {played});
     Store::instance().setBackend(std::move(generated));
     Store::instance().ensureLoaded();
+    // An export's list may double a slash where Mixxx keeps the path clean.
+    EXPECT_EQ(Played::Session, Store::instance().played(QStringLiteral("/generated//played.wav")));
+    EXPECT_EQ(Played::No, Store::instance().played(QStringLiteral("/generated//other.wav")));
     QListWidget list;
     auto* item = new QListWidgetItem(QStringLiteral("Generated Tone 124"), &list);
     item->setData(DeckLabListDelegate::MixRole, true);
