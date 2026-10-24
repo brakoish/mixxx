@@ -749,7 +749,8 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                              auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
                              // The stick's files first, so the track table holds no
                              // history track when History opens.
-                             if (!selectListItem(surface, QStringLiteral("USB stick (3A1F)"))) failures->append(QStringLiteral("No demo stick"));
+                             // round5 merge: r5-polish names a lone unlabeled plain stick "USB stick".
+                             if (!selectListItem(surface, QStringLiteral("USB stick"))) failures->append(QStringLiteral("No demo stick"));
                              surface->browsePress();
                              for (int row = 0; list && row < list->count(); ++row) {
                                  if (list->item(row)->data(DeckLabListDelegate::KeyRole).toString() == QStringLiteral("tracks")) list->setCurrentRow(row);
