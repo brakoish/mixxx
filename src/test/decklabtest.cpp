@@ -540,6 +540,162 @@ void r4Pulse(const char* group, const char* item, double value = 1) {
 }
 } // namespace
 
+namespace {
+// r5-fix3-system: the Numark overlay's knob in native Deck Lab
+// (DeckLab-Numark.js, appliance round5-app). Off Browse: browse_hold 1 and
+// the press at press-down, browse_hold 0 at release. On Browse: browse_hold
+// 1 at press-down; at release browse_hold 0, then the press. Shift+press is
+// browse_back alone. Turns are [Playlist] SelectTrackKnob.
+void numarkDownOffBrowse() {
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_hold"), 1);
+    r4Pulse("[DeckLabNative]", "browse_press");
+}
+void numarkUpOffBrowse() {
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_hold"), 0);
+    QCoreApplication::processEvents();
+}
+void numarkDownOnBrowse() {
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_hold"), 1);
+    QCoreApplication::processEvents();
+}
+void numarkUpOnBrowse() {
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_hold"), 0);
+    r4Pulse("[DeckLabNative]", "browse_press");
+}
+void numarkShiftPress() {
+    r4Pulse("[DeckLabNative]", "browse_back");
+}
+void numarkTurn(int steps) {
+    r4Pulse("[Playlist]", "SelectTrackKnob", steps);
+}
+} // namespace
+
+TEST_F(NativeDeckLabTest, NumarkKnobConfirmsHoldButtonsOnlyWhenSeenAndMeant) {
+    // r5-fix3-system: "Press again" confirms with the real controller
+    // sequence, a held knob confirms after 1.2 s, and Turn off never fires
+    // unless it is on screen, focused, owned by the knob and meant.
+    config()->setValue(ConfigKey("[DeckLab]", "first_run_done"), 1);
+    QTemporaryDir socketDir;
+    DeckLabFakeService fake;
+    ASSERT_TRUE(fake.listen(socketDir.filePath(QStringLiteral("decklabd.sock"))));
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, socketDir.filePath(QStringLiteral("decklabd.sock")));
+    panel->attachSystem(&system);
+    system.start();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.isReady(); }, 3000));
+    auto* settings = panel->findChild<DeckLabSettingsPage*>(); ASSERT_NE(nullptr, settings);
+    panel->selectPage(4);
+    settings->showUnit(DeckLabSystemPage::Section::Power);
+    auto* off = panel->findChild<decklab::ui::HoldButton*>(QStringLiteral("decklab-power-shutdown"));
+    auto* reboot = panel->findChild<decklab::ui::HoldButton*>(QStringLiteral("decklab-power-reboot"));
+    ASSERT_NE(nullptr, off); ASSERT_NE(nullptr, reboot);
+    ASSERT_TRUE(QTest::qWaitFor([&] { return off->isVisible() && off->isEnabled(); }, 3000));
+    int fired = 0;
+    QObject::connect(off, &decklab::ui::HoldButton::confirmed, [&fired] { ++fired; });
+    const auto powerCalls = [&fake] { return static_cast<int>(fake.calls.count(QStringLiteral("system.power"))); };
+    auto* knob = settings->knob();
+    EXPECT_EQ(settings, decklab::knobClaimant());
+
+    // 1. Press twice, off Browse: the first press arms ("Press again") and
+    // waits, the second one confirms.
+    knob->focus(off);
+    numarkDownOffBrowse(); QTest::qWait(150); numarkUpOffBrowse();
+    EXPECT_TRUE(off->armed()); EXPECT_EQ(0, fired);
+    QTest::qWait(1500);
+    EXPECT_TRUE(off->armed()); EXPECT_EQ(0, fired);
+    numarkDownOffBrowse(); QTest::qWait(100); numarkUpOffBrowse();
+    EXPECT_EQ(1, fired);
+    EXPECT_FALSE(off->armed());
+    EXPECT_TRUE(QTest::qWaitFor([&] { return powerCalls() == 1; }, 2000));
+
+    // 2. A turn or Shift+press (Back) calls the first press off.
+    numarkDownOffBrowse(); numarkUpOffBrowse();
+    ASSERT_TRUE(off->armed());
+    numarkTurn(-1);
+    EXPECT_EQ(reboot, knob->current());
+    EXPECT_FALSE(off->armed());
+    numarkTurn(1);
+    EXPECT_EQ(off, knob->current());
+    numarkDownOffBrowse(); numarkUpOffBrowse();
+    EXPECT_TRUE(off->armed()); EXPECT_EQ(1, fired);
+    numarkShiftPress();
+    EXPECT_FALSE(off->armed());
+    EXPECT_EQ(DeckLabSystemPage::Section::Power, settings->systemPage()->currentSection());
+    EXPECT_EQ(1, fired);
+
+    // 3. Holding the knob, off Browse: 1.2 s confirms; a short hold only arms.
+    numarkDownOffBrowse();
+    EXPECT_TRUE(off->holding());
+    QTest::qWait(1500);
+    EXPECT_EQ(2, fired);
+    numarkUpOffBrowse();
+    EXPECT_FALSE(off->armed()); EXPECT_EQ(2, fired);
+    numarkDownOffBrowse(); QTest::qWait(400); numarkUpOffBrowse();
+    EXPECT_TRUE(off->armed());
+    QTest::qWait(1500);
+    EXPECT_EQ(2, fired);
+    numarkShiftPress();
+    EXPECT_FALSE(off->armed());
+
+    // 4. On Browse (a sheet over Browse) the press comes at release: after a
+    // full hold it is the end of the same gesture, never a new first press.
+    numarkDownOnBrowse(); QTest::qWait(1500);
+    EXPECT_EQ(3, fired);
+    numarkUpOnBrowse();
+    EXPECT_FALSE(off->armed()); EXPECT_EQ(3, fired);
+    numarkDownOnBrowse(); QTest::qWait(100); numarkUpOnBrowse();
+    EXPECT_TRUE(off->armed()); EXPECT_EQ(3, fired);
+    numarkDownOnBrowse(); QTest::qWait(100); numarkUpOnBrowse();
+    EXPECT_EQ(4, fired);
+    EXPECT_TRUE(QTest::qWaitFor([&] { return powerCalls() == 4; }, 2000));
+
+    // 5. Never off screen: a touch takes Unit back to its home while the knob
+    // ring was on Turn off. A press and hold then acts on nothing hidden.
+    knob->focus(off);
+    settings->systemPage()->showSection(DeckLabSystemPage::Section::Home);
+    QCoreApplication::processEvents();
+    ASSERT_FALSE(off->isVisible());
+    numarkDownOffBrowse(); QTest::qWait(1500); numarkUpOffBrowse();
+    numarkDownOnBrowse(); QTest::qWait(1500); numarkUpOnBrowse();
+    EXPECT_FALSE(off->holding()); EXPECT_FALSE(off->armed());
+    EXPECT_EQ(4, fired);
+    // A hold in progress stops when its button leaves the screen.
+    settings->showUnit(DeckLabSystemPage::Section::Power);
+    ASSERT_TRUE(QTest::qWaitFor([&] { return off->isVisible() && off->isEnabled(); }, 2000));
+    knob->focus(off);
+    numarkDownOffBrowse();
+    ASSERT_TRUE(off->holding());
+    settings->systemPage()->showSection(DeckLabSystemPage::Section::Home);
+    QTest::qWait(1500);
+    numarkUpOffBrowse();
+    EXPECT_EQ(4, fired);
+
+    // 6. A turn mid-hold, or the knob going to a sheet mid-hold, calls it off.
+    settings->showUnit(DeckLabSystemPage::Section::Power);
+    ASSERT_TRUE(QTest::qWaitFor([&] { return off->isVisible() && off->isEnabled(); }, 2000));
+    knob->focus(off);
+    numarkDownOffBrowse();
+    ASSERT_TRUE(off->holding());
+    numarkTurn(1);
+    EXPECT_FALSE(off->holding());
+    QTest::qWait(1500);
+    numarkUpOffBrowse();
+    EXPECT_EQ(4, fired); EXPECT_FALSE(off->armed());
+    knob->focus(off);
+    numarkDownOffBrowse();
+    ASSERT_TRUE(off->holding());
+    QPointer<decklab::ui::Confirm> sheet =
+            decklab::ui::Confirm::inform(panel.get(), QStringLiteral("Generated notice"), QString());
+    QTest::qWait(1500);
+    numarkUpOffBrowse();
+    EXPECT_FALSE(off->holding()); EXPECT_FALSE(off->armed());
+    EXPECT_EQ(4, fired);
+    if (sheet) sheet->close();
+    QTest::qWait(300);
+    EXPECT_EQ(4, powerCalls());
+}
+
 TEST_F(NativeDeckLabTest, SettingsIsAUtilityListTheKnobDrives) {
     // r4-system (Signature 1): turn moves, press opens or edits, back goes up
     // one level; from the category list back returns to Decks.

@@ -1062,6 +1062,14 @@ KnobNavigator::KnobNavigator(QWidget* root, std::function<bool()> back)
     if (root->isVisible()) {
         decklab::claimKnob(root);
     }
+    // r5-fix3-system: a menu, dialog, sheet or another page taking the knob
+    // calls off a hold in progress and a first press of "press twice".
+    decklab::onKnobOwnerChanged(this, [this] {
+        if (decklab::knobOwner().blocker != m_root) {
+            cancelHold();
+            disarm(m_current);
+        }
+    });
 }
 
 KnobNavigator::~KnobNavigator() {
@@ -1073,6 +1081,8 @@ void KnobNavigator::setScope(QWidget* scope) {
         return;
     }
     m_scope = scope;
+    cancelHold();
+    disarm(m_current);
     setEditing(false);
     if (m_ring) {
         m_ring->hide();
@@ -1112,6 +1122,9 @@ QList<QWidget*> KnobNavigator::candidates() const {
 void KnobNavigator::focus(QWidget* control) {
     if (m_current.data() != control) {
         setEditing(false);
+        // Moving the ring calls off the hold and "press again" on the old one.
+        cancelHold();
+        disarm(m_current);
     }
     m_current = control;
     if (!control) {
@@ -1148,6 +1161,10 @@ void KnobNavigator::move(int steps) {
     if (steps == 0) {
         return;
     }
+    // Any turn calls off a hold in progress and a first press.
+    m_releasePress.invalidate();
+    cancelHold();
+    disarm(m_current);
     if (m_editing && m_current) {
         if (auto* target = dynamic_cast<KnobTarget*>(m_current.data())) {
             target->knobTurn(steps);
@@ -1173,6 +1190,25 @@ void KnobNavigator::move(int steps) {
 }
 
 void KnobNavigator::press() {
+    // r5-fix3-system: on Browse the controller sends the press on release.
+    // After a completed knob hold that press is the end of the same gesture.
+    if (m_releasePress.isValid()) {
+        const bool sameGesture = m_releasePress.elapsed() < 500;
+        m_releasePress.invalidate();
+        if (sameGesture) {
+            return;
+        }
+    }
+    if (m_holdTarget) {
+        // Off Browse the press comes at press-down, during the hold.
+        m_holdPressed = true;
+        auto* held = qobject_cast<HoldButton*>(m_holdTarget.data());
+        if (held && held == m_current.data() && held->holding()) {
+            // Arms "press twice" only if the hold ends early.
+            m_armOnRelease = true;
+            return;
+        }
+    }
     if (!m_current || !m_current->isVisible() || !m_current->isEnabled() || !candidates().contains(m_current)) {
         focusFirst();
         return;
@@ -1201,6 +1237,14 @@ void KnobNavigator::press() {
 }
 
 void KnobNavigator::back() {
+    // Back calls off a hold or a first press before it goes up a level.
+    m_releasePress.invalidate();
+    if (auto* held = qobject_cast<HoldButton*>(m_current.data()); held && (held->armed() || held->holding())) {
+        cancelHold();
+        disarm(held);
+        return;
+    }
+    cancelHold();
     if (m_editing && m_current) {
         if (auto* target = dynamic_cast<KnobTarget*>(m_current.data())) {
             target->knobCancel();
@@ -1214,15 +1258,86 @@ void KnobNavigator::back() {
 }
 
 void KnobNavigator::hold(bool down) {
-    if (!m_current) {
+    if (down) {
+        cancelHold();
+        m_releasePress.invalidate();
+        QWidget* control = m_current.data();
+        auto* target = dynamic_cast<KnobTarget*>(control);
+        // r5-fix3-system: only the control the DJ can see is focused (ringed),
+        // on screen, on the page that owns the knob, takes a hold.
+        if (!target || !control->isVisible() || !control->isEnabled() || !m_ring || !m_ring->isVisible() ||
+                decklab::knobOwner().blocker != m_root || control->visibleRegion().isEmpty() ||
+                !candidates().contains(control)) {
+            return;
+        }
+        m_holdTarget = control;
+        if (auto* held = qobject_cast<HoldButton*>(control)) {
+            m_holdConfirmed = connect(held, &HoldButton::confirmed, this, [this] { m_holdFired = true; });
+            if (held->armed()) {
+                // Armed by a first press: keep it, the press confirms.
+                m_holdKeptArm = true;
+                return;
+            }
+        }
+        target->knobHold(true);
         return;
     }
-    if (auto* target = dynamic_cast<KnobTarget*>(m_current.data())) {
-        target->knobHold(down);
+    QPointer<QWidget> control = m_holdTarget;
+    if (!control) {
+        return;
+    }
+    const bool fired = m_holdFired;
+    const bool pressed = m_holdPressed;
+    const bool arm = m_armOnRelease;
+    disconnect(m_holdConfirmed);
+    m_holdTarget = nullptr;
+    m_holdKeptArm = false;
+    m_holdFired = false;
+    m_holdPressed = false;
+    m_armOnRelease = false;
+    // The release goes to the control that took the hold, never another one.
+    if (auto* target = dynamic_cast<KnobTarget*>(control.data())) {
+        target->knobHold(false);
+    }
+    if (fired) {
+        if (!pressed) {
+            m_releasePress.start();
+        }
+        return;
+    }
+    auto* held = qobject_cast<HoldButton*>(control.data());
+    if (held && arm && held->onScreen() && held == m_current.data()) {
+        // A short hold with the press at press-down: the first press of
+        // "press twice".
+        held->knobPress();
+    }
+}
+
+void KnobNavigator::cancelHold() {
+    QPointer<QWidget> control = m_holdTarget;
+    disconnect(m_holdConfirmed);
+    m_holdTarget = nullptr;
+    m_holdKeptArm = false;
+    m_holdFired = false;
+    m_holdPressed = false;
+    m_armOnRelease = false;
+    if (auto* held = qobject_cast<HoldButton*>(control.data())) {
+        held->knobCancel();
+    } else if (auto* target = dynamic_cast<KnobTarget*>(control.data())) {
+        target->knobHold(false);
+    }
+}
+
+void KnobNavigator::disarm(QWidget* control) {
+    // Only hold buttons: other targets' cancel restores edited values.
+    if (auto* held = qobject_cast<HoldButton*>(control); held && (held->armed() || held->holding())) {
+        held->knobCancel();
     }
 }
 
 void KnobNavigator::clear() {
+    cancelHold();
+    disarm(m_current);
     setEditing(false);
     if (m_ring) {
         m_ring->hide();
@@ -1314,6 +1429,10 @@ bool KnobNavigator::eventFilter(QObject* watched, QEvent* event) {
             placeRing();
         } else if (event->type() == QEvent::Hide) {
             clear();
+        } else if (event->type() == QEvent::EnabledChange && !m_current->isEnabled()) {
+            // A row locking (a deck started) calls off its hold and first press.
+            cancelHold();
+            disarm(m_current);
         }
     }
     return QObject::eventFilter(watched, event);
@@ -1380,8 +1499,13 @@ double HoldButton::progress() const {
     return m_holding ? std::clamp(m_since.elapsed() / static_cast<double>(kHoldMs), 0.0, 1.0) : 0.0;
 }
 
+bool HoldButton::onScreen() const {
+    return isVisible() && isEnabled() && window()->isVisible() && !visibleRegion().isEmpty();
+}
+
 bool HoldButton::begin() {
-    if (!isEnabled()) {
+    // r5-fix3-system: never start on a button that isn't on screen.
+    if (!isEnabled() || !isVisible()) {
         return false;
     }
     if (m_gate) {
@@ -1414,6 +1538,11 @@ void HoldButton::fire() {
     m_armed = false;
     m_disarm.stop();
     update();
+    // r5-fix3-system: a hold or a second press never completes on a button
+    // the DJ can't see (another page, scrolled away, hidden meanwhile).
+    if (!onScreen()) {
+        return;
+    }
     emit confirmed();
 }
 

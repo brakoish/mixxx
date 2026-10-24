@@ -285,6 +285,9 @@ class KnobNavigator : public QObject {
   private:
     void placeRing();
     void setEditing(bool editing);
+    // r5-fix3-system: a knob hold belongs to the one control that took it.
+    void cancelHold();
+    void disarm(QWidget* control);
 
     QWidget* m_root;
     QPointer<QWidget> m_scope;
@@ -292,6 +295,17 @@ class KnobNavigator : public QObject {
     QPointer<QWidget> m_ring;
     std::function<bool()> m_back;
     bool m_editing = false;
+    // r5-fix3-system: the held knob press (browse_hold) in progress. Only the
+    // visible, ringed control of the page that owns the knob takes it; a
+    // turn, a focus move, the control hiding or the knob going elsewhere
+    // cancels it, and the release goes to the same control.
+    QPointer<QWidget> m_holdTarget;
+    QMetaObject::Connection m_holdConfirmed;
+    bool m_holdKeptArm = false; // the hold started on an armed button: the press confirms
+    bool m_holdFired = false;
+    bool m_holdPressed = false;  // a press arrived during the hold (press at press-down)
+    bool m_armOnRelease = false; // that press arms "press twice" once the hold ends early
+    QElapsedTimer m_releasePress; // after a completed hold: the release press is not a new press
 };
 
 /// r4-system (Signature 4): hold-to-confirm for disruptive actions (restart,
@@ -326,6 +340,9 @@ class HoldButton : public TouchButton, public KnobTarget {
     bool holding() const {
         return m_holding;
     }
+    /// r5-fix3-system: shown and not scrolled or covered out of sight. A hold
+    /// never completes on a button that isn't.
+    bool onScreen() const;
     bool armed() const {
         return m_armed;
     }
