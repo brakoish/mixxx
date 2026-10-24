@@ -596,7 +596,7 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                          QCoreApplication::processEvents();
                          auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
                          return list && list->currentItem() &&
-                                 list->currentItem()->text() == QStringLiteral("USB stick (3A1F)") &&
+                                 list->currentItem()->text() == QStringLiteral("USB stick") &&
                                  list->currentItem()->data(DeckLabListDelegate::TileRole).toInt() == 1 &&
                                  surface->findChild<QWidget*>(QStringLiteral("decklab-deck-dock"))->isVisible();
                      }},

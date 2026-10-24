@@ -20,6 +20,7 @@
 #include "decklab/decklabsetupwizard.h"
 #include "decklab/decklabsystem.h"
 #include "decklab/decklabui.h"
+#include "decklab/decklabusbname.h"
 #include "moc_decklabsystemui.cpp"
 #include "util/cmdlineargs.h"
 
@@ -222,9 +223,11 @@ void DeckLabSystemUi::refreshRail() {
         const QJsonArray drives = rail.serviceOnline ? m_system->usbDrives() : QJsonArray();
         const QString directory = m_system->recordingDirectory();
         QStringList names;
-        for (const auto& value : drives) {
-            const QJsonObject drive = value.toObject();
-            const QString label = drive.value(QStringLiteral("label")).toString(tr("USB drive"));
+        // r5-polish: the stick's friendly name (never its UUID), as in Browse.
+        const QStringList friendly = decklab::usbNames(decklab::usbNameSources(drives));
+        for (int index = 0; index < drives.size(); ++index) {
+            const QJsonObject drive = drives.at(index).toObject();
+            const QString label = friendly.at(index);
             const bool readOnly = drive.value(QStringLiteral("read_only")).toBool(true);
             rail.usbRekordbox |= drive.value(QStringLiteral("rekordbox")).toBool();
             if (!readOnly && decklab::isPathOnMount(directory, drive.value(QStringLiteral("mount")).toString())) {

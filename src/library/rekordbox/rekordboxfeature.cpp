@@ -5,17 +5,20 @@
 #include <rekordbox_pdb.h>
 
 #include <QDir>
+#include <QHash>
 #include <QMap>
 #include <QMessageBox>
 #include <QSet>
 #include <QSettings>
 #include <QString>
+#include <QStorageInfo>
 #include <QStringList>
 #include <QTextCodec>
 #include <QtDebug>
 #include <exception>
 
 #include "decklab/decklabphrase.h"
+#include "decklab/decklabusbname.h"
 #include "engine/engine.h"
 #include "library/dao/trackschema.h"
 #include "library/library.h"
@@ -69,47 +72,30 @@ QString findRekordboxPdbPath(const QString& devicePath) {
 #if defined(__LINUX__)
 const QString kDeckLabMediaRoot = QStringLiteral("/media/decklab");
 
-// udev escapes characters such as spaces in /dev/disk link names ("\x20").
-QString udevUnescape(const QString& name) {
-    QByteArray bytes = name.toUtf8();
-    QByteArray out;
-    for (int i = 0; i < bytes.size(); ++i) {
-        bool ok = false;
-        if (bytes[i] == '\\' && i + 3 < bytes.size() && bytes[i + 1] == 'x') {
-            const int value = bytes.mid(i + 2, 2).toInt(&ok, 16);
-            if (ok) {
-                out.append(static_cast<char>(value));
-                i += 3;
-                continue;
-            }
-        }
-        out.append(bytes[i]);
+// r5-polish: the friendly name Browse, the rail and Storage use for every
+// stick mounted at /media/decklab/<FS-UUID> ("DJ USB", never the UUID). The
+// name is also the device key, so it is unique among them.
+QHash<QString, QString> deckLabStickNames() {
+    QList<decklab::UsbNameSource> sources;
+    QStringList paths;
+    const QFileInfoList sticks = QDir(kDeckLabMediaRoot).entryInfoList(
+            QDir::AllDirs | QDir::NoDotAndDotDot, QDir::Name);
+    for (const QFileInfo& stick : sticks) {
+        decklab::UsbNameSource source;
+        source.id = stick.fileName();
+        source.label = decklab::usbLabelForUuid(stick.fileName());
+        source.rekordbox = !findRekordboxPdbPath(stick.filePath()).isEmpty();
+        const QStorageInfo mount(stick.filePath());
+        source.bytes = mount.isValid() ? mount.bytesTotal() : -1;
+        sources.append(source);
+        paths.append(stick.filePath());
     }
-    return QString::fromUtf8(out);
-}
-
-// Filesystem label of a stick mounted at /media/decklab/<FS-UUID>, read from
-// udev's /dev/disk links. Empty when unknown.
-QString deckLabVolumeLabel(const QString& mountPath) {
-    const QFileInfo mount(mountPath);
-    if (mount.absolutePath() != kDeckLabMediaRoot) {
-        return {};
+    QHash<QString, QString> names;
+    const QStringList friendly = decklab::usbNames(sources);
+    for (int index = 0; index < paths.size(); ++index) {
+        names.insert(paths.at(index), friendly.at(index));
     }
-    const QString device =
-            QFileInfo(QDir(QStringLiteral("/dev/disk/by-uuid")), mount.fileName())
-                    .canonicalFilePath();
-    if (device.isEmpty()) {
-        return {};
-    }
-    const QDir labels(QStringLiteral("/dev/disk/by-label"));
-    const QStringList links = labels.entryList(
-            QDir::AllEntries | QDir::System | QDir::Hidden | QDir::NoDotAndDotDot);
-    for (const QString& link : links) {
-        if (QFileInfo(labels.filePath(link)).canonicalFilePath() == device) {
-            return udevUnescape(link).trimmed();
-        }
-    }
-    return {};
+    return names;
 }
 #endif
 
@@ -292,15 +278,16 @@ QList<TreeItem*> findRekordboxDevices() {
 
     QSet<QString> seenPaths;
     QSet<QString> names;
+    const QHash<QString, QString> stickNames = deckLabStickNames();
     foreach (QFileInfo device, devices) {
         if (seenPaths.contains(device.filePath())) {
             continue;
         }
         seenPaths.insert(device.filePath());
         if (!findRekordboxPdbPath(device.filePath()).isEmpty()) {
-            // Show the stick's label rather than its UUID mount folder. The
-            // name is also the device key, so it must stay unique.
-            QString name = deckLabVolumeLabel(device.filePath());
+            // Show the stick's friendly name rather than its UUID mount
+            // folder. The name is also the device key, so it must stay unique.
+            QString name = stickNames.value(device.filePath());
             if (name.isEmpty() || names.contains(name)) {
                 name = device.fileName();
             }

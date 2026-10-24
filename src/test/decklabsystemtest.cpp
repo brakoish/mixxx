@@ -41,6 +41,7 @@
 #include "decklab/decklabrail.h"
 #include "decklab/decklabsystempages.h"
 #include "decklab/decklabsystemui.h"
+#include "decklab/decklabusbname.h"
 #include "decklab/decklabui.h"
 #include "decklab/decklabui.h"
 #include "test/mixxxtest.h"
@@ -924,10 +925,11 @@ TEST_F(DeckLabSystemTest, RailLampsTeachAndRedIsOnlyForLive) {
     in.outputWorking = true;
     in.undervoltage = true;
     EXPECT_EQ(decklab::rail::Alert::LowPower, decklab::rail::alertFor(in));
-    // USB: presence, count and a rekordbox export.
+    // USB: presence and count. r5-polish: no "RB" abbreviation; the stick's
+    // name ("DJ USB") is in Browse and the status sheet.
     in.usbDrives = 1;
     in.usbRekordbox = true;
-    EXPECT_EQ(QStringLiteral("USB RB"), decklab::rail::usbView(in).label);
+    EXPECT_EQ(QStringLiteral("USB"), decklab::rail::usbView(in).label);
     in.usbDrives = 2;
     EXPECT_EQ(QStringLiteral("USB 2"), decklab::rail::usbView(in).label);
     in.controllerNew = true;
@@ -1526,3 +1528,63 @@ TEST_F(DeckLabSystemTest, EveryDeckSetupStepNameFitsAt800) {
     }
 }
 
+// Issue: Browse showed an unlabeled stick as its filesystem UUID.
+TEST_F(DeckLabSystemTest, UsbSticksHaveFriendlyNamesNeverTheirUuid) {
+    using decklab::UsbNameSource;
+    const auto source = [](const QString& id, const QString& label, bool rekordbox, double gigabytes = -1) {
+        UsbNameSource result;
+        result.id = id;
+        result.label = label;
+        result.rekordbox = rekordbox;
+        result.bytes = gigabytes > 0 ? static_cast<qint64>(gigabytes * 1e9) : -1;
+        return result;
+    };
+    // decklabd sends the UUID as the label when there is none.
+    EXPECT_EQ(QStringLiteral("DJ USB"), decklab::usbBaseName(source("3A1F-0C2D", "3A1F-0C2D", true)));
+    EXPECT_EQ(QStringLiteral("USB stick"), decklab::usbBaseName(source("3A1F-0C2D", "", false)));
+    EXPECT_EQ(QStringLiteral("MIX SETS"), decklab::usbBaseName(source("3A1F-0C2D", "MIX SETS", false)));
+    for (const char* uuid : {"6A3F-1C2B", "0123456789ABCDEF", "0e9c1d7a-55aa-4b33-9e3f-2f9d0c4a1b77"}) {
+        EXPECT_TRUE(decklab::usbLabelIsPlaceholder(QString::fromLatin1(uuid))) << uuid;
+    }
+    EXPECT_FALSE(decklab::usbLabelIsPlaceholder(QStringLiteral("DJ USB")));
+    // The size it was sold as.
+    EXPECT_EQ(QStringLiteral("32 GB"), decklab::usbCapacityText(static_cast<qint64>(29.6e9)));
+    EXPECT_EQ(QStringLiteral("32 GB"), decklab::usbCapacityText(static_cast<qint64>(32.4e9)));
+    EXPECT_EQ(QStringLiteral("16 GB"), decklab::usbCapacityText(static_cast<qint64>(15.4e9)));
+    EXPECT_EQ(QStringLiteral("1 TB"), decklab::usbCapacityText(static_cast<qint64>(1.0e12)));
+    EXPECT_TRUE(decklab::usbCapacityText(-1).isEmpty());
+    // Several sticks: different kinds need nothing more; the same name gets
+    // the size, or a number when the sizes match. Never a UUID.
+    EXPECT_EQ((QStringList{"DJ USB", "USB stick"}),
+            decklab::usbNames({source("3A1F-0C2D", "", true, 31), source("55AA-1234", "", false, 31)}));
+    EXPECT_EQ((QStringList{"DJ USB 32 GB", "DJ USB 16 GB"}),
+            decklab::usbNames({source("3A1F-0C2D", "", true, 31), source("55AA-1234", "", true, 15.5)}));
+    EXPECT_EQ((QStringList{"DJ USB 2", "DJ USB 1"}),
+            decklab::usbNames({source("55AA-1234", "", true, 31), source("3A1F-0C2D", "", true, 31)}));
+    // The rail and Storage name decklabd's drives the same way.
+    const QJsonArray drives{QJsonObject{{"id", "3A1F-0C2D"}, {"label", "3A1F-0C2D"}, {"mount", "/media/decklab/3A1F-0C2D"},
+                                    {"size_mb", 30528}, {"free_mb", 12402}, {"fs", "exfat"}, {"read_only", true},
+                                    {"rekordbox", true}, {"busy", false}},
+            QJsonObject{{"id", "0e9c1d7a-55aa-4b33-9e3f-2f9d0c4a1b77"}, {"label", "MIX SETS"},
+                    {"mount", "/media/decklab/0e9c1d7a-55aa-4b33-9e3f-2f9d0c4a1b77"}, {"size_mb", 61056},
+                    {"free_mb", 40220}, {"fs", "ext4"}, {"read_only", false}, {"rekordbox", false}, {"busy", false}}};
+    EXPECT_EQ(QStringLiteral("DJ USB"), decklab::usbDriveName(drives.at(0).toObject(), drives));
+    DeckLabFakeService fake;
+    fake.drives = drives;
+    ASSERT_TRUE(fake.listen(socketPath()));
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, socketPath());
+    QWidget host;
+    DeckLabSystemUi ui(&host, DeckLabSystemUi::Hooks{});
+    ui.attach(&system);
+    system.start();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.usbDrives().size() == 2; }, 3000));
+    QCoreApplication::processEvents();
+    decklab::rail::Inputs inputs;
+    ui.fillRailInputs(inputs);
+    EXPECT_EQ(QStringLiteral("DJ USB (read-only) · MIX SETS"), inputs.usbSummary);
+    EXPECT_FALSE(inputs.usbSummary.contains(QStringLiteral("3A1F")));
+    EXPECT_EQ(QStringLiteral("USB 2"), decklab::rail::usbView(inputs).label);
+    EXPECT_TRUE(system.ejectRefusal(drives.at(0).toObject()).isEmpty());
+}

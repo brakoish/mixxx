@@ -20,6 +20,7 @@
 #include <cmath>
 
 #include "decklab/decklaboverlay.h"
+#include "decklab/decklabusbname.h"
 #include "library/coverart.h"
 #include "library/coverartcache.h"
 #include "track/keyutils.h"
@@ -364,44 +365,6 @@ QStringList& usbStickTestRoots() {
     return roots;
 }
 
-#if defined(Q_OS_LINUX)
-// udev escapes characters such as spaces in /dev/disk link names ("\x20").
-QString udevUnescape(const QString& name) {
-    const QByteArray bytes = name.toUtf8();
-    QByteArray out;
-    for (int i = 0; i < bytes.size(); ++i) {
-        bool ok = false;
-        if (bytes[i] == '\\' && i + 3 < bytes.size() && bytes[i + 1] == 'x') {
-            const int value = bytes.mid(i + 2, 2).toInt(&ok, 16);
-            if (ok) {
-                out.append(static_cast<char>(value));
-                i += 3;
-                continue;
-            }
-        }
-        out.append(bytes[i]);
-    }
-    return QString::fromUtf8(out);
-}
-
-// Label of the filesystem whose UUID names the appliance mount folder.
-QString labelForUuid(const QString& uuid) {
-    const QString device =
-            QFileInfo(QDir(QStringLiteral("/dev/disk/by-uuid")), uuid).canonicalFilePath();
-    if (device.isEmpty()) {
-        return {};
-    }
-    const QDir labels(QStringLiteral("/dev/disk/by-label"));
-    const QStringList links = labels.entryList(
-            QDir::AllEntries | QDir::System | QDir::Hidden | QDir::NoDotAndDotDot);
-    for (const QString& link : links) {
-        if (QFileInfo(labels.filePath(link)).canonicalFilePath() == device) {
-            return udevUnescape(link).trimmed();
-        }
-    }
-    return {};
-}
-#endif
 } // namespace
 
 bool hasRekordboxExport(const QString& path) {
@@ -431,6 +394,7 @@ QList<UsbStick> findUsbSticks() {
     }
     QSet<QString> seen;
     QSet<QByteArray> devices;
+    QList<UsbNameSource> names; // r5-polish: friendly names, as the rail and Storage
     for (const QString& root : std::as_const(roots)) {
         const bool applianceRoot = QDir(root).dirName() == QStringLiteral("decklab");
         const QFileInfoList entries = QDir(root).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
@@ -439,6 +403,7 @@ QList<UsbStick> findUsbSticks() {
             if (seen.contains(path)) {
                 continue;
             }
+            UsbNameSource name;
             if (!testing) {
                 // Only real mounts: the appliance helper removes stale
                 // folders, but a desktop may leave empty ones behind. A stick
@@ -449,26 +414,30 @@ QList<UsbStick> findUsbSticks() {
                     continue;
                 }
                 devices.insert(mount.device());
+                name.bytes = mount.bytesTotal();
             }
             seen.insert(path);
             UsbStick stick;
             stick.path = path;
-            if (applianceRoot) {
-                stick.label = testing ? QString() : labelForUuid(entry.fileName());
-                if (stick.label.isEmpty()) {
-                    stick.label = translate("USB stick (%1)")
-                                          .arg(entry.fileName().left(4).toUpper());
-                }
-            } else {
-                // udisks names desktop mount folders after the label.
-                stick.label = entry.fileName();
-            }
             stick.rekordbox = hasRekordboxExport(path);
+            // The appliance mounts by filesystem UUID and udev knows the
+            // label; udisks names desktop mount folders after the label (or
+            // the UUID when there is none).
+            name.id = applianceRoot ? entry.fileName() : path;
+            name.label = applianceRoot ? (testing ? QString() : usbLabelForUuid(entry.fileName()))
+                                       : entry.fileName();
+            name.rekordbox = stick.rekordbox;
+            names.append(name);
             sticks.append(stick);
         }
     }
+    const QStringList labels = usbNames(names);
+    for (int index = 0; index < sticks.size(); ++index) {
+        sticks[index].label = labels.at(index);
+    }
     std::sort(sticks.begin(), sticks.end(), [](const UsbStick& a, const UsbStick& b) {
-        return QString::localeAwareCompare(a.label, b.label) < 0;
+        const int order = QString::localeAwareCompare(a.label, b.label);
+        return order != 0 ? order < 0 : a.path < b.path;
     });
 #endif
     return sticks;

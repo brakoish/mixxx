@@ -29,6 +29,7 @@
 #include "controllers/hid/hidcontroller.h"
 #endif
 #include "decklab/decklabdclient.h"
+#include "decklab/decklabusbname.h"
 #include "library/dao/directorydao.h"
 #include "library/library_decl.h"
 #include "library/trackcollection.h"
@@ -484,10 +485,8 @@ QString DeckLabSystem::recordingDirectory() const {
 
 QString DeckLabSystem::ejectRefusal(const QJsonObject& drive) const {
     const QString mount = drive.value(QStringLiteral("mount")).toString();
-    QString name = drive.value(QStringLiteral("label")).toString();
-    if (name.isEmpty()) {
-        name = tr("this USB drive");
-    }
+    // r5-polish: the friendly name, as everywhere else.
+    const QString name = decklab::usbDriveName(drive, m_drives);
     const QString refusal = decklab::ejectRefusal(name, decklab::ejectBlockers(mount, loadedTracks()));
     if (!refusal.isEmpty()) {
         return refusal;

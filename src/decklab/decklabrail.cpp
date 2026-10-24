@@ -70,7 +70,10 @@ SlotView usbView(const Inputs& in) {
     if (in.usbDrives > 1) {
         return {Lamp::Go, text("USB %1").arg(in.usbDrives)};
     }
-    return {Lamp::Go, in.usbRekordbox ? text("USB RB") : text("USB")};
+    // r5-polish: the lamp says where (USB) and its state; the stick's name
+    // ("DJ USB") is one tap away in Browse and in the status sheet. "RB"
+    // was an abbreviation, and a name does not fit a 54 px slot.
+    return {Lamp::Go, text("USB")};
 }
 
 Alert alertFor(const Inputs& in) {

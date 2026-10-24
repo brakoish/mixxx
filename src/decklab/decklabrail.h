@@ -81,7 +81,7 @@ struct SlotView {
 
 /// The lamp and label a slot shows for these inputs (pure, for tests).
 SlotView slotView(Slot slot, const Inputs& inputs);
-/// USB slot: lamp and label ("USB", "USB 2", "USB RB").
+/// USB slot: lamp and label ("USB", or "USB 2" for two sticks).
 SlotView usbView(const Inputs& inputs);
 
 enum class Alert {
