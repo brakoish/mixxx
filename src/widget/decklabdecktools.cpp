@@ -240,18 +240,35 @@ void DeckLabDeckTools::restoreSavedKeylocks() {
         }
         const QString saved = m_host.setting(QString(QStringLiteral("KeySheetKeylockTrack") + suffix));
         const TrackPointer track = m_host.track ? m_host.track(deck) : TrackPointer();
-        m_keylockBySheet[deck - 1] = true;
-        m_keylockTrack[deck - 1] = track;
-        m_keylockAdjust[deck - 1] = m_host.setting(QString(QStringLiteral("KeySheetKeylockAdjust") + suffix)).toDouble();
-        if (track && !saved.isEmpty() && trackKey(track) == saved) {
-            // A skin rebuild with the same track on the deck: still the
+        if (m_host.read(deck, QStringLiteral("keylock")) > 0 && track && !saved.isEmpty() && trackKey(track) == saved) {
+            // Key lock still on with the same track on the deck: still the
             // sheet's, RESET or the next track gives it back.
+            m_keylockBySheet[deck - 1] = true;
+            m_keylockTrack[deck - 1] = track;
+            m_keylockAdjust[deck - 1] = m_host.setting(QString(QStringLiteral("KeySheetKeylockAdjust") + suffix)).toDouble();
             continue;
         }
-        // The track it applied to is gone (a restart): key lock goes back,
-        // as for the next track.
-        restoreKeylock(deck, 0);
+        // A stale record (teardown never ran: a crash or a power cut): key
+        // lock is off, or the track is another one. The record goes, and key
+        // lock is left as it is: it may be the DJ's own.
+        m_keylockBySheet[deck - 1] = false;
+        m_keylockTrack[deck - 1].reset();
+        saveKeylockOwner(deck);
     }
+}
+
+void DeckLabDeckTools::handBackKeylocks() {
+    for (int deck = 1; deck <= 4; ++deck) {
+        if (!m_keylockBySheet[deck - 1]) {
+            continue;
+        }
+        if (m_host.read(deck, QStringLiteral("keylock")) > 0) {
+            restoreKeylock(deck, m_keylockAdjust[deck - 1]);
+        } else {
+            forgetKeylock(deck);
+        }
+    }
+    m_pitchPending.fill(false);
 }
 
 bool DeckLabDeckTools::keylockBySheet(int deck) const {

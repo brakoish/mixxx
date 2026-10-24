@@ -132,6 +132,12 @@ class DeckLabDeckTools final : public QObject {
     // Key lock was turned on by the sheet (RESET or the next track turns it
     // back off).
     bool keylockBySheet(int deck) const;
+    // Teardown (the surface's destructor, while its controls still exist and
+    // before Mixxx saves key lock): every key lock the sheet turned on goes
+    // back, the pitch restored the same way as RESET, and the saved records
+    // are cleared. A build without the sheet (a rollback) never inherits a
+    // deck stuck on key lock.
+    void handBackKeylocks();
 
   private:
     struct Match {

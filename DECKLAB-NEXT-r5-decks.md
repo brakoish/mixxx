@@ -48,9 +48,12 @@ heights and its two- and four-deck layouts stay as round 4 left them.
     it never passes through the track's key, under either unlock preference.
   - **Key lock:** MATCH and ±1 turn it on (a key set by hand stays put when the tempo moves). Mixxx saves key lock,
     so the sheet records that it turned it on, in `[DeckLab] KeySheetKeylockN` with the track and the pre-sheet
-    adjust: RESET or the next track gives it back, and so does the next start if that track is gone (a skin rebuild
-    with the track still loaded keeps it the sheet's). The DJ's own key lock is never turned off, and any off-on
-    toggle in between (sheet, MORE or a controller) makes it the DJ's (all tested, the restart too).
+    adjust: RESET or the next track gives it back, and so does the surface's teardown (quitting, a skin change),
+    before Mixxx saves key lock, with the pitch restored the same no-snap way as RESET and the record cleared. A
+    rollback to a build without the sheet never inherits a key-locked deck. On the next start a stale record (a
+    crash: key lock off, or another track) is dropped and key lock left as it is; key lock still on with the same
+    track stays the sheet's. The DJ's own key lock is never turned off, and any off-on toggle in between (sheet,
+    MORE or a controller) makes it the DJ's (all tested, the teardown and stale records too).
   - MATCH's deck is Mixxx's `EngineSync::pickNonSyncSyncTarget` choice: the sync leader, else a playing synced deck,
     else a playing deck, else a loaded one (tested with several decks).
 - **The result shows:** after MATCH the key and its shift turn the match green (#2FD27A) inside a green outline (a
@@ -200,6 +203,9 @@ New suites (in the lock's `test_suites`), `src/test/decklabdecktoolstest.cpp`:
 - `KeySheetStepsKeepTheHeardPitchAndGiveKeyLockBack`: the pitch recorder at +8%, −8%, pitch_adjust +0.5, beyond
   ±5 st and a sync follower; RESET under KeepLockedKey; the DJ's own key lock kept through RESET and the next
   track; an off-on toggle hands it to the DJ; a restart (a fresh surface reading the saved record) gives it back.
+- `KeySheetHandsKeyLockBackAtTeardownAndDropsStaleRecords`: the surface torn down after +1 at +8% leaves key lock
+  off at the heard pitch with no snap and the record cleared; stale records (key lock off; another track with key
+  lock on) are dropped without touching key lock; the same track with key lock on stays the sheet's.
 - `KeySheetAndGridFollowTheKnobOwnerAsTheControllerSendsIt`: one sheet at a time; a MORE popup hides the cursor and
   the returning knob reveals first; the held press and push-turn through the controller's controls, for the sheet
   and GRID; GRID's lamps and legend follow a MORE popup with every deck paused.
@@ -247,6 +253,7 @@ New suites (in the lock's `test_suites`), `src/test/decklabdecktoolstest.cpp`:
 - Not touched: `kStyle`, Browse, History, the setup wizard, the controller list, the LaunchImage.
 
 - `eventFilter()`: `decklab::noteKnobOwnerChanged()` beside `scheduleKnobLegend()` (menus and dialogs).
+- `~WDeckLab()`: `m_deckTools->handBackKeylocks()` first, while the controls still exist.
 - The host block also passes `epoch`, `setting` and `setSetting` (`[DeckLab]` config).
 
 **`src/widget/wdecklab.h`:** `class DeckLabDeckTools;`, `m_deckTools`, a comment on `showBeatgrid`.
