@@ -82,6 +82,11 @@ DeckLabDeckTools::DeckLabDeckTools(Host host, QGridLayout* deckGrid, QObject* pa
     }
     // Key lock the sheet turned on before a restart or a skin rebuild.
     restoreSavedKeylocks();
+    // A real quit hands it back; a skin rebuild (only this object goes)
+    // does not.
+    if (QCoreApplication* app = QCoreApplication::instance()) {
+        connect(app, &QCoreApplication::aboutToQuit, this, &DeckLabDeckTools::applicationQuitting);
+    }
 }
 
 DeckLabDeckTools::~DeckLabDeckTools() = default;
@@ -227,6 +232,8 @@ void DeckLabDeckTools::saveKeylockOwner(int deck) {
             owned ? trackKey(m_keylockTrack[deck - 1].lock()) : QString());
     m_host.setSetting(QString(QStringLiteral("KeySheetKeylockAdjust") + suffix),
             owned ? QString::number(m_keylockAdjust[deck - 1], 'g', 10) : QString());
+    // Version 2: written by a build that hands key lock back when it quits.
+    m_host.setSetting(QString(QStringLiteral("KeySheetKeylockVersion") + suffix), owned ? QStringLiteral("2") : QString());
 }
 
 void DeckLabDeckTools::restoreSavedKeylocks() {
@@ -248,13 +255,31 @@ void DeckLabDeckTools::restoreSavedKeylocks() {
             m_keylockAdjust[deck - 1] = m_host.setting(QString(QStringLiteral("KeySheetKeylockAdjust") + suffix)).toDouble();
             continue;
         }
-        // A stale record (teardown never ran: a crash or a power cut): key
-        // lock is off, or the track is another one. The record goes, and key
-        // lock is left as it is: it may be the DJ's own.
+        // A stale record: key lock is off, or another track is on the deck.
+        // - Key lock off: nothing to give back.
+        // - Written by an earlier round-5 build (no version): those builds
+        //   never handed key lock back when they quit, and promised to on
+        //   their next start; with key lock still on, this start keeps that
+        //   promise (the pitch restored as RESET does).
+        // - Written by this build (version 2): it hands back on every quit,
+        //   so such a record can only have reached disk through a config
+        //   save mid-session followed by an unclean end, and a later build
+        //   may have run since: key lock may be the DJ's now, so it stays.
+        const bool older = m_host.setting(QString(QStringLiteral("KeySheetKeylockVersion") + suffix)).isEmpty();
+        if (older && m_host.read(deck, QStringLiteral("keylock")) > 0) {
+            m_keylockBySheet[deck - 1] = true;
+            m_keylockTrack[deck - 1] = track;
+            restoreKeylock(deck, 0);
+            continue;
+        }
         m_keylockBySheet[deck - 1] = false;
         m_keylockTrack[deck - 1].reset();
         saveKeylockOwner(deck);
     }
+}
+
+void DeckLabDeckTools::applicationQuitting() {
+    handBackKeylocks();
 }
 
 void DeckLabDeckTools::handBackKeylocks() {

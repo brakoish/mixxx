@@ -132,12 +132,16 @@ class DeckLabDeckTools final : public QObject {
     // Key lock was turned on by the sheet (RESET or the next track turns it
     // back off).
     bool keylockBySheet(int deck) const;
-    // Teardown (the surface's destructor, while its controls still exist and
-    // before Mixxx saves key lock): every key lock the sheet turned on goes
-    // back, the pitch restored the same way as RESET, and the saved records
-    // are cleared. A build without the sheet (a rollback) never inherits a
-    // deck stuck on key lock.
+    // Every key lock the sheet turned on goes back, the pitch restored the
+    // same way as RESET, and the saved records are cleared.
     void handBackKeylocks();
+    // The application is quitting (QCoreApplication::aboutToQuit: the event
+    // loop is done, the engine and its controls still exist, Mixxx has not
+    // saved key lock yet): hand key lock back, so a build without the sheet
+    // (a rollback) never inherits a key-locked deck. A skin rebuild is not a
+    // quit: the audio runs on, so the sheet keeps ownership and the next
+    // surface takes it over (same track, key lock still on).
+    void applicationQuitting();
 
   private:
     struct Match {

@@ -1049,9 +1049,6 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
 }
 
 WDeckLab::~WDeckLab() {
-    // r5-decks: key lock the key sheet turned on goes back while the controls
-    // still exist, before Mixxx saves key lock (a rollback never inherits it).
-    if (m_deckTools) m_deckTools->handBackKeylocks();
     m_fxTimer.stop();
     m_meterTimer.stop();
     qApp->removeEventFilter(this);

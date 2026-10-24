@@ -2713,20 +2713,26 @@ TEST_F(NativeDeckLabTest, KeySheetStepsKeepTheHeardPitchAndGiveKeyLockBack) {
     for(int deck=1;deck<=4;++deck) EXPECT_DOUBLE_EQ(0,get(deck,"play"));
 }
 
-// r5-decks: key lock the sheet turned on goes back when the surface is torn
-// down (before Mixxx saves key lock), the pitch restored as RESET does, so
-// a build without the sheet never inherits it. On the next start a stale
-// record (key lock off, or another track) is dropped without touching key
-// lock; key lock still on with the same track stays the sheet's.
-TEST_F(NativeDeckLabTest, KeySheetHandsKeyLockBackAtTeardownAndDropsStaleRecords) {
-    loadGenerated(1,126,mixxx::track::io::key::A_MINOR);
+// r5-decks: a skin rebuild keeps a playing deck's pitch and the key lock
+// the sheet turned on (the audio runs on; the next surface takes it over),
+// and only a real quit hands key lock back, the pitch restored as RESET
+// does, so a build without the sheet never inherits it. On the next start a
+// stale record goes: key lock off, or a record of this build for another
+// track, leave key lock alone (it may be the DJ's); a record from an
+// earlier round-5 build, which never handed back at quit, is kept to its
+// promise and handed back.
+TEST_F(NativeDeckLabTest, KeySheetKeepsKeyLockThroughASkinRebuildAndHandsItBackAtQuit) {
+    auto track=Track::newTemporary(getTestDir().filePath(QStringLiteral("sine-30.wav")));
+    loadTrack(m_pMixerDeck1.get(),track); ASSERT_TRUE(track->trySetBpm(126));
+    track->setKey(mixxx::track::io::key::A_MINOR,mixxx::track::io::key::USER);
+    ASSERT_FALSE(track->getLocation().isEmpty());
     loadGenerated(2,128,mixxx::track::io::key::B_FLAT_MINOR); ProcessBuffer(); QTest::qWait(150); settle();
     const auto get=[](int deck,const char* item) { return ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck),item)); };
     const auto put=[](int deck,const char* item,double v) { ControlObject::set(ConfigKey(QStringLiteral("[Channel%1]").arg(deck),item),v); };
     const auto record=[this](const char* item) { return config()->getValueString(ConfigKey("[DeckLab]",QString::fromLatin1(item))); };
     const auto setRecord=[this](const char* item,const QString& value) { config()->set(ConfigKey("[DeckLab]",QString::fromLatin1(item)),ConfigValue(value)); };
-    // +8% with key lock off, then +1 from the sheet: key lock is the sheet's.
-    put(1,"keylock",0); put(1,"rateRange",.08); put(1,"rate",1); ProcessBuffer(); settle();
+    // Deck 1 plays at +8% with key lock off; +1 from the sheet.
+    put(1,"keylock",0); put(1,"rateRange",.08); put(1,"rate",1); put(1,"play",1); ProcessBuffer(); settle();
     const double heard=get(1,"pitch");
     ASSERT_GT(std::abs(heard),1.0);
     auto* tools=panel->findChild<DeckLabDeckTools*>("decklab-deck-tools"); ASSERT_NE(nullptr,tools);
@@ -2735,27 +2741,43 @@ TEST_F(NativeDeckLabTest, KeySheetHandsKeyLockBackAtTeardownAndDropsStaleRecords
     QTest::mouseClick(sheet->key(DeckLabKeySheet::Action::Up),Qt::LeftButton); settle();
     ASSERT_DOUBLE_EQ(1,get(1,"keylock")); ASSERT_NEAR(heard+1,get(1,"pitch"),.02);
     ASSERT_EQ(QStringLiteral("1"),record("KeySheetKeylock1"));
-    // Teardown (the app quitting, a skin change): key lock back, the deck at
-    // the pitch it had, the record cleared.
+    EXPECT_EQ(QStringLiteral("2"),record("KeySheetKeylockVersion1"));
+    // A skin rebuild: the surface goes while the deck plays on. Its pitch and
+    // key lock stay, and so does the record.
     QList<double> seen;
     ControlProxy recorder("[Channel1]","pitch");
     recorder.connectValueChanged(&recorder,[&seen](double v) { seen << v; },Qt::DirectConnection);
     panel.reset();
-    EXPECT_DOUBLE_EQ(0,get(1,"keylock")) << "handed back at teardown";
-    EXPECT_NEAR(heard,get(1,"pitch"),.02) << "at the pitch it played before the sheet";
+    EXPECT_TRUE(seen.isEmpty()) << "a rebuild never moves a playing deck's pitch";
+    EXPECT_DOUBLE_EQ(1,get(1,"keylock"));
+    EXPECT_NEAR(heard+1,get(1,"pitch"),.02);
+    EXPECT_EQ(QStringLiteral("1"),record("KeySheetKeylock1"));
+    // The rebuilt surface takes the ownership over: same track, key lock on.
+    panel=std::make_unique<WDeckLab>(config(),nullptr,players.get(),m_pEffectsManager.get());
+    QCoreApplication::processEvents();
+    tools=panel->findChild<DeckLabDeckTools*>("decklab-deck-tools"); ASSERT_NE(nullptr,tools);
+    EXPECT_TRUE(tools->keylockBySheet(1)) << "still the sheet's after the rebuild";
+    EXPECT_DOUBLE_EQ(1,get(1,"keylock"));
+    EXPECT_TRUE(seen.isEmpty());
+    // The real quit (QCoreApplication::aboutToQuit): key lock back, the deck
+    // at the pitch it played before the sheet, with no snap, the record gone.
+    tools->applicationQuitting();
+    EXPECT_DOUBLE_EQ(0,get(1,"keylock")) << "handed back at quit";
+    EXPECT_NEAR(heard,get(1,"pitch"),.02);
     for(double v:std::as_const(seen)) {
         EXPECT_TRUE(std::abs(v-heard)<.02 || std::abs(v-heard-1)<.02) << "no snap on the way: " << v;
     }
-    EXPECT_EQ(QStringLiteral("0"),record("KeySheetKeylock1")) << "the record is cleared";
-    put(1,"rate",0); ProcessBuffer();
+    EXPECT_EQ(QStringLiteral("0"),record("KeySheetKeylock1"));
+    put(1,"play",0); put(1,"rate",0); ProcessBuffer();
     DeckLabDeckTools::Host host;
     host.read=[](int deck,const QString& item) { return ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck),item)); };
     host.write=[](int deck,const QString& item,double v) { ControlObject::set(ConfigKey(QStringLiteral("[Channel%1]").arg(deck),item),v); };
     host.track=[this](int deck) { return deckPlayer(deck)->getLoadedTrack(); };
     host.setting=[this](const QString& item) { return config()->getValueString(ConfigKey("[DeckLab]",item)); };
     host.setSetting=[this](const QString& item,const QString& value) { config()->set(ConfigKey("[DeckLab]",item),ConfigValue(value)); };
-    // A stale record with key lock off: dropped.
+    // Stale: key lock off. Dropped.
     setRecord("KeySheetKeylock1",QStringLiteral("1")); setRecord("KeySheetKeylockTrack1",QStringLiteral("gone.wav"));
+    setRecord("KeySheetKeylockVersion1",QStringLiteral("2"));
     put(1,"keylock",0);
     {
         DeckLabDeckTools next(host,nullptr);
@@ -2763,31 +2785,26 @@ TEST_F(NativeDeckLabTest, KeySheetHandsKeyLockBackAtTeardownAndDropsStaleRecords
         EXPECT_DOUBLE_EQ(0,get(1,"keylock"));
         EXPECT_FALSE(next.keylockBySheet(1));
     }
-    // A stale record for another track while key lock is on (the DJ's, say,
-    // from a build without the sheet): dropped, key lock left on.
+    // Stale, this build's, another track, key lock on: dropped, key lock left on.
     setRecord("KeySheetKeylock1",QStringLiteral("1")); setRecord("KeySheetKeylockTrack1",QStringLiteral("gone.wav"));
+    setRecord("KeySheetKeylockVersion1",QStringLiteral("2"));
     put(1,"keylock",1);
     {
         DeckLabDeckTools next(host,nullptr);
         EXPECT_EQ(QStringLiteral("0"),record("KeySheetKeylock1"));
-        EXPECT_DOUBLE_EQ(1,get(1,"keylock")) << "the DJ's key lock is never turned off";
+        EXPECT_DOUBLE_EQ(1,get(1,"keylock")) << "it may be the DJ's now";
         EXPECT_FALSE(next.keylockBySheet(1));
     }
-    // Key lock on with the very same track still loaded: still the sheet's.
-    auto same=Track::newTemporary(getTestDir().filePath(QStringLiteral("sine-30.wav")));
-    loadTrack(m_pMixerDeck1.get(),same); ProcessBuffer();
-    ASSERT_FALSE(same->getLocation().isEmpty());
+    // Stale, from an earlier round-5 build (no version; it never handed back
+    // at quit), another track, key lock on: handed back, as it promised.
+    setRecord("KeySheetKeylock1",QStringLiteral("1")); setRecord("KeySheetKeylockTrack1",QStringLiteral("gone.wav"));
+    setRecord("KeySheetKeylockVersion1",QString()); setRecord("KeySheetKeylockAdjust1",QStringLiteral("0"));
     put(1,"keylock",1);
-    setRecord("KeySheetKeylock1",QStringLiteral("1")); setRecord("KeySheetKeylockTrack1",same->getLocation());
-    setRecord("KeySheetKeylockAdjust1",QStringLiteral("0"));
     {
         DeckLabDeckTools next(host,nullptr);
-        EXPECT_TRUE(next.keylockBySheet(1));
-        EXPECT_DOUBLE_EQ(1,get(1,"keylock"));
-        EXPECT_EQ(QStringLiteral("1"),record("KeySheetKeylock1"));
-        next.handBackKeylocks();
-        EXPECT_DOUBLE_EQ(0,get(1,"keylock")) << "and its teardown hands it back";
+        EXPECT_DOUBLE_EQ(0,get(1,"keylock")) << "an earlier build's key lock goes back";
         EXPECT_EQ(QStringLiteral("0"),record("KeySheetKeylock1"));
+        EXPECT_FALSE(next.keylockBySheet(1));
     }
     for(int deck=1;deck<=4;++deck) EXPECT_DOUBLE_EQ(0,get(deck,"play"));
 }
