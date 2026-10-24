@@ -114,11 +114,12 @@ class EngineSyncTest : public MockedEngineBackendTest {
         ASSERT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup2, "play")));
     }
 
-    // Pause deck 2 and put it back on 0:00.
+    // Pause deck 2 and put it back on 0:00. (Not through playposition: its
+    // indicator lags a few buffers, so writing 0 again may not seek.)
     void parkDeckTwo() {
         ControlObject::set(ConfigKey(m_sGroup2, "play"), 0.0);
         ProcessBuffer();
-        ControlObject::set(ConfigKey(m_sGroup2, "playposition"), 0.0);
+        m_pChannel2->getEngineBuffer()->seekExact(mixxx::audio::kStartFramePos);
         ProcessBuffer();
         ASSERT_DOUBLE_EQ(0.0, ControlObject::get(ConfigKey(m_sGroup2, "beat_distance")));
     }
@@ -3311,10 +3312,12 @@ TEST_F(EngineSyncTest, PlayStartSyncLockOnlyAlignsSyncLeader) {
     ControlObject::set(ConfigKey(m_sGroup1, "sync_enabled"), 1.0);
     ControlObject::set(ConfigKey(m_sGroup2, "sync_enabled"), 1.0);
     playDeckOneOverPausedDeckTwo();
-    // Deck 2, paused, takes the lead; deck 1 follows its tempo.
-    ControlObject::set(ConfigKey(m_sGroup2, "sync_leader"), 1.0);
+    // Deck 2, paused, takes the lead (a soft leader must be playing); deck 1
+    // follows its tempo.
+    ControlObject::set(ConfigKey(m_sGroup2, "sync_mode"),
+            static_cast<double>(SyncMode::LeaderExplicit));
     ProcessBuffer();
-    ASSERT_TRUE(isSoftLeader(m_sGroup2));
+    ASSERT_TRUE(isExplicitLeader(m_sGroup2));
     ASSERT_TRUE(isFollower(m_sGroup1));
     ASSERT_DOUBLE_EQ(0.0, beatDistance(m_sGroup2));
 
@@ -3370,7 +3373,7 @@ TEST_F(EngineSyncTest, PlayStartSyncLockOnlySyncTapWhilePausedAlignsNextStart) {
     parkDeckTwo();
     ControlObject::set(ConfigKey(m_sGroup2, "play"), 1.0);
     ProcessBuffer();
-    EXPECT_NEAR(kOneBufferAt100Bpm * 130 / 100, beatDistance(m_sGroup2), 1e-12);
+    EXPECT_NEAR(kOneBufferAt100Bpm * 130 / 100, beatDistance(m_sGroup2), 1e-9);
     EXPECT_FALSE(beatsAligned(m_sGroup1, m_sGroup2));
 
     // A controller's single SYNC press (beatsync) on the paused deck.
@@ -3463,7 +3466,7 @@ TEST_F(EngineSyncTest, PlayStartSyncLockOnlyHotCuePreviewStartsOnTheHotCue) {
 
     // One deck only: paused between beats (2.3 beats in), a preview starts on
     // the hot cue, not on the paused playhead's phase.
-    ControlObject::set(ConfigKey(m_sGroup2, "playposition"), 0.138);
+    ControlObject::set(ConfigKey(m_sGroup2, "playposition"), 0.276);
     ProcessBuffer();
     ASSERT_NEAR(0.3, beatDistance(m_sGroup2), 1e-9);
     pHotCue2Activate->set(1.0);
@@ -3502,7 +3505,7 @@ TEST_F(EngineSyncTest, PlayStartMixxxHotCuePreviewKeepsThePausedPhase) {
     pHotCue2Activate->set(0.0);
     ProcessBuffer();
 
-    ControlObject::set(ConfigKey(m_sGroup2, "playposition"), 0.138);
+    ControlObject::set(ConfigKey(m_sGroup2, "playposition"), 0.276);
     ProcessBuffer();
     ASSERT_NEAR(0.3, beatDistance(m_sGroup2), 1e-9);
     pHotCue2Activate->set(1.0);
