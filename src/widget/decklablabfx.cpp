@@ -1138,7 +1138,8 @@ void DeckLabLabFx::paintEvent(QPaintEvent*) {
 
 // Fixed geometry, computed once per resize: 800x436 below the rail on the
 // 7" screen, also 1024x556; r4-waveforms: 800x270 and 1024x330 under the
-// compact waveform lanes.
+// compact waveform lanes. r6-fxstrip: all six target slots are always
+// reserved; keys 3 and 4 of the 2-deck layout hide in place (syncKeys).
 void DeckLabLabFx::layoutChildren() {
     const int w = width(), h = height();
     const int margin = 6, gap = 6;
@@ -1337,7 +1338,8 @@ double DeckLabLabFx::referenceBpm(int target) const {
 }
 
 bool DeckLabLabFx::targetLoaded(int target) const {
-    if (!m_host.value) {
+    // r6-fxstrip: no target, no reads (never the sampler scan below).
+    if (!m_host.value || target < 1 || target > kSampler) {
         return false;
     }
     if (target >= 1 && target <= 4) {
@@ -1356,6 +1358,34 @@ bool DeckLabLabFx::targetLoaded(int target) const {
         }
     }
     return false;
+}
+
+bool DeckLabLabFx::deckSounding(int deck) const {
+    // The voice's unit counts too: engage() enables and routes it. MASTER
+    // has its own key, so only a deck route counts here.
+    for (const Unit& unit : m_units) {
+        if (unit.enabled && unit.target == deck) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool DeckLabLabFx::targetShown(int target) const {
+    if (target >= 1 && target <= 4) {
+        return m_deckKeyShown[target - 1];
+    }
+    return target == kMaster || target == kSampler;
+}
+
+void DeckLabLabFx::setDeckLayout(int decks) {
+    decks = decks == 2 ? 2 : 4;
+    if (decks == m_deckLayout) {
+        return;
+    }
+    // Only the keys change: the target, the voice and any tail stay put.
+    m_deckLayout = decks;
+    syncKeys();
 }
 
 bool DeckLabLabFx::available() const {
@@ -2014,8 +2044,23 @@ void DeckLabLabFx::syncKeys() {
     m_beatLeft->setActive(beat && beatIndex() > 0);
     m_beatRight->setActive(beat && beatIndex() < kBeats - 1);
     for (int n = 0; n < 6; ++n) {
-        m_targets[n]->setSelected(m_target == n + 1);
-        m_targets[n]->setDim(!targetLoaded(n + 1));
+        const int target = n + 1;
+        const bool loaded = targetLoaded(target);
+        // r6-fxstrip: in the 2-deck layout keys 3 and 4 come and go in their
+        // reserved slots. The target and a deck with an effect sounding or
+        // ringing out always keep their key; a hidden key reads only its
+        // deck's track_loaded (what brings it back) and never repaints.
+        const bool shown = n < 2 || n >= 4 || m_deckLayout == 4 || loaded || m_target == target ||
+                deckSounding(target);
+        if (n < 4 && shown != m_deckKeyShown[n]) {
+            m_deckKeyShown[n] = shown;
+            m_targets[n]->setVisible(shown);
+        }
+        if (!shown) {
+            continue;
+        }
+        m_targets[n]->setSelected(m_target == target);
+        m_targets[n]->setDim(!loaded);
     }
     const bool bands = usesBands(m_effect);
     for (int n = 0; n < 3; ++n) {

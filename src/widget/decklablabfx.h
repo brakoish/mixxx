@@ -6,7 +6,8 @@
 // Pioneer beat-FX model, with Teenage Engineering punch-in feel:
 // - effect select (six tiles), beat ◀▶ with the value shown (a strip of
 //   cells over the pad), channel select (decks 1-4 in deck colours, MASTER,
-//   SMP for the samplers) and a lit ON key;
+//   SMP for the samplers; r6-fxstrip: the 2-deck layout offers decks 3 and
+//   4 only while they are in use, see setDeckLayout) and a lit ON key;
 // - an X-PAD style XY pad: touch-down = on, lift = the effect's musical
 //   return, double-tap = latch; no time limit while a finger is down;
 // - LOW / MID / HIGH band lamps choose which bands get the effect;
@@ -121,6 +122,17 @@ class DeckLabLabFx final : public QWidget {
     bool lanesShown() const {
         return m_lanesShown;
     }
+    // r6-fxstrip: the surface's deck layout, 2 or 4 (the default). With two
+    // decks, keys 1 and 2 always show; keys 3 and 4 only while their deck is
+    // loaded, is the target, or still has an effect sounding or ringing out.
+    // Their slots stay reserved, so MASTER, SMP, ON and the readout never
+    // move. Nothing is ever retargeted: the target keeps its key.
+    void setDeckLayout(int decks);
+    int deckLayout() const {
+        return m_deckLayout;
+    }
+    // Whether the key for this target is offered (1-4 decks, MASTER, SMP).
+    bool targetShown(int target) const;
 
     Effect effect() const {
         return m_effect;
@@ -199,6 +211,7 @@ class DeckLabLabFx final : public QWidget {
     int referenceDeck(int target) const;
     double referenceBpm(int target) const;
     bool targetLoaded(int target) const;
+    bool deckSounding(int deck) const; // r6-fxstrip: wet or ringing out there
     bool usesBeat(Effect effect) const;
     bool usesBands(Effect effect) const;
     int columnAt(double x) const;
@@ -241,6 +254,10 @@ class DeckLabLabFx final : public QWidget {
     bool m_available = false;
     bool m_ready = false;
     bool m_lanesShown = false; // r4-waveforms
+    // r6-fxstrip: the deck layout and which deck keys it offers now. An
+    // explicit model: the layout often changes while the page is hidden.
+    int m_deckLayout = 4;
+    std::array<bool, 4> m_deckKeyShown{true, true, true, true};
     // What the header readout last showed: effect, beat, target, loaded, BPM x10.
     std::array<int, 5> m_header{-1, -1, -1, -1, -1};
 
