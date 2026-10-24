@@ -37,6 +37,7 @@
 #include "library/decklabknob.h"
 #include "library/coverartutils.h"
 #include "library/library.h"
+#include "library/librarytablemodel.h" // r5-fix2-history
 #include "library/sidebarmodel.h"
 #include "library/dao/playlistdao.h" // r5-history
 #include "library/playlisttablemodel.h" // r5-history
@@ -503,6 +504,24 @@ struct BrowseCapture {
     std::function<bool()> action;
 };
 
+// r5-fix2-history: in native mode a load from the selection takes only the
+// track Browse highlights, so the demo loads go through the Library's track
+// list (from wherever Browse was left).
+bool openLibraryTracks(WDeckLab* surface) {
+    surface->selectPage(1);
+    for (int level = 0; level < 4 && !selectListItem(surface, QStringLiteral("Library")); ++level) {
+        surface->browseBack();
+        QCoreApplication::processEvents();
+    }
+    if (!selectListItem(surface, QStringLiteral("Library"))) return false;
+    surface->browsePress();
+    QCoreApplication::processEvents();
+    if (!selectListItem(surface, decklab::categoryName(decklab::Category::AllTracks))) return false;
+    surface->browsePress();
+    QCoreApplication::processEvents();
+    return true;
+}
+
 // r4-sampler: the Sampler page with generated demo samples loaded (never
 // played) and its edit sheet open. Like the Browse captures they reuse the
 // surface checks and do not change the reported screen count.
@@ -511,7 +530,7 @@ void captureSampler(WDeckLab* surface, const QString& output, const std::functio
     auto captures = std::make_shared<QList<BrowseCapture>>(QList<BrowseCapture>{
             {QString(), 900, [surface] {
                  // Browse shows the demo collection: load three pads from it.
-                 surface->selectPage(1);
+                 if (!openLibraryTracks(surface)) return false;
                  bool loaded = true;
                  for (const auto& [sampler, title] : {std::pair{1, "Signal Fire"}, std::pair{2, "Glass Garden"},
                               std::pair{5, "Spiral Steps"}}) {
@@ -572,7 +591,7 @@ void captureDeckTools(WDeckLab* surface, const QString& output, const std::funct
     auto captures = std::make_shared<QList<BrowseCapture>>(QList<BrowseCapture>{
             {QString(), 900, [surface] {
                  // Deck 2 gets a second demo track (never played).
-                 surface->selectPage(1);
+                 if (!openLibraryTracks(surface)) return false;
                  if (!selectTrack(surface, QStringLiteral("Concrete Bloom"))) return false;
                  ControlObject::set(ConfigKey("[Channel2]", "LoadSelectedTrack"), 1);
                  ControlObject::set(ConfigKey("[Channel2]", "LoadSelectedTrack"), 0);
@@ -910,6 +929,15 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                              if (ControlObject::get(ConfigKey(QStringLiteral("[DeckLabNative]"), QStringLiteral("track_level"))) != 1)
                                  failures->append(QStringLiteral("History track row does not report track_level"));
                              const int wanted = item ? item->data(decklab::history::TrackIdRole).toInt() : -1;
+                             // r5-fix2-history: a table Mixxx swaps in under the row (a
+                             // stick read finishing): track_level drops at once and the
+                             // selection goes; the LOAD below then settles the row first
+                             // and loads exactly it.
+                             if (Library* mixxx = surface->library()) emit mixxx->showTrackModel(mixxx->trackTableModel());
+                             if (ControlObject::get(ConfigKey(QStringLiteral("[DeckLabNative]"), QStringLiteral("track_level"))) != 0)
+                                 failures->append(QStringLiteral("A table swapped in under a History row keeps track_level"));
+                             if (table && table->selectionModel() && !table->selectionModel()->selectedRows().isEmpty())
+                                 failures->append(QStringLiteral("A table swapped in under a History row keeps a selection"));
                              ControlObject::set(ConfigKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("LoadSelectedTrack")), 1);
                              ControlObject::set(ConfigKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("LoadSelectedTrack")), 0);
                              QTimer::singleShot(700, surface, [surface, failures, wanted] {
@@ -923,11 +951,18 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                          });
                          return true;
                      }},
-                    {"history-marks", 900, [surface] {
+                    {"history-marks", 900, [surface, failures] {
                          // Played marks in a track list: this set's rows dim with
                          // a check, last night's carry a quieter ring.
                          surface->browseBack();
                          surface->browseBack();
+                         // r5-fix2-history: the home highlights no track: nothing is
+                         // selected under it, and a controller's LOAD stays blocked.
+                         auto* tracks = surface->findChild<WLibrary*>() ? surface->findChild<WLibrary*>()->getCurrentTrackTableView() : nullptr;
+                         if (ControlObject::get(ConfigKey(QStringLiteral("[DeckLabNative]"), QStringLiteral("track_level"))) != 0)
+                             failures->append(QStringLiteral("The home reports track_level"));
+                         if (tracks && tracks->selectionModel() && !tracks->selectionModel()->selectedRows().isEmpty())
+                             failures->append(QStringLiteral("A selection stays under the home"));
                          if (!selectListItem(surface, QStringLiteral("Library"))) return false;
                          surface->browsePress();
                          if (!selectListItem(surface, decklab::categoryName(decklab::Category::AllTracks))) return false;

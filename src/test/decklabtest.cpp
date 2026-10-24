@@ -5095,6 +5095,9 @@ TEST_F(NativeDeckLabTest, NewSetHoldStartsAnotherHistorySetAndKeepsTheLastOne) {
 // The Numark and SB2 overlays send browse_hold 1 on press and 0 on release,
 // then a release press unless the knob turned; a held turn arrives eight
 // times over; Shift+press sends Back (Numark on release, SB2 at once).
+// r5-fix2-history: the Numark latches Shift as the knob goes down (no
+// browse_hold then); a sheet taking the knob calls an armed press off; a turn
+// LibraryControl sets lands at once, before any later press.
 TEST_F(NativeDeckLabTest, NewSetKnobFollowsTheControllersRealSequences) {
     GeneratedSets* sets = installGeneratedSets(model.get(), config(), panel.get());
     panel->selectPage(1); QCoreApplication::processEvents(); settle();
@@ -5124,8 +5127,11 @@ TEST_F(NativeDeckLabTest, NewSetKnobFollowsTheControllersRealSequences) {
         QCoreApplication::processEvents(); settle();
     };
     const int full = decklab::ui::HoldButton::kHoldMs + 250;
-    // The sets list is not a track: a controller's LOAD stays blocked.
+    // The sets list is not a track: a controller's LOAD stays blocked, and
+    // LibraryControl's load-time check says so too.
     EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[DeckLabNative]", "track_level")));
+    ASSERT_TRUE(decklab::nativeLoadGuard());
+    EXPECT_FALSE(decklab::nativeLoadGuard()());
     // A push-turn from "New set": held, turned (x8), let go with no press.
     toNewSet();
     hold(1);
@@ -5143,6 +5149,23 @@ TEST_F(NativeDeckLabTest, NewSetKnobFollowsTheControllersRealSequences) {
     knob("browse_back");
     EXPECT_EQ(0, sets->newSets);
     EXPECT_EQ(QStringList{QStringLiteral("Sources")}, crumbs());
+    // The Numark with Shift latched at press-down: no browse_hold, Back on
+    // release (even when Shift lifted first). After a first press armed New
+    // set, that Back calls it off and never completes it.
+    openHistory();
+    toNewSet();
+    hold(1);
+    hold(0);
+    knob("browse_press");
+    EXPECT_TRUE(newSet->armed());
+    hold(0);
+    knob("browse_back");
+    EXPECT_EQ(0, sets->newSets);
+    EXPECT_FALSE(newSet->armed());
+    EXPECT_EQ(QStringList{QStringLiteral("Sources")}, crumbs());
+    // Nor anything on the home: no selection, no controller LOAD.
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[DeckLabNative]", "track_level")));
+    EXPECT_FALSE(decklab::nativeLoadGuard()());
     // SB2 Shift+press: Back at once while held.
     openHistory();
     toNewSet();
@@ -5165,6 +5188,31 @@ TEST_F(NativeDeckLabTest, NewSetKnobFollowsTheControllersRealSequences) {
     QTest::qWait(600);
     EXPECT_EQ(0, sets->newSets);
     EXPECT_FALSE(newSet->holding());
+    // An armed "press twice" ends when a sheet takes the knob: open and close
+    // the status sheet, and the next press arms again, never ends the set.
+    toNewSet();
+    hold(1);
+    hold(0);
+    knob("browse_press");
+    EXPECT_TRUE(newSet->armed());
+    auto* rail = panel->findChild<DeckLabRail*>(); ASSERT_NE(nullptr, rail);
+    QPointer<DeckLabStatusSheet> sheet = rail->openSheet(); ASSERT_TRUE(sheet);
+    QCoreApplication::processEvents(); QCoreApplication::processEvents();
+    EXPECT_FALSE(newSet->armed());
+    sheet->hide();
+    QCoreApplication::processEvents(); QCoreApplication::processEvents();
+    hold(1);
+    hold(0);
+    knob("browse_press");
+    EXPECT_EQ(0, sets->newSets);
+    EXPECT_EQ(QStringList{QStringLiteral("History")}, crumbs());
+    // A turn LibraryControl sets runs at once (no event loop in between), so a
+    // press the controller sent after it acts on the row the turn reached.
+    EXPECT_TRUE(newSet->armed());
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_select"), -1);
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_select"), 0);
+    EXPECT_EQ(0, list->currentRow());
+    EXPECT_FALSE(newSet->armed());
     // The Numark's "press twice": (hold 1, hold 0, press) twice.
     toNewSet();
     for (int press = 0; press < 2; ++press) {

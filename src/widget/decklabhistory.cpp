@@ -5,15 +5,23 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLocale>
 #include <QObject>
 #include <QSqlDatabase>
 #include <QSqlError>
+#include <QSaveFile>
 #include <QSqlQuery>
 #include <QStringList>
 #include <QTimer>
 #include <algorithm>
 #include <initializer_list>
+#ifdef Q_OS_UNIX
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 #include "library/dao/playlistdao.h"
 #include "library/dao/trackdao.h"
@@ -29,6 +37,8 @@ namespace decklab::history {
 
 namespace {
 
+// Round-5 builds before r5-fix2 kept the set starts here; read once, then
+// moved into their own file (setStartsFile).
 const ConfigKey kSetStartsKey(QStringLiteral("[DeckLab]"), QStringLiteral("HistorySetStarts"));
 constexpr qint64 kDaySeconds = 24 * 60 * 60;
 
@@ -80,6 +90,7 @@ class MixxxBackend final : public Backend {
             std::function<int(TrackId)> deckOf)
             : m_collection(collection),
               m_config(std::move(config)),
+              m_file(m_config ? setStartsFile(m_config->getSettingsPath()) : QString()),
               m_startNewSet(std::move(startNewSet)),
               m_deckOf(std::move(deckOf)) {
         // Sets that start or go elsewhere, and tracks taken out of a set, are
@@ -228,34 +239,38 @@ class MixxxBackend final : public Backend {
     }
 
     QVector<int> setStarts() override {
-        if (!m_config) {
+        if (m_file.isEmpty()) {
             return m_starts;
         }
-        QVector<int> starts;
-        const QStringList parts = m_config->getValueString(kSetStartsKey).split(QLatin1Char(','), Qt::SkipEmptyParts);
-        for (const QString& part : parts) {
-            bool ok = false;
-            const int id = part.trimmed().toInt(&ok);
-            if (ok && id >= 0) {
-                starts.append(id);
+        if (const auto starts = readSetStarts(m_file)) {
+            return *starts;
+        }
+        // Once: a round-5 build kept them in the config. Move them into the
+        // file; the config value goes with Mixxx's own next save.
+        QVector<int> legacy;
+        if (m_config && m_config->exists(kSetStartsKey)) {
+            const QStringList parts = m_config->getValueString(kSetStartsKey).split(QLatin1Char(','), Qt::SkipEmptyParts);
+            for (const QString& part : parts) {
+                bool ok = false;
+                const int id = part.trimmed().toInt(&ok);
+                if (ok && id >= 0) {
+                    legacy.append(id);
+                }
+            }
+            if (writeSetStarts(m_file, legacy)) {
+                m_config->remove(kSetStartsKey);
             }
         }
-        return starts;
+        return legacy;
     }
 
     void saveSetStarts(const QVector<int>& starts) override {
         m_starts = starts;
-        if (!m_config) {
-            return;
+        // Their own small file, replaced atomically and synced: never
+        // Mixxx's config save (a power cut during it can empty mixxx.cfg).
+        if (!m_file.isEmpty() && !writeSetStarts(m_file, starts)) {
+            qWarning() << "DeckLab history: could not save the set starts to" << m_file;
         }
-        QStringList parts;
-        for (const int id : starts) {
-            parts << QString::number(id);
-        }
-        m_config->setValue(kSetStartsKey, parts.join(QLatin1Char(',')));
-        // Written now, not when Mixxx next saves: a power cut must not undo
-        // a New set (rare: the first read and each New set).
-        m_config->save();
     }
 
   private:
@@ -379,6 +394,7 @@ class MixxxBackend final : public Backend {
 
     QPointer<TrackCollectionManager> m_collection;
     UserSettingsPointer m_config;
+    QString m_file; // decklab-history-sets.json in the profile
     std::function<bool()> m_startNewSet;
     std::function<int(TrackId)> m_deckOf;
     QVector<int> m_starts; // without settings (tests)
@@ -745,6 +761,70 @@ void Store::notify(const Change& change) {
             listener.callback(change);
         }
     }
+}
+
+QString setStartsFile(const QString& settingsPath) {
+    return settingsPath.isEmpty() ? QString()
+                                  : QDir(settingsPath).filePath(QStringLiteral("decklab-history-sets.json"));
+}
+
+bool writeSetStarts(const QString& path, const QVector<int>& starts) {
+    QJsonArray array;
+    for (const int id : starts) {
+        array.append(id);
+    }
+    QJsonObject root;
+    root.insert(QStringLiteral("version"), 1);
+    root.insert(QStringLiteral("starts"), array);
+    const QByteArray bytes = QJsonDocument(root).toJson(QJsonDocument::Compact);
+    // A new file beside the old one, synced, then renamed over it: the old
+    // starts or the new ones survive a power cut, never an empty file.
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        return false;
+    }
+    if (file.write(bytes) != bytes.size() || !file.flush()) {
+        file.cancelWriting();
+        return false;
+    }
+#ifdef Q_OS_UNIX
+    if (::fsync(file.handle()) != 0) {
+        file.cancelWriting();
+        return false;
+    }
+#endif
+    if (!file.commit()) {
+        return false;
+    }
+#ifdef Q_OS_UNIX
+    // The rename is in the folder: sync it too.
+    const QByteArray folder = QFile::encodeName(QFileInfo(path).absolutePath());
+    const int handle = ::open(folder.constData(), O_RDONLY | O_DIRECTORY);
+    if (handle >= 0) {
+        ::fsync(handle);
+        ::close(handle);
+    }
+#endif
+    return true;
+}
+
+std::optional<QVector<int>> readSetStarts(const QString& path) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return std::nullopt;
+    }
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+    if (!document.isObject()) {
+        return std::nullopt;
+    }
+    QVector<int> starts;
+    const QJsonArray array = document.object().value(QStringLiteral("starts")).toArray();
+    for (const QJsonValue& value : array) {
+        if (value.isDouble() && value.toInt(-1) >= 0) {
+            starts.append(value.toInt());
+        }
+    }
+    return starts;
 }
 
 std::unique_ptr<Backend> makeMixxxBackend(TrackCollectionManager* collection,

@@ -12,8 +12,8 @@
 // A set spans restarts. Mixxx starts a new history playlist on every launch
 // (a controller replug's Restart to detect, Power › Restart app, a crash or a
 // power blip all do), so a set is every history playlist from the one where
-// the DJ last held "New set" on: the set starts are kept in the Deck Lab
-// settings ([DeckLab] HistorySetStarts, history playlist ids, never times).
+// the DJ last held "New set" on: the set starts (history playlist ids, never
+// times) are kept in decklab-history-sets.json in the profile.
 // Playlists from before the first start (older history) stay one set each.
 //
 // Store keeps the played locations of the current set and of earlier sets in
@@ -32,6 +32,7 @@
 #include <QVector>
 #include <functional>
 #include <memory>
+#include <optional>
 
 #include "preferences/usersettings.h"
 #include "proto/keys.pb.h"
@@ -276,6 +277,14 @@ std::unique_ptr<Backend> makeMixxxBackend(TrackCollectionManager* collection,
         UserSettingsPointer config,
         std::function<bool()> startNewSet,
         std::function<int(TrackId)> deckOf = {});
+
+// The set starts live in their own small file in the profile, replaced
+// atomically and synced (the file and its folder), so a power cut right after
+// New set loses neither them nor any other setting.
+QString setStartsFile(const QString& settingsPath);
+bool writeSetStarts(const QString& path, const QVector<int>& starts);
+// nullopt when there is no readable file yet.
+std::optional<QVector<int>> readSetStarts(const QString& path);
 
 // "21:04" (24 h, as on a CDJ).
 QString clockText(const QDateTime& time);
