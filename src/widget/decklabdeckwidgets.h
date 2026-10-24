@@ -17,6 +17,7 @@
 #include "util/fpclassify.h"
 
 class QPainter;
+class QTimer;
 
 // Deck identity colors. Badges, lane edges and the waveform pairing all use
 // the same color so a DJ can match a readout to its waveform at a glance.
@@ -92,6 +93,13 @@ struct DeckLabStripState {
     QString key;
     QColor keyColor;
     int keyMatch = 0; // 1 compatible with the reference deck, -1 not, 0 none
+    // r5-decks: the key shift in semitones from the track's own key
+    // (Mixxx's [ChannelN],pitch), "+1" or "−0.5"; empty when unshifted. The
+    // readout shows "8A +1".
+    QString keyShift;
+    // r5-decks: MATCH (sync_key) set this key and it still matches the deck
+    // it was matched to: the key turns the match green, outlined.
+    bool keyMatched = false;
     QString remaining;
     bool endWarning = false;
     bool master = false;
@@ -199,6 +207,10 @@ class DeckLabStripRenderer {
     static QString roundedBpm(const QString& bpm);
     // Parts that cannot be shown at their binding size in this geometry.
     QStringList overflowingParts() const;
+    // r5-decks: touch zones inside the readout, at least 44 px tall: the
+    // KEY readout opens the key sheet, a long press on the BPM opens GRID.
+    QRect keyTarget() const;
+    QRect bpmTarget() const;
     QFont uiFont(int pixels, QFont::Weight weight) const;
     QFont numeralFont(int pixels) const;
     QFont labelFont() const;
@@ -207,6 +219,8 @@ class DeckLabStripRenderer {
     void layout();
     // Key box shifted left when a long clock needs the room.
     int clockExcess() const;
+    // r5-decks: the key, its shift and the room they take at readout size.
+    int keyTextWidth() const;
     void paintBadge(QPainter& painter) const;
     void paintTransport(QPainter& painter, const QRect& area) const;
     void paintTitle(QPainter& painter, const QRect& area) const;
@@ -282,6 +296,16 @@ class DeckLabDeckStrip final : public QPushButton {
     // padding or text metrics.
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override;
+    // r5-decks: how long the BPM readout is held to open GRID mode.
+    static constexpr int kGridHoldMs = 600;
+
+  signals:
+    // r5-decks: a touch-down on the loaded deck's KEY readout (key sheet).
+    // The touch is the sheet's: the readout does not go down or click.
+    void keyTouched(int deck);
+    // r5-decks: the BPM readout was held for kGridHoldMs (GRID mode). The
+    // press is cancelled, so its release never opens track information.
+    void bpmHeld(int deck);
 
   protected:
     void paintEvent(QPaintEvent* event) override;
@@ -289,12 +313,16 @@ class DeckLabDeckStrip final : public QPushButton {
     void changeEvent(QEvent* event) override;
     void focusInEvent(QFocusEvent* event) override;
     void focusOutEvent(QFocusEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
 
   private:
     void placeMeter();
     DeckLabStripRenderer m_renderer;
     DeckLabLevelMeter* m_meter;
     bool m_keyboardFocus = false;
+    // r5-decks: single shot, runs only while the BPM readout is held.
+    QTimer* m_gridHold = nullptr;
 };
 
 // One-line readout above a waveform on Browse and FX. Display only.

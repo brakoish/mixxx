@@ -10,8 +10,10 @@
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QMouseEvent>
 #include <QResizeEvent>
 #include <QStringList>
+#include <QTimer>
 
 #include "moc_decklabdeckwidgets.cpp"
 
@@ -172,9 +174,12 @@ void DeckLabStripRenderer::layout() {
         const int bpm = tabularWidth(hero, QStringLiteral("000")) +
                 tabularWidth(readout, QStringLiteral(".0")) + 4;
         const int clock = tabularWidth(hero, QString::fromUtf8("−00:00")) + 4;
+        // r5-decks: +10 for a key shift ("8A +1"), all the tempo can give and
+        // keep OVER ±18.82% outlined at 399 px; a check mark that no longer
+        // fits beside a shifted key is dropped, never squeezed.
         const int key = std::max(readout.horizontalAdvance(QStringLiteral("12A")),
                                 readout.horizontalAdvance(QStringLiteral("F#m"))) +
-                20;
+                30;
         constexpr int kValuesTop = 24;
         constexpr int kValuesHeight = 32;
         const QRect time(width - 10 - clock, kValuesTop, clock + 10, kValuesHeight);
@@ -206,8 +211,9 @@ void DeckLabStripRenderer::layout() {
         set(Part::Phase, QRect(12, 37, width - 20, 12));
         set(Part::Bpm, QRect(10, 50, std::max(0, time.left() - 14), 38));
         set(Part::Time, time);
-        set(Part::Tempo, QRect(10, 89, std::max(0, width - 88), 26));
-        set(Part::Key, QRect(width - 76, 89, 76, 26));
+        // r5-decks: the key box is 10 px wider for a key shift.
+        set(Part::Tempo, QRect(10, 89, std::max(0, width - 98), 26));
+        set(Part::Key, QRect(width - 86, 89, 86, 26));
         set(Part::Chips, QRect(10, 116, width - 18, 22));
         // The phrase readout shares the lamp row: lit lamps keep their place
         // and the phrase takes the room that is left, right-aligned.
@@ -292,8 +298,13 @@ QRegion DeckLabStripRenderer::setState(const DeckLabStripState& next) {
             previous.overRange != next.overRange) {
         add(Part::Tempo);
     }
-    if (previous.key != next.key || previous.keyColor != next.keyColor || previous.keyMatch != next.keyMatch) {
+    if (previous.key != next.key || previous.keyColor != next.keyColor || previous.keyMatch != next.keyMatch ||
+            previous.keyShift != next.keyShift || previous.keyMatched != next.keyMatched) {
         add(Part::Key);
+        if (m_mode == Mode::Full && !rect(Part::Key).isEmpty()) {
+            // r5-decks: the MATCH outline starts 2 px left of the key box.
+            dirty += rect(Part::Key).adjusted(-4, 0, 0, 0);
+        }
     }
     if (previous.remaining.size() != next.remaining.size()) {
         // A clock that gains or loses a digit moves the key and tempo (full)
@@ -380,7 +391,9 @@ QStringList DeckLabStripRenderer::overflowingParts() const {
     if (m_mode == Mode::Full && clock > rect(Part::Time).width() - 6 + clockExcess()) {
         overflowing << QStringLiteral("time");
     }
-    if (readout.horizontalAdvance(m_state.key) > rect(Part::Key).width() - (mini ? 0 : 18)) {
+    // r5-decks: the key and its shift; the check mark steps aside for them.
+    if ((mini ? readout.horizontalAdvance(m_state.key) : keyTextWidth()) >
+            rect(Part::Key).width() - (mini ? 0 : compact ? 8 : 2)) {
         overflowing << QStringLiteral("key");
     }
     if (compact &&
@@ -390,6 +403,43 @@ QStringList DeckLabStripRenderer::overflowingParts() const {
         overflowing << QStringLiteral("row");
     }
     return overflowing;
+}
+
+int DeckLabStripRenderer::keyTextWidth() const {
+    const int key = QFontMetrics(numeralFont(m_mode == Mode::Mini ? kTitle : kReadout)).horizontalAdvance(m_state.key);
+    if (m_mode == Mode::Mini || m_state.keyShift.isEmpty()) {
+        return key;
+    }
+    return key + 3 + QFontMetrics(numeralFont(kSecondary)).horizontalAdvance(m_state.keyShift);
+}
+
+QRect DeckLabStripRenderer::keyTarget() const {
+    // At least 44 px tall around the key, inside the readout.
+    if (m_mode == Mode::Mini || !m_state.loaded) {
+        return QRect();
+    }
+    QRect area = rect(Part::Key).translated(m_mode == Mode::Full ? -clockExcess() : 0, 0);
+    const int grow = std::max(0, 44 - area.height());
+    area.adjust(0, -grow / 2, 0, grow - grow / 2);
+    if (m_mode == Mode::Compact) {
+        // Compact cards: below the clock's row, never on the clock.
+        area.moveTop(std::max(area.top(), rect(Part::Time).bottom() + 1));
+    }
+    return area.intersected(QRect(QPoint(), m_size));
+}
+
+QRect DeckLabStripRenderer::bpmTarget() const {
+    if (m_mode == Mode::Mini || !m_state.loaded) {
+        return QRect();
+    }
+    QRect area = rect(Part::Bpm);
+    if (m_mode == Mode::Compact) {
+        // Compact cards share the row with the clock: the BPM's own digits.
+        area.setRight(std::min(area.right(), rect(Part::Time).left() - 4));
+    }
+    const int grow = std::max(0, 44 - area.height());
+    area.adjust(0, -grow / 2, 0, grow - grow / 2);
+    return area.intersected(QRect(QPoint(), m_size));
 }
 
 int DeckLabStripRenderer::chipWidth(const QString& text) const {
@@ -894,27 +944,50 @@ void DeckLabStripRenderer::paintValues(QPainter& painter, const QRect& dirty) co
         }
     }
     // Key: readout size in the key-wheel color, with a harmonic hint.
+    // r5-decks: then the key shift ("8A +1", 15 px). After MATCH the key
+    // and its shift turn the match green inside a green outline, while the
+    // key still matches the deck it was matched to.
     const QRect keyArea = rect(Part::Key).translated(-excess, 0);
     if (keyArea.intersects(dirty) || excess > 0) {
-        const QColor color = m_state.keyColor.isValid() ? m_state.keyColor : kText;
+        const bool matched = !mini && m_state.keyMatched;
+        const QColor color = matched ? kPlay : m_state.keyColor.isValid() ? m_state.keyColor : kText;
         painter.setFont(readout);
         painter.setPen(color);
         const int keyWidth = readoutMetrics.horizontalAdvance(m_state.key);
+        const int textWidth = keyTextWidth();
         const int baseline = compact ? baselineFor(keyArea, readoutMetrics) : heroBaseline;
         const int keyLeft = mini ? keyArea.right() - keyWidth
-                : compact        ? keyArea.right() - 6 - keyWidth
+                : compact        ? keyArea.right() - 6 - textWidth
                                  : keyArea.left() + 2;
         painter.drawText(QPoint(keyLeft, baseline), m_state.key);
-        // A compatible key gets a green check. An incompatible one shows
-        // nothing: a grey cross read like a close button on every deck.
-        if (!mini && m_state.keyMatch > 0) {
-            const int kx = compact ? keyLeft - 16 : keyLeft + keyWidth + 6;
-            QPainterPath check;
-            check.moveTo(kx, baseline - 6);
-            check.lineTo(kx + 4, baseline - 2);
-            check.lineTo(kx + 11, baseline - 11);
-            painter.setPen(QPen(kPlay, 2.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-            painter.drawPath(check);
+        if (!mini && !m_state.keyShift.isEmpty()) {
+            painter.setFont(numeralFont(kSecondary));
+            painter.setPen(matched ? kPlay : kText);
+            painter.drawText(QPoint(keyLeft + keyWidth + 3, baseline), m_state.keyShift);
+        }
+        if (matched) {
+            const int capTop = baseline - readoutMetrics.capHeight();
+            QPainterPath box;
+            box.addRoundedRect(QRectF(keyLeft - 4, capTop - 4, textWidth + 8, readoutMetrics.capHeight() + 8)
+                                       .adjusted(0.75, 0.75, -0.75, -0.75),
+                    3,
+                    3);
+            painter.setPen(QPen(kPlay, 1.5));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawPath(box);
+        } else if (!mini && m_state.keyMatch > 0) {
+            // A compatible key gets a green check. An incompatible one shows
+            // nothing: a grey cross read like a close button on every deck.
+            // r5-decks: dropped when a shifted key needs its room.
+            const int kx = compact ? keyLeft - 16 : keyLeft + textWidth + 6;
+            if (compact ? kx >= keyArea.left() : kx + 12 <= keyArea.right() + 1) {
+                QPainterPath check;
+                check.moveTo(kx, baseline - 6);
+                check.lineTo(kx + 4, baseline - 2);
+                check.lineTo(kx + 11, baseline - 11);
+                painter.setPen(QPen(kPlay, 2.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                painter.drawPath(check);
+            }
         }
     }
     if (mini) {
@@ -1042,6 +1115,47 @@ void DeckLabDeckStrip::setFlash(bool on) {
     if (!dirty.isEmpty()) {
         update(dirty);
     }
+}
+
+void DeckLabDeckStrip::mousePressEvent(QMouseEvent* event) {
+    // r5-decks: two zones inside the readout. The KEY readout opens the key
+    // sheet on touch-down (the readout itself never goes down, so no track
+    // information follows); holding the BPM opens GRID mode. Everywhere
+    // else the readout is one target, as before.
+    if (event->button() == Qt::LeftButton && isEnabled()) {
+        const QPoint at = event->position().toPoint();
+        const int deck = m_renderer.state().deck;
+        if (m_renderer.keyTarget().contains(at)) {
+            event->accept();
+            emit keyTouched(deck);
+            return;
+        }
+        if (m_renderer.bpmTarget().contains(at)) {
+            if (!m_gridHold) {
+                m_gridHold = new QTimer(this);
+                m_gridHold->setSingleShot(true);
+                m_gridHold->setInterval(kGridHoldMs);
+                connect(m_gridHold, &QTimer::timeout, this, [this] {
+                    // Same finger, same deck, still loaded: cancel the press
+                    // (no click on release) and open GRID.
+                    if (!isDown() || !m_renderer.state().loaded) {
+                        return;
+                    }
+                    setDown(false);
+                    emit bpmHeld(m_renderer.state().deck);
+                });
+            }
+            m_gridHold->start();
+        }
+    }
+    QPushButton::mousePressEvent(event);
+}
+
+void DeckLabDeckStrip::mouseReleaseEvent(QMouseEvent* event) {
+    if (m_gridHold) {
+        m_gridHold->stop();
+    }
+    QPushButton::mouseReleaseEvent(event);
 }
 
 QSize DeckLabDeckStrip::sizeHint() const {

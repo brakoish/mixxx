@@ -65,6 +65,9 @@ class DeckLabPadButton final : public QPushButton {
     }
     // Outlined: the armed loop length.
     void setArmed(bool armed);
+    bool armed() const { // r5-decks: also the knob's cursor in the key sheet
+        return m_armed;
+    }
     // A small lamp in the corner: something lives in a mode not shown
     // (a running loop, muted stems).
     void setIndicator(bool on);
@@ -139,6 +142,15 @@ class DeckLabPadBlock final : public QWidget {
     void setSideColumn(QWidget* column);
     // Side blocks sit 4 px below the overview; the MORE sheet needs none.
     void setOuterMargins(int left, int top, int right, int bottom);
+    // r5-decks: a panel (the deck's key sheet, decklabkeysheet.h) shown in
+    // place of the mode keys and pads, beside the SYNC/MORE column, so the
+    // sheet docks in the deck area and never floats over the waveforms.
+    // Showing it ends a held roll and drops the SOLO latch.
+    void setPanel(QWidget* panel);
+    void showPanel(bool shown);
+    bool panelShown() const {
+        return m_panelShown;
+    }
 
     void setDeckState(const DeckLabPadDeckState& state);
     const DeckLabPadDeckState& deckState() const {
@@ -213,6 +225,8 @@ class DeckLabPadBlock final : public QWidget {
     QWidget* m_padArea = nullptr;
     std::array<QHBoxLayout*, 2> m_rows{};
     QWidget* m_side = nullptr;
+    QWidget* m_panel = nullptr; // r5-decks
+    bool m_panelShown = false;
     bool m_soloLatched = false;
     // The held roll: deck and size it was started on, ended on release.
     int m_rollDeck = 0;

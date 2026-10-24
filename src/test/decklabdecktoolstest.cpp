@@ -1,0 +1,634 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// r5-decks: the key sheet (decklabkeysheet.h), GRID mode (decklabgridmode.h)
+// and the readout's key shift (decklabdeckwidgets.h) against fake hosts.
+// Widgets only: no engine, no controls, no audio. The real wiring to
+// Mixxx's controls is covered by NativeDeckLabTest.
+#include <gtest/gtest.h>
+
+#include <QApplication>
+#include <QHBoxLayout>
+#include <QImage>
+#include <QKeyEvent>
+#include <QLabel>
+#include <QMouseEvent>
+#include <QPushButton>
+#include <QStringList>
+#include <QTest>
+#include <memory>
+
+#include "library/decklabknob.h"
+#include "widget/decklabdeckwidgets.h"
+#include "widget/decklabdecktools.h"
+#include "widget/decklabgridmode.h"
+#include "widget/decklabkeysheet.h"
+#include "widget/decklabpads.h"
+
+namespace {
+
+using KeyAction = DeckLabKeySheet::Action;
+using GridAction = DeckLabGridPanel::Action;
+using Part = DeckLabStripRenderer::Part;
+
+void press(QPushButton* button) {
+    button->setDown(true);
+    emit button->pressed();
+}
+void release(QPushButton* button) {
+    button->setDown(false);
+    emit button->released();
+}
+
+DeckLabKeySheetState keyState(int deck) {
+    DeckLabKeySheetState state;
+    state.deck = deck;
+    state.loaded = true;
+    state.hasKey = true;
+    state.target = deck == 1 ? 2 : 1;
+    state.targetKey = QStringLiteral("3A");
+    state.key = QStringLiteral("8A");
+    return state;
+}
+
+struct FakeKeyHost {
+    int deck = 1;
+    bool current = true;
+    QStringList acts;
+    DeckLabKeySheet::Host host() {
+        DeckLabKeySheet::Host h;
+        h.deck = [this] { return deck; };
+        h.current = [this](int) { return current; };
+        h.act = [this](int which, KeyAction action) {
+            acts << QStringLiteral("%1/%2").arg(which).arg(DeckLabKeySheet::actionName(action));
+        };
+        return h;
+    }
+};
+
+class DeckLabKeySheetTest : public ::testing::Test {
+  protected:
+    void SetUp() override {
+        sheet = std::make_unique<DeckLabKeySheet>(QStringLiteral("decklab-key-1"),
+                DeckLabKeySheet::Shape::Pads, host.host());
+        sheet->resize(329, DeckLabKeySheet::kHeight);
+        sheet->setState(keyState(1));
+        sheet->show();
+        QCoreApplication::processEvents();
+    }
+    void TearDown() override {
+        sheet.reset();
+    }
+    FakeKeyHost host;
+    std::unique_ptr<DeckLabKeySheet> sheet;
+};
+
+TEST_F(DeckLabKeySheetTest, KeysFireOnTouchDownWithTheStaleTouchGuards) {
+    auto* match = sheet->key(KeyAction::Match);
+    ASSERT_NE(nullptr, match);
+    EXPECT_EQ(QStringLiteral("decklab-key-1-match"), match->objectName());
+    EXPECT_EQ(QStringLiteral("MATCH TO DECK 2 · 3A"), sheet->info()->text());
+    press(match);
+    EXPECT_EQ(QStringList{QStringLiteral("1/match")}, host.acts) << "touch-down, before any release";
+    release(match);
+    EXPECT_EQ(1, host.acts.size());
+    for (const KeyAction action : {KeyAction::Down, KeyAction::Up, KeyAction::Reset, KeyAction::KeyLock}) {
+        press(sheet->key(action));
+        release(sheet->key(action));
+    }
+    EXPECT_EQ((QStringList{QStringLiteral("1/match"), QStringLiteral("1/down"), QStringLiteral("1/up"),
+                      QStringLiteral("1/reset"), QStringLiteral("1/keylock")}),
+            host.acts);
+    // The layer moved under the sheet before it refreshed: nothing.
+    host.acts.clear();
+    host.deck = 3;
+    press(sheet->key(KeyAction::Up));
+    EXPECT_TRUE(host.acts.isEmpty());
+    host.deck = 1;
+    // Another track than the one the sheet shows: nothing.
+    host.current = false;
+    press(sheet->key(KeyAction::Match));
+    EXPECT_TRUE(host.acts.isEmpty());
+    // DONE always closes, whatever the deck holds.
+    press(sheet->key(KeyAction::Done));
+    EXPECT_EQ(QStringList{QStringLiteral("1/done")}, host.acts);
+}
+
+TEST_F(DeckLabKeySheetTest, MatchNeedsTwoKeysAndLightsWhileMatched) {
+    auto* match = sheet->key(KeyAction::Match);
+    EXPECT_TRUE(match->isEnabled());
+    EXPECT_FALSE(match->lit());
+    auto state = keyState(1);
+    state.matched = true;
+    state.shift = QStringLiteral("+1");
+    state.key = QStringLiteral("3A");
+    sheet->setState(state);
+    EXPECT_TRUE(match->lit());
+    EXPECT_EQ(QStringLiteral("MATCHED · DECK 2 3A"), sheet->info()->text());
+    EXPECT_TRUE(sheet->info()->styleSheet().contains(QStringLiteral("#2FD27A"))) << "the match green";
+    // No target, or no key there or here: MATCH is off and says why.
+    state = keyState(1);
+    state.target = 0;
+    state.targetKey.clear();
+    sheet->setState(state);
+    EXPECT_FALSE(match->isEnabled());
+    EXPECT_EQ(QStringLiteral("No other deck to match"), sheet->info()->text());
+    EXPECT_TRUE(sheet->key(KeyAction::Up)->isEnabled()) << "a shift needs no other deck";
+    state = keyState(1);
+    state.hasKey = false;
+    sheet->setState(state);
+    EXPECT_FALSE(match->isEnabled());
+    press(match);
+    EXPECT_TRUE(host.acts.isEmpty());
+    // KEY LOCK is a lamp.
+    state = keyState(1);
+    state.keylock = true;
+    sheet->setState(state);
+    EXPECT_TRUE(sheet->key(KeyAction::KeyLock)->lit());
+    EXPECT_TRUE(sheet->key(KeyAction::KeyLock)->accessibleName().endsWith(QStringLiteral("on")));
+    // Empty deck: only DONE.
+    DeckLabKeySheetState empty;
+    empty.deck = 1;
+    sheet->setState(empty);
+    for (const KeyAction action : {KeyAction::Down, KeyAction::Match, KeyAction::Up, KeyAction::Reset, KeyAction::KeyLock}) {
+        EXPECT_FALSE(sheet->key(action)->isEnabled()) << DeckLabKeySheet::actionName(action).toStdString();
+    }
+    EXPECT_TRUE(sheet->key(KeyAction::Done)->isEnabled());
+}
+
+TEST_F(DeckLabKeySheetTest, TheKnobMovesActivatesAndCloses) {
+    // The sheet claims the browse knob while it is shown.
+    EXPECT_EQ(sheet.get(), decklab::knobClaimant());
+    const auto owner = decklab::knobOwner();
+    EXPECT_TRUE(owner.claimed);
+    EXPECT_EQ(KeyAction::Match, sheet->knobFocus());
+    // No cursor for touch; it shows once the knob is used.
+    EXPECT_FALSE(sheet->key(KeyAction::Match)->armed());
+    // Turn right: the next key (+1), press: it acts.
+    decklab::forwardKnob(owner, decklab::KnobAction::Move, 1);
+    EXPECT_EQ(KeyAction::Up, sheet->knobFocus());
+    EXPECT_TRUE(sheet->key(KeyAction::Up)->armed());
+    EXPECT_FALSE(sheet->key(KeyAction::Match)->armed());
+    decklab::forwardKnob(owner, decklab::KnobAction::Press, 1);
+    EXPECT_EQ(QStringList{QStringLiteral("1/up")}, host.acts);
+    // Turn far left: stops at the first key.
+    decklab::forwardKnob(owner, decklab::KnobAction::Move, -9);
+    EXPECT_EQ(KeyAction::Down, sheet->knobFocus());
+    // Back (Shift+press) closes.
+    decklab::forwardKnob(owner, decklab::KnobAction::Back, -1);
+    EXPECT_EQ(QStringLiteral("1/done"), host.acts.last());
+    sheet->hide();
+    EXPECT_EQ(nullptr, decklab::knobClaimant()) << "a hidden sheet never keeps the knob";
+}
+
+TEST_F(DeckLabKeySheetTest, TargetsFitTheDeckAreaInBothShapes) {
+    // Two decks: in the pad block's area (329 px beside SYNC / MORE).
+    for (const KeyAction action : {KeyAction::Down, KeyAction::Match, KeyAction::Up, KeyAction::Reset,
+                 KeyAction::KeyLock, KeyAction::Done}) {
+        auto* key = sheet->key(action);
+        EXPECT_EQ(44, key->height()) << DeckLabKeySheet::actionName(action).toStdString();
+        EXPECT_GE(key->width(), 44) << DeckLabKeySheet::actionName(action).toStdString();
+        EXPECT_TRUE(sheet->rect().contains(key->geometry()));
+        EXPECT_GE(QFontInfo(key->font()).pixelSize(), 16);
+    }
+    EXPECT_GE(sheet->info()->width(), 150) << "the info line keeps room for MATCH TO DECK 2 · 12A";
+    // Four decks: a card (about 191 px inside its margins), keys only.
+    FakeKeyHost cardHost;
+    DeckLabKeySheet card(QStringLiteral("decklab-card-key-1"), DeckLabKeySheet::Shape::Card, cardHost.host());
+    card.resize(191, DeckLabKeySheet::kHeight);
+    card.setState(keyState(1));
+    card.show();
+    QCoreApplication::processEvents();
+    EXPECT_EQ(nullptr, card.key(KeyAction::KeyLock)) << "KEY LOCK stays in MORE";
+    EXPECT_EQ(nullptr, card.info());
+    for (const KeyAction action : {KeyAction::Down, KeyAction::Match, KeyAction::Up, KeyAction::Reset, KeyAction::Done}) {
+        auto* key = card.key(action);
+        EXPECT_EQ(44, key->height());
+        EXPECT_GE(key->width(), 44);
+        EXPECT_GE(key->width() - 4, QFontMetrics(key->font()).horizontalAdvance(key->text()))
+                << key->text().toStdString() << " fits its key";
+    }
+    EXPECT_EQ(92, DeckLabKeySheet::kHeight) << "the overview (44) and transport (48) rows";
+}
+
+TEST_F(DeckLabKeySheetTest, DocksInPlaceOfThePadsBesideSyncAndMore) {
+    // The two-deck sheet is the pad block's panel: the mode keys and pads
+    // give way, the SYNC / MORE column stays, a held roll ends.
+    QStringList writes;
+    DeckLabPadBlock::Host padHost;
+    padHost.deck = [] { return 1; };
+    padHost.epoch = [] { return quint64(1); };
+    padHost.current = [](int) { return true; };
+    padHost.read = [](int, const QString&) { return -1.0; };
+    padHost.write = [&writes](int deck, const QString& item, double value) {
+        writes << QStringLiteral("%1/%2=%3").arg(deck).arg(item).arg(value);
+    };
+    DeckLabPadBlock block(QStringLiteral("decklab-pads-1"), QStringLiteral("decklab-hotcue-1-"), padHost);
+    auto* column = new QWidget;
+    column->setObjectName(QStringLiteral("column"));
+    block.setSideColumn(column);
+    FakeKeyHost dockHost;
+    auto* docked = new DeckLabKeySheet(QStringLiteral("decklab-key-1"), DeckLabKeySheet::Shape::Pads, dockHost.host());
+    block.setPanel(docked);
+    block.resize(391, DeckLabPadBlock::kBlockHeight);
+    DeckLabPadDeckState state;
+    state.deck = 1;
+    state.loaded = true;
+    block.setDeckState(state);
+    block.show();
+    QCoreApplication::processEvents();
+    EXPECT_FALSE(docked->isVisible());
+    // A roll is held when the sheet opens: it ends at once.
+    block.setMode(DeckLabPadBlock::Mode::Roll);
+    press(block.pad(2));
+    ASSERT_TRUE(block.holding());
+    block.showPanel(true);
+    QCoreApplication::processEvents();
+    EXPECT_FALSE(block.holding());
+    EXPECT_EQ(QStringLiteral("1/beatlooproll_0.25_activate=0"), writes.last());
+    EXPECT_TRUE(docked->isVisible());
+    EXPECT_FALSE(block.pad(0)->isVisible());
+    EXPECT_FALSE(block.modeKey(DeckLabPadBlock::Mode::Cue)->isVisible());
+    EXPECT_TRUE(column->isVisible()) << "SYNC and MORE stay";
+    EXPECT_EQ(DeckLabKeySheet::kHeight, docked->height());
+    EXPECT_LE(docked->geometry().right(), column->geometry().left());
+    // Closing brings the pads back in the deck's mode.
+    block.showPanel(false);
+    QCoreApplication::processEvents();
+    EXPECT_FALSE(docked->isVisible());
+    EXPECT_TRUE(block.pad(0)->isVisible());
+    EXPECT_EQ(DeckLabPadBlock::Mode::Roll, block.mode());
+}
+
+// ---------------------------------------------------------------- GRID mode
+
+DeckLabGridState gridState(int deck) {
+    DeckLabGridState state;
+    state.deck = deck;
+    state.loaded = true;
+    state.hasBeats = true;
+    state.constantTempo = true;
+    state.bpm = QStringLiteral("128.00");
+    state.beat = 0;
+    return state;
+}
+
+struct FakeGridHost {
+    bool current = true;
+    QStringList acts;
+    DeckLabGridPanel::Host host() {
+        DeckLabGridPanel::Host h;
+        h.current = [this](int) { return current; };
+        h.act = [this](int which, GridAction action) {
+            acts << QStringLiteral("%1/%2").arg(which).arg(DeckLabGridPanel::actionName(action));
+        };
+        return h;
+    }
+};
+
+class DeckLabGridModeTest : public ::testing::Test {
+  protected:
+    void SetUp() override {
+        panel = std::make_unique<DeckLabGridPanel>(QStringLiteral("decklab-grid-mode"), host.host());
+        panel->resize(396, 230);
+        panel->setState(gridState(1));
+        panel->show();
+        QCoreApplication::processEvents();
+    }
+    void TearDown() override {
+        panel.reset();
+    }
+    FakeGridHost host;
+    std::unique_ptr<DeckLabGridPanel> panel;
+};
+
+TEST_F(DeckLabGridModeTest, EveryKeyDrivesItsGridControlOnTouchDown) {
+    const QList<std::pair<GridAction, QString>> keys{
+            {GridAction::NudgeEarlier, QStringLiteral("beats_translate_earlier")},
+            {GridAction::NudgeLater, QStringLiteral("beats_translate_later")},
+            {GridAction::BeatEarlier, QStringLiteral("beat-earlier")},
+            {GridAction::BeatLater, QStringLiteral("beat-later")},
+            {GridAction::BpmDownCoarse, QStringLiteral("bpm-down-coarse")},
+            {GridAction::BpmDownFine, QStringLiteral("beats_adjust_slower")},
+            {GridAction::BpmUpFine, QStringLiteral("beats_adjust_faster")},
+            {GridAction::BpmUpCoarse, QStringLiteral("bpm-up-coarse")},
+            {GridAction::Halve, QStringLiteral("beats_set_halve")},
+            {GridAction::Double, QStringLiteral("beats_set_double")},
+            {GridAction::Tap, QStringLiteral("bpm_tap")},
+            {GridAction::Downbeat, QStringLiteral("downbeat")},
+            {GridAction::Lock, QStringLiteral("bpmlock")},
+            {GridAction::Done, QStringLiteral("done")}};
+    QStringList expected;
+    for (const auto& [action, name] : keys) {
+        auto* key = panel->key(action);
+        ASSERT_NE(nullptr, key) << name.toStdString();
+        EXPECT_EQ(QString(QStringLiteral("decklab-grid-mode-") + name), key->objectName());
+        EXPECT_FALSE(key->accessibleName().isEmpty()) << name.toStdString();
+        press(key);
+        expected << QString(QStringLiteral("1/") + name);
+        EXPECT_EQ(expected, host.acts) << "on touch-down: " << name.toStdString();
+        release(key);
+    }
+    EXPECT_EQ(expected, host.acts) << "releases add nothing";
+}
+
+TEST_F(DeckLabGridModeTest, EditsWaitForAnUnlockedQuietGridAndSayWhy) {
+    EXPECT_TRUE(panel->editable());
+    EXPECT_TRUE(panel->status().startsWith(QStringLiteral("KNOB  NUDGE")));
+    struct Case {
+        const char* what;
+        std::function<void(DeckLabGridState&)> change;
+        const char* status;
+    };
+    const QList<Case> cases{
+            {"locked", [](DeckLabGridState& s) { s.locked = true; }, "Grid locked. Touch LOCK to edit."},
+            {"synced", [](DeckLabGridState& s) { s.synced = true; }, "SYNC is on. Turn it off to edit the grid."},
+            {"shared", [](DeckLabGridState& s) { s.sharedDeck = 2; },
+                    "Also playing or synced on deck 2. Stop it there first."},
+            {"no grid", [](DeckLabGridState& s) { s.hasBeats = false; }, "No beat grid yet. Analyse the track first."}};
+    for (const auto& c : cases) {
+        auto state = gridState(1);
+        c.change(state);
+        panel->setState(state);
+        EXPECT_FALSE(panel->editable()) << c.what;
+        EXPECT_EQ(QString::fromUtf8(c.status), panel->status()) << c.what;
+        host.acts.clear();
+        for (const GridAction action : {GridAction::NudgeLater, GridAction::Double, GridAction::Tap,
+                     GridAction::Downbeat, GridAction::BpmUpFine}) {
+            EXPECT_FALSE(panel->key(action)->isEnabled()) << c.what;
+            press(panel->key(action));
+        }
+        EXPECT_TRUE(host.acts.isEmpty()) << c.what;
+        EXPECT_TRUE(panel->key(GridAction::Done)->isEnabled()) << c.what;
+    }
+    // A locked grid can be unlocked; a busy alias cannot be touched at all.
+    auto locked = gridState(1);
+    locked.locked = true;
+    panel->setState(locked);
+    EXPECT_TRUE(panel->key(GridAction::Lock)->isEnabled());
+    EXPECT_TRUE(panel->key(GridAction::Lock)->lit());
+    auto shared = gridState(1);
+    shared.sharedDeck = 3;
+    panel->setState(shared);
+    EXPECT_FALSE(panel->key(GridAction::Lock)->isEnabled());
+    // Whole-beat moves need a constant-tempo grid (Mixxx's rule).
+    auto variable = gridState(1);
+    variable.constantTempo = false;
+    panel->setState(variable);
+    EXPECT_FALSE(panel->key(GridAction::BeatEarlier)->isEnabled());
+    EXPECT_TRUE(panel->key(GridAction::NudgeEarlier)->isEnabled());
+    // Another track than the one GRID mode opened for: nothing.
+    panel->setState(gridState(1));
+    host.acts.clear();
+    host.current = false;
+    press(panel->key(GridAction::NudgeLater));
+    EXPECT_TRUE(host.acts.isEmpty());
+}
+
+TEST_F(DeckLabGridModeTest, APlayingDeckSaysEditingGridInTheDeckColour) {
+    EXPECT_EQ(QStringLiteral("PAUSED"), panel->playText());
+    auto playing = gridState(2);
+    playing.playing = true;
+    panel->setState(playing);
+    EXPECT_EQ(QStringLiteral("PLAYING"), panel->playText());
+    EXPECT_TRUE(panel->editable()) << "DJs fix grids live";
+    const QImage image = panel->grab().toImage();
+    // The deck colour along the top and filling the EDITING GRID chip.
+    EXPECT_EQ(deckLabDeckColor(2), image.pixelColor(panel->width() / 2, 1));
+    const QWidget* title = panel->findChild<QWidget*>(QStringLiteral("decklab-grid-mode-title"));
+    ASSERT_NE(nullptr, title);
+    int deckPixels = 0;
+    for (int x = title->x() + 36; x < title->x() + 130; ++x) {
+        deckPixels += image.pixelColor(x, title->y() + title->height() / 2 - 8) == deckLabDeckColor(2);
+    }
+    EXPECT_GT(deckPixels, 20) << "a filled deck-colour chip";
+    EXPECT_TRUE(panel->accessibleDescription().contains(QStringLiteral("playing")));
+}
+
+TEST_F(DeckLabGridModeTest, TheKnobNudgesSwitchesToBpmAndLeaves) {
+    EXPECT_EQ(panel.get(), decklab::knobClaimant());
+    const auto owner = decklab::knobOwner();
+    ASSERT_TRUE(owner.claimed);
+    decklab::forwardKnob(owner, decklab::KnobAction::Move, 2);
+    decklab::forwardKnob(owner, decklab::KnobAction::Move, -1);
+    EXPECT_EQ((QStringList{QStringLiteral("1/beats_translate_later"), QStringLiteral("1/beats_translate_later"),
+                      QStringLiteral("1/beats_translate_earlier")}),
+            host.acts);
+    // The keys the knob stands for carry its lamp.
+    EXPECT_TRUE(panel->key(GridAction::NudgeLater)->armed());
+    EXPECT_FALSE(panel->key(GridAction::BpmUpFine)->armed());
+    // Press: the knob adjusts the BPM by 0.01.
+    decklab::forwardKnob(owner, decklab::KnobAction::Press, 1);
+    EXPECT_EQ(DeckLabGridPanel::Knob::Bpm, panel->knob());
+    EXPECT_TRUE(panel->key(GridAction::BpmUpFine)->armed());
+    EXPECT_FALSE(panel->key(GridAction::NudgeLater)->armed());
+    EXPECT_TRUE(panel->status().startsWith(QStringLiteral("KNOB  BPM")));
+    host.acts.clear();
+    decklab::forwardKnob(owner, decklab::KnobAction::Move, 1);
+    decklab::forwardKnob(owner, decklab::KnobAction::Move, -1);
+    EXPECT_EQ((QStringList{QStringLiteral("1/beats_adjust_faster"), QStringLiteral("1/beats_adjust_slower")}), host.acts);
+    // Shift+press (back): DONE.
+    decklab::forwardKnob(owner, decklab::KnobAction::Back, -1);
+    EXPECT_EQ(QStringLiteral("1/done"), host.acts.last());
+    // A locked grid: the knob changes nothing.
+    auto locked = gridState(1);
+    locked.locked = true;
+    panel->setState(locked);
+    host.acts.clear();
+    decklab::forwardKnob(decklab::knobOwner(), decklab::KnobAction::Move, 3);
+    EXPECT_TRUE(host.acts.isEmpty());
+}
+
+TEST_F(DeckLabGridModeTest, ControlsFitTheDeckAreaAtBothLayouts) {
+    for (const QSize size : {QSize(396, 244), QSize(397, 230)}) {
+        panel->resize(size);
+        QCoreApplication::processEvents();
+        EXPECT_LE(panel->minimumHeight(), size.height());
+        for (int index = 0; index < static_cast<int>(GridAction::Count); ++index) {
+            auto* key = panel->key(static_cast<GridAction>(index));
+            EXPECT_EQ(44, key->height()) << key->objectName().toStdString();
+            EXPECT_GE(key->width(), 44) << key->objectName().toStdString();
+            EXPECT_TRUE(panel->rect().contains(key->geometry())) << key->objectName().toStdString();
+            EXPECT_GE(key->width() - 4, QFontMetrics(key->font()).horizontalAdvance(key->text()))
+                    << key->text().toStdString() << " fits its key";
+            EXPECT_GE(QFontInfo(key->font()).pixelSize(), 16);
+        }
+        // 4 px gaps between keys on a row.
+        EXPECT_GE(panel->key(GridAction::NudgeLater)->x() -
+                        (panel->key(GridAction::NudgeEarlier)->x() + panel->key(GridAction::NudgeEarlier)->width()),
+                4);
+    }
+}
+
+TEST_F(DeckLabGridModeTest, AnUnchangedStateRepaintsNothing) {
+    struct PaintCounter : QObject {
+        int count = 0;
+        bool eventFilter(QObject*, QEvent* event) override {
+            count += event->type() == QEvent::Paint;
+            return false;
+        }
+    } counter;
+    panel->grab();
+    QCoreApplication::processEvents();
+    panel->installEventFilter(&counter);
+    panel->setState(gridState(1));
+    QCoreApplication::processEvents();
+    EXPECT_EQ(0, counter.count);
+    auto next = gridState(1);
+    next.beat = 1;
+    panel->setState(next);
+    QCoreApplication::processEvents();
+    EXPECT_LE(counter.count, 1) << "one repaint of the readout";
+    panel->removeEventFilter(&counter);
+}
+
+// ------------------------------------------------------- the key readout
+
+DeckLabStripState loadedStrip(int deck) {
+    DeckLabStripState s;
+    s.deck = deck;
+    s.loaded = true;
+    s.title = QStringLiteral("Generated Tone");
+    s.artist = QStringLiteral("Deck Lab Fixture");
+    s.bpm = QStringLiteral("128.0");
+    s.tempo = QStringLiteral("+0.00%");
+    s.tempoCentered = true;
+    s.range = QStringLiteral("±8%");
+    s.key = QStringLiteral("12A");
+    s.keyColor = QColor(0x35, 0xc8, 0xf0);
+    s.remaining = QStringLiteral("−3:20");
+    s.quantize = true;
+    return s;
+}
+
+TEST(DeckLabKeyReadoutTest, ShiftTextIsMixxxSemitones) {
+    EXPECT_EQ(QString(), DeckLabDeckTools::shiftText(0));
+    EXPECT_EQ(QString(), DeckLabDeckTools::shiftText(0.03));
+    EXPECT_EQ(QStringLiteral("+1"), DeckLabDeckTools::shiftText(1));
+    EXPECT_EQ(QStringLiteral("+1"), DeckLabDeckTools::shiftText(0.98));
+    EXPECT_EQ(QString::fromUtf8("−2"), DeckLabDeckTools::shiftText(-2));
+    EXPECT_EQ(QStringLiteral("+0.5"), DeckLabDeckTools::shiftText(0.5));
+    EXPECT_EQ(QString::fromUtf8("−1.3"), DeckLabDeckTools::shiftText(-1.33));
+}
+
+TEST(DeckLabKeyReadoutTest, KeyAndShiftFitEveryReadoutWithoutTakingTheTempo) {
+    // "12A +1", "F#m −0.5": the key and its shift always fit; the tempo
+    // keeps its OVER outline at ±18.82% in the two-deck readout.
+    for (const auto mode : {DeckLabStripRenderer::Mode::Full, DeckLabStripRenderer::Mode::Compact}) {
+        const bool full = mode == DeckLabStripRenderer::Mode::Full;
+        for (const int width : full ? QList<int>{399, 400, 512, 640} : QList<int>{196, 199, 255}) {
+            for (const char* key : {"12A", "F#m", "10m"}) {
+                for (const char* shift : {"", "+1", "−0.5", "−6"}) {
+                    DeckLabStripRenderer renderer;
+                    renderer.setMode(mode);
+                    renderer.setSize(QSize(width, DeckLabStripRenderer::preferredHeight(mode)));
+                    auto s = loadedStrip(1);
+                    s.key = QString::fromUtf8(key);
+                    s.keyShift = QString::fromUtf8(shift);
+                    s.keyMatch = 1;
+                    s.tempo = QString::fromUtf8("−18.82%");
+                    s.tempoCentered = false;
+                    s.overRange = true;
+                    renderer.setState(s);
+                    EXPECT_TRUE(renderer.overflowingParts().isEmpty())
+                            << width << " " << key << " " << shift << ": "
+                            << renderer.overflowingParts().join(',').toStdString();
+                    EXPECT_GE(renderer.keyTarget().height(), 44);
+                    EXPECT_GE(renderer.keyTarget().width(), 44);
+                    EXPECT_GE(renderer.bpmTarget().height(), 44);
+                    EXPECT_GE(renderer.bpmTarget().width(), 44);
+                    EXPECT_FALSE(renderer.keyTarget().intersects(renderer.bpmTarget()));
+                    EXPECT_FALSE(renderer.keyTarget().intersects(renderer.rect(Part::Time)));
+                }
+            }
+        }
+    }
+}
+
+TEST(DeckLabKeyReadoutTest, MatchedKeyTurnsGreenOutlinedAndRepaintsOnlyTheKey) {
+    DeckLabDeckStrip strip(1);
+    strip.resize(400, 104);
+    auto s = loadedStrip(1);
+    s.key = QStringLiteral("3A");
+    strip.setState(s);
+    strip.grab();
+    const QRect key = strip.renderer().rect(Part::Key);
+    const QColor green(0x2f, 0xd2, 0x7a);
+    const auto countIn = [&strip](const QRect& area, const QColor& color) {
+        const QImage image = strip.grab().toImage();
+        int count = 0;
+        for (int y = area.top(); y <= area.bottom(); ++y)
+            for (int x = area.left(); x <= area.right(); ++x) count += image.pixelColor(x, y) == color;
+        return count;
+    };
+    EXPECT_EQ(0, countIn(key, green));
+    DeckLabStripRenderer renderer;
+    renderer.setSize(QSize(400, 104));
+    renderer.setState(s);
+    auto matched = s;
+    matched.keyShift = QStringLiteral("+1");
+    matched.keyMatched = true;
+    const QRegion dirty = renderer.setState(matched);
+    EXPECT_TRUE(dirty.intersects(key));
+    EXPECT_FALSE(dirty.intersects(renderer.rect(Part::Tempo)));
+    EXPECT_FALSE(dirty.intersects(renderer.rect(Part::Time)));
+    EXPECT_FALSE(dirty.intersects(renderer.rect(Part::Chips)));
+    strip.setState(matched);
+    EXPECT_GT(countIn(key.adjusted(-4, 0, 0, 0), green), 40) << "green key, shift and outline";
+    // The outline: green on the box's left edge, left of the key text.
+    const QImage image = strip.grab().toImage();
+    bool edge = false;
+    for (int y = key.top(); y <= key.bottom(); ++y) {
+        edge |= image.pixelColor(key.left() - 2, y) == green || image.pixelColor(key.left() - 1, y) == green;
+    }
+    EXPECT_TRUE(edge);
+    EXPECT_TRUE(strip.renderer().overflowingParts().isEmpty());
+}
+
+TEST(DeckLabKeyReadoutTest, KeyTouchOpensTheSheetAndBpmHoldOpensGrid) {
+    QWidget host;
+    auto* strip = new DeckLabDeckStrip(2, &host);
+    strip->resize(400, 104);
+    strip->setState(loadedStrip(2));
+    host.show();
+    QCoreApplication::processEvents();
+    int keys = 0;
+    int grids = 0;
+    int clicks = 0;
+    QObject::connect(strip, &DeckLabDeckStrip::keyTouched, &host, [&keys](int deck) { keys += deck == 2; });
+    QObject::connect(strip, &DeckLabDeckStrip::bpmHeld, &host, [&grids](int deck) { grids += deck == 2; });
+    QObject::connect(strip, &QPushButton::clicked, &host, [&clicks] { ++clicks; });
+    const auto mouse = [strip](QEvent::Type type, const QPoint& at) {
+        QMouseEvent event(type, at, strip->mapToGlobal(at), Qt::LeftButton,
+                type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(strip, &event);
+    };
+    // KEY: on touch-down, and the readout never clicks.
+    const QPoint key = strip->renderer().keyTarget().center();
+    mouse(QEvent::MouseButtonPress, key);
+    EXPECT_EQ(1, keys);
+    EXPECT_FALSE(strip->isDown());
+    mouse(QEvent::MouseButtonRelease, key);
+    EXPECT_EQ(0, clicks);
+    // A short tap on the BPM is still the readout's tap.
+    const QPoint bpm = strip->renderer().bpmTarget().center();
+    mouse(QEvent::MouseButtonPress, bpm);
+    mouse(QEvent::MouseButtonRelease, bpm);
+    EXPECT_EQ(1, clicks);
+    EXPECT_EQ(0, grids);
+    // Held: GRID, and the release no longer clicks.
+    mouse(QEvent::MouseButtonPress, bpm);
+    QTest::qWait(DeckLabDeckStrip::kGridHoldMs + 150);
+    EXPECT_EQ(1, grids);
+    mouse(QEvent::MouseButtonRelease, bpm);
+    EXPECT_EQ(1, clicks);
+    // An empty deck has no zones: the whole readout opens Browse.
+    DeckLabStripState empty;
+    empty.deck = 2;
+    strip->setState(empty);
+    EXPECT_TRUE(strip->renderer().keyTarget().isEmpty());
+    mouse(QEvent::MouseButtonPress, key);
+    mouse(QEvent::MouseButtonRelease, key);
+    EXPECT_EQ(1, keys);
+    EXPECT_EQ(2, clicks);
+}
+
+} // namespace

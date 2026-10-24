@@ -312,6 +312,37 @@ void DeckLabPadBlock::setSideColumn(QWidget* column) {
     static_cast<QHBoxLayout*>(layout())->addWidget(column);
 }
 
+void DeckLabPadBlock::setPanel(QWidget* panel) {
+    if (!panel || m_panel) {
+        return;
+    }
+    m_panel = panel;
+    panel->setParent(this);
+    panel->hide();
+    static_cast<QHBoxLayout*>(layout())->insertWidget(0, panel, 1);
+}
+
+void DeckLabPadBlock::showPanel(bool shown) {
+    shown = shown && m_panel;
+    if (shown == m_panelShown) {
+        return;
+    }
+    m_panelShown = shown;
+    if (shown) {
+        // Nothing stays held behind the sheet.
+        endHolds();
+        setSoloLatched(false);
+    }
+    m_modeCluster->setVisible(!shown);
+    m_padArea->setVisible(!shown);
+    if (m_panel) {
+        m_panel->setVisible(shown);
+    }
+    if (!shown) {
+        applyMode(true);
+    }
+}
+
 void DeckLabPadBlock::addStems(const Stems& stems) {
     if (!stems.pads) {
         return;

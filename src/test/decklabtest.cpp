@@ -64,6 +64,10 @@
 #include "widget/decklabbrowselegend.h"
 #include "widget/decklabbrowsemix.h"
 #include "widget/decklabdeckwidgets.h"
+#include "widget/decklabdecktools.h" // r5-decks
+#include "widget/decklabgridmode.h"
+#include "widget/decklabkeysheet.h"
+#include "widget/decklabpads.h"
 #include "widget/decklablabfx.h"
 #include "widget/decklablanes.h"
 #include "widget/decklabtempopresenter.h"
@@ -1635,20 +1639,22 @@ TEST_F(NativeDeckLabTest, MoreAndDialogsKeepTouchGeometryAfterShownStylePolish) 
         auto* close=dialog->findChild<QPushButton*>("decklab-track-info-close"); ASSERT_NE(nullptr,close);
         close->click(); QCoreApplication::processEvents();
     }
-    // Edit grid follows the side's layer; the loop above left it on deck 3.
+    // r5-decks: GRID (was Edit grid) follows the side's layer; the loop above
+    // left it on deck 3. It opens GRID mode on the page, not a dialog.
     ControlObject::set(ConfigKey("[DeckLabLeft]","current"),0); QTest::qWait(150);
     more->click(); QCoreApplication::processEvents();
     auto* grid=panel->findChild<QPushButton*>("decklab-1-grid"); ASSERT_NE(nullptr,grid);
     grid->click(); QCoreApplication::processEvents(); QTest::qWait(20);
-    auto* dialog=panel->findChild<QDialog*>("decklab-beatgrid-editor"); ASSERT_NE(nullptr,dialog); ASSERT_TRUE(dialog->isVisible());
-    EXPECT_TRUE(dialog->windowFlags().testFlag(Qt::FramelessWindowHint));
-    auto* heading=dialog->findChild<QLabel*>("decklab-beatgrid-title"); ASSERT_NE(nullptr,heading);
-    EXPECT_TRUE(heading->text().contains("DECK 1")); EXPECT_TRUE(heading->text().contains("GRID"));
-    checkButtons(dialog);
-    // Checked styling must retain the same physical target size after polish.
-    auto* lock=dialog->findChild<QPushButton*>("decklab-grid-bpmlock"); ASSERT_NE(nullptr,lock);
-    lock->click(); QCoreApplication::processEvents(); checkButtons(dialog);
-    auto* close=dialog->findChild<QPushButton*>("decklab-grid-close"); ASSERT_NE(nullptr,close); close->click(); QCoreApplication::processEvents();
+    EXPECT_EQ(nullptr,panel->findChild<QDialog*>("decklab-beatgrid-editor"));
+    auto* mode=panel->findChild<DeckLabGridPanel*>("decklab-grid-mode"); ASSERT_NE(nullptr,mode); ASSERT_TRUE(mode->isVisible());
+    EXPECT_EQ(1,mode->state().deck);
+    checkButtons(mode);
+    // A lit lamp keeps the same physical target size after polish.
+    auto* lock=mode->key(DeckLabGridPanel::Action::Lock); ASSERT_NE(nullptr,lock);
+    lock->click(); QCoreApplication::processEvents(); checkButtons(mode);
+    lock->click(); QCoreApplication::processEvents();
+    mode->key(DeckLabGridPanel::Action::Done)->click(); QCoreApplication::processEvents();
+    EXPECT_FALSE(mode->isVisible());
     EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel1]","play")));
     EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel3]","play")));
 }
@@ -1663,9 +1669,19 @@ TEST_F(NativeDeckLabTest, FullDeckReadoutOpensTrackInformationAndRejectsStaleGes
     EXPECT_EQ(Qt::StrongFocus,header->focusPolicy());
     auto* accessible=QAccessible::queryAccessibleInterface(header); ASSERT_NE(nullptr,accessible);
     EXPECT_EQ(QAccessible::Button,accessible->role());
-    // The whole readout is one target; nothing painted inside takes the touch.
+    // The readout is one target; nothing painted inside takes the touch.
+    // r5-decks: except its KEY readout (the key sheet, tested in
+    // KeySheetMatchesShiftsAndResetsWithMixxxKeyControls) and a held BPM
+    // (GRID mode): the title row is what opens track information.
     for(auto* child:header->findChildren<QWidget*>()) EXPECT_TRUE(child->testAttribute(Qt::WA_TransparentForMouseEvents));
-    QTest::mouseClick(header,Qt::LeftButton,Qt::NoModifier,header->rect().center());
+    const QPoint title(header->width()/3,10);
+    ASSERT_FALSE(strip(1)->renderer().keyTarget().contains(title));
+    ASSERT_FALSE(strip(1)->renderer().bpmTarget().contains(title));
+    QTest::mouseClick(header,Qt::LeftButton,Qt::NoModifier,strip(1)->renderer().keyTarget().center());
+    QCoreApplication::processEvents(); QTest::qWait(20);
+    EXPECT_EQ(nullptr,panel->findChild<QDialog*>("decklab-track-info")) << "KEY opens the key sheet instead";
+    QTest::mouseClick(header,Qt::LeftButton,Qt::NoModifier,strip(1)->renderer().keyTarget().center()); // closes it
+    QTest::mouseClick(header,Qt::LeftButton,Qt::NoModifier,title);
     QCoreApplication::processEvents(); QTest::qWait(20);
     auto* dialog=panel->findChild<QDialog*>("decklab-track-info"); ASSERT_NE(nullptr,dialog);
     EXPECT_TRUE(dialog->findChild<QTextBrowser*>("decklab-track-info-text")->toPlainText().contains(track->getTitle()));
@@ -1675,21 +1691,21 @@ TEST_F(NativeDeckLabTest, FullDeckReadoutOpensTrackInformationAndRejectsStaleGes
         dialog=panel->findChild<QDialog*>("decklab-track-info"); ASSERT_NE(nullptr,dialog); ASSERT_TRUE(dialog->isVisible());
         dialog->findChild<QPushButton*>("decklab-track-info-close")->click(); QTest::qWait(20);
     }
-    QTest::mousePress(header,Qt::LeftButton);
+    QTest::mousePress(header,Qt::LeftButton,Qt::NoModifier,title);
     ControlObject::set(ConfigKey("[DeckLabLeft]","current"),1); QCoreApplication::processEvents();
-    QTest::mouseRelease(header,Qt::LeftButton); QTest::qWait(20);
+    QTest::mouseRelease(header,Qt::LeftButton,Qt::NoModifier,title); QTest::qWait(20);
     EXPECT_EQ(nullptr,panel->findChild<QDialog*>("decklab-track-info"));
     ControlObject::set(ConfigKey("[DeckLabLeft]","current"),0); QTest::qWait(150);
-    QTest::mousePress(header,Qt::LeftButton);
+    QTest::mousePress(header,Qt::LeftButton,Qt::NoModifier,title);
     m_pMixerDeck1->loadFakeTrack(false,140); ProcessBuffer(); QCoreApplication::processEvents();
-    QTest::mouseRelease(header,Qt::LeftButton); QTest::qWait(20);
+    QTest::mouseRelease(header,Qt::LeftButton,Qt::NoModifier,title); QTest::qWait(20);
     EXPECT_EQ(nullptr,panel->findChild<QDialog*>("decklab-track-info"));
     // While the deck plays, a stray tap on its readout never covers the
     // decks; Track info stays one tap away in MORE.
     QTest::qWait(150);
     ControlObject::set(ConfigKey("[Channel1]","play"),1); ProcessBuffer(); settle();
     EXPECT_TRUE(header->accessibleDescription().contains("MORE"));
-    QTest::mouseClick(header,Qt::LeftButton,Qt::NoModifier,header->rect().center()); QTest::qWait(20);
+    QTest::mouseClick(header,Qt::LeftButton,Qt::NoModifier,title); QTest::qWait(20);
     header->setFocus(); QTest::keyClick(header,Qt::Key_Return); QTest::qWait(20);
     EXPECT_EQ(nullptr,panel->findChild<QDialog*>("decklab-track-info"));
     EXPECT_DOUBLE_EQ(1,ControlObject::get(ConfigKey("[Channel1]","play")));
@@ -2064,110 +2080,341 @@ TEST_F(NativeDeckLabTest, FourthDeckCuePopupTargetsActualDecksAndCancelsChangedC
     EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel4]","play")));
 }
 
-TEST_F(NativeDeckLabTest, BeatgridEditorUsesRealGridControlsAndRefusesUnsafeRelease) {
+// r5-decks (audit move 6): GRID mode replaces the decklab-beatgrid-editor
+// dialog. These two tests replace BeatgridEditorUsesRealGridControlsAndRefuses-
+// UnsafeRelease and SharedTrackGridEditingRequiresEveryAliasedDeckToBeQuiet:
+// the same real grid controls and stale-context guards, on the page, beside
+// the waveform; a playing deck may now be edited (flagged EDITING GRID).
+TEST_F(NativeDeckLabTest, GridModeEditsTheRealGridBesideItsWaveformAndOwnsTheKnob) {
     auto track=m_pMixerDeck1->loadFakeTrack(false,128); track->setTitle("Grid target");
-    m_pMixerDeck3->loadFakeTrack(false,132); ProcessBuffer();
+    loadGenerated(2,126,mixxx::track::io::key::E_MINOR); ProcessBuffer();
     // bpmlock requests toggle regardless of the requested value; establish
     // fixture state through the track and verify the native control follows.
     track->setBpmLocked(false); QTest::qWait(150);
     ASSERT_FALSE(track->isBpmLocked());
     ASSERT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel1]","bpmlock")));
-    auto open=[this] {
-        panel->findChild<QPushButton*>("decklab-1-more")->click(); QCoreApplication::processEvents();
-        panel->findChild<QPushButton*>("decklab-1-grid")->click(); QCoreApplication::processEvents();
-        return panel->findChild<QDialog*>("decklab-beatgrid-editor");
-    };
-    auto* dialog=open(); ASSERT_NE(nullptr,dialog); ASSERT_TRUE(dialog->isVisible());
-    EXPECT_TRUE(dialog->findChild<QLabel*>("decklab-beatgrid-title")->text().contains("Grid target"));
-    auto button=[dialog](const QString& control) { return dialog->findChild<QPushButton*>(QStringLiteral("decklab-grid-")+control); };
-    auto* later=button("beats_translate_later"); auto* align=button("beats_translate_curpos");
-    auto* half=button("beats_set_halve"); auto* twice=button("beats_set_double"); auto* lock=button("bpmlock");
-    ASSERT_NE(nullptr,later); ASSERT_NE(nullptr,align); ASSERT_NE(nullptr,half); ASSERT_NE(nullptr,twice); ASSERT_NE(nullptr,lock);
-    ASSERT_FALSE(lock->isChecked());
-    for(auto* action:{later,align,half,twice}) ASSERT_TRUE(action->isEnabled());
+    const double zoom=ControlObject::get(ConfigKey("[Channel1]","waveform_zoom"));
+    // Holding the BPM readout opens GRID mode; the release opens nothing.
+    const QPoint bpm=strip(1)->renderer().bpmTarget().center();
+    ASSERT_FALSE(bpm.isNull());
+    QTest::mousePress(strip(1),Qt::LeftButton,Qt::NoModifier,bpm);
+    QTest::qWait(DeckLabDeckStrip::kGridHoldMs+150);
+    auto* grid=panel->findChild<DeckLabGridPanel*>("decklab-grid-mode"); ASSERT_NE(nullptr,grid);
+    ASSERT_TRUE(grid->isVisible());
+    QTest::mouseRelease(strip(1),Qt::LeftButton,Qt::NoModifier,bpm); QTest::qWait(20);
+    EXPECT_EQ(nullptr,panel->findChild<QDialog*>("decklab-track-info"));
+    EXPECT_EQ(nullptr,panel->findChild<QDialog*>("decklab-beatgrid-editor")) << "no dialog any more";
+    // It takes deck 1's readout, overview and pads; deck 2 and the lanes stay.
+    EXPECT_FALSE(strip(1)->isVisible());
+    EXPECT_FALSE(panel->findChild<QWidget*>("decklab-pads-1")->isVisible());
+    EXPECT_TRUE(strip(2)->isVisible());
+    EXPECT_FALSE(strip(2)->hasFocus()) << "no focus frame handed to the other deck";
+    EXPECT_TRUE(panel->findChild<QWidget*>("decklab-pads-2")->isVisible());
+    auto* zone=panel->findChild<QWidget*>("decklab-wave-zone"); ASSERT_NE(nullptr,zone);
+    auto* row=panel->findChild<QWidget*>("decklab-deck-row"); ASSERT_NE(nullptr,row);
+    const QRect gridRect(grid->mapTo(panel.get(),QPoint()),grid->size());
+    EXPECT_FALSE(gridRect.intersects(QRect(zone->mapTo(panel.get(),QPoint()),zone->size()))) << "nothing over the lanes";
+    EXPECT_TRUE(QRect(row->mapTo(panel.get(),QPoint()),row->size()).contains(gridRect));
+    EXPECT_LE(gridRect.width(),panel->width()/2+1);
+    EXPECT_EQ(244,row->height()) << "the waveforms keep their height";
+    for(int deck=1;deck<=4;++deck) {
+        auto* lane=panel->findChild<QWidget*>(QStringLiteral("decklab-detail-%1").arg(deck));
+        if(lane&&lane->isVisible()) { EXPECT_FALSE(gridRect.intersects(QRect(lane->mapTo(panel.get(),QPoint()),lane->size()))) << deck; }
+    }
+    EXPECT_EQ(1,grid->state().deck); EXPECT_EQ(QStringLiteral("128.00"),grid->state().bpm);
+    EXPECT_EQ(QStringLiteral("PAUSED"),grid->playText());
+    // The lanes zoom in to Mixxx's closest zoom while editing.
+    if(zoom>DeckLabDeckTools::kGridZoom) { EXPECT_DOUBLE_EQ(DeckLabDeckTools::kGridZoom,ControlObject::get(ConfigKey("[Channel1]","waveform_zoom"))); }
+    // The browse knob belongs to GRID mode while it is on.
+    EXPECT_EQ(grid,decklab::knobClaimant());
+    EXPECT_TRUE(decklab::knobOwner().claimed);
+    capture(QStringLiteral("decks-grid-mode.png"));
+    const auto key=[grid](DeckLabGridPanel::Action action) { return grid->key(action); };
+    using A=DeckLabGridPanel::Action;
+    // GRID ▶ on touch-down: Mixxx's beats_translate_later.
     const auto reference=mixxx::audio::FramePos(44100);
-    const double oldBeat=track->getBeats()->findClosestBeat(reference).toEngineSamplePos();
-    later->click(); QCoreApplication::processEvents(); ProcessBuffer();
-    EXPECT_GT(track->getBeats()->findClosestBeat(reference).toEngineSamplePos(),oldBeat);
+    double oldBeat=track->getBeats()->findClosestBeat(reference).toEngineSamplePos();
+    QTest::mousePress(key(A::NudgeLater),Qt::LeftButton); ProcessBuffer();
+    EXPECT_GT(track->getBeats()->findClosestBeat(reference).toEngineSamplePos(),oldBeat) << "on touch-down";
+    QTest::mouseRelease(key(A::NudgeLater),Qt::LeftButton);
+    oldBeat=track->getBeats()->findClosestBeat(reference).toEngineSamplePos();
+    QTest::mouseClick(key(A::NudgeEarlier),Qt::LeftButton); ProcessBuffer();
+    EXPECT_LT(track->getBeats()->findClosestBeat(reference).toEngineSamplePos(),oldBeat);
+    // DOWNBEAT: a beat at the playhead, counted as beat 1.
     ControlObject::set(ConfigKey("[Channel1]","playposition"),.317); ProcessBuffer();
     const auto position=m_pChannel1->getEngineBuffer()->getExactPlayPos();
-    ASSERT_TRUE(align->isEnabled()); align->click(); QCoreApplication::processEvents(); ProcessBuffer();
+    const auto beatIndex=[&track](mixxx::audio::FramePos at) {
+        const auto beats=track->getBeats();
+        return static_cast<long long>(beats->iteratorFrom(beats->findClosestBeat(at))-beats->cfirstmarker());
+    };
+    QTest::mouseClick(key(A::Downbeat),Qt::LeftButton); ProcessBuffer();
     EXPECT_NEAR(position.toEngineSamplePos(),track->getBeats()->findClosestBeat(position).toEngineSamplePos(),2);
-    ASSERT_TRUE(half->isEnabled()); half->click(); QCoreApplication::processEvents(); ProcessBuffer(); EXPECT_NEAR(64,track->getBpm(),.001);
-    ASSERT_TRUE(twice->isEnabled()); twice->click(); QCoreApplication::processEvents(); ProcessBuffer(); EXPECT_NEAR(128,track->getBpm(),.001);
-    QTest::mousePress(twice,Qt::LeftButton); ControlObject::set(ConfigKey("[Channel1]","sync_enabled"),1); ProcessBuffer();
-    ASSERT_GT(ControlObject::get(ConfigKey("[Channel1]","sync_enabled")),0);
-    QTest::mouseRelease(twice,Qt::LeftButton); EXPECT_NEAR(128,track->getBpm(),.001);
-    EXPECT_GT(ControlObject::get(ConfigKey("[Channel1]","sync_enabled")),0);
-    ControlObject::set(ConfigKey("[Channel1]","sync_enabled"),0); ProcessBuffer(); QTest::qWait(150);
-    ASSERT_TRUE(twice->isEnabled());
-    QTest::mousePress(twice,Qt::LeftButton); ControlObject::set(ConfigKey("[Channel1]","sync_leader"),1); ProcessBuffer();
-    ASSERT_GT(ControlObject::get(ConfigKey("[Channel1]","sync_leader")),0);
-    QTest::mouseRelease(twice,Qt::LeftButton); EXPECT_NEAR(128,track->getBpm(),.001);
-    ControlObject::set(ConfigKey("[Channel1]","sync_enabled"),0); ProcessBuffer(); QTest::qWait(150);
-    ASSERT_TRUE(twice->isEnabled());
-    QTest::mousePress(twice,Qt::LeftButton); ControlObject::set(ConfigKey("[Channel1]","bpmlock"),1);
-    QTest::mouseRelease(twice,Qt::LeftButton); EXPECT_NEAR(128,track->getBpm(),.001); EXPECT_TRUE(lock->isChecked());
-    ASSERT_TRUE(lock->isEnabled()); ASSERT_TRUE(track->isBpmLocked());
-    lock->click(); QCoreApplication::processEvents();
-    ASSERT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel1]","bpmlock")));
-    ASSERT_FALSE(track->isBpmLocked()); ASSERT_FALSE(lock->isChecked());
-    ASSERT_TRUE(twice->isEnabled());
-    QTest::mousePress(twice,Qt::LeftButton); ControlObject::set(ConfigKey("[Channel1]","play"),1);
-    QTest::mouseRelease(twice,Qt::LeftButton); EXPECT_NEAR(128,track->getBpm(),.001);
-    ControlObject::set(ConfigKey("[Channel1]","play"),0); ProcessBuffer(); QTest::qWait(150);
-    QTest::mousePress(twice,Qt::LeftButton); auto replacement=m_pMixerDeck1->loadFakeTrack(false,144); ProcessBuffer();
-    QTest::mouseRelease(twice,Qt::LeftButton); EXPECT_NEAR(144,replacement->getBpm(),.001); QTest::qWait(150);
-    EXPECT_EQ(nullptr,panel->findChild<QDialog*>("decklab-beatgrid-editor"));
-    dialog=open(); ASSERT_NE(nullptr,dialog);
-    ControlObject::set(ConfigKey("[DeckLabLeft]","current"),1); QTest::qWait(150);
-    EXPECT_EQ(nullptr,panel->findChild<QDialog*>("decklab-beatgrid-editor"));
-    ControlObject::set(ConfigKey("[DeckLabLeft]","current"),0); QCoreApplication::processEvents();
-    dialog=open(); ASSERT_NE(nullptr,dialog); panel->selectPage(1); QTest::qWait(150);
-    EXPECT_EQ(nullptr,panel->findChild<QDialog*>("decklab-beatgrid-editor"));
-    EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel1]","play")));
+    EXPECT_EQ(0,((beatIndex(position)%4)+4)%4) << "beat 1 at the playhead";
+    // ◀ BEAT / BEAT ▶ slip the count a whole beat, the beats stay put.
+    const double here=track->getBeats()->findClosestBeat(position).toEngineSamplePos();
+    QTest::mouseClick(key(A::BeatLater),Qt::LeftButton); ProcessBuffer();
+    EXPECT_NEAR(here,track->getBeats()->findClosestBeat(position).toEngineSamplePos(),2);
+    EXPECT_EQ(3,((beatIndex(position)%4)+4)%4);
+    QTest::mouseClick(key(A::BeatEarlier),Qt::LeftButton); QTest::mouseClick(key(A::BeatEarlier),Qt::LeftButton); ProcessBuffer();
+    EXPECT_EQ(1,((beatIndex(position)%4)+4)%4);
+    QTest::mouseClick(key(A::BeatLater),Qt::LeftButton); ProcessBuffer();
+    EXPECT_EQ(0,((beatIndex(position)%4)+4)%4);
+    // ÷2 / ×2 and the BPM steps (Mixxx's 0.01 adjust).
+    QTest::mouseClick(key(A::Halve),Qt::LeftButton); ProcessBuffer(); EXPECT_NEAR(64,track->getBpm(),.001);
+    QTest::mouseClick(key(A::Double),Qt::LeftButton); ProcessBuffer(); EXPECT_NEAR(128,track->getBpm(),.001);
+    QTest::mouseClick(key(A::BpmUpFine),Qt::LeftButton); ProcessBuffer(); EXPECT_NEAR(128.01,track->getBpm(),.001);
+    // ±0.1 is ten of Mixxx's 0.01 steps, each rounded to a nearby round BPM.
+    QTest::mouseClick(key(A::BpmUpCoarse),Qt::LeftButton); ProcessBuffer(); EXPECT_NEAR(128.11,track->getBpm(),.006);
+    QTest::mouseClick(key(A::BpmDownCoarse),Qt::LeftButton); ProcessBuffer(); EXPECT_NEAR(128.01,track->getBpm(),.006);
+    QTest::mouseClick(key(A::BpmDownFine),Qt::LeftButton); ProcessBuffer(); EXPECT_NEAR(128,track->getBpm(),.001);
+    settle(); EXPECT_EQ(QStringLiteral("128.00"),grid->state().bpm) << "the readout follows";
+    // TAP drives bpm_tap on touch-down.
+    int taps=0;
+    ControlProxy tap("[Channel1]","bpm_tap");
+    tap.connectValueChanged(grid,[&taps](double v) { taps+=v>0; },Qt::DirectConnection);
+    QTest::mousePress(key(A::Tap),Qt::LeftButton); EXPECT_EQ(1,taps); QTest::mouseRelease(key(A::Tap),Qt::LeftButton);
+    // The knob: a turn nudges the grid, a press switches to the BPM.
+    oldBeat=track->getBeats()->findClosestBeat(reference).toEngineSamplePos();
+    decklab::forwardKnob(decklab::knobOwner(),decklab::KnobAction::Move,1); ProcessBuffer();
+    EXPECT_GT(track->getBeats()->findClosestBeat(reference).toEngineSamplePos(),oldBeat);
+    decklab::forwardKnob(decklab::knobOwner(),decklab::KnobAction::Press,1);
+    EXPECT_EQ(DeckLabGridPanel::Knob::Bpm,grid->knob());
+    decklab::forwardKnob(decklab::knobOwner(),decklab::KnobAction::Move,-1); ProcessBuffer();
+    EXPECT_NEAR(127.99,track->getBpm(),.001);
+    decklab::forwardKnob(decklab::knobOwner(),decklab::KnobAction::Move,1); ProcessBuffer();
+    EXPECT_NEAR(128,track->getBpm(),.001);
+    // LOCK is the track's BPM lock; a locked grid refuses every edit.
+    QTest::mouseClick(key(A::Lock),Qt::LeftButton); settle();
+    ASSERT_TRUE(track->isBpmLocked()); EXPECT_TRUE(key(A::Lock)->lit());
+    EXPECT_FALSE(key(A::Double)->isEnabled()); EXPECT_TRUE(grid->status().contains("locked"));
+    key(A::Double)->setEnabled(true); QTest::mouseClick(key(A::Double),Qt::LeftButton); ProcessBuffer();
+    EXPECT_NEAR(128,track->getBpm(),.001) << "the press-time guard";
+    QTest::mouseClick(key(A::Lock),Qt::LeftButton); settle();
+    ASSERT_FALSE(track->isBpmLocked()); EXPECT_TRUE(key(A::Double)->isEnabled());
+    // Sync on: edits wait (other decks would move), and say why.
+    ControlObject::set(ConfigKey("[Channel1]","sync_enabled"),1); ProcessBuffer(); settle();
+    EXPECT_FALSE(key(A::NudgeLater)->isEnabled()); EXPECT_TRUE(grid->status().contains("SYNC"));
+    key(A::Double)->setEnabled(true); QTest::mouseClick(key(A::Double),Qt::LeftButton); ProcessBuffer();
+    EXPECT_NEAR(128,track->getBpm(),.001);
+    ControlObject::set(ConfigKey("[Channel1]","sync_enabled"),0); ProcessBuffer(); settle();
+    ASSERT_TRUE(key(A::NudgeLater)->isEnabled());
+    // A playing deck can be edited, but says so in the deck colour.
+    ControlObject::set(ConfigKey("[Channel1]","play"),1); ProcessBuffer(); settle();
+    EXPECT_EQ(QStringLiteral("PLAYING"),grid->playText());
+    EXPECT_TRUE(key(A::NudgeLater)->isEnabled());
+    oldBeat=track->getBeats()->findClosestBeat(reference).toEngineSamplePos();
+    QTest::mouseClick(key(A::NudgeLater),Qt::LeftButton); ProcessBuffer();
+    EXPECT_GT(track->getBeats()->findClosestBeat(reference).toEngineSamplePos(),oldBeat);
+    capture(QStringLiteral("decks-grid-mode-playing.png"));
+    ControlObject::set(ConfigKey("[Channel1]","play"),0); ProcessBuffer(); settle();
+    // Shift+press (the knob's back) leaves GRID mode: the deck comes back.
+    ControlObject::set(ConfigKey("[DeckLabNative]","browse_back"),1);
+    ControlObject::set(ConfigKey("[DeckLabNative]","browse_back"),0); settle(); QTest::qWait(20);
+    EXPECT_FALSE(grid->isVisible());
+    EXPECT_TRUE(strip(1)->isVisible()); EXPECT_TRUE(panel->findChild<QWidget*>("decklab-pads-1")->isVisible());
+    EXPECT_NE(grid,decklab::knobClaimant());
+    EXPECT_DOUBLE_EQ(zoom,ControlObject::get(ConfigKey("[Channel1]","waveform_zoom"))) << "the zoom comes back";
+    // MORE › GRID follows the side's layer; DONE leaves.
+    panel->findChild<QPushButton*>("decklab-1-more")->click(); QCoreApplication::processEvents();
+    panel->findChild<QPushButton*>("decklab-1-grid")->click(); settle();
+    ASSERT_TRUE(grid->isVisible()); EXPECT_EQ(1,grid->state().deck);
+    QTest::mouseClick(key(A::Done),Qt::LeftButton); settle();
+    EXPECT_FALSE(grid->isVisible()); EXPECT_TRUE(strip(1)->isVisible());
+    // Leaving the page, a layer change or a new track ends GRID mode.
+    auto* tools=panel->findChild<DeckLabDeckTools*>("decklab-deck-tools"); ASSERT_NE(nullptr,tools);
+    tools->enterGrid(1); settle(); ASSERT_EQ(1,tools->gridDeck());
+    panel->selectPage(1); settle(); EXPECT_EQ(0,tools->gridDeck());
+    panel->selectPage(0); settle(); EXPECT_TRUE(strip(1)->isVisible()); EXPECT_FALSE(grid->isVisible());
+    tools->enterGrid(1); settle(); ASSERT_EQ(1,tools->gridDeck());
+    ControlObject::set(ConfigKey("[DeckLabLeft]","current"),1); QTest::qWait(150); settle();
+    EXPECT_EQ(0,tools->gridDeck()); EXPECT_FALSE(grid->isVisible());
+    ControlObject::set(ConfigKey("[DeckLabLeft]","current"),0); QTest::qWait(150); settle();
+    tools->enterGrid(1); settle(); ASSERT_EQ(1,tools->gridDeck());
+    auto replacement=m_pMixerDeck1->loadFakeTrack(false,144); ProcessBuffer(); QTest::qWait(150); settle();
+    EXPECT_EQ(0,tools->gridDeck()); EXPECT_FALSE(grid->isVisible()); EXPECT_TRUE(strip(1)->isVisible());
+    EXPECT_NEAR(144,replacement->getBpm(),.001);
+    // Four decks: the half of the deck row that holds the deck.
+    QMetaObject::invokeMethod(panel->findChild<QComboBox*>("decklab-deck-layout"),"activated",Q_ARG(int,2)); QTest::qWait(150);
+    panel->findChild<QPushButton*>("decklab-card-2-more")->click(); QCoreApplication::processEvents();
+    panel->findChild<QPushButton*>("decklab-card-2-grid")->click(); settle();
+    ASSERT_TRUE(grid->isVisible()); EXPECT_EQ(2,grid->state().deck);
+    EXPECT_FALSE(panel->findChild<QWidget*>("decklab-card-1")->isVisible());
+    EXPECT_FALSE(panel->findChild<QWidget*>("decklab-card-2")->isVisible());
+    EXPECT_TRUE(panel->findChild<QWidget*>("decklab-card-3")->isVisible());
+    EXPECT_TRUE(panel->findChild<QWidget*>("decklab-card-4")->isVisible());
+    const QRect fourRect(grid->mapTo(panel.get(),QPoint()),grid->size());
+    EXPECT_FALSE(fourRect.intersects(QRect(zone->mapTo(panel.get(),QPoint()),zone->size())));
+    EXPECT_EQ(138+44+48,row->height());
+    EXPECT_GE(fourRect.width(),panel->width()/2-4);
+    capture(QStringLiteral("decks-four-grid-mode.png"));
+    QTest::mouseClick(key(A::Done),Qt::LeftButton); settle();
+    EXPECT_TRUE(panel->findChild<QWidget*>("decklab-card-1")->isVisible());
+    EXPECT_TRUE(panel->findChild<QWidget*>("decklab-card-2")->isVisible());
+    for(int deck=1;deck<=4;++deck) EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck),"play")));
 }
 
-TEST_F(NativeDeckLabTest, SharedTrackGridEditingRequiresEveryAliasedDeckToBeQuiet) {
+TEST_F(NativeDeckLabTest, GridModeWaitsWhileTheSameTrackPlaysOrSyncsOnAnotherDeck) {
     auto shared=Track::newTemporary(getTestDir().filePath(QStringLiteral("sine-30.wav")));
     loadTrack(m_pMixerDeck1.get(),shared); loadTrack(m_pMixerDeck2.get(),shared);
     ASSERT_EQ(shared,m_pMixerDeck1->getLoadedTrack()); ASSERT_EQ(shared,m_pMixerDeck2->getLoadedTrack());
     ASSERT_TRUE(shared->trySetBpm(128)); ProcessBuffer();
     shared->setBpmLocked(false); QTest::qWait(150);
     ASSERT_FALSE(shared->isBpmLocked());
-    ASSERT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel1]","bpmlock")));
-    ASSERT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel2]","bpmlock")));
     panel->findChild<QPushButton*>("decklab-1-more")->click(); QCoreApplication::processEvents();
-    panel->findChild<QPushButton*>("decklab-1-grid")->click(); QCoreApplication::processEvents();
-    auto* dialog=panel->findChild<QDialog*>("decklab-beatgrid-editor"); ASSERT_NE(nullptr,dialog);
-    auto* half=dialog->findChild<QPushButton*>("decklab-grid-beats_set_halve");
-    auto* later=dialog->findChild<QPushButton*>("decklab-grid-beats_translate_later");
-    auto* lock=dialog->findChild<QPushButton*>("decklab-grid-bpmlock");
-    ASSERT_NE(nullptr,half); ASSERT_NE(nullptr,later); ASSERT_NE(nullptr,lock);
+    panel->findChild<QPushButton*>("decklab-1-grid")->click(); settle();
+    auto* grid=panel->findChild<DeckLabGridPanel*>("decklab-grid-mode"); ASSERT_NE(nullptr,grid); ASSERT_TRUE(grid->isVisible());
+    using A=DeckLabGridPanel::Action;
+    auto* half=grid->key(A::Halve); auto* later=grid->key(A::NudgeLater); auto* lock=grid->key(A::Lock);
     ASSERT_TRUE(half->isEnabled()); ASSERT_TRUE(later->isEnabled()); ASSERT_TRUE(lock->isEnabled());
-    ASSERT_FALSE(lock->isChecked());
     for(int busy=0;busy<3;++busy) {
         const QString control=busy==0 ? QStringLiteral("play") : busy==1 ? QStringLiteral("sync_enabled") : QStringLiteral("sync_leader");
-        ControlObject::set(ConfigKey("[Channel2]",control),1); ProcessBuffer(); QTest::qWait(150);
+        ControlObject::set(ConfigKey("[Channel2]",control),1); ProcessBuffer(); QTest::qWait(150); settle();
         ASSERT_GT(ControlObject::get(ConfigKey("[Channel2]",control)),0);
+        EXPECT_EQ(2,grid->state().sharedDeck) << control.toStdString();
         EXPECT_FALSE(half->isEnabled()); EXPECT_FALSE(later->isEnabled()); EXPECT_FALSE(lock->isEnabled());
+        EXPECT_TRUE(grid->status().contains("deck 2")) << grid->status().toStdString();
         const auto reference=mixxx::audio::FramePos(44100);
         const double beat=shared->getBeats()->findClosestBeat(reference).toEngineSamplePos();
-        // Force enabled to exercise the release guard independently of UI state.
-        for(auto* b:{half,later,lock}) { b->setEnabled(true); b->click(); }
+        // Force enabled to exercise the press-time guard independently of the UI.
+        for(auto* b:{half,later,lock}) { b->setEnabled(true); QTest::mouseClick(b,Qt::LeftButton); }
         QCoreApplication::processEvents(); ProcessBuffer();
         EXPECT_NEAR(128,shared->getBpm(),.001);
         EXPECT_DOUBLE_EQ(beat,shared->getBeats()->findClosestBeat(reference).toEngineSamplePos());
-        EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel1]","bpmlock")));
+        EXPECT_FALSE(shared->isBpmLocked());
         EXPECT_GT(ControlObject::get(ConfigKey("[Channel2]",control)),0);
         ControlObject::set(ConfigKey("[Channel2]","play"),0);
-        ControlObject::set(ConfigKey("[Channel2]","sync_enabled"),0); ProcessBuffer(); QTest::qWait(150);
+        ControlObject::set(ConfigKey("[Channel2]","sync_enabled"),0); ProcessBuffer(); QTest::qWait(150); settle();
     }
-    ASSERT_TRUE(half->isEnabled()); half->click(); QCoreApplication::processEvents(); ProcessBuffer();
+    ASSERT_TRUE(half->isEnabled()); QTest::mouseClick(half,Qt::LeftButton); ProcessBuffer();
     EXPECT_NEAR(64,shared->getBpm(),.001);
     EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel1]","play")));
     EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel2]","play")));
-    dialog->close(); QCoreApplication::processEvents();
+    QTest::mouseClick(grid->key(A::Done),Qt::LeftButton); settle();
+}
+
+// r5-decks (owner's pick #3): one touch matches this deck's key to the other
+// deck with Mixxx's sync_key; ±1 and RESET are Mixxx's pitch steps. The
+// sheet docks in the deck area (never over the lanes) in both layouts.
+TEST_F(NativeDeckLabTest, KeySheetMatchesShiftsAndResetsWithMixxxKeyControls) {
+    loadGenerated(1,128,mixxx::track::io::key::A_MINOR);
+    loadGenerated(2,126,mixxx::track::io::key::B_FLAT_MINOR); ProcessBuffer(); QTest::qWait(150); settle();
+    // The waveform tick copies the engine key into visual_key, as the app's
+    // VisualsManager does at the render rate.
+    const auto visualTick=[] {
+        for(int deck=1;deck<=4;++deck) {
+            const QString group=QStringLiteral("[Channel%1]").arg(deck);
+            ControlObject::set(ConfigKey(group,"visual_key"),ControlObject::get(ConfigKey(group,"key")));
+        }
+        settle();
+    };
+    const QString aMinor=KeyUtils::keyToString(mixxx::track::io::key::A_MINOR);
+    const QString bFlatMinor=KeyUtils::keyToString(mixxx::track::io::key::B_FLAT_MINOR);
+    ASSERT_EQ(aMinor,strip(1)->state().key); EXPECT_TRUE(strip(1)->state().keyShift.isEmpty());
+    ControlObject::set(ConfigKey("[Channel1]","keylock"),0); settle();
+    // Touch-down on the KEY readout docks the sheet in place of the pads.
+    auto* sheet=panel->findChild<DeckLabKeySheet*>("decklab-key-1"); ASSERT_NE(nullptr,sheet);
+    EXPECT_FALSE(sheet->isVisible());
+    const QPoint keyAt=strip(1)->renderer().keyTarget().center();
+    QTest::mousePress(strip(1),Qt::LeftButton,Qt::NoModifier,keyAt);
+    EXPECT_TRUE(sheet->isVisible()) << "on touch-down";
+    QTest::mouseRelease(strip(1),Qt::LeftButton,Qt::NoModifier,keyAt); QTest::qWait(20);
+    EXPECT_EQ(nullptr,panel->findChild<QDialog*>("decklab-track-info"));
+    EXPECT_FALSE(panel->findChild<QWidget*>("decklab-pads-1-area")->isVisible());
+    EXPECT_TRUE(panel->findChild<QPushButton*>("decklab-1-beatsync")->isVisible()) << "SYNC and MORE stay";
+    auto* zone=panel->findChild<QWidget*>("decklab-wave-zone"); ASSERT_NE(nullptr,zone);
+    const QRect sheetRect(sheet->mapTo(panel.get(),QPoint()),sheet->size());
+    EXPECT_FALSE(sheetRect.intersects(QRect(zone->mapTo(panel.get(),QPoint()),zone->size()))) << "nothing over the lanes";
+    EXPECT_EQ(244,panel->findChild<QWidget*>("decklab-deck-row")->height());
+    EXPECT_EQ(2,sheet->state().target);
+    EXPECT_EQ(QString(QStringLiteral("MATCH TO DECK 2 · ")+bFlatMinor),sheet->info()->text());
+    EXPECT_EQ(sheet,decklab::knobClaimant()) << "the knob drives the sheet";
+    capture(QStringLiteral("decks-key-sheet.png"));
+    using K=DeckLabKeySheet::Action;
+    // MATCH on touch-down: key lock on, then Mixxx's sync_key (A minor is
+    // a semitone under B flat minor).
+    QTest::mousePress(sheet->key(K::Match),Qt::LeftButton);
+    EXPECT_DOUBLE_EQ(1,ControlObject::get(ConfigKey("[Channel1]","keylock")));
+    EXPECT_NEAR(1,ControlObject::get(ConfigKey("[Channel1]","pitch")),.01);
+    EXPECT_EQ(static_cast<double>(mixxx::track::io::key::B_FLAT_MINOR),ControlObject::get(ConfigKey("[Channel1]","key")));
+    QTest::mouseRelease(sheet->key(K::Match),Qt::LeftButton);
+    visualTick();
+    EXPECT_EQ(bFlatMinor,strip(1)->state().key);
+    EXPECT_EQ(QStringLiteral("+1"),strip(1)->state().keyShift) << "the readout shows the key and its shift";
+    EXPECT_TRUE(strip(1)->state().keyMatched) << "the key turns the match green";
+    EXPECT_TRUE(strip(1)->state().keylock);
+    EXPECT_TRUE(sheet->key(K::Match)->lit());
+    EXPECT_TRUE(sheet->info()->text().startsWith(QStringLiteral("MATCHED")));
+    capture(QStringLiteral("decks-key-sheet-matched.png"));
+    // +1 / −1 / RESET: Mixxx's semitone steps; the match light goes out.
+    QTest::mouseClick(sheet->key(K::Up),Qt::LeftButton); visualTick();
+    EXPECT_NEAR(2,ControlObject::get(ConfigKey("[Channel1]","pitch")),.01);
+    EXPECT_EQ(QStringLiteral("+2"),strip(1)->state().keyShift); EXPECT_FALSE(strip(1)->state().keyMatched);
+    QTest::mouseClick(sheet->key(K::Down),Qt::LeftButton); QTest::mouseClick(sheet->key(K::Down),Qt::LeftButton);
+    QTest::mouseClick(sheet->key(K::Down),Qt::LeftButton); visualTick();
+    EXPECT_NEAR(-1,ControlObject::get(ConfigKey("[Channel1]","pitch")),.01);
+    EXPECT_EQ(QString::fromUtf8("−1"),strip(1)->state().keyShift);
+    QTest::mouseClick(sheet->key(K::Reset),Qt::LeftButton); visualTick();
+    EXPECT_NEAR(0,ControlObject::get(ConfigKey("[Channel1]","pitch")),.01);
+    EXPECT_TRUE(strip(1)->state().keyShift.isEmpty()); EXPECT_EQ(aMinor,strip(1)->state().key);
+    // KEY LOCK is in the sheet as a lamp.
+    QTest::mouseClick(sheet->key(K::KeyLock),Qt::LeftButton); settle();
+    EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey("[Channel1]","keylock"))); EXPECT_FALSE(sheet->key(K::KeyLock)->lit());
+    // The knob: turn to a key, press; Shift+press (back) closes.
+    ControlObject::set(ConfigKey("[DeckLabNative]","browse_press"),1); ControlObject::set(ConfigKey("[DeckLabNative]","browse_press"),0);
+    settle(); visualTick();
+    EXPECT_TRUE(strip(1)->state().keyMatched) << "the knob's press is MATCH";
+    ControlObject::set(ConfigKey("[DeckLabNative]","browse_back"),1); ControlObject::set(ConfigKey("[DeckLabNative]","browse_back"),0);
+    settle();
+    EXPECT_FALSE(sheet->isVisible()); EXPECT_TRUE(panel->findChild<QWidget*>("decklab-pads-1-area")->isVisible());
+    // A second touch on KEY closes the sheet; the readout keeps the shift.
+    QTest::mouseClick(strip(1),Qt::LeftButton,Qt::NoModifier,keyAt); ASSERT_TRUE(sheet->isVisible());
+    QTest::mouseClick(strip(1),Qt::LeftButton,Qt::NoModifier,keyAt); EXPECT_FALSE(sheet->isVisible());
+    EXPECT_EQ(QStringLiteral("+1"),strip(1)->state().keyShift);
+    // Stale guards: a layer change or a new track closes the sheet.
+    QTest::mouseClick(strip(1),Qt::LeftButton,Qt::NoModifier,keyAt); ASSERT_TRUE(sheet->isVisible());
+    ControlObject::set(ConfigKey("[DeckLabLeft]","current"),1); QTest::qWait(150); settle();
+    EXPECT_FALSE(sheet->isVisible());
+    ControlObject::set(ConfigKey("[DeckLabLeft]","current"),0); QTest::qWait(150); settle();
+    // MORE › KEY, beside KEY LOCK, opens it too.
+    panel->findChild<QPushButton*>("decklab-1-more")->click(); QCoreApplication::processEvents();
+    auto* moreKey=panel->findChild<QPushButton*>("decklab-1-key-sheet"); ASSERT_NE(nullptr,moreKey);
+    EXPECT_TRUE(moreKey->isVisible()); EXPECT_EQ(44,moreKey->height());
+    auto* moreLock=panel->findChild<QPushButton*>("decklab-1-keylock"); ASSERT_NE(nullptr,moreLock);
+    EXPECT_EQ(moreLock->y(),moreKey->y()) << "next to KEY LOCK";
+    moreKey->click(); settle();
+    ASSERT_TRUE(sheet->isVisible());
+    loadGenerated(1,130,mixxx::track::io::key::C_MAJOR); ProcessBuffer(); QTest::qWait(150); settle();
+    EXPECT_FALSE(sheet->isVisible()) << "a new track closes the sheet";
+    EXPECT_FALSE(strip(1)->state().keyMatched);
+    // Four decks: the card's overview and transport rows give way.
+    QMetaObject::invokeMethod(panel->findChild<QComboBox*>("decklab-deck-layout"),"activated",Q_ARG(int,2)); QTest::qWait(150); settle();
+    auto* card=panel->findChild<DeckLabKeySheet*>("decklab-card-key-2"); ASSERT_NE(nullptr,card);
+    const QPoint cardKey=strip(2)->renderer().keyTarget().center();
+    ASSERT_FALSE(cardKey.isNull());
+    QTest::mousePress(strip(2),Qt::LeftButton,Qt::NoModifier,cardKey);
+    EXPECT_TRUE(card->isVisible());
+    QTest::mouseRelease(strip(2),Qt::LeftButton,Qt::NoModifier,cardKey);
+    EXPECT_FALSE(panel->findChild<QWidget*>("decklab-overview-2")->isVisible());
+    EXPECT_FALSE(panel->findChild<QWidget*>("decklab-card-2-more")->isVisible());
+    EXPECT_EQ(138+44+48,panel->findChild<QWidget*>("decklab-deck-row")->height());
+    const QRect cardRect(card->mapTo(panel.get(),QPoint()),card->size());
+    EXPECT_FALSE(cardRect.intersects(QRect(zone->mapTo(panel.get(),QPoint()),zone->size())));
+    EXPECT_TRUE(QRect(strip(2)->parentWidget()->mapTo(panel.get(),QPoint()),strip(2)->parentWidget()->size()).contains(cardRect));
+    for(auto action:{K::Down,K::Match,K::Up,K::Reset,K::Done}) {
+        EXPECT_EQ(44,card->key(action)->height()); EXPECT_GE(card->key(action)->width(),44);
+    }
+    QTest::mouseClick(card->key(K::Match),Qt::LeftButton); visualTick();
+    // C major on deck 1 now: deck 2 matches it (Mixxx picks the target).
+    EXPECT_EQ(1,card->state().target);
+    EXPECT_TRUE(strip(2)->state().keyMatched);
+    EXPECT_TRUE(KeyUtils::getCompatibleKeys(KeyUtils::keyFromNumericValue(ControlObject::get(ConfigKey("[Channel1]","key"))))
+                    .contains(KeyUtils::keyFromNumericValue(ControlObject::get(ConfigKey("[Channel2]","key")))));
+    capture(QStringLiteral("decks-four-key-sheet.png"));
+    QTest::mouseClick(card->key(K::Done),Qt::LeftButton); settle();
+    EXPECT_FALSE(card->isVisible());
+    EXPECT_TRUE(panel->findChild<QWidget*>("decklab-overview-2")->isVisible());
+    EXPECT_TRUE(panel->findChild<QWidget*>("decklab-card-2-more")->isVisible());
+    for(int deck=1;deck<=4;++deck) EXPECT_DOUBLE_EQ(0,ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck),"play")));
 }
 
 TEST_F(NativeDeckLabTest, SideUtilitiesOperateRealLoopsAndModesWithoutRetargetingHeldActions) {
@@ -2904,8 +3151,8 @@ TEST_F(NativeDeckLabTest, PadModesAndReadoutRowsFollowTheRealDecks) {
     EXPECT_EQ(QStringLiteral("E"), panel->findChild<QPushButton*>("decklab-hotcue-1-5")->text());
     EXPECT_TRUE(loopMode->accessibleName().contains("loop is running"));
     ControlObject::set(ConfigKey("[Channel1]", "loop_enabled"), 0); settle();
-    // Four decks: each card's MORE holds the same pad block, QNT, KEY LOCK
-    // and SLIP, Track info and Edit grid.
+    // Four decks: each card's MORE holds the same pad block, QNT, KEY LOCK,
+    // KEY (r5-decks) and SLIP, Track info and GRID.
     QMetaObject::invokeMethod(panel->findChild<QComboBox*>("decklab-deck-layout"), "activated", Q_ARG(int, 2)); QTest::qWait(150);
     EXPECT_EQ(138 + 44 + 48, panel->findChild<QWidget*>("decklab-deck-row")->height());
     panel->findChild<QPushButton*>("decklab-card-1-more")->click(); QCoreApplication::processEvents();
@@ -2914,7 +3161,8 @@ TEST_F(NativeDeckLabTest, PadModesAndReadoutRowsFollowTheRealDecks) {
     EXPECT_TRUE(block->isVisible());
     for (const char* name : {"decklab-card-pads-1-mode-cue", "decklab-card-pads-1-mode-loop", "decklab-card-pads-1-mode-roll",
                  "decklab-card-hotcue-1-1", "decklab-card-hotcue-1-8", "decklab-card-1-quantize", "decklab-card-1-keylock",
-                 "decklab-card-1-slip_enabled", "decklab-card-1-track-info", "decklab-card-1-grid"}) {
+                 "decklab-card-1-slip_enabled", "decklab-card-1-track-info", "decklab-card-1-grid",
+                 "decklab-card-1-key-sheet"}) {
         auto* key = panel->findChild<QPushButton*>(QString::fromLatin1(name)); ASSERT_NE(nullptr, key) << name;
         EXPECT_TRUE(key->isVisible()) << name; EXPECT_EQ(44, key->height()) << name; EXPECT_GE(key->width(), 44) << name;
         EXPECT_TRUE(menu->rect().contains(QRect(key->mapTo(menu, QPoint()), key->size()))) << name;

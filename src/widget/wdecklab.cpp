@@ -75,6 +75,7 @@
 #include "widget/decklabsampler.h"         // r4-sampler
 #include "widget/decklabsamplercontrols.h" // r4-sampler
 #include "widget/decklabpads.h" // r4-decks: pad modes
+#include "widget/decklabdecktools.h" // r5-decks: key sheet and GRID mode
 #include "widget/decklabbrowsedock.h"
 #include "widget/decklabbrowsehome.h"
 #include "widget/decklabbrowselegend.h"
@@ -855,6 +856,27 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     m_pages->setObjectName("decklab-pages");
     m_pages->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
     m_pages->addWidget(new QWidget(m_pages));
+    // r5-decks: the key sheet and GRID mode (widget/decklabdecktools.h).
+    {
+        DeckLabDeckTools::Host tools;
+        tools.read = [this](int deck, const QString& item) { return value(channel(deck), item); };
+        tools.write = [this](int deck, const QString& item, double v) { set(channel(deck), item, v); };
+        tools.watch = [this](int deck, const QString& item, std::function<void(double)> changed) { watch(channel(deck), item, std::move(changed)); };
+        tools.displayedDeck = [this](int side) { return displayedDeck(side); };
+        tools.fourDecks = [this] { return m_fourDeckLayout; };
+        tools.onDecks = [this] { return m_page == 0; };
+        tools.track = [this](int deck) {
+            auto* player = m_players ? m_players->getPlayer(channel(deck)) : nullptr;
+            return player ? player->getLoadedTrack() : TrackPointer();
+        };
+        tools.shownTrack = [this](int deck) { return m_tracks[deck - 1]; };
+        tools.refresh = [this](int deck) { markDeckDirty(deck); };
+        tools.relayout = [this] { updateLayers(); };
+        tools.overview = [this](int deck) { return m_overviews[deck - 1]; };
+        tools.cardTransport = [this](int deck) { return m_cardTransports[deck - 1]; };
+        tools.stripState = [this](int deck) -> const DeckLabStripState& { return m_stripStates[deck - 1]; };
+        m_deckTools = new DeckLabDeckTools(tools, m_deckGrid, this);
+    }
     m_deckControls = buildDecks();
     m_pages->addWidget(buildBrowse());
     m_pages->addWidget(buildSampler());
@@ -1206,16 +1228,23 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
             showTrackInfo(target());
         }, owner, prefix + QStringLiteral("track-info"));
         info->setStyleSheet(kActionStyle); info->setFixedHeight(44);
-        auto* grid = button(tr("Edit grid"), [this, deck, menu, followsLayer] { menu->close(); showBeatgrid(deck, followsLayer); },
+        // r5-decks: GRID mode on the page (decklabgridmode.h), not a dialog.
+        auto* grid = button(tr("GRID"), [this, deck, menu, followsLayer] { menu->close(); showBeatgrid(deck, followsLayer); },
                 owner, prefix + QStringLiteral("grid"));
         grid->setStyleSheet(kActionStyle); grid->setFixedHeight(44);
+        grid->setAccessibleName(tr("Edit the beat grid on the waveform"));
         return QList<QWidget*>{info, grid};
     };
     // QNT, KEY LOCK and SLIP: set once and left, so they live in MORE; the
     // readout lights KEY and SLIP, and QNT OFF only when quantize is off.
-    const auto deckKeys = [&makeAction] {
+    // r5-decks: KEY (the key sheet: MATCH, ±1, RESET) beside KEY LOCK.
+    const auto deckKeys = [this, &makeAction, target, prefix](QWidget* owner, QMenu* menu) {
+        auto* key = button(tr("KEY"), [this, target, menu] { menu->close(); m_deckTools->openKeySheet(target()); },
+                owner, prefix + QStringLiteral("key-sheet"));
+        key->setStyleSheet(kActionStyle); key->setFixedHeight(44); key->setMinimumWidth(44);
+        key->setAccessibleName(tr("Key sheet: match or shift the key"));
         return QList<QWidget*>{makeAction(tr("QNT"), QStringLiteral("quantize"), true),
-                makeAction(tr("KEY LOCK"), QStringLiteral("keylock"), true),
+                makeAction(tr("KEY LOCK"), QStringLiteral("keylock"), true), key,
                 makeAction(tr("SLIP"), QStringLiteral("slip_enabled"), true)};
     };
     if (followsLayer) {
@@ -1232,7 +1261,7 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
         auto* play = makeAction(tr("PLAY"), QStringLiteral("play"), true);
         auto* cue = makeAction(tr("CUE (hold)"), QStringLiteral("cue_default"));
         addGroup(sheet, rows, tr("PLAY"), {play, cue});
-        addGroup(sheet, rows, tr("DECK"), deckKeys());
+        addGroup(sheet, rows, tr("DECK"), deckKeys(sheet, menu)); // r5-decks: + KEY
         addGroup(sheet, rows, tr("TRACK"), trackKeys(sheet, menu));
         addGroup(sheet, rows, tr("VIEW"), zoomKeys(sheet));
         sheet->setMinimumWidth(320);
@@ -1268,7 +1297,7 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
         // class in four-deck view.
         addGroup(content, rows, tr("PADS"), {});
         rows->addWidget(buildPads(deck, false, content));
-        addGroup(content, rows, tr("DECK"), deckKeys());
+        addGroup(content, rows, tr("DECK"), deckKeys(content, menu)); // r5-decks: + KEY
         addGroup(content, rows, tr("TRACK"), trackKeys(content, menu));
         addGroup(content, rows, tr("VIEW"), zoomKeys(content));
         content->setMinimumWidth(392);
@@ -1442,100 +1471,11 @@ void WDeckLab::refreshPads(int deck, bool card) {
     block->setDeckState(state);
 }
 
+// r5-decks (audit move 6): the grid is edited on the page, beside the
+// waveform being aligned (GRID mode, widget/decklabgridmode.h), instead of in
+// the old decklab-beatgrid-editor dialog that covered it.
 void WDeckLab::showBeatgrid(int deck, bool followsLayer) {
-    const int actual = followsLayer ? displayedDeck(deck - 1) : deck;
-    const QString group = channel(actual);
-    auto* player = m_players ? m_players->getPlayer(group) : nullptr;
-    const TrackPointer track = player ? player->getLoadedTrack() : TrackPointer();
-    if (!track) return;
-    const quint64 epoch = m_interactionEpoch;
-    auto* dialog = new QDialog(this, Qt::Dialog | Qt::FramelessWindowHint); dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->setObjectName(QStringLiteral("decklab-beatgrid-editor"));
-    dialog->setWindowTitle(tr("Deck %1 beatgrid").arg(actual));
-    dialog->setStyleSheet(kDialogStyle);
-    auto* content = column(dialog, 8); content->setSpacing(8);
-    auto* title = new QLabel(dialog); title->setObjectName(QStringLiteral("decklab-beatgrid-title")); title->setFixedHeight(48);
-    title->setProperty("heading", true);
-    content->addWidget(title);
-    auto* hint = new QLabel(tr("Pause the deck to edit its grid."), dialog); hint->setFixedHeight(32); content->addWidget(hint);
-    const auto current = [this, deck, followsLayer, actual, track, epoch] {
-        auto* player = m_players ? m_players->getPlayer(channel(actual)) : nullptr;
-        return epoch == m_interactionEpoch && (!followsLayer || displayedDeck(deck - 1) == actual) &&
-                player && player->getLoadedTrack() == track && value(channel(actual), "track_loaded") > 0;
-    };
-    const auto quietShared = [this, track] {
-        for (int deck = 1; deck <= 4; ++deck) {
-            auto* player = m_players ? m_players->getPlayer(channel(deck)) : nullptr;
-            if (player && player->getLoadedTrack() == track &&
-                    (value(channel(deck), "play") > 0 || value(channel(deck), "sync_enabled") > 0 ||
-                            value(channel(deck), "sync_leader") > 0)) return false;
-        }
-        return true;
-    };
-    auto update = std::make_shared<std::function<void()>>();
-    QList<QPushButton*> edits;
-    auto make = [this, dialog, current, quietShared, group, track, update, &edits](const QString& text, const QString& item, bool lock) {
-        auto pressed = std::make_shared<quint64>(0);
-        auto* b = button(text, [this, dialog, current, quietShared, group, track, update, pressed, item, lock] {
-            if (!current()) { dialog->close(); return; }
-            if (*pressed == m_interactionEpoch && quietShared() && !value(group, "play") &&
-                    (lock || (!value(group, "bpmlock") && !value(group, "sync_enabled") &&
-                                     !value(group, "sync_leader") && track->getBeats()))) {
-                if (lock) set(group, item, !value(group, item));
-                else pulse(group, item);
-            }
-            if (*update) (*update)();
-        }, dialog, QStringLiteral("decklab-grid-%1").arg(item));
-        b->setFixedHeight(44); b->setCheckable(lock);
-        connect(b, &QPushButton::pressed, this, [this, pressed] { *pressed = m_interactionEpoch; });
-        if (!lock) edits.append(b);
-        return b;
-    };
-    auto* shifts = row();
-    shifts->addWidget(make(QString::fromUtf8("‹ ") + tr("GRID"), QStringLiteral("beats_translate_earlier"), false), 1);
-    shifts->addWidget(make(tr("BEAT HERE"), QStringLiteral("beats_translate_curpos"), false), 1);
-    shifts->addWidget(make(tr("GRID") + QString::fromUtf8(" ›"), QStringLiteral("beats_translate_later"), false), 1); content->addLayout(shifts);
-    auto* tempo = row();
-    tempo->addWidget(make(tr("BPM −"), QStringLiteral("beats_adjust_slower"), false), 1);
-    tempo->addWidget(make(tr("BPM +"), QStringLiteral("beats_adjust_faster"), false), 1); content->addLayout(tempo);
-    auto* scale = row();
-    scale->addWidget(make(QString::fromUtf8("÷2"), QStringLiteral("beats_set_halve"), false), 1);
-    scale->addWidget(make(QString::fromUtf8("×2"), QStringLiteral("beats_set_double"), false), 1); content->addLayout(scale);
-    // Accessible names keep the full meaning of the short labels.
-    const std::array<std::pair<const char*, const char*>, 7> spoken{{
-            {"beats_translate_earlier", QT_TR_NOOP("Move the grid earlier")},
-            {"beats_translate_curpos", QT_TR_NOOP("Put a beat at the playhead")},
-            {"beats_translate_later", QT_TR_NOOP("Move the grid later")},
-            {"beats_adjust_slower", QT_TR_NOOP("Grid BPM slower")},
-            {"beats_adjust_faster", QT_TR_NOOP("Grid BPM faster")},
-            {"beats_set_halve", QT_TR_NOOP("Half grid BPM")},
-            {"beats_set_double", QT_TR_NOOP("Double grid BPM")}}};
-    for (const auto& [item, name] : spoken)
-        if (auto* edit = dialog->findChild<QPushButton*>(QStringLiteral("decklab-grid-") + QString::fromLatin1(item)))
-            edit->setAccessibleName(tr(name));
-    auto* footer = row();
-    auto* lock = make(tr("LOCK"), QStringLiteral("bpmlock"), true); footer->addWidget(lock, 1);
-    auto* close = button(tr("Close"), [dialog] { dialog->close(); }, dialog, QStringLiteral("decklab-grid-close")); close->setFixedHeight(44); footer->addWidget(close, 1); content->addLayout(footer);
-    *update = [this, dialog, current, quietShared, group, track, actual, title, hint, lock, edits] {
-        if (!current()) { dialog->close(); return; }
-        const bool paused = !value(group, "play"); const bool locked = value(group, "bpmlock") > 0;
-        const bool synced = value(group, "sync_enabled") > 0 || value(group, "sync_leader") > 0;
-        const bool sharedSafe = quietShared();
-        const bool beats = bool(track->getBeats());
-        const double bpm = value(group, "local_bpm");
-        setTextIf(title, tr("DECK %1 · GRID · %2 BPM\n%3").arg(actual).arg(
-                util_isfinite(bpm) && bpm > 0 ? QString::number(bpm, 'f', 2) : QStringLiteral("—"),
-                title->fontMetrics().elidedText(track->getTitle(), Qt::ElideRight, 660)));
-        setTextIf(hint, !sharedSafe ? tr("This track is also playing or synced on another deck. Stop it there first.") : !paused ? tr("Pause the deck to edit its grid.") : !beats ? tr("No beat grid yet. Analyse the track first.") : synced ? tr("Turn SYNC off to edit the grid.") : locked ? tr("Grid locked. Tap LOCK to edit.") : tr("Editing. Changes save to this track."));
-        // LOCK is a lamp: filled while the grid is locked, never ON/OFF words.
-        lock->setEnabled(paused && sharedSafe); lock->setChecked(locked);
-        setAccessibleNameIf(lock, locked ? tr("Grid lock, locked") : tr("Grid lock, unlocked"));
-        for (auto* b : edits) b->setEnabled(paused && sharedSafe && !locked && !synced && beats);
-    };
-    auto* timer = new QTimer(dialog); connect(timer, &QTimer::timeout, dialog, [update] { if (*update) (*update)(); });
-    timer->start(100); (*update)();
-    dialog->resize(760, 420); dialog->move(mapToGlobal(QPoint((width() - 760) / 2, (height() - 420) / 2)));
-    dialog->setWindowModality(Qt::WindowModal); dialog->open();
+    m_deckTools->enterGrid(followsLayer ? displayedDeck(deck - 1) : deck);
 }
 
 QWidget* WDeckLab::buildDecks() {
@@ -1550,6 +1490,7 @@ QWidget* WDeckLab::buildDecks() {
         pads->setOuterMargins(4, 4, 4, 0);
         m_sideUtilities[deck - 1] = buildTransport(deck, true, pads);
         pads->setSideColumn(m_sideUtilities[deck - 1]);
+        m_deckTools->attachSide(deck - 1, pads); // r5-decks: the key sheet docks in place of the pads
         pads->hide();
     }
     page->hide(); return page;
@@ -2383,6 +2324,7 @@ void WDeckLab::ensureDeckSurfaces(int deck) {
     m_cardTransports[deck - 1] = buildTransport(deck, false, card);
     cardRows->addWidget(m_cardTransports[deck - 1]);
     m_cardTransports[deck - 1]->hide();
+    m_deckTools->attachCard(deck, card, strip); // r5-decks: KEY touch, BPM hold, the card's key sheet
     // r4-decks: stem pads are STEM mode in the side pad blocks (buildPads),
     // not a row of their own: no layout change when a stem track loads.
     card->hide();
@@ -3568,6 +3510,7 @@ void WDeckLab::refreshDeck(int deck) {
     state.quantize = state.loaded && d.quantize->get() > 0;
     state.looping = state.loaded && d.loop->get() > 0;
     state.loopSize = beatLoopSizeText(d.loopSize->get());
+    m_deckTools->fillKey(deck, state); // r5-decks: "8A +1" and the MATCH result
     fillDeckClock(deck, state);
     m_stripStates[deck - 1] = state;
     applyDeck(deck);
@@ -3658,6 +3601,7 @@ void WDeckLab::refreshDeckClock(int deck) {
     if (state == m_stripStates[deck - 1]) return;
     m_stripStates[deck - 1] = state;
     if (m_strips[deck - 1]) m_strips[deck - 1]->setState(state);
+    m_deckTools->showState(deck); // r5-decks: the open key sheet / GRID panel
     if (m_minis[deck - 1]) m_minis[deck - 1]->setState(state);
     refreshDockFor(deck); // r4-browse
     if (!m_laneDecks->isHidden()) m_laneDecks->setDeck(deck, state, m_shownPosition[deck - 1]); // r4-waveforms
@@ -3674,6 +3618,7 @@ void WDeckLab::applyDeck(int deck) {
                                         : tr("Read the full title, artist and source"));
     }
     if (auto* mini = m_minis[deck - 1]) mini->setState(state);
+    m_deckTools->showState(deck); // r5-decks: the open key sheet / GRID panel
     refreshDockFor(deck); // r4-browse
     if (!m_laneDecks->isHidden()) m_laneDecks->setDeck(deck, state, m_shownPosition[deck - 1]); // r4-waveforms
     const int side = deck % 2 ? 0 : 1;
@@ -4759,6 +4704,7 @@ void WDeckLab::updateLayers() {
     }
     // r4-decks: stems are a pad mode (decklabpads.h), so a stem track no
     // longer changes the layout (round 3 took a 48 px row from the waveforms).
+    signature |= m_deckTools->layoutSignature(); // r5-decks: GRID mode
     if (signature == m_layoutSignature) {
         for (int deck = 1; deck <= 4; ++deck) markDeckDirty(deck);
         refreshLoadButtons();
@@ -4844,6 +4790,7 @@ void WDeckLab::updateLayers() {
                     : DeckLabStripRenderer::preferredHeight(DeckLabStripRenderer::Mode::Full) + kOverviewHeight +
                             4 + DeckLabPadBlock::kBlockHeight);
     setVisibleIf(m_deckRow, decks);
+    m_deckTools->applyLayout(); // r5-decks: GRID mode's place; stale sheets close
     // r4-waveforms: the DECKS row under compact lanes; refreshDeck() below
     // gives it every deck's state.
     if (compact) m_laneDecks->setChoice(laneChoice);

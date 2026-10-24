@@ -45,6 +45,9 @@
 #include "util/cmdlineargs.h"
 #include "widget/decklabbrowse.h"
 #include "widget/decklabsampler.h"
+#include "widget/decklabdecktools.h" // r5-decks
+#include "widget/decklabgridmode.h"
+#include "widget/decklabkeysheet.h"
 #include "widget/decklabbrowsemix.h"
 #include "widget/wdecklab.h"
 #include "widget/wlibrary.h"
@@ -490,6 +493,114 @@ void captureSampler(WDeckLab* surface, const QString& output, const std::functio
     };
     (*next)();
 }
+
+// r5-decks: the key sheet (after MATCH) and GRID mode in both layouts, with
+// two generated demo tracks paused on decks 1 and 2 (8A and 2A: MATCH takes
+// deck 1 up a semitone to 3A). Like the Browse and Sampler captures they reuse
+// the surface checks and do not change the reported screen count.
+void captureDeckTools(WDeckLab* surface, const QString& output, const std::function<void()>& check,
+        const std::shared_ptr<QJsonArray>& failures, const std::function<void()>& done) {
+    auto* tools = surface->findChild<DeckLabDeckTools*>(QStringLiteral("decklab-deck-tools"));
+    const auto layout = [surface](int index) {
+        QMetaObject::invokeMethod(surface->findChild<QComboBox*>("decklab-deck-layout"), "activated", Q_ARG(int, index));
+    };
+    const auto shown = [surface](const QString& name) {
+        auto* widget = surface->findChild<QWidget*>(name);
+        return widget && widget->isVisible();
+    };
+    auto captures = std::make_shared<QList<BrowseCapture>>(QList<BrowseCapture>{
+            {QString(), 900, [surface] {
+                 // Deck 2 gets a second demo track (never played).
+                 surface->selectPage(1);
+                 if (!selectTrack(surface, QStringLiteral("Concrete Bloom"))) return false;
+                 ControlObject::set(ConfigKey("[Channel2]", "LoadSelectedTrack"), 1);
+                 ControlObject::set(ConfigKey("[Channel2]", "LoadSelectedTrack"), 0);
+                 return true;
+             }},
+            {QStringLiteral("app-decks-key-sheet.png"), 700, [surface, tools, layout, shown] {
+                 // Silent fixtures have no grid until loaded: their demo tempo.
+                 for (const auto& [deck, bpm] : {std::pair{1, 122.0}, std::pair{2, 130.0}}) {
+                     if (const TrackPointer loaded = PlayerInfo::instance().getTrackInfo(
+                                 QStringLiteral("[Channel%1]").arg(deck))) {
+                         loaded->trySetBpm(bpm);
+                     }
+                 }
+                 layout(1);
+                 surface->selectPage(0);
+                 QCoreApplication::processEvents();
+                 if (!tools) return false;
+                 tools->openKeySheet(1);
+                 return shown(QStringLiteral("decklab-key-1"));
+             }},
+            {QStringLiteral("app-decks-key-matched.png"), 700, [surface, shown] {
+                 clickVisible(surface, QStringLiteral("decklab-key-1-match"));
+                 return shown(QStringLiteral("decklab-key-1"));
+             }},
+            {QStringLiteral("app-decks-grid.png"), 700, [surface, tools, shown] {
+                 clickVisible(surface, QStringLiteral("decklab-key-1-done"));
+                 if (!tools) return false;
+                 tools->enterGrid(1);
+                 return shown(QStringLiteral("decklab-grid-mode")) && !shown(QStringLiteral("decklab-info-hit-1"));
+             }},
+            {QStringLiteral("app-decks-four-key-sheet.png"), 900, [surface, tools, layout, shown] {
+                 if (!tools) return false;
+                 tools->leaveGrid();
+                 layout(2);
+                 surface->selectPage(0);
+                 QCoreApplication::processEvents();
+                 tools->openKeySheet(2);
+                 return shown(QStringLiteral("decklab-card-key-2"));
+             }},
+            {QStringLiteral("app-decks-four-grid.png"), 700, [surface, tools, shown] {
+                 clickVisible(surface, QStringLiteral("decklab-card-key-2-done"));
+                 if (!tools) return false;
+                 tools->enterGrid(1);
+                 return shown(QStringLiteral("decklab-grid-mode")) && !shown(QStringLiteral("decklab-card-1"));
+             }},
+    });
+    auto index = std::make_shared<int>(0);
+    auto next = std::make_shared<std::function<void()>>();
+    *next = [=] {
+        if (*index >= captures->size()) {
+            if (tools) {
+                tools->leaveGrid();
+                tools->closeKeySheets();
+            }
+            done();
+            return;
+        }
+        const BrowseCapture capture = captures->at(*index);
+        if (!capture.action()) failures->append(QString(QStringLiteral("Decks capture could not reach: ") +
+                (capture.name.isEmpty() ? QStringLiteral("loading") : capture.name)));
+        QTimer::singleShot(capture.waitMs, surface, [=] {
+            check();
+            // Every key of the sheet and GRID mode is a 44 px target, and
+            // neither crosses the waveform lanes (native GL windows).
+            auto* zone = surface->findChild<QWidget*>(QStringLiteral("decklab-wave-zone"));
+            const QRect lanes = zone ? QRect(zone->mapTo(surface, QPoint()), zone->size()) : QRect();
+            QList<QWidget*> panels;
+            for (auto* sheet : surface->findChildren<DeckLabKeySheet*>()) panels << sheet;
+            for (auto* grid : surface->findChildren<DeckLabGridPanel*>()) panels << grid;
+            for (auto* tool : std::as_const(panels)) {
+                if (!tool->isVisible()) continue;
+                if (QRect(tool->mapTo(surface, QPoint()), tool->size()).intersects(lanes))
+                    failures->append(QString(QStringLiteral("Over the waveform lanes: ") + tool->objectName()));
+                for (auto* button : tool->findChildren<QPushButton*>()) {
+                    if (button->isVisible() && (button->height() < 44 || button->width() < 44))
+                        failures->append(QStringLiteral("Small Decks touch target %1 (%2x%3)")
+                                                 .arg(button->objectName())
+                                                 .arg(button->width())
+                                                 .arg(button->height()));
+                }
+            }
+            if (!capture.name.isEmpty() && !surface->grab().save(QDir(output).filePath(capture.name)))
+                failures->append("Screenshot failed");
+            ++*index;
+            (*next)();
+        });
+    };
+    (*next)();
+}
 } // namespace
 
 void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
@@ -505,6 +616,7 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
     auto failures = std::make_shared<QJsonArray>();
     auto browseDone = std::make_shared<bool>(false);
     auto samplerDone = std::make_shared<bool>(false); // r4-sampler
+    auto decksDone = std::make_shared<bool>(false); // r5-decks
     // A step whose action outlasts the timer interval (seen under qemu) must not
     // be run again, or the next step's action is skipped: wait for its capture.
     auto capturing = std::make_shared<bool>(false);
@@ -704,6 +816,12 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
             // r4-sampler: Sampler captures after Browse (uncounted).
             timer->stop();
             captureSampler(surface, output, check, failures, [=] { *samplerDone = true; timer->start(350); });
+            return;
+        }
+        else if (!*decksDone) {
+            // r5-decks: key sheet and GRID mode captures (uncounted).
+            timer->stop();
+            captureDeckTools(surface, output, check, failures, [=] { *decksDone = true; timer->start(350); });
             return;
         }
         else {

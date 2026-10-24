@@ -26,6 +26,7 @@ class DeckLabLabFx; // r4-labfx: the Lab FX page (widget/decklablabfx.h)
 class DeckLabLaneDecks; // r4-waveforms: the DECKS row under compact lanes (widget/decklablanes.h)
 class DeckLabSampler;
 class DeckLabPadBlock;
+class DeckLabDeckTools; // r5-decks: key sheet and GRID mode (widget/decklabdecktools.h)
 class DeckLabStemPads;
 class DeckLabRail;
 class DeckLabSettingsPage;
@@ -119,7 +120,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     // r4-decks: the pad block (decklabpads.h) for a side row or a card's MORE.
     DeckLabPadBlock* buildPads(int deck, bool followsLayer, QWidget* parent);
     void refreshPads(int deck, bool card);
-    void showBeatgrid(int deck, bool followsLayer);
+    void showBeatgrid(int deck, bool followsLayer); // r5-decks: enters GRID mode
     void showTrackInfo(int actualDeck);
     void showControllerFxInfo();
     void refreshTransport(int deck, const QString& prefix);
@@ -354,6 +355,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     // (follows the layer), one per card's MORE in four-deck view.
     std::array<DeckLabPadBlock*, 2> m_sidePads{};
     std::array<DeckLabPadBlock*, 4> m_cardPads{};
+    DeckLabDeckTools* m_deckTools = nullptr; // r5-decks
     bool m_sideBySideWaveforms = false;
     double m_linkedZoom = 0;
     bool m_zoomPending = false;

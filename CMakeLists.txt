@@ -1783,6 +1783,9 @@ add_library(
   src/widget/decklabsampler.cpp
   src/widget/decklabsamplercontrols.cpp
   src/widget/decklabpads.cpp
+  src/widget/decklabkeysheet.cpp
+  src/widget/decklabgridmode.cpp
+  src/widget/decklabdecktools.cpp
   src/widget/decklabstempads.cpp
   src/widget/decklablabfx.cpp
   src/widget/decklablanes.cpp
@@ -2813,6 +2816,7 @@ if(BUILD_TESTING)
     src/test/decklabsamplertest.cpp
     src/test/decklabstemstest.cpp
     src/test/decklabpadstest.cpp
+    src/test/decklabdecktoolstest.cpp
     src/test/decklabvsynctest.cpp
     src/test/decklablabfxtest.cpp
     src/test/decklablanestest.cpp

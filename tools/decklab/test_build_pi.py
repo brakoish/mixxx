@@ -145,8 +145,9 @@ class BuildGuards(unittest.TestCase):
                          "MasterLockMissingBeatGridAndSavedLoopIndicatorsUseRealState",
                          "NativeComboPopupRowsHaveTouchHeight",
                          "FourthDeckCuePopupTargetsActualDecksAndCancelsChangedContext",
-                         "BeatgridEditorUsesRealGridControlsAndRefusesUnsafeRelease",
-                         "SharedTrackGridEditingRequiresEveryAliasedDeckToBeQuiet",
+                         "GridModeEditsTheRealGridBesideItsWaveformAndOwnsTheKnob",
+                         "GridModeWaitsWhileTheSameTrackPlaysOrSyncsOnAnotherDeck",
+                         "KeySheetMatchesShiftsAndResetsWithMixxxKeyControls",
                          "Lv2PreparationUsesSelectedRateWithoutAudio", "TouchSearchUsesNativeKeyboardAndReturnsWaveforms"):
                 required += '<testcase name="%s" classname="NativeDeckLabTest" status="run"/>' % name
             for name in ("EdgeLabelsStayInsideWithoutChangingWidth", "OverwideLabelsRemainInsideAtBothEdges",
@@ -161,7 +162,7 @@ class BuildGuards(unittest.TestCase):
             for name in sorted(build_pi.SYSTEM_SETUP_TESTS):
                 required += '<testcase name="%s" classname="DeckLabSystemTest" status="run"/>' % name
             path.write_text('<testsuites failures="0" errors="0"><testsuite>' + common + required + '</testsuite></testsuites>')
-            self.assertEqual(build_pi.test_summary(path)["enabled_passed"], 234 + len(build_pi.SYSTEM_SETUP_TESTS))
+            self.assertEqual(build_pi.test_summary(path)["enabled_passed"], 235 + len(build_pi.SYSTEM_SETUP_TESTS))
             path.write_text(path.read_text().replace('failures="0"', 'failures="1"'))
             with self.assertRaises(ValueError):
                 build_pi.test_summary(path)

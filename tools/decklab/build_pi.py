@@ -133,8 +133,9 @@ def test_summary(path):
                     "MasterLockMissingBeatGridAndSavedLoopIndicatorsUseRealState",
                     "NativeComboPopupRowsHaveTouchHeight",
                     "FourthDeckCuePopupTargetsActualDecksAndCancelsChangedContext",
-                    "BeatgridEditorUsesRealGridControlsAndRefusesUnsafeRelease",
-                    "SharedTrackGridEditingRequiresEveryAliasedDeckToBeQuiet",
+                    "GridModeEditsTheRealGridBesideItsWaveformAndOwnsTheKnob",
+                    "GridModeWaitsWhileTheSameTrackPlaysOrSyncsOnAnotherDeck",
+                    "KeySheetMatchesShiftsAndResetsWithMixxxKeyControls",
                     "Lv2PreparationUsesSelectedRateWithoutAudio", "TouchSearchUsesNativeKeyboardAndReturnsWaveforms"}.issubset(native_ui)
             or not {"EdgeLabelsStayInsideWithoutChangingWidth", "OverwideLabelsRemainInsideAtBothEdges",
                     "HotcueIdentifiersPreserveNumericDefaultAndSavedLabels", "LetterIdentifiersRequireExplicitSkinOptIn",
