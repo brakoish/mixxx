@@ -881,12 +881,36 @@ DeckLabActionButton::DeckLabActionButton(const QString& text, QWidget* parent)
     setFocusPolicy(Qt::NoFocus);
 }
 
-void DeckLabActionButton::setDetail(const QString& detail) {
-    if (m_detail == detail) {
+void DeckLabActionButton::setDetail(const QString& detail, const QString& shortDetail) {
+    if (m_detail == detail && m_shortDetail == shortDetail) {
         return;
     }
     m_detail = detail;
+    m_shortDetail = shortDetail;
     update();
+}
+
+QString DeckLabActionButton::shownDetail() const {
+    if (m_shortDetail.isEmpty()) {
+        return m_detail;
+    }
+    const int width = rect().adjusted(8, 2, -8, -2).width();
+    return QFontMetrics(secondaryFont(font())).horizontalAdvance(m_detail) <= width ? m_detail : m_shortDetail;
+}
+
+bool DeckLabActionButton::textFits() const {
+    if (m_deck > 0 || (text().isEmpty() && m_glyph != Glyph::None)) {
+        return true; // LOAD targets have their own layout; glyph-only buttons
+    }
+    const QRect content = rect().adjusted(8, 2, -8, -2);
+    const QFontMetrics primaryMetrics(strongFont(font()));
+    const int textWidth = std::max(0, content.width() - (m_glyph == Glyph::None ? 0 : 20));
+    const QString label = text().toUpper();
+    if (primaryMetrics.elidedText(label, Qt::ElideRight, textWidth) != label) {
+        return false;
+    }
+    const QString detail = shownDetail();
+    return QFontMetrics(secondaryFont(font())).elidedText(detail, Qt::ElideRight, content.width()) == detail;
 }
 
 void DeckLabActionButton::setTone(Tone tone) {
@@ -1077,13 +1101,23 @@ void DeckLabActionButton::paintEvent(QPaintEvent*) {
                                  content.width(),
                                  detailMetrics.height()),
                 Qt::AlignHCenter | Qt::AlignVCenter,
-                detailMetrics.elidedText(m_detail, Qt::ElideRight, content.width()));
+                detailMetrics.elidedText(shownDetail(), Qt::ElideRight, content.width()));
     }
 }
 
 DeckLabDeckChip::DeckLabDeckChip(QWidget* parent)
         : QPushButton(parent) {
     setFocusPolicy(Qt::NoFocus);
+}
+
+bool DeckLabDeckChip::textFits() const {
+    if (m_deck <= 0) {
+        return QFontMetrics(secondaryFont(font())).elidedText(m_detail, Qt::ElideRight, width() - 18) == m_detail;
+    }
+    const int left = 13;
+    const QString title = (m_automatic ? tr("Deck %1 · auto").arg(m_deck) : tr("Deck %1").arg(m_deck)).toUpper();
+    return QFontMetrics(labelFont(font())).elidedText(title, Qt::ElideRight, width() - left - 6) == title &&
+            QFontMetrics(numberFont(font(), 16)).elidedText(m_detail, Qt::ElideRight, width() - left - 6) == m_detail;
 }
 
 void DeckLabDeckChip::setReference(int deck, bool automatic, const QString& detail) {
@@ -1153,6 +1187,16 @@ void DeckLabTwoLineLabel::setLines(const QString& primary, const QString& second
     m_active = active;
     setAccessibleName(secondary.isEmpty() ? primary : primary + QStringLiteral(", ") + secondary);
     update();
+}
+
+bool DeckLabTwoLineLabel::textFits() const {
+    const QFontMetrics valueMetrics(m_active ? numberFont(font(), 16) : secondaryFont(font()));
+    const int width = std::max(0, this->width() - 8);
+    if (valueMetrics.elidedText(m_primary, Qt::ElideRight, width) != m_primary) {
+        return false;
+    }
+    return m_secondary.isEmpty() ||
+            QFontMetrics(labelFont(font())).elidedText(m_secondary, Qt::ElideRight, width) == m_secondary;
 }
 
 void DeckLabTwoLineLabel::paintEvent(QPaintEvent*) {

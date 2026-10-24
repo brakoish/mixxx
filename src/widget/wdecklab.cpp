@@ -4621,7 +4621,8 @@ void WDeckLab::updateMatchBar() {
         b.directions[n]->setEnabled(active && reference.bpm > 0);
     }
     if (!active) {
-        b.matchSummary->setLines(tr("Load a deck to match"), QString(), false);
+        // r5-polish: short enough for the summary at 800 px ("…to mat…" was cut).
+        b.matchSummary->setLines(tr("Load a deck first"), QString(), false);
     } else {
         const auto window = reference.window();
         b.matchSummary->setLines(window.isValid() ? tr("%1 BPM").arg(decklab::tempoWindowText(window)) : tr("Any tempo"),
@@ -4629,7 +4630,9 @@ void WDeckLab::updateMatchBar() {
     }
     b.matchOnlyButton->setEnabled(active);
     b.matchOnlyButton->setTone(b.matchOnly ? Tone::Selected : Tone::Neutral);
-    b.matchOnlyButton->setDetail(b.matchCount >= 0 ? countText(b.matchCount, tr("1 track"), tr("%1 tracks")) : QString());
+    // r5-polish: the bare count when "1,234 tracks" would not fit.
+    b.matchOnlyButton->setDetail(b.matchCount >= 0 ? countText(b.matchCount, tr("1 track"), tr("%1 tracks")) : QString(),
+            b.matchCount >= 0 ? QLocale().toString(b.matchCount) : QString());
     b.matchOnlyButton->setAccessibleName(b.matchOnly ? tr("Showing only matching tracks; tap to show all")
                                                      : tr("Show only matching tracks"));
 }

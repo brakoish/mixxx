@@ -3735,9 +3735,15 @@ TEST_F(NativeDeckLabTest, MatchBarShowsDeckWindowDirectionAndClears) {
     auto* both = static_cast<DeckLabActionButton*>(panel->findChild<QPushButton*>("decklab-match-both"));
     ASSERT_TRUE(match && only && faster && both);
     ASSERT_TRUE(bar->isVisible());
-    // No deck loaded: neutral, never the match green (B-50).
-    EXPECT_EQ(QStringLiteral("Load a deck to match"), summary->primary());
+    // No deck loaded: neutral, never the match green (B-50). r5-polish:
+    // nothing in the bar is cut off at 800x480 ("Load a deck to mat...").
+    EXPECT_EQ(QStringLiteral("Load a deck first"), summary->primary());
     EXPECT_FALSE(summary->active());
+    EXPECT_EQ(800, panel->width());
+    EXPECT_TRUE(summary->textFits()) << summary->width();
+    EXPECT_TRUE(chip->textFits());
+    EXPECT_TRUE(only->textFits());
+    capture(QStringLiteral("browse-match-bar-empty.png"));
     EXPECT_EQ(0, chip->deck());
     EXPECT_EQ(Tone::Neutral, match->tone());
     EXPECT_EQ(QStringLiteral("Load a deck"), match->detail());
@@ -3752,6 +3758,13 @@ TEST_F(NativeDeckLabTest, MatchBarShowsDeckWindowDirectionAndClears) {
     EXPECT_TRUE(chip->detail().contains(QLocale().toString(122.0, 'f', 1))) << chip->detail().toStdString();
     EXPECT_EQ(QString::fromUtf8("115–129 BPM"), summary->primary());
     EXPECT_TRUE(summary->active());
+    EXPECT_TRUE(summary->textFits()) << summary->secondary().toStdString();
+    EXPECT_TRUE(chip->textFits()) << chip->detail().toStdString();
+    EXPECT_TRUE(only->textFits()) << only->detail().toStdString();
+    // A big count falls back to the number alone rather than "1,234 tr...".
+    only->setDetail(QStringLiteral("4,000 tracks"), QStringLiteral("4,000"));
+    EXPECT_TRUE(only->textFits());
+    only->setDetail(QString());
     EXPECT_EQ(Tone::Active, match->tone());
     EXPECT_EQ(Tone::Selected, both->tone());
     // Faster only: the window starts at the reference.

@@ -232,7 +232,9 @@ class DeckLabActionButton : public QPushButton {
         Selected, // a chosen segment or toggle: raised fill, white outline
     };
     explicit DeckLabActionButton(const QString& text, QWidget* parent = nullptr);
-    void setDetail(const QString& detail);
+    /// r5-polish: `shortDetail` is shown instead when `detail` would not fit
+    /// ("37" for "1,234 tracks"), so nothing is cut off.
+    void setDetail(const QString& detail, const QString& shortDetail = QString());
     void setTone(Tone tone);
     void setGlyph(decklab::Glyph glyph);
     // Deck identity (LOAD targets): a 6 px bar and a numbered badge in the
@@ -247,14 +249,18 @@ class DeckLabActionButton : public QPushButton {
     int deck() const {
         return m_deck;
     }
+    /// r5-polish: every text it paints fits uncut at its current size.
+    bool textFits() const;
 
   protected:
     void paintEvent(QPaintEvent* event) override;
 
   private:
     void paintDeckTarget(QPainter& painter, const QColor& primary, const QColor& secondary);
+    QString shownDetail() const;
 
     QString m_detail;
+    QString m_shortDetail;
     Tone m_tone = Tone::Neutral;
     decklab::Glyph m_glyph = decklab::Glyph::None;
     int m_deck = 0;
@@ -275,6 +281,8 @@ class DeckLabDeckChip : public QPushButton {
     QString detail() const {
         return m_detail;
     }
+    /// r5-polish: every text it paints fits uncut at its current size.
+    bool textFits() const;
 
   protected:
     void paintEvent(QPaintEvent* event) override;
@@ -299,6 +307,8 @@ class DeckLabTwoLineLabel : public QWidget {
     bool active() const {
         return m_active;
     }
+    /// r5-polish: both lines fit uncut at its current width.
+    bool textFits() const;
 
   protected:
     void paintEvent(QPaintEvent* event) override;
