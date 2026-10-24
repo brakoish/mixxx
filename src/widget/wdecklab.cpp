@@ -4636,6 +4636,12 @@ void WDeckLab::updateMatchBar() {
     b.matchOnlyButton->setAccessibleName(b.matchOnly ? tr("Showing only matching tracks; tap to show all")
                                                      : tr("Show only matching tracks"));
 }
+// r5-polish (tests): a count the fixtures' empty track table can't produce.
+void WDeckLab::setMatchCountForTesting(int count) {
+    if (!m_browseState) return;
+    m_browseState->matchCount = count;
+    updateMatchBar();
+}
 void WDeckLab::scheduleMatchCount() {
     if (m_browseState && !m_browseState->matchCountTimer.isActive()) m_browseState->matchCountTimer.start();
 }

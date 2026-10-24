@@ -93,10 +93,9 @@ stick's name is one tap away (Browse) and in the status sheet.
 
 ## Renders (offscreen, 800x480)
 
-`C:\Users\Me\Desktop\Mixx Pi\local\wt\audit\screens\r5-polish\before\` and `...\after\`:
-`setup-controller-midi-hid.png`, `settings-*-set-up-later.png` / `settings-finish-setup.png`,
-`status-sheet-*.png`, `first-run-*-step-bar.png` / `setup-step-bar*.png`,
-`browse-usb-unlabeled-breadcrumb.png`, `browse-match-bar-empty.png`, plus the full smoke set.
+Before and after renders are in the coordinator's audit folder (`r5-polish/before`, `r5-polish/after`):
+the controller step with a MIDI + vendor HID controller, Settings and the status sheet after
+"Set up later", the step bar, the breadcrumb of an unlabeled stick and the match bar, plus the smoke set.
 
 ## Verified
 
@@ -105,9 +104,14 @@ stick's name is one tap away (Browse) and in the status sheet.
 - New tests: `DeckLabSystemTest.OneControllerIsOneRowAndItsVendorHidInterfaceStaysClosed`,
   `HidOnlyAndTwinControllersKeepTheirOwnRows`, `UsbLocationsComeFromHidrawAndTheAlsaCard`,
   `SetUpLaterSticksAndSettingsOffersFinishSetup`, `EveryDeckSetupStepNameFitsAt800`,
-  `UsbSticksHaveFriendlyNamesNeverTheirUuid`; `NativeDeckLabTest.DeckSetupListsAMidiAndHidControllerOnce`,
-  `SettingsAndStatusSheetOfferFinishSetupAfterSetUpLater`, `UnlabeledStickIsNamedDjUsbNotItsUuid`.
-  Updated: the match bar test, the stick-name expectations, the rail USB lamp.
+  `UsbSticksHaveFriendlyNamesNeverTheirUuid` (with eject and Storage names),
+  `StrayHidInterfaceIsClosedAtStartAndAfterARescan`, `TwinControllersAsLinuxReportThemAreTwoRowsAndBothHidClose`,
+  `FinishingANormalDeckSetupCompletesSetup`, `AUnitAlreadySetUpSkipsWelcomeAfterTheUpdate`;
+  `NativeDeckLabTest.DeckSetupListsAMidiAndHidControllerOnce`,
+  `SettingsAndStatusSheetOfferFinishSetupAfterSetUpLater`,
+  `RekordboxSticksKeepTheirRowAndNameWhenSticksAreSwapped` (real rekordbox scan and merge).
+  Updated: the match bar test (the Only fallback through `updateMatchBar()`), the stick-name
+  expectations, the rail USB lamp.
 - `python tools/decklab/build_pi.py --check-inputs` passes (lock refreshed).
 
 ## Needs the ARM build and the Pi
@@ -119,12 +123,12 @@ stick's name is one tap away (Browse) and in the status sheet.
 
 ## Merge notes
 
-- `src/widget/wdecklab.cpp`: two marked hooks (`// r5-polish:`): `railHooks.finishSetup` next to the other
-  rail hooks (~784), and `updateMatchBar()` (~4624, ~4633).
+- `src/widget/wdecklab.{h,cpp}`: marked hooks (`// r5-polish:`): `railHooks.finishSetup` next to the other
+  rail hooks (~784), `updateMatchBar()` (~4624, ~4633), and `setMatchCountForTesting()` (tests).
 - New files: `src/decklab/decklabcontrollers.{h,cpp}`, `src/decklab/decklabusbname.{h,cpp}`
   (CMakeLists: next to `decklabusbrelink.cpp` and before `decklabdclient.cpp`).
-- Also touched: `controllers/hid/hidcontroller.h` (getter), `library/rekordbox/rekordboxfeature.cpp`
-  (device names), `widget/decklabbrowse.{h,cpp}`, `widget/decklabsmoke.cpp` (stick name), and the decklab
+- Also touched: `controllers/hid/hidcontroller.h` (getter), `library/rekordbox/rekordboxfeature.{h,cpp}`
+  (device names, devices keyed by mount path, static `findDevices()`/`mergeDevices()`), `widget/decklabbrowse.{h,cpp}`, `widget/decklabsmoke.cpp` (stick name), and the decklab
   system files.
 - Lock: input hashes refreshed for the changed locked files. Smoke: +0 screens.
 

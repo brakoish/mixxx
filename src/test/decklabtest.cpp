@@ -3763,10 +3763,15 @@ TEST_F(NativeDeckLabTest, MatchBarShowsDeckWindowDirectionAndClears) {
     EXPECT_TRUE(summary->textFits()) << summary->secondary().toStdString();
     EXPECT_TRUE(chip->textFits()) << chip->detail().toStdString();
     EXPECT_TRUE(only->textFits()) << only->detail().toStdString();
-    // A big count falls back to the number alone rather than "1,234 tr...".
-    only->setDetail(QStringLiteral("4,000 tracks"), QStringLiteral("4,000"));
+    // A big count falls back to the number alone rather than "123456 tr...",
+    // through the bar's own update; a small one keeps its unit.
+    panel->setMatchCountForTesting(123456);
+    EXPECT_TRUE(only->textFits()) << only->detail().toStdString();
+    EXPECT_EQ(QLocale().toString(123456), only->shownDetail());
+    panel->setMatchCountForTesting(3);
+    EXPECT_EQ(QStringLiteral("3 tracks"), only->shownDetail());
     EXPECT_TRUE(only->textFits());
-    only->setDetail(QString());
+    panel->setMatchCountForTesting(-1);
     EXPECT_EQ(Tone::Active, match->tone());
     EXPECT_EQ(Tone::Selected, both->tone());
     // Faster only: the window starts at the reference.

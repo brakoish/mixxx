@@ -251,13 +251,14 @@ class DeckLabActionButton : public QPushButton {
     }
     /// r5-polish: every text it paints fits uncut at its current size.
     bool textFits() const;
+    /// The detail as painted: the short one when the long one doesn't fit.
+    QString shownDetail() const;
 
   protected:
     void paintEvent(QPaintEvent* event) override;
 
   private:
     void paintDeckTarget(QPainter& painter, const QColor& primary, const QColor& secondary);
-    QString shownDetail() const;
 
     QString m_detail;
     QString m_shortDetail;
