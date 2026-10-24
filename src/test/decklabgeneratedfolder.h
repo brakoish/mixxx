@@ -52,8 +52,9 @@ class DeckLabGeneratedFolder final : public QStandardItemModel, public TrackMode
     QUrl getTrackUrl(const QModelIndex&) const override {
         return {};
     }
-    QString getTrackLocation(const QModelIndex&) const override {
-        return {};
+    QString getTrackLocation(const QModelIndex& index) const override {
+        // A generated path per file (never one of the decks' tracks).
+        return QStringLiteral("/media/decklab/GENERATED/%1.wav").arg(index.sibling(index.row(), 0).data().toString());
     }
     TrackId getTrackId(const QModelIndex&) const override {
         return {};
