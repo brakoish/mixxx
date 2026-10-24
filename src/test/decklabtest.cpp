@@ -53,6 +53,7 @@
 #include "library/decklabknob.h"
 #include "library/libraryfeature.h"
 #include "library/librarycontrol.h"
+#include "library/rekordbox/rekordboxfeature.h"
 #include "library/sidebarmodel.h"
 #include "library/treeitem.h"
 #include "test/signalpathtest.h"
@@ -181,6 +182,7 @@ class NativeDeckLabTest : public BaseSignalPathTest {
         // USB sticks come from a generated, initially empty mount folder.
         ASSERT_TRUE(QDir().mkpath(media.filePath(QStringLiteral("decklab"))));
         decklab::setUsbStickRootsForTesting({media.filePath(QStringLiteral("decklab"))});
+        decklab::usbNameBook().clear(); // r5-polish: stick names start fresh per test
         navigation = std::make_unique<LibraryControl>(nullptr);
         soundStatus = std::make_unique<ControlObject>(ConfigKey("[SoundManager]", "status"));
         // RecordingManager's status exists before the skin in the app.
@@ -4728,23 +4730,73 @@ TEST_F(DeckLabOverlayTest, EveryOverlayOverTheWaveformsHidesThemOrIsNativeAndRai
 }
 
 // r5-polish: an unlabeled rekordbox stick is "DJ USB" in the source list and
-// the breadcrumb, never its filesystem UUID.
-TEST_F(NativeDeckLabTest, UnlabeledStickIsNamedDjUsbNotItsUuid) {
-    const QString stick = makeStick(QStringLiteral("3A1F-0C2D"), true);
-    // The name RekordboxFeature gives that stick (same helper).
-    const QStringList names = decklab::usbNames({decklab::UsbNameSource{QStringLiteral("3A1F-0C2D"), QString(), true}});
-    ASSERT_EQ(QStringList{QStringLiteral("DJ USB")}, names);
-    addRekordboxDevice(names.first(), stick, true);
-    panel->selectPage(1); QCoreApplication::processEvents();
-    EXPECT_EQ(QStringLiteral("DJ USB"), listTexts().value(0));
-    ASSERT_TRUE(selectRow(QStringLiteral("DJ USB"))) << listTexts().join(" / ").toStdString();
-    panel->browsePress(); QCoreApplication::processEvents();
-    ASSERT_EQ(QStringList{QStringLiteral("DJ USB")}, crumbs());
-    ASSERT_TRUE(selectRow(QStringLiteral("All Tracks"))) << listTexts().join(" / ").toStdString();
-    panel->browsePress(); QCoreApplication::processEvents();
-    EXPECT_EQ((QStringList{QStringLiteral("DJ USB"), QStringLiteral("All Tracks")}), crumbs());
-    for (const QString& segment : crumbs()) EXPECT_FALSE(segment.contains(QStringLiteral("3A1F"))) << segment.toStdString();
+// the breadcrumb, never its UUID. RekordboxFeature's own device scan and
+// merge fill the tree Browse reads; a device is its mount path, so a swapped
+// stick with the same name gets its own row, and a stick already listed is
+// never renamed or dropped when another one arrives.
+TEST_F(NativeDeckLabTest, RekordboxSticksKeepTheirRowAndNameWhenSticksAreSwapped) {
+    const auto rows = [this] {
+        QList<QPair<QString, QString>> result; // (label, path)
+        const QModelIndex root;
+        for (int row = 0; row < rekordbox->model.rowCount(root); ++row) {
+            const QModelIndex index = rekordbox->model.index(row, 0, root);
+            result.append({index.data().toString(),
+                    index.data(TreeItemModel::kDataRole).toStringList().value(0)});
+        }
+        return result;
+    };
+    const auto scan = [this] {
+        const QList<TreeItem*> found = RekordboxFeature::findDevices();
+        std::vector<std::unique_ptr<TreeItem>> devices(found.cbegin(), found.cend());
+        QStringList removed;
+        RekordboxFeature::mergeDevices(&rekordbox->model, std::move(devices), [&removed](TreeItem* item) {
+            removed.append(item->getData().toList().value(0).toString());
+        });
+        return removed;
+    };
+    const auto openTile = [this](const QString& name) {
+        panel->selectPage(1);
+        ControlObject::set(ConfigKey("[DeckLabNative]", "browse_sources"), 1);
+        ControlObject::set(ConfigKey("[DeckLabNative]", "browse_sources"), 0);
+        QCoreApplication::processEvents();
+        if (!selectRow(name)) return false;
+        panel->browsePress(); QCoreApplication::processEvents();
+        return true;
+    };
+    // One unlabeled stick: "DJ USB" everywhere.
+    const QString first = makeStick(QStringLiteral("5D2C-81F0"), true);
+    EXPECT_TRUE(scan().isEmpty());
+    ASSERT_EQ(1, rows().size());
+    EXPECT_EQ(QStringLiteral("DJ USB"), rows().first().first);
+    EXPECT_EQ(QDir::cleanPath(first), QDir::cleanPath(rows().first().second));
+    ASSERT_TRUE(openTile(QStringLiteral("DJ USB"))) << listTexts().join(" / ").toStdString();
+    EXPECT_EQ(QStringList{QStringLiteral("DJ USB")}, crumbs());
+    EXPECT_EQ(1, rekordbox->activations); // its export is read
     capture(QStringLiteral("browse-usb-unlabeled-breadcrumb.png"));
+    panel->browseBack(); QCoreApplication::processEvents();
+    // Swapped for another unlabeled stick: the row follows the new stick.
+    ASSERT_TRUE(QDir(first).removeRecursively());
+    const QString second = makeStick(QStringLiteral("9E41-07B3"), true);
+    EXPECT_EQ(QStringList{QDir::cleanPath(first)}, scan());
+    ASSERT_EQ(1, rows().size());
+    EXPECT_EQ(QStringLiteral("DJ USB"), rows().first().first);
+    EXPECT_EQ(QDir::cleanPath(second), QDir::cleanPath(rows().first().second));
+    ASSERT_TRUE(openTile(QStringLiteral("DJ USB"))) << listTexts().join(" / ").toStdString();
+    EXPECT_EQ(QStringList{QStringLiteral("DJ USB")}, crumbs());
+    EXPECT_EQ(2, rekordbox->activations); // the new stick is read
+    panel->browseBack(); QCoreApplication::processEvents();
+    // The first comes back while the second is in: the second keeps its row
+    // and name, the newcomer is "DJ USB 2" (tile, row and breadcrumb).
+    makeStick(QStringLiteral("5D2C-81F0"), true);
+    EXPECT_TRUE(scan().isEmpty());
+    ASSERT_EQ(2, rows().size());
+    QHash<QString, QString> byPath;
+    for (const auto& row : rows()) byPath.insert(QDir::cleanPath(row.second), row.first);
+    EXPECT_EQ(QStringLiteral("DJ USB"), byPath.value(QDir::cleanPath(second)));
+    EXPECT_EQ(QStringLiteral("DJ USB 2"), byPath.value(QDir::cleanPath(first)));
+    ASSERT_TRUE(openTile(QStringLiteral("DJ USB 2"))) << listTexts().join(" / ").toStdString();
+    EXPECT_EQ(QStringList{QStringLiteral("DJ USB 2")}, crumbs());
+    for (const QString& segment : crumbs()) EXPECT_FALSE(segment.contains(QStringLiteral("5D2C"))) << segment.toStdString();
 }
 
 // r5-polish: after "Set up later", Settings and the status sheet offer

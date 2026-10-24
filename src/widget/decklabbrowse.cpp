@@ -359,14 +359,6 @@ QString matchFilterQuery(const MatchReference& reference, const QString& extra) 
     return alternatives.join(QStringLiteral(" | "));
 }
 
-namespace {
-QStringList& usbStickTestRoots() {
-    static QStringList roots;
-    return roots;
-}
-
-} // namespace
-
 bool hasRekordboxExport(const QString& path) {
     for (const auto* relative : {"PIONEER/rekordbox/export.pdb", ".PIONEER/rekordbox/export.pdb"}) {
         if (QFileInfo(QDir(path).filePath(QString::fromLatin1(relative))).isFile()) {
@@ -377,14 +369,15 @@ bool hasRekordboxExport(const QString& path) {
 }
 
 void setUsbStickRootsForTesting(const QStringList& roots) {
-    usbStickTestRoots() = roots;
+    // Shared with the rekordbox device scan (decklab/decklabusbname.h).
+    setUsbMediaRootsForTesting(roots);
 }
 
 QList<UsbStick> findUsbSticks() {
     QList<UsbStick> sticks;
 #if defined(Q_OS_LINUX)
-    const bool testing = !usbStickTestRoots().isEmpty();
-    QStringList roots = usbStickTestRoots();
+    const bool testing = usbMediaRootsAreForTesting();
+    QStringList roots = testing ? usbMediaRoots() : QStringList();
     if (!testing) {
         const QString user = QString::fromLocal8Bit(qgetenv("USER"));
         roots << QStringLiteral("/media/decklab");

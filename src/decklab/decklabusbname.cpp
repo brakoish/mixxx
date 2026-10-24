@@ -5,7 +5,9 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QHash>
+#include <QMutexLocker>
 #include <QRegularExpression>
+#include <QSet>
 #include <algorithm>
 
 namespace decklab {
@@ -73,42 +75,133 @@ QString usbCapacityText(qint64 bytes) {
     return tr("%1 GB").arg(sold);
 }
 
-QStringList usbNames(const QList<UsbNameSource>& sources) {
-    QStringList names;
-    QHash<QString, QList<int>> byName;
-    for (int index = 0; index < sources.size(); ++index) {
-        names.append(usbBaseName(sources.at(index)));
-        byName[names.last().toCaseFolded()].append(index);
+QStringList UsbNameBook::names(const QList<UsbNameSource>& sources) {
+    const QMutexLocker locker(&m_mutex);
+    ++m_call;
+    const int count = static_cast<int>(sources.size());
+    QStringList bases;
+    QStringList sizes;
+    for (const auto& source : sources) {
+        bases.append(usbBaseName(source));
+        sizes.append(usbCapacityText(source.bytes));
     }
-    for (auto it = byName.cbegin(); it != byName.cend(); ++it) {
-        QList<int> same = it.value();
-        if (same.size() < 2) {
+    QStringList result;
+    for (int index = 0; index < count; ++index) {
+        result.append(QString());
+    }
+    QSet<QString> used; // case-folded names given out in this call
+    // 1. A stick that already has a name keeps it, unless another stick here
+    // holds it: the one in most recently (it is the one on screen) wins, then
+    // the one named first.
+    QList<int> known;
+    QList<int> pending;
+    for (int index = 0; index < count; ++index) {
+        const auto entry = m_entries.constFind(sources.at(index).id);
+        if (!sources.at(index).id.isEmpty() && entry != m_entries.constEnd() &&
+                entry->base == bases.at(index)) {
+            known.append(index);
+        } else {
+            pending.append(index);
+        }
+    }
+    std::sort(known.begin(), known.end(), [this, &sources](int a, int b) {
+        const Entry left = m_entries.value(sources.at(a).id);
+        const Entry right = m_entries.value(sources.at(b).id);
+        return left.seen != right.seen ? left.seen > right.seen : left.order < right.order;
+    });
+    for (int index : std::as_const(known)) {
+        const QString name = m_entries.value(sources.at(index).id).name;
+        if (used.contains(name.toCaseFolded())) {
+            pending.append(index);
             continue;
         }
-        QStringList sizes;
-        for (int index : std::as_const(same)) {
-            sizes.append(usbCapacityText(sources.at(index).bytes));
-        }
-        bool distinct = !sizes.contains(QString());
-        for (int a = 0; a < sizes.size() && distinct; ++a) {
-            distinct = sizes.count(sizes.at(a)) == 1;
-        }
-        if (distinct) {
-            for (int n = 0; n < same.size(); ++n) {
-                names[same.at(n)] += QLatin1Char(' ') + sizes.at(n);
+        result[index] = name;
+        used.insert(name.toCaseFolded());
+    }
+    // 2. New sticks, in a stable order (by id): the plain name when it is
+    // free, else the size when it tells them apart, else 2, 3, ...
+    std::sort(pending.begin(), pending.end(), [&sources](int a, int b) {
+        return sources.at(a).id < sources.at(b).id;
+    });
+    for (int index : std::as_const(pending)) {
+        const QString& base = bases.at(index);
+        QString name = base;
+        if (used.contains(name.toCaseFolded())) {
+            bool sameSize = sizes.at(index).isEmpty();
+            for (int other = 0; other < count && !sameSize; ++other) {
+                sameSize = other != index && bases.at(other).toCaseFolded() == base.toCaseFolded() &&
+                        sizes.at(other) == sizes.at(index);
             }
-            continue;
+            name = sameSize ? QString() : QString(base + QLatin1Char(' ') + sizes.at(index));
+            for (int number = 2; name.isEmpty() || used.contains(name.toCaseFolded()); ++number) {
+                name = base + QLatin1Char(' ') + QString::number(number);
+            }
         }
-        // Same size too: 1, 2, ... in a stable order (by id), whatever order
-        // the caller listed them in.
-        std::sort(same.begin(), same.end(), [&sources](int a, int b) {
-            return sources.at(a).id < sources.at(b).id;
-        });
-        for (int n = 0; n < same.size(); ++n) {
-            names[same.at(n)] += QLatin1Char(' ') + QString::number(n + 1);
+        result[index] = name;
+        used.insert(name.toCaseFolded());
+        if (!sources.at(index).id.isEmpty()) {
+            m_entries.insert(sources.at(index).id, Entry{base, name, m_next++, 0});
         }
     }
-    return names;
+    for (const auto& source : sources) {
+        const auto entry = m_entries.find(source.id);
+        if (entry != m_entries.end()) {
+            entry->seen = m_call;
+        }
+    }
+    // Remember a bounded number of sticks (the most recent).
+    while (m_entries.size() > 64) {
+        auto oldest = m_entries.begin();
+        for (auto it = m_entries.begin(); it != m_entries.end(); ++it) {
+            if (it->order < oldest->order) {
+                oldest = it;
+            }
+        }
+        m_entries.erase(oldest);
+    }
+    return result;
+}
+
+void UsbNameBook::clear() {
+    const QMutexLocker locker(&m_mutex);
+    m_entries.clear();
+    m_next = 0;
+    m_call = 0;
+}
+
+UsbNameBook& usbNameBook() {
+    static UsbNameBook book;
+    return book;
+}
+
+QStringList usbNames(const QList<UsbNameSource>& sources) {
+    return usbNameBook().names(sources);
+}
+
+namespace {
+QStringList& mediaTestRoots() {
+    static QStringList roots;
+    return roots;
+}
+QMutex& mediaRootsMutex() {
+    static QMutex mutex;
+    return mutex;
+}
+} // namespace
+
+QStringList usbMediaRoots() {
+    const QMutexLocker locker(&mediaRootsMutex());
+    return mediaTestRoots().isEmpty() ? QStringList{QStringLiteral("/media/decklab")} : mediaTestRoots();
+}
+
+bool usbMediaRootsAreForTesting() {
+    const QMutexLocker locker(&mediaRootsMutex());
+    return !mediaTestRoots().isEmpty();
+}
+
+void setUsbMediaRootsForTesting(const QStringList& roots) {
+    const QMutexLocker locker(&mediaRootsMutex());
+    mediaTestRoots() = roots;
 }
 
 QList<UsbNameSource> usbNameSources(const QJsonArray& drives) {

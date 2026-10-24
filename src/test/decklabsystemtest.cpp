@@ -1553,14 +1553,36 @@ TEST_F(DeckLabSystemTest, UsbSticksHaveFriendlyNamesNeverTheirUuid) {
     EXPECT_EQ(QStringLiteral("16 GB"), decklab::usbCapacityText(static_cast<qint64>(15.4e9)));
     EXPECT_EQ(QStringLiteral("1 TB"), decklab::usbCapacityText(static_cast<qint64>(1.0e12)));
     EXPECT_TRUE(decklab::usbCapacityText(-1).isEmpty());
-    // Several sticks: different kinds need nothing more; the same name gets
-    // the size, or a number when the sizes match. Never a UUID.
-    EXPECT_EQ((QStringList{"DJ USB", "USB stick"}),
-            decklab::usbNames({source("3A1F-0C2D", "", true, 31), source("55AA-1234", "", false, 31)}));
-    EXPECT_EQ((QStringList{"DJ USB 32 GB", "DJ USB 16 GB"}),
-            decklab::usbNames({source("3A1F-0C2D", "", true, 31), source("55AA-1234", "", true, 15.5)}));
-    EXPECT_EQ((QStringList{"DJ USB 2", "DJ USB 1"}),
-            decklab::usbNames({source("55AA-1234", "", true, 31), source("3A1F-0C2D", "", true, 31)}));
+    // Several sticks: different kinds need nothing more; the same name: the
+    // first keeps it, a later one gets its size, or a number when the sizes
+    // match. Never a UUID.
+    {
+        decklab::UsbNameBook book;
+        EXPECT_EQ((QStringList{"DJ USB", "USB stick"}),
+                book.names({source("3A1F-0C2D", "", true, 31), source("55AA-1234", "", false, 31)}));
+    }
+    {
+        decklab::UsbNameBook book;
+        EXPECT_EQ((QStringList{"DJ USB", "DJ USB 16 GB"}),
+                book.names({source("3A1F-0C2D", "", true, 31), source("55AA-1234", "", true, 15.5)}));
+    }
+    {
+        // A name shown stays while the stick is in: A alone is "DJ USB"; B
+        // arriving (its UUID sorts first) is "DJ USB 2", A is not renamed;
+        // A leaving does not rename B; A back gets its name again.
+        decklab::UsbNameBook book;
+        const auto a = source("55AA-1234", "", true, 31);
+        const auto b = source("0B7E-4C11", "", true, 31);
+        EXPECT_EQ(QStringList{"DJ USB"}, book.names({a}));
+        EXPECT_EQ((QStringList{"DJ USB", "DJ USB 2"}), book.names({a, b}));
+        EXPECT_EQ((QStringList{"DJ USB 2", "DJ USB"}), book.names({b, a})); // any order
+        EXPECT_EQ(QStringList{"DJ USB 2"}, book.names({b}));
+        EXPECT_EQ((QStringList{"DJ USB", "DJ USB 2"}), book.names({a, b}));
+        // Without a remembered name, the first by UUID keeps the plain one.
+        decklab::UsbNameBook fresh;
+        EXPECT_EQ((QStringList{"DJ USB 2", "DJ USB"}), fresh.names({a, b}));
+    }
+    decklab::usbNameBook().clear();
     // The rail and Storage name decklabd's drives the same way.
     const QJsonArray drives{QJsonObject{{"id", "3A1F-0C2D"}, {"label", "3A1F-0C2D"}, {"mount", "/media/decklab/3A1F-0C2D"},
                                     {"size_mb", 30528}, {"free_mb", 12402}, {"fs", "exfat"}, {"read_only", true},

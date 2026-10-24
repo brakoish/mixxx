@@ -68,10 +68,17 @@ unlabeled stick after its mount folder (`/media/decklab/<UUID>`): Browse's bread
 "<UUID> › All Tracks". Browse's own tile said "USB stick (3A1F)".
 
 **Fix.** `src/decklab/decklabusbname.{h,cpp}` (new): the volume label, else **DJ USB** (rekordbox export)
-or **USB stick**. Same names for several sticks get the size they were sold as ("DJ USB 32 GB"), or
-"1"/"2" in UUID order when the sizes match. A label equal to the id or shaped like a UUID or serial
-counts as none. Used by Browse's tiles and breadcrumb (`findUsbSticks`), RekordboxFeature's device names,
-the rail's status sheet and accessible name, Settings › Unit › Storage and eject messages.
+or **USB stick**. A label equal to the id or shaped like a UUID or serial counts as none. A name, once
+shown, stays while the stick is in (`UsbNameBook`, shared by every caller): a later stick with the same
+name gets the size it was sold as ("DJ USB 16 GB"), or "2", "3" when the sizes match; nobody already
+listed is renamed. Used by Browse's tiles and breadcrumb (`findUsbSticks`), RekordboxFeature's device
+names, the rail's status sheet and accessible name, Settings › Unit › Storage and eject messages.
+
+Names are display only. RekordboxFeature keys a device by its mount path: `mergeDevices()` matches
+rows by path (a known stick keeps its row and read export and takes a new name in place; a swapped
+stick with the same name gets its own row), and the rekordbox tables' `device` column holds the path.
+Tests run the real `findDevices()`/`mergeDevices()` over generated stick folders
+(`setUsbMediaRootsForTesting`, shared with Browse).
 
 **Rail lamp: "USB" (or "USB 2"), no longer "USB RB".** The 54 px slot is read at arm's length; it says
 where and, by its lamp, the state. "RB" is an abbreviation (not allowed) and no name fits the slot; the
