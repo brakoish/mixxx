@@ -1587,11 +1587,31 @@ TEST_F(NativeDeckLabTest, ControllerBeatSyncTogglesAndOnlyTheMasterFaderMovesThe
     RateControl::setPermanentRateChangeCoarseAmount(step);
     EXPECT_NEAR(moved, get(1, "bpm"), 1e-6);
     EXPECT_NEAR(moved, get(2, "bpm"), 1e-6);
+    // Nor does a tempo written as BPM on the follower (a mapping's bpm, as a
+    // Shift+TAP sends it, and bpm_up / bpm_down_small; tempo_tap writes bpm
+    // the same way): the master on air keeps its tempo, the follower's BPM
+    // comes back.
+    put(1, "bpm", 140);
+    put(1, "bpm_up", 1); put(1, "bpm_up", 0);
+    put(1, "bpm_down_small", 1); put(1, "bpm_down_small", 0);
+    for (int n = 0; n < 4; ++n) ProcessBuffer();
+    EXPECT_NEAR(moved, get(1, "bpm"), 1e-6);
+    EXPECT_NEAR(moved, get(2, "bpm"), 1e-6) << "a follower's BPM never retunes the master";
+    // The master's BPM moves both.
+    put(2, "bpm", 131);
+    for (int n = 0; n < 4; ++n) ProcessBuffer();
+    EXPECT_NEAR(131, get(2, "bpm"), 1e-6);
+    EXPECT_NEAR(131, get(1, "bpm"), 1e-6);
     // The next press turns it off; the deck keeps the tempo.
     put(1, "beatsync", 1); put(1, "beatsync", 0);
     for (int n = 0; n < 4; ++n) ProcessBuffer();
     EXPECT_DOUBLE_EQ(0, get(1, "sync_enabled"));
-    EXPECT_NEAR(moved, get(1, "bpm"), 1e-6);
+    EXPECT_NEAR(131, get(1, "bpm"), 1e-6);
+    // Off sync, the deck's own BPM controls work again.
+    put(1, "bpm", 125);
+    for (int n = 0; n < 4; ++n) ProcessBuffer();
+    EXPECT_NEAR(125, get(1, "bpm"), 1e-6);
+    EXPECT_NEAR(131, get(2, "bpm"), 1e-6);
     // No tempo yet (not analysed): BEAT SYNC stays off, so a later analysis
     // can never retune the deck by itself.
     ASSERT_FALSE(unanalysed->getBeats());
@@ -3774,8 +3794,9 @@ TEST_F(NativeDeckLabTest, OnStatesAreFilledLampsNotOutlines) {
 }
 
 // r6-sync: SYNC is a CDJ BEAT SYNC: a tap turns it on, the lamp stays lit
-// until the next tap. A hold is INST DOUBLES; one that loads nothing (here
-// nothing plays and there is no master) is still a tap on release.
+// until the next tap. A hold is INST DOUBLES; one that loads nothing on a
+// stopped deck (here nothing plays and there is no master) is still a tap on
+// release, so a slow press is never a dead button.
 TEST_F(NativeDeckLabTest, SyncTapTogglesBeatSyncAndAHoldThatLoadsNothingIsATap) {
     loadGenerated(1, 128); loadGenerated(2, 130); loadGenerated(3, 132); ProcessBuffer(); settle();
     auto* sync = panel->findChild<QPushButton*>("decklab-1-beatsync"); ASSERT_NE(nullptr, sync);
@@ -3825,7 +3846,8 @@ TEST_F(NativeDeckLabTest, SyncTapTogglesBeatSyncAndAHoldThatLoadsNothingIsATap) 
 
 // r6-sync: INST DOUBLES (SYNC held, or INST DOUBLES in MORE) loads the tempo
 // master's track, else a playing deck's, onto a stopped deck at the same
-// position, playing if it plays. Never onto a playing deck.
+// position, playing if it plays. Never onto a playing deck, where a SYNC
+// hold does nothing at all (owner rule).
 TEST_F(NativeDeckLabTest, SyncHoldIsInstantDoublesOnlyOntoAStoppedDeck) {
     auto track = Track::newTemporary(getTestDir().filePath(QStringLiteral("sine-30.wav")));
     loadTrack(m_pMixerDeck1.get(), track); ASSERT_TRUE(track->trySetBpm(128));
@@ -3855,8 +3877,9 @@ TEST_F(NativeDeckLabTest, SyncHoldIsInstantDoublesOnlyOntoAStoppedDeck) {
     EXPECT_DOUBLE_EQ(0, get(2, "sync_enabled")) << "the release is no tap";
     EXPECT_DOUBLE_EQ(1, get(2, "play")) << "Mixxx's clone plays with its source";
     EXPECT_NEAR(get(1, "playposition"), get(2, "playposition"), .01);
-    // Deck 2 plays now: a hold there never replaces its track (its release
-    // is a tap: BEAT SYNC on), and MORE's INST DOUBLES is off.
+    // Deck 2 plays now: a hold there does nothing at all. It never replaces
+    // the track, and its release is no tap, so BEAT SYNC stays off and the
+    // deck on air keeps its tempo. MORE's INST DOUBLES is off.
     auto other = Track::newTemporary(getTestDir().filePath(QStringLiteral("sine-30.wav")));
     loadTrack(m_pMixerDeck3.get(), other); ASSERT_TRUE(other->trySetBpm(126));
     settle(); QTest::qWait(150); settle(); // the player finishes its load (cue recall) first
@@ -3865,13 +3888,17 @@ TEST_F(NativeDeckLabTest, SyncHoldIsInstantDoublesOnlyOntoAStoppedDeck) {
     put(3, "sync_leader", 1);
     for (int n = 0; n < 4; ++n) ProcessBuffer();
     settle(); QTest::qWait(150); settle();
+    const double onAir = get(2, "bpm");
+    ASSERT_GT(std::abs(onAir - get(3, "bpm")), 1);
     QTest::mousePress(sync2, Qt::LeftButton); QTest::qWait(700);
     QTest::mouseRelease(sync2, Qt::LeftButton);
     for (int n = 0; n < 4; ++n) ProcessBuffer();
     settle();
     EXPECT_EQ(track, m_pMixerDeck2->getLoadedTrack()) << "a playing deck's track is never replaced";
     EXPECT_DOUBLE_EQ(1, get(2, "play"));
-    EXPECT_DOUBLE_EQ(1, get(2, "sync_enabled")) << "the hold loaded nothing: its release is a tap";
+    EXPECT_DOUBLE_EQ(0, get(2, "sync_enabled")) << "a hold on a playing deck is no tap";
+    EXPECT_NEAR(onAir, get(2, "bpm"), 1e-6) << "the deck on air keeps its tempo";
+    EXPECT_FALSE(sync2->property("lit").toBool());
     panel->findChild<QPushButton*>("decklab-2-more")->click(); settle();
     auto* doubles = panel->findChild<QPushButton*>("decklab-2-doubles"); ASSERT_NE(nullptr, doubles);
     EXPECT_FALSE(doubles->isEnabled());
@@ -3988,39 +4015,173 @@ TEST_F(NativeDeckLabTest, MasterInMoreTakesAndHandsOnTheTempoMaster) {
     ProcessBuffer();
 }
 
-// r6-sync: the browse knob drives a MORE sheet: the first event shows the
-// cursor and does nothing else, a turn moves it through the keys that can
-// act in reading order, a press clicks the key under it, back closes.
+// r6-sync: SYNC on the deck on air while the only other playing deck is in
+// the headphones (its channel fader down): the deck on air becomes the tempo
+// master at its own tempo, with no seek. It is never matched to a deck nobody
+// hears. The headphone deck's SYNC then follows the deck on air.
+TEST_F(NativeDeckLabTest, SyncOnTheDeckOnAirNeverMatchesADeckNobodyHears) {
+    m_pMixerDeck1->loadFakeTrack(false, 124); m_pMixerDeck2->loadFakeTrack(false, 128); ProcessBuffer();
+    const auto get = [](int deck, const char* item) { return ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), item)); };
+    const auto put = [](int deck, const char* item, double v) { ControlObject::set(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), item), v); };
+    put(1, "quantize", 1); put(2, "quantize", 1);
+    put(1, "playposition", .11); put(2, "playposition", .23); ProcessBuffer();
+    put(2, "volume", 0); // cued in the headphones
+    put(1, "play", 1); put(2, "play", 1);
+    for (int n = 0; n < 4; ++n) ProcessBuffer();
+    settle();
+    ASSERT_GT(std::abs(get(1, "beat_distance") - get(2, "beat_distance")), .05);
+    const double start = get(1, "playposition");
+    for (int n = 0; n < 4; ++n) ProcessBuffer();
+    const double step = (get(1, "playposition") - start) / 4;
+    ASSERT_GT(step, 0);
+    const double tapped = get(1, "playposition");
+    auto* sync1 = panel->findChild<QPushButton*>("decklab-1-beatsync"); ASSERT_NE(nullptr, sync1);
+    sync1->click();
+    for (int n = 0; n < 8; ++n) ProcessBuffer();
+    settle();
+    EXPECT_GT(get(1, "sync_leader"), 0) << "the deck on air is the master";
+    EXPECT_DOUBLE_EQ(1, get(1, "sync_enabled"));
+    EXPECT_DOUBLE_EQ(0, get(2, "sync_enabled")) << "the headphone deck is not synced";
+    EXPECT_NEAR(124, get(1, "bpm"), 1e-6) << "the deck on air keeps its tempo";
+    EXPECT_NEAR(128, get(2, "bpm"), 1e-6);
+    EXPECT_NEAR(tapped + 8 * step, get(1, "playposition"), step / 2) << "no phase seek on air";
+    EXPECT_TRUE(sync1->property("lit").toBool()); EXPECT_TRUE(strip(1)->state().master);
+    // The headphone deck's SYNC: it follows the deck on air, which stays the
+    // master however quiet the headphone deck is.
+    panel->findChild<QPushButton*>("decklab-2-beatsync")->click();
+    for (int n = 0; n < 8; ++n) ProcessBuffer();
+    settle();
+    EXPECT_GT(get(1, "sync_leader"), 0); EXPECT_DOUBLE_EQ(0, get(2, "sync_leader"));
+    EXPECT_DOUBLE_EQ(1, get(2, "sync_enabled"));
+    EXPECT_NEAR(124, get(1, "bpm"), 1e-6);
+    EXPECT_NEAR(124, get(2, "bpm"), 1e-6);
+    EXPECT_NEAR(get(1, "beat_distance"), get(2, "beat_distance"), .001);
+    for (int deck = 1; deck <= 2; ++deck) { put(deck, "play", 0); put(deck, "sync_enabled", 0); put(deck, "volume", 1); }
+    ProcessBuffer();
+}
+
+// r6-sync: as on a CDJ the tempo master moves only on a pause, a new track or
+// MASTER. Closing its channel fader (a cut) leaves it the master, so its
+// tempo fader still leads and the synced deck's still does nothing; another
+// deck's SYNC follows it too. A pause hands the master on.
+TEST_F(NativeDeckLabTest, TempoMasterStaysWhileItPlaysWhenItsFaderCloses) {
+    m_pMixerDeck1->loadFakeTrack(false, 124); m_pMixerDeck2->loadFakeTrack(false, 128);
+    m_pMixerDeck3->loadFakeTrack(false, 126); ProcessBuffer();
+    const auto get = [](int deck, const char* item) { return ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), item)); };
+    const auto put = [](int deck, const char* item, double v) { ControlObject::set(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), item), v); };
+    for (int deck = 1; deck <= 3; ++deck) put(deck, "quantize", 0);
+    put(1, "play", 1); put(2, "play", 1); ProcessBuffer(); ProcessBuffer();
+    // SYNC on deck 1: deck 2, on air, is the master; deck 1 follows it.
+    put(1, "beatsync", 1); put(1, "beatsync", 0);
+    for (int n = 0; n < 4; ++n) ProcessBuffer();
+    settle();
+    ASSERT_GT(get(2, "sync_leader"), 0); ASSERT_DOUBLE_EQ(1, get(1, "sync_enabled"));
+    ASSERT_NEAR(128, get(1, "bpm"), 1e-6);
+    // A cut: the master's channel fader closes while both play.
+    put(2, "volume", 0);
+    for (int n = 0; n < 4; ++n) ProcessBuffer();
+    settle();
+    EXPECT_GT(get(2, "sync_leader"), 0) << "the master stays the master";
+    EXPECT_DOUBLE_EQ(0, get(1, "sync_leader"));
+    EXPECT_TRUE(strip(2)->state().master); EXPECT_FALSE(strip(1)->state().master);
+    // Deck 1, on air, still follows: its fader does nothing, the master's
+    // moves both.
+    put(1, "rate", .5);
+    for (int n = 0; n < 4; ++n) ProcessBuffer();
+    EXPECT_NEAR(128, get(1, "bpm"), 1e-6);
+    EXPECT_NEAR(128, get(2, "bpm"), 1e-6);
+    put(2, "rate", .25);
+    for (int n = 0; n < 4; ++n) ProcessBuffer();
+    const double moved = get(2, "bpm");
+    EXPECT_GT(std::abs(moved - 128), 1);
+    EXPECT_NEAR(moved, get(1, "bpm"), 1e-6);
+    // Another deck on air syncs: it follows the master too.
+    put(3, "play", 1); ProcessBuffer(); ProcessBuffer();
+    put(3, "beatsync", 1); put(3, "beatsync", 0);
+    for (int n = 0; n < 4; ++n) ProcessBuffer();
+    settle();
+    EXPECT_GT(get(2, "sync_leader"), 0); EXPECT_DOUBLE_EQ(0, get(3, "sync_leader"));
+    EXPECT_DOUBLE_EQ(1, get(3, "sync_enabled"));
+    EXPECT_NEAR(moved, get(3, "bpm"), 1e-6);
+    // The fader back up changes nothing.
+    put(2, "volume", 1);
+    for (int n = 0; n < 4; ++n) ProcessBuffer();
+    EXPECT_GT(get(2, "sync_leader"), 0);
+    // A pause hands the master to a deck that plays, at the same tempo.
+    put(2, "play", 0);
+    for (int n = 0; n < 4; ++n) ProcessBuffer();
+    settle();
+    EXPECT_DOUBLE_EQ(0, get(2, "sync_leader"));
+    EXPECT_GT(get(1, "sync_leader"), 0);
+    int masters = 0;
+    for (int deck = 1; deck <= 4; ++deck) masters += get(deck, "sync_leader") > 0 ? 1 : 0;
+    EXPECT_EQ(1, masters) << "exactly one tempo master";
+    EXPECT_NEAR(moved, get(1, "bpm"), 1e-6);
+    EXPECT_NEAR(moved, get(3, "bpm"), 1e-6);
+    for (int deck = 1; deck <= 3; ++deck) { put(deck, "play", 0); put(deck, "sync_enabled", 0); put(deck, "volume", 1); }
+    ProcessBuffer();
+}
+
+// r6-sync: the browse knob drives a MORE sheet. A press before any turn
+// closes it, as it always did; the first turn shows the cursor on MASTER and
+// does nothing else; turns move it through the keys that can act, in reading
+// order, never onto PLAY, CUE or the pads (touch only: a stray press must not
+// stop a deck on air or jump it to a cue); a press clicks the key under it;
+// back closes.
 TEST_F(NativeDeckLabTest, KnobReachesMasterInTheMoreSheet) {
     loadGenerated(1, 128); loadGenerated(2, 130); ProcessBuffer(); settle();
     const auto get = [](int deck, const char* item) { return ControlObject::get(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), item)); };
     const auto put = [](int deck, const char* item, double v) { ControlObject::set(ConfigKey(QStringLiteral("[Channel%1]").arg(deck), item), v); };
+    const auto touchOnly = [](QPushButton* key) {
+        const QString name = key->objectName();
+        return name.endsWith(QStringLiteral("-play")) || name.endsWith(QStringLiteral("cue_default")) ||
+                qobject_cast<DeckLabPadButton*>(key) != nullptr;
+    };
     put(1, "quantize", 0); put(2, "quantize", 0);
     put(1, "play", 1); put(2, "play", 1); ProcessBuffer(); ProcessBuffer();
     panel->findChild<QPushButton*>("decklab-1-beatsync")->click();
     for (int n = 0; n < 4; ++n) ProcessBuffer();
     settle();
     ASSERT_GT(get(2, "sync_leader"), 0);
-    panel->findChild<QPushButton*>("decklab-1-more")->click(); settle();
+    auto* more = panel->findChild<QPushButton*>("decklab-1-more"); ASSERT_NE(nullptr, more);
+    more->click(); settle();
     auto* menu = panel->findChild<QMenu*>("decklab-1-more-menu"); ASSERT_NE(nullptr, menu); ASSERT_TRUE(menu->isVisible());
     auto* knob = menu->findChild<DeckLabMoreKnob*>(); ASSERT_NE(nullptr, knob);
     auto* ring = menu->findChild<QFrame*>("decklab-more-knob-cursor"); ASSERT_NE(nullptr, ring);
     auto* master = panel->findChild<QPushButton*>("decklab-1-master"); ASSERT_NE(nullptr, master);
     EXPECT_EQ(nullptr, knob->cursorKey()); EXPECT_FALSE(ring->isVisible());
-    // The first turn only shows the cursor.
+    // A press before any turn (from habit, or the first of a double press)
+    // closes MORE and acts on no key.
+    r4Pulse("[DeckLabNative]", "browse_press");
+    for (int n = 0; n < 4; ++n) ProcessBuffer();
+    settle();
+    EXPECT_FALSE(menu->isVisible());
+    EXPECT_DOUBLE_EQ(1, get(1, "play")); EXPECT_DOUBLE_EQ(1, get(2, "play"));
+    EXPECT_DOUBLE_EQ(0, get(1, "sync_leader")); EXPECT_GT(get(2, "sync_leader"), 0);
+    more->click(); settle(); ASSERT_TRUE(menu->isVisible());
+    EXPECT_EQ(nullptr, knob->cursorKey());
+    // The first turn only shows the cursor: on MASTER, as PLAY and CUE above
+    // it are touch only.
     r4Pulse("[Playlist]", "SelectTrackKnob", 1); settle();
-    ASSERT_NE(nullptr, knob->cursorKey()); EXPECT_TRUE(ring->isVisible());
-    EXPECT_DOUBLE_EQ(1, get(1, "play")) << "a reveal acts on nothing";
+    ASSERT_EQ(master, knob->cursorKey()); EXPECT_TRUE(ring->isVisible());
+    EXPECT_DOUBLE_EQ(0, get(1, "sync_leader")) << "a reveal acts on nothing";
     EXPECT_TRUE(menu->isVisible());
-    // Turn to MASTER (reading order: PLAY, then the SYNC group).
-    for (int n = 0; n < 12 && knob->cursorKey() != master; ++n) {
-        r4Pulse("[Playlist]", "SelectTrackKnob", 1); settle();
-    }
-    ASSERT_EQ(master, knob->cursorKey());
     const QRect key(master->mapTo(ring->parentWidget(), QPoint()), master->size());
     EXPECT_TRUE(ring->geometry().contains(key)) << "the ring is around MASTER";
     const QString output = qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
     if (!output.isEmpty()) EXPECT_TRUE(menu->grab().save(QDir(output).filePath(QStringLiteral("decks-more-knob-master.png"))));
+    // Down to the last key and back: settings keys only, and never past
+    // MASTER to PLAY.
+    QStringList reached;
+    for (int n = 0; n < 16; ++n) {
+        ASSERT_NE(nullptr, knob->cursorKey());
+        EXPECT_FALSE(touchOnly(knob->cursorKey())) << knob->cursorKey()->objectName().toStdString();
+        reached << knob->cursorKey()->objectName();
+        r4Pulse("[Playlist]", "SelectTrackKnob", 1); settle();
+    }
+    EXPECT_TRUE(reached.contains(QStringLiteral("decklab-1-zoom_in"))) << reached.join(' ').toStdString();
+    for (int n = 0; n < 16; ++n) { r4Pulse("[Playlist]", "SelectTrackKnob", -1); settle(); }
+    ASSERT_EQ(master, knob->cursorKey());
     // Press: deck 1 takes the master; the sheet stays open on MASTER.
     r4Pulse("[DeckLabNative]", "browse_press");
     for (int n = 0; n < 4; ++n) ProcessBuffer();
@@ -4028,16 +4189,29 @@ TEST_F(NativeDeckLabTest, KnobReachesMasterInTheMoreSheet) {
     EXPECT_GT(get(1, "sync_leader"), 0); EXPECT_DOUBLE_EQ(0, get(2, "sync_leader"));
     EXPECT_TRUE(menu->isVisible()); EXPECT_EQ(master, knob->cursorKey());
     EXPECT_TRUE(master->isChecked());
-    // A turn back up and a press: PLAY, as with a finger.
-    for (int n = 0; n < 12; ++n) { r4Pulse("[Playlist]", "SelectTrackKnob", -1); settle(); }
-    EXPECT_EQ(panel->findChild<QPushButton*>("decklab-1-play"), knob->cursorKey());
-    // Back closes the sheet; the next opening starts with a reveal again.
+    // Back closes the sheet; the next opening starts over.
     r4Pulse("[DeckLabNative]", "browse_back"); settle();
     EXPECT_FALSE(menu->isVisible());
-    panel->findChild<QPushButton*>("decklab-1-more")->click(); settle();
+    more->click(); settle();
     ASSERT_TRUE(menu->isVisible());
     EXPECT_EQ(nullptr, knob->cursorKey()); EXPECT_FALSE(ring->isVisible());
     menu->close(); settle();
+    // Four-deck card: the pads (hot cues, loops, rolls, stems) sit above
+    // MASTER, and the knob never reaches them.
+    QMetaObject::invokeMethod(panel->findChild<QComboBox*>("decklab-deck-layout"), "activated", Q_ARG(int, 2)); QTest::qWait(150);
+    settle();
+    panel->findChild<QPushButton*>("decklab-card-1-more")->click(); settle();
+    auto* card = panel->findChild<QMenu*>("decklab-card-1-more-menu"); ASSERT_NE(nullptr, card); ASSERT_TRUE(card->isVisible());
+    auto* cardKnob = card->findChild<DeckLabMoreKnob*>(); ASSERT_NE(nullptr, cardKnob);
+    auto* pad = card->findChild<DeckLabPadButton*>(); ASSERT_NE(nullptr, pad); EXPECT_TRUE(pad->isVisible());
+    r4Pulse("[Playlist]", "SelectTrackKnob", 1); settle();
+    EXPECT_EQ(panel->findChild<QPushButton*>("decklab-card-1-master"), cardKnob->cursorKey()) << "the reveal skips the pads";
+    for (int n = 0; n < 16; ++n) {
+        ASSERT_NE(nullptr, cardKnob->cursorKey());
+        EXPECT_FALSE(touchOnly(cardKnob->cursorKey())) << cardKnob->cursorKey()->objectName().toStdString();
+        r4Pulse("[Playlist]", "SelectTrackKnob", n < 8 ? 1 : -1); settle();
+    }
+    card->close(); settle();
     EXPECT_DOUBLE_EQ(1, get(1, "play")); EXPECT_DOUBLE_EQ(1, get(2, "play"));
     for (int deck = 1; deck <= 2; ++deck) { put(deck, "play", 0); put(deck, "sync_enabled", 0); }
     ProcessBuffer();

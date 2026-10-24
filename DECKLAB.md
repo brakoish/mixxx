@@ -160,12 +160,18 @@ BEAT, not an inferred bar or phrase.
 SYNC works like a Pioneer CDJ-3000's BEAT SYNC. A tap turns Sync Lock on or off
 and the lamp stays lit while it is on; the deck follows the tempo master's tempo
 and beat, and keeps its tempo when sync goes off. One deck is the tempo master
-(Mixxx's sync leader): the deck on air when sync first goes on, or the deck MORE's
-MASTER picks while it plays; pausing the master hands it on. A synced deck that
-is not the master ignores its tempo fader; after sync is off, the controller's
-soft takeover picks the fader up when it passes the tempo. Holding SYNC (or MORE's
-INST DOUBLES) loads the master's track, else a playing deck's, at the same
-position, only onto a stopped deck. The engine half lives behind
+(Mixxx's sync leader): the deck on air when sync first goes on (a deck on air
+that syncs with no other deck on air leads at its own tempo, never matched to a
+deck in the headphones), or the deck MORE's MASTER picks while it plays. Only a
+pause, a new track or MASTER hands it on, never a closed channel fader. A synced
+deck that is not the master ignores its tempo controls (fader, tempo buttons,
+BPM writes and tempo tap); after sync is off, the controller's soft takeover picks
+the fader up when it passes the tempo. Holding SYNC (or MORE's INST DOUBLES) loads
+the master's track, else a playing deck's, at the same position, only onto a
+stopped deck; on a playing deck a hold does nothing. The browse knob reaches
+MORE's MASTER and other settings keys after a turn shows its cursor; PLAY, CUE
+and the pads stay touch only, and a press before any turn closes MORE. The engine
+half lives behind
 `[DeckLab],cdj_sync` (`src/engine/sync/decklabcdjsync.h`), which the native
 surface turns on, so every controller mapping that sends `beatsync` gets the
 same SYNC button; without it Mixxx's own sync behaviour applies.
