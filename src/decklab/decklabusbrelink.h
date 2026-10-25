@@ -113,8 +113,9 @@ struct RelinkPlan {
     int missing = 0;      // earlier rows whose file is not on the stick: left missing
     int blocked = 0;      // the current address is held by a hidden row
     // Songs left because a track is loaded or cached right now; they are
-    // tried again the next time the stick is seen.
+    // tried again once none of busyIds is in use (or the stick is seen).
     int busy = 0;
+    QSet<qint64> busyIds; // the tracks in use that kept them waiting
     int renamed = 0; // groups that follow a rename map
     bool isEmpty() const {
         return groups.isEmpty() && revived.isEmpty() && folders.isEmpty();
@@ -240,6 +241,11 @@ class UsbRelinker final : public QObject {
     bool isRunning() const {
         return m_watcher.isRunning();
     }
+    // How often songs left because a track was in use look again whether it
+    // still is (cheap: the track cache only). Default 5 s; tests shorten it.
+    void setBusyRetryInterval(int ms) {
+        m_busyRetry.setInterval(ms);
+    }
 
   public slots:
     void relinkDrives(const QJsonArray& drives);
@@ -249,7 +255,8 @@ class UsbRelinker final : public QObject {
     // Get Music's rename maps (also with every stick and after every
     // library scan, which Deck Lab starts when a utility closes).
     void relinkRenames();
-    // Hides or shows the tracks of sticks that went or came.
+    // Hides or shows the tracks of sticks that went or came. r7: while it is
+    // not quiet, crate and playlist counts are rebuilt once it is.
     void refreshMedia(bool force = false);
     // A stick mounted or taken out (its folder or link appears or goes in
     // /media, /media/decklab, /media/$USER or /run/media/$USER) refreshes
@@ -282,6 +289,13 @@ class UsbRelinker final : public QObject {
     bool m_scanning = false; // Mixxx's library scan is running
     QFileSystemWatcher* m_folders = nullptr;
     QTimer m_settle; // media folder changes come in bursts
+    bool m_countsPending = false; // r7: crate and playlist counts wait until it is quiet
+    // r7: songs a pass left because a track was in use (rename takeovers and
+    // a stick's moves), tried again once none of these tracks is in use.
+    QSet<qint64> m_busyIds;
+    QList<UsbVolume> m_busyVolumes;
+    bool m_busyRenames = false;
+    QTimer m_busyRetry;
 };
 
 } // namespace decklab

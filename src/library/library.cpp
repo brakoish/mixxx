@@ -6,6 +6,7 @@
 
 #include "control/controlobject.h"
 #include "controllers/keyboard/keyboardeventfilter.h"
+#include "decklab/decklabmedia.h"
 #include "library/analysis/analysisfeature.h"
 #include "library/autodj/autodjfeature.h"
 #include "library/banshee/bansheefeature.h"
@@ -549,6 +550,8 @@ void Library::slotShowTrackModel(QAbstractItemModel* model) {
     VERIFY_OR_DEBUG_ASSERT(trackModel) {
         return;
     }
+    // Deck Lab r7: a list a USB stick change left stale reads again now.
+    decklab::MediaPresence::instance().setShown(model);
     emit showTrackModel(model);
     emit switchToView(m_sTrackViewName);
     emit restoreSearch(trackModel->currentSearch());

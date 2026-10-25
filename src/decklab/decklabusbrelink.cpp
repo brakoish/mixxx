@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <optional>
+#include <utility>
 
 #include "decklab/decklabmedia.h"
 #include "decklab/decklabusbname.h"
@@ -654,9 +655,16 @@ RelinkPlan planRelink(const UsbVolume& volume,
             plan.sizeMismatch += static_cast<int>(same.size());
             continue;
         }
-        bool busy = song.current && busyTrackIds.contains(song.current->trackId);
+        bool busy = false;
+        if (song.current && busyTrackIds.contains(song.current->trackId)) {
+            plan.busyIds.insert(song.current->trackId);
+            busy = true;
+        }
         for (const auto& row : std::as_const(same)) {
-            busy = busy || busyTrackIds.contains(row.trackId);
+            if (busyTrackIds.contains(row.trackId)) {
+                plan.busyIds.insert(row.trackId);
+                busy = true;
+            }
         }
         if (busy) {
             ++plan.busy;
@@ -925,6 +933,11 @@ RelinkPlan planRenames(const QList<RelinkRow>& rows,
                 continue;
             }
             if (busyTrackIds.contains(row->trackId) || (holder && busyTrackIds.contains(holder->trackId))) {
+                for (const qint64 id : {row->trackId, holder ? holder->trackId : qint64(-1)}) {
+                    if (busyTrackIds.contains(id)) {
+                        plan.busyIds.insert(id);
+                    }
+                }
                 ++plan.busy;
                 continue;
             }
@@ -1108,6 +1121,15 @@ UsbRelinker::UsbRelinker(std::shared_ptr<TrackCollectionManager> library, QObjec
     m_retry.setSingleShot(true);
     m_retry.setInterval(10000);
     connect(&m_retry, &QTimer::timeout, this, &UsbRelinker::startNext);
+    m_busyRetry.setSingleShot(true);
+    m_busyRetry.setInterval(5000);
+    connect(&m_busyRetry, &QTimer::timeout, this, &UsbRelinker::retryBusy);
+    // r7: counts a stick change left for later are rebuilt once it is quiet.
+    connect(&MediaPresence::instance(), &MediaPresence::settled, this, [this] {
+        if (std::exchange(m_countsPending, false)) {
+            emitCounts();
+        }
+    });
     m_settle.setSingleShot(true);
     m_settle.setInterval(700);
     connect(&m_settle, &QTimer::timeout, this, [this] {
@@ -1171,6 +1193,20 @@ void UsbRelinker::refreshMedia(bool force) {
         return;
     }
     if (!MediaPresence::instance().refresh(collection->database(), force)) {
+        return;
+    }
+    // r7: rebuilding every crate's and playlist's count reads the database
+    // on the GUI thread; mid-set it waits until it is quiet.
+    if (MediaPresence::instance().deferring()) {
+        m_countsPending = true;
+        return;
+    }
+    emitCounts();
+}
+
+void UsbRelinker::emitCounts() {
+    TrackCollection* collection = m_library ? m_library->internalCollection() : nullptr;
+    if (!collection) {
         return;
     }
     // Crate and playlist counts leave out tracks on sticks that are out.
@@ -1301,6 +1337,7 @@ void UsbRelinker::startNext() {
             plan.missing += renamed.missing;
             plan.blocked += renamed.blocked;
             plan.busy += renamed.busy;
+            plan.busyIds += renamed.busyIds;
         }
         return plan;
     }));
@@ -1325,9 +1362,16 @@ void UsbRelinker::finish() {
     const QSet<qint64> busy = m_busy ? m_busy() : QSet<qint64>();
     QList<RelinkGroup> groups;
     for (const auto& group : std::as_const(plan.groups)) {
-        bool inUse = busy.contains(group.survivor.trackId);
+        bool inUse = false;
+        if (busy.contains(group.survivor.trackId)) {
+            plan.busyIds.insert(group.survivor.trackId);
+            inUse = true;
+        }
         for (const auto& row : group.merged) {
-            inUse = inUse || busy.contains(row.trackId);
+            if (busy.contains(row.trackId)) {
+                plan.busyIds.insert(row.trackId);
+                inUse = true;
+            }
         }
         if (inUse) {
             ++plan.busy;
@@ -1369,10 +1413,38 @@ void UsbRelinker::finish() {
     if (volume && plan.busy == 0 && result.ok) {
         m_done.insert(volumeKey(*volume));
     }
+    if (plan.busy > 0) {
+        // r7: the songs left because a track was in use (the analysis or a
+        // deck held it) are tried again once none of those tracks is, a
+        // rename-only pass too.
+        m_busyIds.unite(plan.busyIds);
+        m_busyRenames = m_busyRenames || m_runningRenames;
+        if (volume && std::none_of(m_busyVolumes.cbegin(), m_busyVolumes.cend(), [&volume](const UsbVolume& known) {
+                return volumeKey(known) == volumeKey(*volume);
+            })) {
+            m_busyVolumes.append(*volume);
+        }
+        m_busyRetry.start();
+    }
     // The views select again: rows moved, merged or found again.
     refreshMedia(result.ok && !plan.isEmpty());
     emit relinked(relocated, merged);
     startNext();
+}
+
+void UsbRelinker::retryBusy() {
+    if (m_busyIds.isEmpty() && m_busyVolumes.isEmpty() && !m_busyRenames) {
+        return;
+    }
+    const QSet<qint64> held = m_busy ? m_busy() : QSet<qint64>();
+    if (held.intersects(m_busyIds)) {
+        m_busyRetry.start(); // still in use: a cheap look again later
+        return;
+    }
+    m_busyIds.clear();
+    m_renamesPending = std::exchange(m_busyRenames, false) || m_renamesPending;
+    queue(std::exchange(m_busyVolumes, {}));
+    startNext(); // and only while it is quiet
 }
 
 void UsbRelinker::notify(const RelinkResult& result) {

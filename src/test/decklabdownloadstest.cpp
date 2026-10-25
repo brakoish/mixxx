@@ -113,10 +113,54 @@ TEST(DeckLabDownloadsTest, DownloadsListNewestFirstWithPlaylistsAsFolders) {
                       QStringLiteral("01 - Fixture - One.m4a"),
                       QStringLiteral("Generated Single A [aaaaaaaaaaa].m4a")}),
             names(decklab::allDownloads(folders)));
+    // r7: the DOWNLOADS tile counts the same from names alone (no stat of
+    // every file on a stick plugged in mid-set).
+    EXPECT_EQ((decklab::DownloadCounts{4, 1}), decklab::countDownloads(folders));
     // Pulling the stick: only the Pi card's downloads are left.
     ASSERT_TRUE(QDir(stick).removeRecursively());
     EXPECT_EQ(QStringList{QDir::cleanPath(onCard)}, decklab::downloadFolders({stick}));
     EXPECT_EQ(1, decklab::listDownloads(decklab::downloadFolders({stick})).size());
+    EXPECT_EQ((decklab::DownloadCounts{1, 0}), decklab::countDownloads(decklab::downloadFolders({stick})));
+}
+
+// r7: one samples folder, ~/Music/Deck Lab Samples in the home folder: the
+// path Sample Maker hard-codes and its systemd unit allows (and Get Music's
+// ~/Music/New Music beside it). Never the desktop's music folder, which
+// XDG_MUSIC_DIR or a localized name can move. TO PAD, PUT ON PAD, SAMPLES
+// and the song lists' filter all use it.
+TEST(DeckLabDownloadsTest, TheSamplesFolderIsInMusicInTheHomeFolder) {
+    QTemporaryDir config;
+    ASSERT_TRUE(config.isValid());
+    const QString elsewhere = config.filePath(QStringLiteral("Elsewhere"));
+    ASSERT_TRUE(QDir().mkpath(elsewhere));
+    {
+        QFile dirs(config.filePath(QStringLiteral("user-dirs.dirs")));
+        ASSERT_TRUE(dirs.open(QIODevice::WriteOnly));
+        dirs.write(QStringLiteral("XDG_MUSIC_DIR=\"%1\"\n").arg(elsewhere).toUtf8());
+    }
+    const bool hadConfig = qEnvironmentVariableIsSet("XDG_CONFIG_HOME");
+    const QByteArray oldConfig = qgetenv("XDG_CONFIG_HOME");
+    qputenv("XDG_CONFIG_HOME", QFile::encodeName(config.path()));
+    struct Restore {
+        bool had;
+        QByteArray value;
+        ~Restore() {
+            if (had) {
+                qputenv("XDG_CONFIG_HOME", value);
+            } else {
+                qunsetenv("XDG_CONFIG_HOME");
+            }
+        }
+    } restore{hadConfig, oldConfig};
+    const QString samples = QDir::home().filePath(QStringLiteral("Music/Deck Lab Samples"));
+    EXPECT_EQ(QDir::home().filePath(QStringLiteral("Music")), decklab::musicFolder());
+    EXPECT_EQ(samples, decklab::samplesFolder());
+    EXPECT_EQ(QDir::home().filePath(QStringLiteral("Music/New Music")), decklab::cardDownloadsFolder());
+    EXPECT_TRUE(decklab::isSampleLocation(samples + QStringLiteral("/Generated Hit.wav")));
+    EXPECT_FALSE(decklab::isSampleLocation(elsewhere + QStringLiteral("/Deck Lab Samples/Generated Hit.wav")));
+    QString literal = QDir::cleanPath(samples) + QLatin1Char('/');
+    literal.replace(QLatin1Char('\''), QStringLiteral("''"));
+    EXPECT_TRUE(decklab::songListSqlFilter().contains(literal)) << "the song lists leave out the same folder";
 }
 
 // Get Music numbers a list's tracks in playlist order ("01 - ", three digits

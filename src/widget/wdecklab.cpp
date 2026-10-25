@@ -5770,7 +5770,7 @@ void WDeckLab::showHistory(bool fromCategories) {
     auto& b = *m_browseState;
     auto& store = decklab::history::Store::instance();
     clearBrowseFilter();
-    store.ensureLoaded();
+    store.ensureFresh(); // r7: a stick change mid-set is read now
     b.list = DeckLabList::History;
     b.historyFromCategories = fromCategories;
     b.historySession = -1;
@@ -6519,12 +6519,11 @@ decklab::SourceEntry WDeckLab::downloadsEntry(const QStringList& folders) const 
     entry.key = QStringLiteral("downloads");
     entry.name = tr("Downloads");
     entry.glyph = decklab::Glyph::Download;
-    int tracks = 0;
-    int playlists = 0;
-    for (const auto& item : decklab::listDownloads(folders)) {
-        tracks += item.tracks;
-        playlists += item.folder ? 1 : 0;
-    }
+    // r7: counted from names alone: a stick plugged in mid-set shows its
+    // tile without a stat of every download on it.
+    const decklab::DownloadCounts counts = decklab::countDownloads(folders);
+    const int tracks = counts.tracks;
+    const int playlists = counts.playlists;
     QStringList parts;
     if (tracks) parts << countText(tracks, tr("1 track"), tr("%1 tracks"));
     if (playlists) parts << countText(playlists, tr("1 playlist"), tr("%1 playlists"));

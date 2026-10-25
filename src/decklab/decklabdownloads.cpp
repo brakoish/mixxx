@@ -159,6 +159,35 @@ QVector<DownloadEntry> listDownloads(const QStringList& folders) {
     return entries;
 }
 
+DownloadCounts countDownloads(const QStringList& folders) {
+    // Names and the directory entries' own types only: no stat per file.
+    const auto audio = [](const QString& folder) {
+        int count = 0;
+        const QStringList names = QDir(folder).entryList(QDir::Files | QDir::NoSymLinks, QDir::NoSort);
+        for (const QString& name : names) {
+            count += isAudioFile(name) ? 1 : 0;
+        }
+        return count;
+    };
+    DownloadCounts counts;
+    for (const QString& folder : folders) {
+        counts.tracks += audio(folder);
+        const QStringList children =
+                QDir(folder).entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDir::NoSort);
+        for (const QString& child : children) {
+            if (skippedFolder(child)) {
+                continue;
+            }
+            const int tracks = audio(QDir(folder).filePath(child));
+            if (tracks > 0) {
+                counts.tracks += tracks;
+                ++counts.playlists;
+            }
+        }
+    }
+    return counts;
+}
+
 QStringList newestDownloads(const QStringList& folders) {
     QVector<Arrived> files;
     for (const QString& folder : folders) {

@@ -151,9 +151,20 @@ class MixxxBackend final : public Backend {
         QObject::connect(tracks, &TrackDAO::tracksChanged, &m_context, moved);
         QObject::connect(tracks, &TrackDAO::tracksRemoved, &m_context, moved);
         // r7-library: a USB stick in or out, or its tracks merged: the sets
-        // are read again (decklabmedia.h).
+        // are read again (decklabmedia.h). r7: mid-set only when the
+        // History list is shown next (Store::ensureFresh), or once it is
+        // quiet; the played marks do not depend on it.
         QObject::connect(&MediaPresence::instance(), &MediaPresence::changed, &m_context, [this] {
-            m_reload.start();
+            if (MediaPresence::instance().deferring()) {
+                Store::instance().markStale();
+            } else {
+                m_reload.start();
+            }
+        });
+        QObject::connect(&MediaPresence::instance(), &MediaPresence::settled, &m_context, [this] {
+            if (Store::instance().stale()) {
+                m_reload.start();
+            }
         });
     }
 
@@ -518,6 +529,7 @@ void Store::setBackend(std::unique_ptr<Backend> backend, QObject* owner) {
 void Store::reset() {
     setBackend(nullptr);
     m_listeners.clear();
+    m_stale = false;
     m_dim = true;
     m_clock = ClockState::Unknown;
 }
@@ -612,11 +624,18 @@ void Store::ensureLoaded() {
     }
 }
 
+void Store::ensureFresh() {
+    if ((!m_loaded || m_stale) && m_backend) {
+        reload();
+    }
+}
+
 void Store::reload() {
     if (!m_backend) {
         return;
     }
     const bool first = !m_loaded;
+    m_stale = false;
     const QSet<QString> oldSession = m_session;
     const QSet<QString> oldEarlier = m_earlier;
     read();

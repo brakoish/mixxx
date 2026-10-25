@@ -27,6 +27,10 @@ class BaseSqlTableModel : public BaseTrackTableModel {
     bool initialized() const {
         return m_bInitialized;
     }
+    // r7: a USB stick change waits until this list is shown or it is quiet.
+    bool mediaStale() const {
+        return m_mediaStale;
+    }
 
     void setExtraFilter(const QString& extraFilter);
     void setSearch(const QString& searchText);
@@ -99,6 +103,9 @@ class BaseSqlTableModel : public BaseTrackTableModel {
             QSharedPointer<BaseTrackCache> trackSource);
 
     virtual void initSortColumnMapping();
+    // r7: a USB stick came or went (decklab/decklabmedia.h): read again.
+    // A list of files by location finds their rows again first.
+    virtual void refreshForMedia();
 
     TrackCollectionManager* const m_pTrackCollectionManager;
 
@@ -117,6 +124,7 @@ class BaseSqlTableModel : public BaseTrackTableModel {
 
   private slots:
     void tracksChanged(const QSet<TrackId>& trackIds);
+    void mediaChanged();
 
   private:
     void setTrackValueForColumn(
@@ -178,6 +186,7 @@ class BaseSqlTableModel : public BaseTrackTableModel {
     QString m_currentSearchFilter;
     QVector<QHash<int, QVariant>> m_headerInfo;
     QString m_trackSourceOrderBy;
+    bool m_mediaStale = false; // r7: a stick change waits until shown or quiet
 
     DISALLOW_COPY_AND_ASSIGN(BaseSqlTableModel);
 };

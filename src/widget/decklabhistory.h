@@ -190,6 +190,15 @@ class Store {
     bool loaded() const {
         return m_loaded;
     }
+    // r7: a USB stick change mid-set left the sets' counts behind: read
+    // again when the History list is shown (ensureFresh) or once it is quiet.
+    void markStale() {
+        m_stale = m_loaded;
+    }
+    bool stale() const {
+        return m_stale;
+    }
+    void ensureFresh();
     // Reads everything again and tells listeners what changed.
     void reload();
 
@@ -266,6 +275,7 @@ class Store {
     std::unique_ptr<Backend> m_backend;
     QMetaObject::Connection m_ownerGone;
     bool m_loaded = false;
+    bool m_stale = false;
     bool m_dim = true;
     bool m_clockSuspect = false;
     ClockState m_clock = ClockState::Unknown;

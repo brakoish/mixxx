@@ -994,6 +994,49 @@ TEST_F(DeckLabRenameDbTest, ARowAlreadyAtTheNewNameIsMerged) {
                                  "WHERE mixxx_deleted=0 AND fs_deleted=0")));
 }
 
+// r7: a rename takeover the pass had to leave because a track was in use
+// (the background analysis or a deck held it) is tried again, a rename-only
+// pass too, once that track is no longer in use.
+TEST_F(DeckLabRenameDbTest, ATakeoverLeftForATrackInUseIsTriedAgain) {
+    QTemporaryDir root;
+    ASSERT_TRUE(root.isValid());
+    const QString folder = root.filePath(QStringLiteral("New Music"));
+    ASSERT_TRUE(QDir().mkpath(folder));
+    const QString renamed = folder + QStringLiteral("/01 Generated Tone.mp3");
+    {
+        QFile file(renamed);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        file.write(QByteArray(4096, '\x5a'));
+    }
+    {
+        QFile file(folder + QLatin1Char('/') + decklab::kRenameMapName);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        file.write(renameMap({{QStringLiteral("Generated Tone.mp3"), QStringLiteral("01 Generated Tone.mp3"), 4096}}));
+    }
+    exec(QStringLiteral("INSERT INTO directories (directory) VALUES ('%1')").arg(root.path()));
+    const qint64 track = addTrack(folder + QStringLiteral("/Generated Tone.mp3"), 4096, true);
+    const qint64 scanned = addTrack(renamed, 4096);
+    addCue(track, CueType::HotCue, 100, 0, 0);
+
+    decklab::UsbRelinker relinker(std::shared_ptr<TrackCollectionManager>(
+            trackCollectionManager(), [](TrackCollectionManager*) {}));
+    relinker.setBusyRetryInterval(50);
+    QSet<qint64> inUse{scanned}; // the analysis holds the newest download
+    relinker.setBusyTracks([&inUse] { return inUse; });
+    QSignalSpy done(&relinker, &decklab::UsbRelinker::relinked);
+    relinker.relinkRenames();
+    ASSERT_TRUE(done.wait(5000));
+    EXPECT_EQ(0, done.last().at(1).toInt()) << "left while in use";
+    EXPECT_FALSE(hidden(scanned));
+    EXPECT_FALSE(done.wait(300)) << "nothing again while it is still in use";
+    // The analysis lets go of it: the takeover follows without another scan.
+    inUse.clear();
+    ASSERT_TRUE(done.wait(5000));
+    EXPECT_EQ(1, done.last().at(1).toInt());
+    EXPECT_EQ(renamed, locationOf(track));
+    EXPECT_TRUE(hidden(scanned));
+}
+
 TEST_F(DeckLabRenameDbTest, MalformedMapIsIgnored) {
     QTemporaryDir root;
     ASSERT_TRUE(root.isValid());
@@ -1211,4 +1254,82 @@ TEST_F(DeckLabMediaDbTest, AbsentStickHiddenThenShownWhenMounted) {
     EXPECT_EQ(2, store.sessions().at(0).count);
     EXPECT_EQ(2, store.sessions().at(1).count);
     EXPECT_EQ(before, totals());
+}
+
+// r7: a stick plugged in mid-set stays cheap: only the list on screen reads
+// again. Every other list, the crate and playlist counts and the history's
+// sets wait until they are shown or until it is quiet.
+TEST_F(DeckLabMediaDbTest, MidSetOnlyTheListOnScreenReadsAgain) {
+    const QString away = QStringLiteral("/media/user/5678-EF01/");
+    addTrack(kNow + QStringLiteral("a.mp3"), 1000);
+    const qint64 awayB = addTrack(away + QStringLiteral("away-b.mp3"), 2000);
+    const qint64 crate = addCrate(QStringLiteral("Generated crate"));
+    addToCrate(crate, awayB);
+    const int set = history(QStringLiteral("2026-10-23"));
+    append(set, awayB);
+
+    QSet<QString> in{kMount};
+    auto& presence = decklab::MediaPresence::instance();
+    presence.setRootProbeForTesting([&in](const QString& root) { return in.contains(root); });
+    bool quiet = false;
+    presence.setQuiet([&quiet] { return quiet; });
+    struct Reset {
+        ~Reset() {
+            decklab::MediaPresence::instance().setQuiet({});
+            decklab::MediaPresence::instance().setShown(nullptr);
+        }
+    } reset;
+    EXPECT_TRUE(presence.refresh(database()));
+    connectLibraryCache();
+    LibraryTableModel tracks(nullptr, trackCollectionManager(), "mixxx.db.model.decklab.media.midset");
+    tracks.select();
+    CrateTableModel crateList(nullptr, trackCollectionManager());
+    crateList.selectCrate(CrateId(QVariant(crate)));
+    crateList.select();
+    presence.setShown(&tracks);
+    EXPECT_EQ(1, tracks.rowCount());
+    EXPECT_EQ(0, crateList.rowCount());
+    auto& store = decklab::history::Store::instance();
+    store.setBackend(decklab::history::makeMixxxBackend(trackCollectionManager(), UserSettingsPointer(),
+            [] { return false; }, [](TrackId) { return 1; }));
+    store.ensureLoaded();
+    ASSERT_EQ(1, store.sessions().size());
+    EXPECT_EQ(0, store.sessions().at(0).count);
+    decklab::UsbRelinker relinker(std::shared_ptr<TrackCollectionManager>(
+            trackCollectionManager(), [](TrackCollectionManager*) {}));
+    relinker.setQuiet([&quiet] { return quiet; });
+    QSignalSpy counts(internalCollection(), &TrackCollection::crateSummaryChanged);
+
+    // Plugged in while a deck plays.
+    in.insert(away.chopped(1));
+    relinker.refreshMedia();
+    EXPECT_EQ(2, tracks.rowCount()) << "the list on screen reads at once";
+    EXPECT_EQ(0, crateList.rowCount()) << "the others wait";
+    EXPECT_TRUE(crateList.mediaStale());
+    EXPECT_EQ(0, counts.size()) << "the counts wait";
+    QTest::qWait(50);
+    EXPECT_EQ(0, store.sessions().at(0).count) << "the history waits";
+    EXPECT_TRUE(store.stale());
+    // A list that is shown reads again then.
+    presence.setShown(&crateList);
+    EXPECT_EQ(1, crateList.rowCount());
+    EXPECT_FALSE(crateList.mediaStale());
+    // The History list reads again when it is shown.
+    store.ensureFresh();
+    EXPECT_EQ(1, store.sessions().at(0).count);
+    // Pulled again: the crate is on screen now; everything else reads once
+    // it is quiet.
+    in.remove(away.chopped(1));
+    relinker.refreshMedia();
+    EXPECT_EQ(0, crateList.rowCount()) << "the list on screen";
+    EXPECT_EQ(2, tracks.rowCount());
+    EXPECT_TRUE(tracks.mediaStale());
+    EXPECT_TRUE(store.stale());
+    quiet = true;
+    ASSERT_TRUE(QTest::qWaitFor([&] { return counts.size() > 0; }, decklab::MediaPresence::kSettleCheckMs + 2000));
+    EXPECT_EQ(1, tracks.rowCount());
+    EXPECT_FALSE(tracks.mediaStale());
+    QTest::qWait(50);
+    EXPECT_FALSE(store.stale());
+    EXPECT_EQ(0, store.sessions().at(0).count);
 }

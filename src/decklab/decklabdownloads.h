@@ -62,6 +62,15 @@ struct DownloadEntry {
 /// newest first (a folder by its newest track). Folders without tracks and
 /// dot or system folders are left out.
 QVector<DownloadEntry> listDownloads(const QStringList& folders);
+/// r7: what the DOWNLOADS tile says: the tracks (playlist tracks too) and
+/// the playlist folders, as listDownloads finds them, from names alone (no
+/// file is stat'ed), so a stick plugged in mid-set lists cheaply.
+struct DownloadCounts {
+    int tracks = 0;
+    int playlists = 0;
+    bool operator==(const DownloadCounts&) const = default;
+};
+DownloadCounts countDownloads(const QStringList& folders);
 /// The single downloads only (files at the top of the folders), newest first.
 QStringList newestDownloads(const QStringList& folders);
 /// Every download, playlist tracks too, newest first (the analysis order).

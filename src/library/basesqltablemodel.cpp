@@ -50,10 +50,36 @@ BaseSqlTableModel::BaseSqlTableModel(
     // r7-library: a USB stick plugged in or taken out (or its tracks merged)
     // shows or hides rows in every list, also the ones not on screen now
     // (decklabmedia.h). Nothing happens before the table is set.
-    connect(&decklab::MediaPresence::instance(),
-            &decklab::MediaPresence::changed,
-            this,
-            &BaseSqlTableModel::select);
+    // r7: while it is not quiet only the list on screen reads at once; the
+    // others when they are shown or when it is quiet again.
+    auto& media = decklab::MediaPresence::instance();
+    connect(&media, &decklab::MediaPresence::changed, this, &BaseSqlTableModel::mediaChanged);
+    connect(&media, &decklab::MediaPresence::settled, this, [this] {
+        if (m_mediaStale) {
+            refreshForMedia();
+        }
+    });
+    connect(&media, &decklab::MediaPresence::shownChanged, this, [this](QObject* model) {
+        if (model == this && m_mediaStale) {
+            refreshForMedia();
+        }
+    });
+}
+
+void BaseSqlTableModel::mediaChanged() {
+    if (!m_bInitialized) {
+        return;
+    }
+    const auto& media = decklab::MediaPresence::instance();
+    if (media.deferring() && media.shown() != this) {
+        m_mediaStale = true;
+        return;
+    }
+    refreshForMedia();
+}
+
+void BaseSqlTableModel::refreshForMedia() {
+    select();
 }
 
 BaseSqlTableModel::~BaseSqlTableModel() {
@@ -200,6 +226,7 @@ void BaseSqlTableModel::select() {
     if (!m_bInitialized) {
         return;
     }
+    m_mediaStale = false;
     // We should be able to detect when a select() would be a no-op. The DAO's
     // do not currently broadcast signals for when common things happen. In the
     // future, we can turn this check on and avoid a lot of needless
