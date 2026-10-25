@@ -51,7 +51,7 @@
   ],
   "input_sha256": {
     ".github/workflows/decklab-pi.yml": "47687c75d8245ecd0be521275cc6871e241d94de9c06ecae8f17c4e2429b124e",
-    "CMakeLists.txt": "24a1cf0878066c0a4bd32cec48f47ffaf9bd279fa7d7088cc90bf1f66d908478",
+    "CMakeLists.txt": "5b86afeaa192832764fad829e84226b0dcd7ff49f6ebfc1e5ee3ca356c01c061",
     "packaging/flatpak/modules/benchmark.yaml": "a85079134b2e8e9a2f837d400030039293e41870d4bf79d761cb4126309591f1",
     "packaging/flatpak/modules/chromaprint.yaml": "b0507a6d98aa75d7d37b7fc33f7fc2f03291ebd59a40711897dfbb0e398b30f2",
     "packaging/flatpak/modules/fdk-aac-free.yaml": "93a456c322c3ca25f1433773f5dda74ee3ea241a92a96d9afe333cc8eedab980",

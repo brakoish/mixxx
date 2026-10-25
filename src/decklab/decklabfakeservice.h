@@ -26,6 +26,13 @@ class DeckLabFakeService : public QObject {
     int connectionCount() const;
 
     void pushEvent(const QString& topic, const QJsonObject& data);
+    /// v1.2: relays a utility's request (preview.play, preview.stop,
+    /// sampler.load) the way decklabd does: an event with a new serial.
+    qint64 relay(const QString& event, QJsonObject data);
+    /// The relay.reply params Mixxx sent for `serial`; empty until it answers.
+    QJsonObject relayReply(qint64 serial) const;
+    /// The params of the newest preview.report.
+    QJsonObject lastPreviewReport() const;
     /// Writes raw bytes to every client (framing tests).
     void sendRaw(const QByteArray& bytes);
     void disconnectClients();
@@ -62,4 +69,5 @@ class DeckLabFakeService : public QObject {
     QList<QPointer<QLocalSocket>> m_clients;
     QHash<QLocalSocket*, QByteArray> m_buffers;
     QList<QPointer<QLocalSocket>> m_subscribed;
+    qint64 m_nextSerial = 1;
 };

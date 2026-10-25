@@ -154,6 +154,33 @@ void DeckLabFakeService::pushEvent(const QString& topic, const QJsonObject& data
     }
 }
 
+qint64 DeckLabFakeService::relay(const QString& event, QJsonObject data) {
+    const qint64 serial = m_nextSerial++;
+    data.insert(QStringLiteral("serial"), serial);
+    pushEvent(event, data);
+    return serial;
+}
+
+QJsonObject DeckLabFakeService::relayReply(qint64 serial) const {
+    for (auto it = requests.crbegin(); it != requests.crend(); ++it) {
+        const QJsonObject params = it->value(QStringLiteral("params")).toObject();
+        if (it->value(QStringLiteral("method")).toString() == QStringLiteral("relay.reply") &&
+                params.value(QStringLiteral("serial")).toInteger(-1) == serial) {
+            return params;
+        }
+    }
+    return QJsonObject();
+}
+
+QJsonObject DeckLabFakeService::lastPreviewReport() const {
+    for (auto it = requests.crbegin(); it != requests.crend(); ++it) {
+        if (it->value(QStringLiteral("method")).toString() == QStringLiteral("preview.report")) {
+            return it->value(QStringLiteral("params")).toObject();
+        }
+    }
+    return QJsonObject();
+}
+
 void DeckLabFakeService::sendRaw(const QByteArray& bytes) {
     for (const auto& client : std::as_const(m_clients)) {
         if (client) {
@@ -206,7 +233,8 @@ void DeckLabFakeService::handle(QLocalSocket* socket, const QJsonObject& request
                 {QStringLiteral("features"),
                         QJsonArray{QStringLiteral("wifi"), QStringLiteral("bt"), QStringLiteral("display"),
                                 QStringLiteral("power"), QStringLiteral("time"), QStringLiteral("usb"),
-                                QStringLiteral("devices"), QStringLiteral("apps"), QStringLiteral("thermal")}}});
+                                QStringLiteral("devices"), QStringLiteral("apps"), QStringLiteral("thermal"),
+                                QStringLiteral("preview")}}});
     } else if (method == QStringLiteral("events.subscribe")) {
         if (!m_subscribed.contains(client)) {
             m_subscribed.append(client);
@@ -321,7 +349,9 @@ void DeckLabFakeService::handle(QLocalSocket* socket, const QJsonObject& request
     } else if (method == QStringLiteral("apps.launch") || method == QStringLiteral("system.power") ||
             method == QStringLiteral("session.restart_mixxx")) {
         reply(socket, id, started);
-    } else if (method == QStringLiteral("apps.close")) {
+    } else if (method == QStringLiteral("apps.close") || method == QStringLiteral("relay.reply") ||
+            method == QStringLiteral("preview.report")) {
+        // v1.2: Mixxx's answers to relayed requests and its preview state (recorded in requests).
         reply(socket, id, {});
     } else {
         // session.desktop and unknown methods

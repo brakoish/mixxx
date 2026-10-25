@@ -30,6 +30,7 @@
 #endif
 #include "decklab/decklabdclient.h"
 #include "decklab/decklabusbname.h"
+#include "engine/engine.h"
 #include "library/dao/directorydao.h"
 #include "library/library_decl.h"
 #include "library/trackcollection.h"
@@ -46,7 +47,9 @@
 #include "soundio/soundmanagerconfig.h"
 #include "soundio/soundmanagerutil.h"
 #include "track/track.h"
+#include "track/trackref.h"
 #include "util/fileinfo.h"
+#include "waveform/visualplayposition.h"
 
 namespace {
 const QString kDeckLab = QStringLiteral("[DeckLab]");
@@ -55,12 +58,33 @@ const QString kRecordingFolder = QStringLiteral("Deck Lab Recordings");
 // Folders the utilities write to (apps/get-music, apps/sample-maker in the appliance repo).
 const QString kDownloadFolder = QStringLiteral("Deck Lab Downloads");
 const QStringList kMusicSubfolders{QStringLiteral("New Music"), QStringLiteral("Deck Lab Samples")};
+const QString kSamplesFolder = QStringLiteral("Deck Lab Samples");
+const QString kPreviewDeck = QStringLiteral("[PreviewDeck1]");
+// Deck Lab shows sixteen pads; PUT ON PAD fills the first empty one of those.
+constexpr int kPads = 16;
 constexpr qint64 kLoadingStaleMs = 20000;
 constexpr qint64 kMinimumRecordingFreeMb = 1024;
 
 double controlValue(const QString& group, const QString& item) {
     auto* control = ControlObject::getControl(ConfigKey(group, item), ControlFlag::NoWarnIfMissing);
     return control ? control->get() : 0.0;
+}
+
+void setControl(const QString& group, const QString& item, double value) {
+    if (auto* control = ControlObject::getControl(ConfigKey(group, item), ControlFlag::NoWarnIfMissing)) {
+        control->set(value);
+    }
+}
+
+int libraryId(const TrackPointer& track) {
+    return track ? track->getId().toVariant().toInt() : 0;
+}
+
+// Seconds of the track the preview deck's engine holds (its frames, not its tags).
+double previewSeconds() {
+    const double rate = controlValue(kPreviewDeck, QStringLiteral("track_samplerate"));
+    const double samples = controlValue(kPreviewDeck, QStringLiteral("track_samples"));
+    return rate > 0 && samples > 0 ? samples / mixxx::kEngineChannelOutputCount / rate : 0.0;
 }
 
 QString compact(const QString& text) {
@@ -179,11 +203,21 @@ DeckLabSystem::DeckLabSystem(Services services, QObject* parent, const QString& 
         : QObject(parent),
           m_services(std::move(services)),
           m_client(new DeckLabdClient(this, socketPath)),
-          m_utilities(new DeckLabUtilities(DeckLabUtilities::Hooks(), this)) {
+          m_utilities(new DeckLabUtilities(DeckLabUtilities::Hooks(), this)),
+          m_preview(new DeckLabPreview(
+                  DeckLabPreview::Hooks(),
+                  [this](const QString& method, const QJsonObject& params) {
+                      m_client->call(method, params);
+                  },
+                  this)) {
     m_utilities->setHooks(utilityHooks());
+    m_preview->setHooks(previewHooks());
     connect(m_client, &DeckLabdClient::readyChanged, this, &DeckLabSystem::onReady);
     connect(m_client, &DeckLabdClient::eventReceived, this, &DeckLabSystem::onEvent);
     connect(m_utilities, &DeckLabUtilities::notice, this, &DeckLabSystem::notice);
+    // Sample Maker reads deck-state.json before it decodes audio: a preview
+    // that starts or stops is published at once, not on the next second.
+    connect(m_preview, &DeckLabPreview::playingChanged, this, [this] { m_utilities->publishNow(); });
     if (auto* library = m_services.library.get()) {
         connect(library,
                 &TrackCollectionManager::libraryScanSummary,
@@ -309,6 +343,9 @@ void DeckLabSystem::onEvent(const QString& topic, const QJsonObject& data) {
         emit quitRequested(data.value(QStringLiteral("reason")).toString());
     } else if (topic == QStringLiteral("apps.changed")) {
         m_utilities->onAppsChanged(data);
+        m_preview->onUtilityChanged(!m_utilities->openApp().isEmpty());
+    } else {
+        m_preview->onEvent(topic, data);
     }
 }
 
@@ -333,6 +370,113 @@ DeckLabUtilities::Hooks DeckLabSystem::utilityHooks() {
     hooks.startQuietScan = [this] {
         auto* library = m_services.library.get();
         return library && library->startLibraryScanQuietly();
+    };
+    return hooks;
+}
+
+DeckLabPreview::Hooks DeckLabSystem::previewHooks() {
+    DeckLabPreview::Hooks hooks;
+    hooks.decksPlaying = [this] { return decksOrSamplersPlaying(); };
+    hooks.utilityOpen = [this] { return !m_utilities->openApp().isEmpty(); };
+    const auto previewDeck = [this]() -> BaseTrackPlayer* {
+        auto* players = m_services.players;
+        return players && players->numberOfPreviewDecks() > 0 ? players->getPreviewDeck(0) : nullptr;
+    };
+    hooks.loadedTrack = [previewDeck] {
+        auto* player = previewDeck();
+        return player ? libraryId(player->getLoadedTrack()) : 0;
+    };
+    hooks.load = [this, previewDeck](int id, QString* error) {
+        auto* player = previewDeck();
+        auto* library = m_services.library.get();
+        const TrackPointer track = library && player
+                ? library->internalCollection()->getTrackById(TrackId(QVariant(id)))
+                : TrackPointer();
+        if (!track) {
+            *error = tr("That track is not in the library.");
+            return false;
+        }
+#ifdef __STEM__
+        player->slotLoadTrack(track, mixxx::StemChannelSelection(), false);
+#else
+        player->slotLoadTrack(track, false);
+#endif
+        return true;
+    };
+    hooks.duration = [] { return previewSeconds(); };
+    hooks.position = [] {
+        // The engine's position from the last audio callback; playposition is only 15 Hz.
+        const auto visual = VisualPlayPosition::getVisualPlayPosition(kPreviewDeck);
+        double fraction = visual ? visual->getEnginePlayPos() : -1.0;
+        if (fraction < 0) {
+            fraction = controlValue(kPreviewDeck, QStringLiteral("playposition"));
+        }
+        return fraction * previewSeconds();
+    };
+    hooks.playing = [] { return controlValue(kPreviewDeck, QStringLiteral("play")) > 0; };
+    hooks.play = [](double start, double end, bool loop, double from) {
+        // Mixxx's loop controls count engine samples (two per frame), so the loop is sample exact.
+        const double rate = controlValue(kPreviewDeck, QStringLiteral("track_samplerate"));
+        const double samples = controlValue(kPreviewDeck, QStringLiteral("track_samples"));
+        if (!(rate > 0 && samples > 0)) {
+            return;
+        }
+        const double perSecond = rate * mixxx::kEngineChannelOutputCount;
+        setControl(kPreviewDeck, QStringLiteral("loop_enabled"), 0);
+        setControl(kPreviewDeck, QStringLiteral("loop_end_position"), -1);
+        setControl(kPreviewDeck, QStringLiteral("loop_start_position"), start * perSecond);
+        setControl(kPreviewDeck, QStringLiteral("loop_end_position"), end * perSecond);
+        if (loop) {
+            setControl(kPreviewDeck, QStringLiteral("loop_enabled"), 1);
+        }
+        if (from >= 0) {
+            setControl(kPreviewDeck, QStringLiteral("playposition"), from * perSecond / samples);
+        }
+        setControl(kPreviewDeck, QStringLiteral("play"), 1);
+    };
+    hooks.pause = [] {
+        setControl(kPreviewDeck, QStringLiteral("play"), 0);
+        setControl(kPreviewDeck, QStringLiteral("loop_enabled"), 0);
+    };
+    hooks.eject = [previewDeck] {
+        if (auto* player = previewDeck()) {
+            player->slotEjectTrack(1.0);
+        }
+    };
+    hooks.samplesFolder = [] {
+        const QString music = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
+        return music.isEmpty() ? QString() : QDir(music).filePath(kSamplesFolder);
+    };
+    hooks.emptyPad = [this] {
+        auto* players = m_services.players;
+        const int pads = players ? std::min(kPads, players->numberOfSamplers()) : 0;
+        for (int index = 0; index < pads; ++index) {
+            auto* sampler = players->getSampler(index);
+            if (sampler && !sampler->getLoadedTrack() && !m_loadingSince.contains(sampler)) {
+                return index + 1;
+            }
+        }
+        return 0;
+    };
+    hooks.loadPad = [this](int pad, const QString& path, QString* error) {
+        auto* players = m_services.players;
+        auto* library = m_services.library.get();
+        auto* sampler = players && pad >= 1 && pad <= players->numberOfSamplers()
+                ? players->getSampler(pad - 1)
+                : nullptr;
+        const TrackPointer track = sampler && library
+                ? library->getOrAddTrack(TrackRef::fromFilePath(path))
+                : TrackPointer();
+        if (!track) {
+            *error = tr("The sample could not be added to the library.");
+            return false;
+        }
+#ifdef __STEM__
+        sampler->slotLoadTrack(track, mixxx::StemChannelSelection(), false);
+#else
+        sampler->slotLoadTrack(track, false);
+#endif
+        return true;
     };
     return hooks;
 }
@@ -400,6 +544,12 @@ void DeckLabSystem::watchPlayer(BaseTrackPlayer* player) {
         m_loadingSince.remove(player);
     });
     connect(player, &BaseTrackPlayer::playerEmpty, this, [this, player] { m_loadingSince.remove(player); });
+    if (player->getGroup() == kPreviewDeck) {
+        connect(player, &BaseTrackPlayer::newTrackLoaded, this, [this](TrackPointer track) {
+            m_preview->onPreviewLoaded(libraryId(track));
+        });
+        connect(player, &BaseTrackPlayer::playerEmpty, this, [this] { m_preview->onPreviewLoaded(0); });
+    }
     connect(player, &QObject::destroyed, this, [this, player] {
         m_watchedPlayers.remove(player);
         m_loadingSince.remove(player);
@@ -433,6 +583,10 @@ QString DeckLabSystem::thermalWarning() const {
 }
 
 bool DeckLabSystem::anyPlaying() const {
+    return decksOrSamplersPlaying() || controlValue(kPreviewDeck, QStringLiteral("play")) > 0;
+}
+
+bool DeckLabSystem::decksOrSamplersPlaying() const {
     const int decks = m_services.players ? m_services.players->numberOfDecks() : 4;
     for (int deck = 1; deck <= std::max(4, decks); ++deck) {
         if (controlValue(QStringLiteral("[Channel%1]").arg(deck), QStringLiteral("play")) > 0) {
@@ -445,7 +599,7 @@ bool DeckLabSystem::anyPlaying() const {
             return true;
         }
     }
-    return controlValue(QStringLiteral("[PreviewDeck1]"), QStringLiteral("play")) > 0;
+    return false;
 }
 
 void DeckLabSystem::setLoadedTracksProvider(std::function<QList<decklab::LoadedTrack>()> provider) {
