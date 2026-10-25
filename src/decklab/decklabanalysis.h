@@ -109,7 +109,8 @@ class DeckLabBackgroundAnalysis : public QObject {
     bool m_stopping = false; // ... and was asked to stop
     int m_done = 0;
     int m_total = 0;
-    QSet<TrackId> m_tried;
+    QSet<TrackId> m_tried;   // finished, failed or skipped this session: never queued again
+    QList<TrackId> m_batch;  // the running batch
     Library* m_library = nullptr;
     UserSettingsPointer m_config;
     TrackAnalysisScheduler::Pointer m_scheduler;

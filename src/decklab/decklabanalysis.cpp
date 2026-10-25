@@ -149,13 +149,25 @@ void DeckLabBackgroundAnalysis::batchFinished() {
     if (!m_running) {
         return;
     }
+    // A batch that ran to its end has tried every track it was given (one
+    // the analyzer could not even load reports nothing): none comes back.
+    if (!m_stopping) {
+        for (const TrackId& id : std::as_const(m_batch)) {
+            m_tried.insert(id);
+        }
+    }
+    m_batch.clear();
     m_running = false;
     m_stopping = false;
     m_stopTimeout.stop();
     // Look again: tracks may have come in meanwhile, or the batch stopped.
     m_pending = true;
-    // Its thread has let go; the scheduler is deleted later by Qt.
-    m_scheduler.reset();
+    // Its thread has let go; the scheduler is deleted later by Qt, and a late
+    // signal from it never reaches the next batch.
+    if (m_scheduler) {
+        disconnect(m_scheduler.get(), nullptr, this, nullptr);
+        m_scheduler.reset();
+    }
     if (!m_timer.isActive()) {
         m_timer.start();
     }
@@ -203,6 +215,7 @@ void DeckLabBackgroundAnalysis::check() {
     }
     m_pending = false;
     m_running = true;
+    m_batch = ids;
     emit progressChanged();
 }
 

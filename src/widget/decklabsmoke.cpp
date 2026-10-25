@@ -1112,7 +1112,10 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                          // A pad's Load opens on SAMPLES, with ALL MUSIC for the rest.
                          auto* page = surface->findChild<DeckLabSampler*>(QStringLiteral("decklab-sampler"));
                          if (!page) return false;
+                         // The page switch echoes back through [Tab],current (queued):
+                         // let it land before the pad asks, as a tap on the pad would.
                          surface->selectPage(2);
+                         QCoreApplication::processEvents();
                          emit page->loadRequested(4);
                          QCoreApplication::processEvents();
                          auto* all = surface->findChild<QPushButton*>(QStringLiteral("decklab-browse-all-music"));

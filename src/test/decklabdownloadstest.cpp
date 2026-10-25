@@ -251,6 +251,12 @@ TEST(DeckLabBackgroundAnalysisTest, StopsWhenSomethingPlaysAndGoesOnWhenQuiet) {
     analysis.check();
     ASSERT_EQ(3, started.size());
     EXPECT_EQ(QStringLiteral("Analyzing 1 of 1"), analysis.progressText()) << "a new batch counts from one";
+    // A batch that ends without a word on a track (it could not even load)
+    // never brings that track back.
+    analysis.batchFinished();
+    analysis.check();
+    EXPECT_EQ(3, started.size());
+    EXPECT_EQ(DeckLabBackgroundAnalysis::State::Idle, analysis.state());
 }
 
 namespace {
