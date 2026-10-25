@@ -220,5 +220,14 @@ Supersedes the relink limits in section 4 (proposal steps 2 and 6 are now implem
   and Mixxx's scanner skips it while it is out. Table models select again by themselves on a change.
 - **Prevention**: the rekordbox device scan lists `/media/decklab` first and skips links to a folder already listed,
   so the appliance's label link is no second device.
-- Tests: `src/test/decklabusbmergetest.cpp` (`DeckLabUsbMergeTest`, `DeckLabUsbMergeDbTest`, `DeckLabMediaTest`,
-  `DeckLabMediaDbTest`).
+- **Get Music's rename maps**: Get Music's ORGANIZE step renames downloads and appends `{"old", "new", "size"}` to a
+  hidden `.deck-lab-renames.json` beside them. Every pass (start-up, a stick mounted, a media folder changed, and
+  after every library scan, which Deck Lab starts when a utility closes) reads the maps in the folders of library rows
+  inside a library folder (newest 5000 entries, files up to 4 MiB; a file that is not a JSON list, and entries that
+  are not plain file names with a positive whole size, are skipped). A live row follows its file, renames in a row
+  included, when its old file is gone and the new one has the size both the map and the row recorded: its
+  track_locations row moves in place, so cues, crates, history and analysis stay attached. When the scan already
+  added a row at the new name, the DJ's row takes over that address and the scan's row is merged into it (hidden).
+  Same copy, transaction and rules as the merge; the maps are only read.
+- Tests: `src/test/decklabusbmergetest.cpp` (`DeckLabUsbMergeTest`, `DeckLabUsbMergeDbTest`, `DeckLabRenameMapTest`,
+  `DeckLabRenameDbTest`, `DeckLabMediaTest`, `DeckLabMediaDbTest`).

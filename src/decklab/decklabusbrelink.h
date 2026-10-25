@@ -21,9 +21,16 @@
 // Nothing is deleted: a merged row is hidden (Mixxx's mixxx_deleted) with
 // whatever the survivor already had; the database is copied beside itself
 // first; the stick is only read. Tracks loaded or cached are left for later.
+//
+// r7-library: Get Music's rename maps. When Get Music renames downloaded
+// files (its ORGANIZE step), it lists {old, new, size} in a hidden
+// .deck-lab-renames.json beside them. A library row of a renamed file
+// follows it to the new name in the same pass, so its cues, crates, history
+// and analysis stay with it.
 
 #include <QFileSystemWatcher>
 #include <QFutureWatcher>
+#include <QHash>
 #include <QJsonArray>
 #include <QList>
 #include <QObject>
@@ -89,6 +96,9 @@ struct RelinkGroup {
     QString target;          // <mount>/<relative path>
     RelinkRow survivor;      // keeps its library id
     bool relocate = false;   // the survivor moves from an earlier address to target
+    // A renamed file the library scan already added at its new name: the
+    // survivor (the DJ's row) takes over the address of merged.first().
+    bool takeOver = false;
     QList<RelinkRow> merged; // merged into the survivor, then hidden
 };
 
@@ -105,6 +115,7 @@ struct RelinkPlan {
     // Songs left because a track is loaded or cached right now; they are
     // tried again the next time the stick is seen.
     int busy = 0;
+    int renamed = 0; // groups that follow a rename map
     bool isEmpty() const {
         return groups.isEmpty() && revived.isEmpty() && folders.isEmpty();
     }
@@ -125,6 +136,43 @@ RelinkPlan planRelink(const UsbVolume& volume,
 
 // Library rows that live under /media or /run/media.
 QList<RelinkRow> relinkCandidates(const QSqlDatabase& database);
+// Every library row.
+QList<RelinkRow> libraryRows(const QSqlDatabase& database);
+
+// --- Get Music's rename maps ---
+
+// One entry of a .deck-lab-renames.json: a file in that folder was renamed.
+struct RenameEntry {
+    QString oldName; // file names, never paths
+    QString newName;
+    qint64 size = 0;
+    bool operator==(const RenameEntry&) const = default;
+};
+// The rename maps by folder (no trailing slash).
+using RenameMaps = QHash<QString, QList<RenameEntry>>;
+
+inline const QString kRenameMapName = QStringLiteral(".deck-lab-renames.json");
+constexpr int kRenameMapEntryLimit = 5000;            // the newest ones
+constexpr qint64 kRenameMapByteLimit = 4 * 1024 * 1024; // bigger maps are not read
+
+// A map's entries, oldest first: a JSON list of {"old", "new", "size"}.
+// Entries that are not plain file names and a positive size are skipped;
+// nullopt for a file that is not such a list.
+std::optional<QList<RenameEntry>> parseRenameMap(const QByteArray& json, int limit = kRenameMapEntryLimit);
+// Where rename maps can matter: the folders of library rows inside a
+// library folder, and the library folders themselves.
+QStringList renameMapFolders(const QList<RelinkRow>& rows, const QStringList& folders);
+// The maps in those folders (file reads; never writes).
+RenameMaps readRenameMaps(const QStringList& folders);
+// Pure planning: library rows of renamed files follow them. A row moves
+// when it is not hidden, its old file is gone, and the new file has the
+// size the map and the row recorded; renames in a row (a to b to c) are
+// followed. A row the library scan added at the new name is merged into
+// it (takeOver). A cycle of names is left alone.
+RelinkPlan planRenames(const QList<RelinkRow>& rows,
+        const RenameMaps& maps,
+        const RelinkProbe& probe,
+        const QSet<qint64>& busyTrackIds = {});
 // Mixxx's library folders (the directories table).
 QStringList libraryFolders(const QSqlDatabase& database);
 
@@ -197,6 +245,9 @@ class UsbRelinker final : public QObject {
     // The sticks mounted under /media/decklab now (start-up; works without
     // decklabd).
     void relinkMounted();
+    // Get Music's rename maps (also with every stick and after every
+    // library scan, which Deck Lab starts when a utility closes).
+    void relinkRenames();
     // Hides or shows the tracks of sticks that went or came.
     void refreshMedia(bool force = false);
     // A stick mounted or taken out (its folder or link appears or goes in
@@ -208,7 +259,8 @@ class UsbRelinker final : public QObject {
     void relinked(int relocated, int merged);
 
   private:
-    void queue(const QList<UsbVolume>& volumes);
+    // true when a stick was added to the queue.
+    bool queue(const QList<UsbVolume>& volumes);
     void startNext();
     void finish();
     void notify(const RelinkResult& result);
@@ -219,8 +271,10 @@ class UsbRelinker final : public QObject {
     RelinkProbe m_probe;
     QList<UsbVolume> m_pending;
     QSet<QString> m_done; // uuid + mount handled while the stick is in
+    bool m_renamesPending = false;
     QFutureWatcher<RelinkPlan> m_watcher;
-    UsbVolume m_running;
+    std::optional<UsbVolume> m_running; // none: rename maps only
+    bool m_runningRenames = false;
     QTimer m_retry; // a stick seen while something played: tried when it stops
     bool m_scanning = false; // Mixxx's library scan is running
     QFileSystemWatcher* m_folders = nullptr;

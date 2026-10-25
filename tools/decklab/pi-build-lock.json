@@ -51,7 +51,9 @@
     "DeckLabUsbMergeTest.*",
     "DeckLabUsbMergeDbTest.*",
     "DeckLabMediaTest.*",
-    "DeckLabMediaDbTest.*"
+    "DeckLabMediaDbTest.*",
+    "DeckLabRenameMapTest.*",
+    "DeckLabRenameDbTest.*"
   ],
   "input_sha256": {
     ".github/workflows/decklab-pi.yml": "47687c75d8245ecd0be521275cc6871e241d94de9c06ecae8f17c4e2429b124e",

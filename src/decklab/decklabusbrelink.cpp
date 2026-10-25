@@ -5,7 +5,10 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonParseError>
 #include <QMap>
 #include <QSqlError>
 #include <QSqlQuery>
@@ -457,6 +460,33 @@ int relocate(QSqlDatabase& database, const RelinkRow& row, const QString& target
     return update.numRowsAffected() == 1 ? 1 : 0;
 }
 
+// -1 a query failed, 0 left (changed since planning), 1 done: the survivor
+// takes the address of holder, which gets the survivor's old one. Both
+// track_locations rows stay as they are.
+int takeOver(QSqlDatabase& database, const RelinkRow& survivor, const RelinkRow& holder) {
+    QSqlQuery point(database);
+    point.prepare(QStringLiteral("UPDATE library SET location=:to WHERE id=:id AND location=:from"));
+    point.bindValue(QStringLiteral(":to"), holder.locationId);
+    point.bindValue(QStringLiteral(":id"), survivor.trackId);
+    point.bindValue(QStringLiteral(":from"), survivor.locationId);
+    if (!run(point)) {
+        return -1;
+    }
+    if (point.numRowsAffected() != 1) {
+        return 0;
+    }
+    point.bindValue(QStringLiteral(":to"), survivor.locationId);
+    point.bindValue(QStringLiteral(":id"), holder.trackId);
+    point.bindValue(QStringLiteral(":from"), holder.locationId);
+    if (!run(point) || point.numRowsAffected() != 1) {
+        return -1; // half done: everything rolls back
+    }
+    QSqlQuery present(database);
+    present.prepare(QStringLiteral("UPDATE track_locations SET fs_deleted=0 WHERE id=:id"));
+    present.bindValue(QStringLiteral(":id"), holder.locationId);
+    return run(present) ? 1 : -1;
+}
+
 } // namespace
 
 QList<UsbVolume> usbVolumesFromDrives(const QJsonArray& drives) {
@@ -688,16 +718,17 @@ RelinkPlan planRelink(const UsbVolume& volume,
     return plan;
 }
 
-QList<RelinkRow> relinkCandidates(const QSqlDatabase& database) {
+namespace {
+
+QList<RelinkRow> readRows(const QSqlDatabase& database, const QString& where) {
     QList<RelinkRow> rows;
     QSqlQuery query(database);
     query.setForwardOnly(true);
     query.prepare(QStringLiteral(
             "SELECT library.id, track_locations.id, track_locations.location, "
             "track_locations.filesize, library.mixxx_deleted, track_locations.fs_deleted "
-            "FROM track_locations INNER JOIN library ON library.location=track_locations.id "
-            "WHERE (track_locations.location >= '/media/' AND track_locations.location < '/media0') "
-            "OR (track_locations.location >= '/run/media/' AND track_locations.location < '/run/media0')"));
+            "FROM track_locations INNER JOIN library ON library.location=track_locations.id ") +
+            where);
     if (!query.exec()) {
         LOG_FAILED_QUERY(query);
         return rows;
@@ -713,6 +744,211 @@ QList<RelinkRow> relinkCandidates(const QSqlDatabase& database) {
         rows.append(row);
     }
     return rows;
+}
+
+bool isMediaLocation(const QString& location) {
+    return location.startsWith(QStringLiteral("/media/")) || location.startsWith(QStringLiteral("/run/media/"));
+}
+
+// A plain file name: no folder part, nothing that walks out of the folder.
+bool isFileName(const QString& name) {
+    return usableName(name) && !name.contains(QLatin1Char('\\'));
+}
+
+} // namespace
+
+QList<RelinkRow> relinkCandidates(const QSqlDatabase& database) {
+    return readRows(database,
+            QStringLiteral("WHERE (track_locations.location >= '/media/' AND "
+                           "track_locations.location < '/media0') OR (track_locations.location >= "
+                           "'/run/media/' AND track_locations.location < '/run/media0')"));
+}
+
+QList<RelinkRow> libraryRows(const QSqlDatabase& database) {
+    return readRows(database, QString());
+}
+
+std::optional<QList<RenameEntry>> parseRenameMap(const QByteArray& json, int limit) {
+    QJsonParseError error;
+    const QJsonDocument document = QJsonDocument::fromJson(json, &error);
+    if (error.error != QJsonParseError::NoError || !document.isArray()) {
+        return std::nullopt;
+    }
+    const QJsonArray list = document.array();
+    QList<RenameEntry> entries;
+    // Appended oldest first; only the newest `limit` are read.
+    for (qsizetype index = std::max<qsizetype>(0, list.size() - std::max(0, limit)); index < list.size(); ++index) {
+        const QJsonObject item = list.at(index).toObject();
+        const QJsonValue oldName = item.value(QStringLiteral("old"));
+        const QJsonValue newName = item.value(QStringLiteral("new"));
+        const QJsonValue size = item.value(QStringLiteral("size"));
+        if (!oldName.isString() || !newName.isString() || !size.isDouble()) {
+            continue;
+        }
+        const double bytes = size.toDouble();
+        // A whole, positive number of bytes that a double holds exactly.
+        if (!(bytes >= 1 && bytes <= 9007199254740992.0) || std::floor(bytes) != bytes) {
+            continue;
+        }
+        RenameEntry entry{oldName.toString(), newName.toString(), static_cast<qint64>(bytes)};
+        if (!isFileName(entry.oldName) || !isFileName(entry.newName) || entry.oldName == entry.newName) {
+            continue;
+        }
+        entries.append(entry);
+    }
+    return entries;
+}
+
+QStringList renameMapFolders(const QList<RelinkRow>& rows, const QStringList& folders) {
+    QStringList roots;
+    for (const QString& folder : folders) {
+        const QString clean = cleanMount(folder);
+        if (clean.startsWith(QLatin1Char('/')) && clean != QStringLiteral("/")) {
+            roots.append(clean);
+        }
+    }
+    QSet<QString> result(roots.cbegin(), roots.cend());
+    for (const auto& row : rows) {
+        if (row.hidden) {
+            continue;
+        }
+        const qsizetype slash = row.location.lastIndexOf(QLatin1Char('/'));
+        if (slash <= 0) {
+            continue;
+        }
+        const QString folder = row.location.left(slash);
+        if (result.contains(folder)) {
+            continue;
+        }
+        for (const QString& root : std::as_const(roots)) {
+            if (folder.startsWith(root + QLatin1Char('/'))) {
+                result.insert(folder);
+                break;
+            }
+        }
+    }
+    QStringList sorted(result.cbegin(), result.cend());
+    std::sort(sorted.begin(), sorted.end());
+    return sorted;
+}
+
+RenameMaps readRenameMaps(const QStringList& folders) {
+    RenameMaps maps;
+    for (const QString& folder : folders) {
+        QFile file(QDir(folder).filePath(kRenameMapName));
+        const QFileInfo info(file);
+        if (!info.isFile()) {
+            continue;
+        }
+        if (info.size() > kRenameMapByteLimit || !file.open(QIODevice::ReadOnly)) {
+            qWarning() << "Deck Lab rename map: not read" << info.filePath();
+            continue;
+        }
+        const auto entries = parseRenameMap(file.read(kRenameMapByteLimit + 1));
+        if (!entries) {
+            qWarning() << "Deck Lab rename map: not a list of renames, ignored" << info.filePath();
+            continue;
+        }
+        if (!entries->isEmpty()) {
+            maps.insert(folder, *entries);
+        }
+    }
+    return maps;
+}
+
+RelinkPlan planRenames(const QList<RelinkRow>& rows,
+        const RenameMaps& maps,
+        const RelinkProbe& probe,
+        const QSet<qint64>& busyTrackIds) {
+    RelinkPlan plan;
+    if (maps.isEmpty() || !probe.fileSize) {
+        return plan;
+    }
+    // Every address in use, hidden rows included.
+    QHash<QString, const RelinkRow*> byLocation;
+    for (const auto& row : rows) {
+        byLocation.insert(row.location, &row);
+    }
+    QStringList folders = maps.keys();
+    std::sort(folders.begin(), folders.end());
+    QSet<qint64> claimed;
+    for (const QString& folder : std::as_const(folders)) {
+        const QString prefix = folder + QLatin1Char('/');
+        // The rows in this folder by file name, as the renames go.
+        QHash<QString, const RelinkRow*> named;
+        for (const auto& row : rows) {
+            if (!row.hidden && row.location.startsWith(prefix) &&
+                    !QStringView(row.location).mid(prefix.size()).contains(QLatin1Char('/'))) {
+                named.insert(row.location.mid(prefix.size()), &row);
+            }
+        }
+        QHash<const RelinkRow*, QString> moved; // row -> its file's name now
+        for (const auto& entry : maps.value(folder)) {
+            const auto it = named.find(entry.oldName);
+            if (it == named.end() || it.value()->fileSize != entry.size) {
+                continue; // no row there, or another file had that name
+            }
+            const RelinkRow* row = it.value();
+            named.erase(it);
+            named.insert(entry.newName, row);
+            moved.insert(row, entry.newName);
+        }
+        QList<const RelinkRow*> order = moved.keys();
+        std::sort(order.begin(), order.end(), [](const RelinkRow* a, const RelinkRow* b) {
+            return a->trackId < b->trackId;
+        });
+        for (const RelinkRow* row : std::as_const(order)) {
+            const QString target = prefix + moved.value(row);
+            if (target == row->location || claimed.contains(row->trackId)) {
+                continue; // back where it was (a cycle), or taken by another group
+            }
+            const qint64 size = probe.fileSize(target);
+            if (size < 0) {
+                ++plan.missing;
+                continue;
+            }
+            if (size != row->fileSize) {
+                ++plan.sizeMismatch;
+                continue;
+            }
+            if (probe.fileSize(row->location) >= 0) {
+                continue; // its old file is still there: a copy, or a name used again
+            }
+            const RelinkRow* holder = byLocation.value(target);
+            if (holder && holder->hidden) {
+                ++plan.blocked;
+                continue;
+            }
+            if (holder && (claimed.contains(holder->trackId) ||
+                                  (holder->fileSize > 0 && holder->fileSize != size))) {
+                ++plan.sizeMismatch;
+                continue;
+            }
+            if (busyTrackIds.contains(row->trackId) || (holder && busyTrackIds.contains(holder->trackId))) {
+                ++plan.busy;
+                continue;
+            }
+            RelinkGroup group;
+            group.target = target;
+            group.survivor = *row;
+            if (holder) {
+                // The scan saw the new name first and added a row for it.
+                // The DJ's row (cues, crates, history, analysis) survives and
+                // takes over its address, as Mixxx's own moved-file
+                // detection keeps the old row; anything only the new row has
+                // moves over.
+                group.takeOver = true;
+                group.merged = {*holder};
+                claimed.insert(holder->trackId);
+            } else {
+                group.relocate = true;
+            }
+            claimed.insert(row->trackId);
+            plan.groups.append(group);
+            ++plan.renamed;
+        }
+    }
+    return plan;
 }
 
 QStringList libraryFolders(const QSqlDatabase& database) {
@@ -740,6 +976,21 @@ RelinkResult applyRelink(QSqlDatabase& database, const RelinkPlan& plan) {
         return result;
     }
     for (const auto& group : plan.groups) {
+        if (group.takeOver && !group.merged.isEmpty()) {
+            const RelinkRow& holder = group.merged.first();
+            const int moved = takeOver(database, group.survivor, holder);
+            if (moved < 0) {
+                return RelinkResult();
+            }
+            if (moved == 0) {
+                continue; // changed since planning
+            }
+            if (mergeInto(database, group.survivor, group.target, holder, &result) <= 0) {
+                return RelinkResult(); // the rows changed under the pass: all of it waits
+            }
+            result.relocated.append({group.survivor.trackId, group.survivor.location, group.target});
+            continue;
+        }
         if (group.relocate) {
             const int moved = relocate(database, group.survivor, group.target);
             if (moved < 0) {
@@ -848,6 +1099,9 @@ UsbRelinker::UsbRelinker(std::shared_ptr<TrackCollectionManager> library, QObjec
         connect(m_library.get(), &TrackCollectionManager::libraryScanFinished, this, [this] {
             m_scanning = false;
             refreshMedia(); // files found missing or found again
+            // Deck Lab scans when a utility closes: Get Music may have
+            // renamed downloads.
+            m_renamesPending = true;
             startNext();
         });
     }
@@ -875,7 +1129,9 @@ void UsbRelinker::relinkDrives(const QJsonArray& drives) {
         present.insert(volumeKey(volume));
     }
     m_done.intersect(present);
-    queue(volumes);
+    // A stick that came: its pass follows the rename maps too.
+    m_renamesPending = queue(volumes) || m_renamesPending;
+    startNext();
 }
 
 void UsbRelinker::relinkMounted() {
@@ -899,6 +1155,14 @@ void UsbRelinker::relinkMounted() {
     }
     m_done.intersect(present);
     queue(volumes);
+    // Start-up, or a media folder changed.
+    m_renamesPending = true;
+    startNext();
+}
+
+void UsbRelinker::relinkRenames() {
+    m_renamesPending = true;
+    startNext();
 }
 
 void UsbRelinker::refreshMedia(bool force) {
@@ -972,10 +1236,11 @@ void UsbRelinker::rewatch() {
     }
 }
 
-void UsbRelinker::queue(const QList<UsbVolume>& volumes) {
+bool UsbRelinker::queue(const QList<UsbVolume>& volumes) {
+    bool added = false;
     for (const auto& volume : volumes) {
         const QString key = volumeKey(volume);
-        if (m_done.contains(key) || (m_watcher.isRunning() && volumeKey(m_running) == key)) {
+        if (m_done.contains(key) || (m_watcher.isRunning() && m_running && volumeKey(*m_running) == key)) {
             continue;
         }
         const bool queued = std::any_of(m_pending.cbegin(), m_pending.cend(), [&key](const UsbVolume& pending) {
@@ -983,13 +1248,14 @@ void UsbRelinker::queue(const QList<UsbVolume>& volumes) {
         });
         if (!queued) {
             m_pending.append(volume);
+            added = true;
         }
     }
-    startNext();
+    return added;
 }
 
 void UsbRelinker::startNext() {
-    if (m_watcher.isRunning() || m_pending.isEmpty() || !m_library || m_scanning) {
+    if (m_watcher.isRunning() || (m_pending.isEmpty() && !m_renamesPending) || !m_library || m_scanning) {
         return;
     }
     // Never while anything plays: tried again when it stops.
@@ -1002,26 +1268,54 @@ void UsbRelinker::startNext() {
         return;
     }
     const QSqlDatabase database = collection->database();
-    const QList<RelinkRow> rows = relinkCandidates(database);
+    const QList<RelinkRow> rows = libraryRows(database);
     const QStringList folders = libraryFolders(database);
     const QSet<qint64> busy = m_busy ? m_busy() : QSet<qint64>();
-    m_running = m_pending.takeFirst();
-    const UsbVolume volume = m_running;
+    m_running = m_pending.isEmpty() ? std::nullopt : std::optional<UsbVolume>(m_pending.takeFirst());
+    // Every pass follows the rename maps too: one copy, one transaction.
+    m_runningRenames = m_renamesPending;
+    m_renamesPending = false;
+    const std::optional<UsbVolume> volume = m_running;
+    const bool renames = m_runningRenames;
     const RelinkProbe probe = m_probe;
-    // Only stat() calls and directory reads on the worker: the stick is
-    // read, never written.
-    m_watcher.setFuture(QtConcurrent::run([volume, rows, folders, probe, busy] {
-        return planRelink(volume, rows, folders, probe, busy);
+    // Only stat() calls, directory and rename map reads on the worker: the
+    // stick is read, never written.
+    m_watcher.setFuture(QtConcurrent::run([volume, renames, rows, folders, probe, busy] {
+        RelinkPlan plan;
+        if (volume) {
+            QList<RelinkRow> media;
+            for (const auto& row : rows) {
+                if (isMediaLocation(row.location)) {
+                    media.append(row);
+                }
+            }
+            plan = planRelink(*volume, media, folders, probe, busy);
+        }
+        if (renames) {
+            // After the stick's own moves: a renamed file's row follows it.
+            const RelinkPlan renamed = planRenames(
+                    rows, readRenameMaps(renameMapFolders(rows, folders)), probe, busy);
+            plan.groups += renamed.groups;
+            plan.renamed = renamed.renamed;
+            plan.sizeMismatch += renamed.sizeMismatch;
+            plan.missing += renamed.missing;
+            plan.blocked += renamed.blocked;
+            plan.busy += renamed.busy;
+        }
+        return plan;
     }));
 }
 
 void UsbRelinker::finish() {
-    const UsbVolume volume = m_running;
+    const std::optional<UsbVolume> volume = m_running;
     RelinkPlan plan = m_watcher.result();
     if (m_scanning || (m_playing && m_playing())) {
         // A deck started (or a library scan) while the stick was read:
         // later, planned afresh.
-        m_pending.prepend(volume);
+        if (volume) {
+            m_pending.prepend(*volume);
+        }
+        m_renamesPending = m_renamesPending || m_runningRenames;
         if (!m_scanning) {
             m_retry.start();
         }
@@ -1061,15 +1355,19 @@ void UsbRelinker::finish() {
     }
     const int relocated = static_cast<int>(result.relocated.size());
     const int merged = static_cast<int>(result.merged.size());
-    qInfo() << "Deck Lab USB merge" << volume.uuid << "->" << volume.mount << ":" << relocated
-            << "moved," << merged << "merged (" << result.cues << "cues," << result.crates
-            << "crate entries," << result.entries << "history and playlist entries ),"
-            << result.revived << "found again," << result.folders << "library folders moved,"
-            << plan.sizeMismatch << "same path but another size," << plan.missing
-            << "not on the stick," << plan.blocked << "address held by a hidden track,"
-            << plan.busy << "in use";
-    if (plan.busy == 0 && result.ok) {
-        m_done.insert(volumeKey(volume));
+    // Every stick pass is logged; a pass of rename maps only when it found work.
+    if (volume || !plan.isEmpty() || plan.sizeMismatch + plan.missing + plan.blocked + plan.busy > 0) {
+        qInfo() << "Deck Lab USB merge" << (volume ? volume->uuid : QStringLiteral("(rename maps)"))
+                << "->" << (volume ? volume->mount : QString()) << ":" << relocated << "moved,"
+                << merged << "merged (" << result.cues << "cues," << result.crates << "crate entries,"
+                << result.entries << "history and playlist entries )," << plan.renamed
+                << "following a rename map," << result.revived << "found again," << result.folders
+                << "library folders moved," << plan.sizeMismatch << "same path but another size,"
+                << plan.missing << "file not there," << plan.blocked
+                << "address held by a hidden track," << plan.busy << "in use";
+    }
+    if (volume && plan.busy == 0 && result.ok) {
+        m_done.insert(volumeKey(*volume));
     }
     // The views select again: rows moved, merged or found again.
     refreshMedia(result.ok && !plan.isEmpty());

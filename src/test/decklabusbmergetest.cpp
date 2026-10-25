@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // r7-library: one library entry per song on a USB stick (rows at its earlier
-// addresses move or merge onto its current one) and tracks on sticks that are
-// out hidden until they are back. Generated rows and fixture paths only: no
+// addresses move or merge onto its current one), rows that follow Get Music's
+// renames, and tracks on sticks that are out hidden until they are back. Generated rows and fixture paths only: no
 // stick, no audio, no personal paths.
 #include <gtest/gtest.h>
 
@@ -9,6 +9,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QSignalSpy>
 #include <QSqlDatabase>
@@ -678,6 +679,296 @@ TEST_F(DeckLabUsbMergeDbTest, RelinkerWaitsWhileAnythingPlays) {
     ASSERT_TRUE(done.wait(5000));
     EXPECT_EQ(1, done.first().at(0).toInt());
     EXPECT_EQ(kNow + QStringLiteral("b.mp3"), locationOf(alone));
+}
+
+// --- Get Music's rename maps ---
+
+namespace {
+
+const QString kNewMusic = QStringLiteral("/home/user/Music/New Music");
+
+QByteArray renameMap(const QList<decklab::RenameEntry>& entries) {
+    QJsonArray list;
+    for (const auto& entry : entries) {
+        list.append(QJsonObject{{"old", entry.oldName}, {"new", entry.newName}, {"size", entry.size}});
+    }
+    return QJsonDocument(list).toJson();
+}
+
+} // namespace
+
+TEST(DeckLabRenameMapTest, MalformedMapsAndEntriesAreIgnored) {
+    using decklab::parseRenameMap;
+    using decklab::RenameEntry;
+    EXPECT_FALSE(parseRenameMap(QByteArray("{not json")).has_value());
+    EXPECT_FALSE(parseRenameMap(QByteArray("{\"old\": \"a.mp3\"}")).has_value());
+    EXPECT_FALSE(parseRenameMap(QByteArray()).has_value());
+    ASSERT_TRUE(parseRenameMap(QByteArray("[]")).has_value());
+    EXPECT_TRUE(parseRenameMap(QByteArray("[]"))->isEmpty());
+    const QByteArray mixed(R"([
+        {"old": "a.mp3", "new": "01 a.mp3", "size": 1000},
+        {"old": "../b.mp3", "new": "02 b.mp3", "size": 1000},
+        {"old": "c.mp3", "new": "sub/03 c.mp3", "size": 1000},
+        {"old": "d.mp3", "new": "04 d.mp3"},
+        {"old": "e.mp3", "new": "05 e.mp3", "size": "1000"},
+        {"old": "f.mp3", "new": "06 f.mp3", "size": -5},
+        {"old": "g.mp3", "new": "07 g.mp3", "size": 1.5},
+        {"old": "h.mp3", "new": "h.mp3", "size": 1000},
+        {"old": 8, "new": "08 i.mp3", "size": 1000},
+        "j.mp3",
+        {"old": "k.mp3", "new": "..", "size": 1000},
+        {"old": "l.mp3", "new": "09 l.mp3", "size": 2000}
+    ])");
+    const auto entries = parseRenameMap(mixed);
+    ASSERT_TRUE(entries.has_value());
+    EXPECT_EQ((QList<RenameEntry>{{QStringLiteral("a.mp3"), QStringLiteral("01 a.mp3"), 1000},
+                      {QStringLiteral("l.mp3"), QStringLiteral("09 l.mp3"), 2000}}),
+            *entries);
+    // Only the newest entries are read.
+    const auto newest = parseRenameMap(mixed, 1);
+    ASSERT_TRUE(newest.has_value());
+    ASSERT_EQ(1, newest->size());
+    EXPECT_EQ(QStringLiteral("l.mp3"), newest->first().oldName);
+}
+
+TEST(DeckLabRenameMapTest, MapsAreLookedForWhereLibraryRowsAre) {
+    const QList<RelinkRow> rows{
+            row(1, kNewMusic + QStringLiteral("/a.mp3"), 1000),
+            row(2, kNewMusic + QStringLiteral("/Generated Playlist/b.mp3"), 1000),
+            row(3, kNow + QStringLiteral("Deck Lab Downloads/Generated Playlist/c.mp3"), 1000),
+            row(4, QStringLiteral("/home/user/Elsewhere/d.mp3"), 1000), // not in a library folder
+    };
+    const QStringList folders{QStringLiteral("/home/user/Music"), kNow + QStringLiteral("Deck Lab Downloads/")};
+    EXPECT_EQ((QStringList{QStringLiteral("/home/user/Music"),
+                      kNewMusic,
+                      kNewMusic + QStringLiteral("/Generated Playlist"),
+                      kNow + QStringLiteral("Deck Lab Downloads"),
+                      kNow + QStringLiteral("Deck Lab Downloads/Generated Playlist")}),
+            decklab::renameMapFolders(rows, folders));
+}
+
+TEST(DeckLabRenameMapTest, RowsFollowRenamesAndRenamesInARow) {
+    const QString in = kNewMusic + QLatin1Char('/');
+    RelinkRow hidden = row(4, in + QStringLiteral("d.mp3"), 4000);
+    hidden.hidden = true;
+    const QList<RelinkRow> rows{
+            row(1, in + QStringLiteral("a.mp3"), 1000),
+            row(2, in + QStringLiteral("b.mp3"), 2000),
+            row(3, in + QStringLiteral("c.mp3"), 3000),
+            hidden,
+            row(5, in + QStringLiteral("e.mp3"), 5000), // its file is still there
+            row(6, in + QStringLiteral("f.mp3"), 6000), // the map names another file
+    };
+    decklab::RenameMaps maps;
+    maps.insert(kNewMusic,
+            {{QStringLiteral("a.mp3"), QStringLiteral("01 a.mp3"), 1000},
+                    {QStringLiteral("b.mp3"), QStringLiteral("02 b.mp3"), 2000},
+                    {QStringLiteral("02 b.mp3"), QStringLiteral("03 b.mp3"), 2000},
+                    {QStringLiteral("c.mp3"), QStringLiteral("04 c.mp3"), 3000},
+                    {QStringLiteral("d.mp3"), QStringLiteral("05 d.mp3"), 4000},
+                    {QStringLiteral("e.mp3"), QStringLiteral("06 e.mp3"), 5000},
+                    {QStringLiteral("f.mp3"), QStringLiteral("07 f.mp3"), 1234}});
+    FakeDisk disk;
+    disk.files.insert(in + QStringLiteral("01 a.mp3"), 1000);
+    disk.files.insert(in + QStringLiteral("03 b.mp3"), 2000);
+    disk.files.insert(in + QStringLiteral("04 c.mp3"), 2999); // changed since: not this file
+    disk.files.insert(in + QStringLiteral("05 d.mp3"), 4000);
+    disk.files.insert(in + QStringLiteral("e.mp3"), 5000);
+    disk.files.insert(in + QStringLiteral("06 e.mp3"), 5000);
+    disk.files.insert(in + QStringLiteral("07 f.mp3"), 1234);
+    const RelinkPlan plan = decklab::planRenames(rows, maps, disk.probe());
+    ASSERT_EQ(2, plan.groups.size());
+    EXPECT_EQ(2, plan.renamed);
+    EXPECT_EQ(1, plan.groups[0].survivor.trackId);
+    EXPECT_EQ(in + QStringLiteral("01 a.mp3"), plan.groups[0].target);
+    EXPECT_TRUE(plan.groups[0].relocate);
+    EXPECT_EQ(2, plan.groups[1].survivor.trackId);
+    EXPECT_EQ(in + QStringLiteral("03 b.mp3"), plan.groups[1].target);
+    EXPECT_EQ(1, plan.sizeMismatch);
+    // A track in use waits.
+    EXPECT_EQ(1, decklab::planRenames(rows, maps, disk.probe(), {2}).busy);
+}
+
+namespace {
+
+class DeckLabRenameDbTest : public DeckLabUsbMergeDbTest {
+  protected:
+    // A rename planned and applied on generated rows.
+    decklab::RelinkResult applyRenames(const decklab::RenameMaps& maps, const FakeDisk& disk) {
+        const RelinkPlan renames = decklab::planRenames(decklab::libraryRows(database()), maps, disk.probe());
+        last = renames;
+        return apply(renames);
+    }
+    RelinkPlan last;
+};
+
+} // namespace
+
+// The real thing: a folder of the library, a file Get Music renamed and its
+// map beside it; the relinker moves the row in place. Cues, crates and
+// history stay with it; the map is only read.
+TEST_F(DeckLabRenameDbTest, InPlaceMoveKeepsCuesCratesAndHistory) {
+    QTemporaryDir root;
+    ASSERT_TRUE(root.isValid());
+    const QString folder = root.filePath(QStringLiteral("New Music/Generated Playlist"));
+    ASSERT_TRUE(QDir().mkpath(folder));
+    const QString renamed = folder + QStringLiteral("/01 Generated Tone.mp3");
+    {
+        QFile file(renamed);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        file.write(QByteArray(4096, '\x5a'));
+    }
+    const QString mapFile = folder + QLatin1Char('/') + decklab::kRenameMapName;
+    {
+        QFile file(mapFile);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        file.write(renameMap({{QStringLiteral("Generated Tone.mp3"), QStringLiteral("01 Generated Tone.mp3"), 4096}}));
+    }
+    const QByteArray mapBytes = [&mapFile] {
+        QFile file(mapFile);
+        return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+    }();
+    exec(QStringLiteral("INSERT INTO directories (directory) VALUES ('%1')").arg(root.path()));
+    const qint64 track = addTrack(folder + QStringLiteral("/Generated Tone.mp3"), 4096);
+    addCue(track, CueType::HotCue, 100, 0, 0);
+    addCue(track, CueType::Loop, 400, 100, 1);
+    const qint64 crate = addCrate(QStringLiteral("Generated crate"));
+    addToCrate(crate, track);
+    const int set = history(QStringLiteral("2026-10-23"));
+    append(set, track);
+    const QList<int> before = totals();
+
+    decklab::UsbRelinker relinker(std::shared_ptr<TrackCollectionManager>(
+            trackCollectionManager(), [](TrackCollectionManager*) {}));
+    QSignalSpy done(&relinker, &decklab::UsbRelinker::relinked);
+    relinker.relinkRenames();
+    ASSERT_TRUE(done.wait(5000));
+    EXPECT_EQ(1, done.first().at(0).toInt());
+    EXPECT_EQ(renamed, locationOf(track));
+    EXPECT_FALSE(missing(track));
+    EXPECT_EQ(folder, value(QStringLiteral("SELECT directory FROM track_locations WHERE location='%1'").arg(renamed)).toString());
+    EXPECT_EQ(QStringLiteral("01 Generated Tone.mp3"),
+            value(QStringLiteral("SELECT filename FROM track_locations WHERE location='%1'").arg(renamed)).toString());
+    EXPECT_EQ(2, count(QStringLiteral("cues WHERE track_id=%1").arg(track)));
+    EXPECT_EQ(1, count(QStringLiteral("crate_tracks WHERE crate_id=%1 AND track_id=%2").arg(crate).arg(track)));
+    EXPECT_EQ(1, count(QStringLiteral("PlaylistTracks WHERE playlist_id=%1 AND track_id=%2").arg(set).arg(track)));
+    EXPECT_EQ(before, totals());
+    // The map was only read.
+    QFile file(mapFile);
+    ASSERT_TRUE(file.open(QIODevice::ReadOnly));
+    EXPECT_EQ(mapBytes, file.readAll());
+}
+
+TEST_F(DeckLabRenameDbTest, SizeMismatchIsIgnored) {
+    const qint64 track = addTrack(kNewMusic + QStringLiteral("/a.mp3"), 1000);
+    decklab::RenameMaps maps;
+    maps.insert(kNewMusic, {{QStringLiteral("a.mp3"), QStringLiteral("01 a.mp3"), 1000}});
+    FakeDisk disk;
+    disk.files.insert(kNewMusic + QStringLiteral("/01 a.mp3"), 1001); // not the file the map named
+    const auto result = applyRenames(maps, disk);
+    EXPECT_TRUE(result.ok);
+    EXPECT_TRUE(last.groups.isEmpty());
+    EXPECT_EQ(1, last.sizeMismatch);
+    EXPECT_EQ(kNewMusic + QStringLiteral("/a.mp3"), locationOf(track));
+    // A map that names another size than the row recorded: not this row.
+    maps[kNewMusic].first().size = 1001;
+    applyRenames(maps, disk);
+    EXPECT_TRUE(last.groups.isEmpty());
+    EXPECT_EQ(kNewMusic + QStringLiteral("/a.mp3"), locationOf(track));
+}
+
+// The library scan saw the new name first and added a row there: the DJ's
+// row keeps its id, cues, crates and history and takes over the address;
+// the scan's row is hidden at the old one with what the DJ's row already had.
+TEST_F(DeckLabRenameDbTest, ARowAlreadyAtTheNewNameIsMerged) {
+    const qint64 track = addTrack(kNewMusic + QStringLiteral("/a.mp3"), 1000, true);
+    const qint64 scanned = addTrack(kNewMusic + QStringLiteral("/01 a.mp3"), 1000);
+    addCue(track, CueType::HotCue, 100, 0, 0);
+    addCue(scanned, CueType::MainCue, 20, 0, -1);
+    const qint64 crate = addCrate(QStringLiteral("Generated crate"));
+    addToCrate(crate, track);
+    const int set = history(QStringLiteral("2026-10-23"));
+    append(set, track);
+    exec(QStringLiteral("UPDATE library SET timesplayed=3 WHERE id=%1").arg(track));
+    const QList<int> before = totals();
+    decklab::RenameMaps maps;
+    maps.insert(kNewMusic, {{QStringLiteral("a.mp3"), QStringLiteral("01 a.mp3"), 1000}});
+    FakeDisk disk;
+    disk.files.insert(kNewMusic + QStringLiteral("/01 a.mp3"), 1000);
+    const auto result = applyRenames(maps, disk);
+    ASSERT_TRUE(result.ok);
+    ASSERT_EQ(1, last.groups.size());
+    EXPECT_TRUE(last.groups.first().takeOver);
+    EXPECT_EQ(1, result.relocated.size());
+    ASSERT_EQ(1, result.merged.size());
+    EXPECT_EQ(track, result.merged.first().survivor);
+    EXPECT_EQ(scanned, result.merged.first().hidden);
+    EXPECT_EQ(kNewMusic + QStringLiteral("/01 a.mp3"), locationOf(track));
+    EXPECT_FALSE(missing(track));
+    EXPECT_FALSE(hidden(track));
+    EXPECT_TRUE(hidden(scanned));
+    EXPECT_EQ(kNewMusic + QStringLiteral("/a.mp3"), locationOf(scanned));
+    // Its cue, crate, history and count stay; the scan row's main cue joins.
+    EXPECT_EQ(2, count(QStringLiteral("cues WHERE track_id=%1").arg(track)));
+    EXPECT_EQ(1, count(QStringLiteral("crate_tracks WHERE crate_id=%1 AND track_id=%2").arg(crate).arg(track)));
+    EXPECT_EQ(1, count(QStringLiteral("PlaylistTracks WHERE playlist_id=%1 AND track_id=%2").arg(set).arg(track)));
+    EXPECT_EQ(3, value(QStringLiteral("SELECT timesplayed FROM library WHERE id=%1").arg(track)).toInt());
+    EXPECT_EQ(before, totals());
+    // What Tracks lists: one entry, the DJ's.
+    EXPECT_EQ(1,
+            count(QStringLiteral("library INNER JOIN track_locations ON library.location=track_locations.id "
+                                 "WHERE mixxx_deleted=0 AND fs_deleted=0")));
+}
+
+TEST_F(DeckLabRenameDbTest, MalformedMapIsIgnored) {
+    QTemporaryDir root;
+    ASSERT_TRUE(root.isValid());
+    const QString folder = root.filePath(QStringLiteral("New Music"));
+    ASSERT_TRUE(QDir().mkpath(folder));
+    {
+        QFile file(folder + QStringLiteral("/01 a.mp3"));
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        file.write(QByteArray(1000, '\x5a'));
+    }
+    {
+        QFile file(folder + QLatin1Char('/') + decklab::kRenameMapName);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        file.write("[{\"old\": \"a.mp3\", \"new\": \"01 a.mp3\", \"size\": 1000"); // cut short
+    }
+    exec(QStringLiteral("INSERT INTO directories (directory) VALUES ('%1')").arg(root.path()));
+    const qint64 track = addTrack(folder + QStringLiteral("/a.mp3"), 1000);
+    EXPECT_TRUE(decklab::readRenameMaps({folder}).isEmpty());
+    decklab::UsbRelinker relinker(std::shared_ptr<TrackCollectionManager>(
+            trackCollectionManager(), [](TrackCollectionManager*) {}));
+    QSignalSpy done(&relinker, &decklab::UsbRelinker::relinked);
+    relinker.relinkRenames();
+    ASSERT_TRUE(done.wait(5000));
+    EXPECT_EQ(0, done.first().at(0).toInt());
+    EXPECT_EQ(folder + QStringLiteral("/a.mp3"), locationOf(track));
+}
+
+TEST_F(DeckLabRenameDbTest, SecondRunChangesNothing) {
+    const qint64 moved = addTrack(kNewMusic + QStringLiteral("/a.mp3"), 1000);
+    const qint64 track = addTrack(kNewMusic + QStringLiteral("/b.mp3"), 2000, true);
+    const qint64 scanned = addTrack(kNewMusic + QStringLiteral("/02 b.mp3"), 2000);
+    decklab::RenameMaps maps;
+    maps.insert(kNewMusic,
+            {{QStringLiteral("a.mp3"), QStringLiteral("01 a.mp3"), 1000},
+                    {QStringLiteral("b.mp3"), QStringLiteral("02 b.mp3"), 2000}});
+    FakeDisk disk;
+    disk.files.insert(kNewMusic + QStringLiteral("/01 a.mp3"), 1000);
+    disk.files.insert(kNewMusic + QStringLiteral("/02 b.mp3"), 2000);
+    ASSERT_TRUE(applyRenames(maps, disk).ok);
+    EXPECT_EQ(2, last.groups.size());
+    const QList<int> after = totals();
+    const QString locations = locationOf(moved) + locationOf(track) + locationOf(scanned);
+    const auto second = applyRenames(maps, disk);
+    EXPECT_TRUE(second.ok);
+    EXPECT_TRUE(last.isEmpty());
+    EXPECT_TRUE(second.relocated.isEmpty());
+    EXPECT_TRUE(second.merged.isEmpty());
+    EXPECT_EQ(after, totals());
+    EXPECT_EQ(locations, locationOf(moved) + locationOf(track) + locationOf(scanned));
 }
 
 // --- Tracks on a stick that is out ---
