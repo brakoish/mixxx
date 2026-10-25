@@ -72,6 +72,7 @@
 #include "mixer/previewdeck.h"
 #include "preferences/colorpalettesettings.h"
 #include "decklab/decklabkeys.h" // r6-keys
+#include "decklab/decklabmedia.h" // r7-library
 #include "track/keyutils.h"
 #include "track/cueinfo.h"
 #include "track/track.h"
@@ -4561,8 +4562,14 @@ int WDeckLab::libraryTrackCount() {
     if (!m_library || !m_library->trackCollectionManager()) return -1;
     if (m_clock.elapsed() - b.libraryCountAt < 10000) return b.libraryCount;
     b.libraryCountAt = m_clock.elapsed();
-    QSqlQuery query(m_library->trackCollectionManager()->internalCollection()->database());
-    b.libraryCount = query.exec(QStringLiteral("SELECT COUNT(*) FROM library WHERE mixxx_deleted=0")) && query.next()
+    const QSqlDatabase database = m_library->trackCollectionManager()->internalCollection()->database();
+    QSqlQuery query(database);
+    // r7-library: the tracks Tracks lists (not missing, not on a USB stick that is out).
+    b.libraryCount = query.exec(QStringLiteral("SELECT COUNT(*) FROM library INNER JOIN track_locations "
+                                               "ON library.location=track_locations.id "
+                                               "WHERE mixxx_deleted=0 AND fs_deleted=0 AND ") +
+                             decklab::mediaShownCondition(database, QStringLiteral("library.location"))) &&
+                    query.next()
             ? query.value(0).toInt()
             : -1;
     return b.libraryCount;

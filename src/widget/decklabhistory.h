@@ -61,6 +61,7 @@ struct Playlist {
     QDateTime first;   // local time of the first track; invalid when empty
     QDateTime last;    // local time of the latest track
     int count = 0;
+    int away = 0; // r7-library: tracks on a USB stick that is out (not in count)
 };
 
 // One set: the history playlists from one "New set" to the next, or one
@@ -73,6 +74,7 @@ struct Session {
     QDateTime first;   // local time of the first track; invalid when empty
     QDateTime last;    // local time of the latest track
     int count = 0;
+    int away = 0;    // r7-library: tracks on a USB stick that is out (not in count)
     int ordinal = 0; // 1 = the oldest set
     bool current = false;
     bool legacy = false;
@@ -214,7 +216,8 @@ class Store {
     const Session* session(int id) const;
     // Tracks of one set, play order. Cached; the current set's grows live.
     QVector<Entry> entries(int sessionId);
-    // Tracks in the current set so far.
+    // Tracks in the current set so far (r7-library: also those on a USB
+    // stick that is out; the set is not empty).
     int currentCount() const;
 
     // A track joined a history playlist (PlaylistDAO::trackAdded).
@@ -318,6 +321,8 @@ QString sessionDetail(const Session& session, bool clockTrusted = true);
 
 // The sessions list: the current set first, then "New set", then earlier
 // sets under the day they began (one "EARLIER SETS" label without a clock).
+// r7-library: an earlier set played only from USB sticks that are out is
+// left out until one is back.
 struct ListRow {
     RowKind kind = RowKind::None;
     QString text;

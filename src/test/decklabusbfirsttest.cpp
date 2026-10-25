@@ -441,38 +441,49 @@ TEST(DeckLabUsbRelinkTest, LegacyPathsMatchUuidAndLabelMountsOnly) {
     EXPECT_EQ(QStringList{"a.mp3"}, legacyRelativePaths(named, "/media/djuser/decklab/a.mp3"));
 }
 
-TEST(DeckLabUsbRelinkTest, PlanMovesOnlyMissingRowsToTheSameFile) {
-    const QString old = QStringLiteral("/media/djuser/DJ USB/Contents/");
+// r7-library: earlier rows move when the stick holds the same file (same
+// relative path and recorded size; an unknown size is not enough); a twin
+// merges into the oldest row instead of being left apart.
+TEST(DeckLabUsbRelinkTest, PlanMovesOnlyRowsOfTheSameFile) {
+    const QString old = QStringLiteral("/media/user/DJ USB/Contents/");
     const QString now = QStringLiteral("/media/decklab/6A3F-1C2B/Contents/");
     const QHash<QString, qint64> files{
             {now + "a.mp3", 1000},
             {now + "b.mp3", 999},
             {now + "c.mp3", 3000},
-            {old + "d.mp3", 4000}, // the old mount still answers for d
-            {now + "d.mp3", 4000},
             {now + "f.mp3", 6000},
     };
-    const auto size = [&files](const QString& path) {
+    decklab::RelinkProbe probe;
+    probe.fileSize = [&files](const QString& path) {
         return files.value(path, -1);
     };
-    const QList<decklab::RelinkRow> rows{
-            {1, 11, old + "a.mp3", 1000},                          // moves
-            {2, 12, old + "b.mp3", 2000},                          // different file
-            {3, 13, old + "c.mp3", 0},                             // size unknown: moves
-            {4, 14, old + "d.mp3", 4000},                          // old path present
-            {5, 15, old + "e.mp3", 5000},                          // not on the stick
-            {6, 16, "/run/media/djuser/DJ USB/Contents/a.mp3", 0}, // a.mp3 already claimed
-            {7, 17, "/home/djuser/Music/x.mp3", 0},                // not this stick
-            {8, 18, old + "f.mp3", 6000},                          // in use right now
+    probe.resolve = [](const QString&) {
+        return QString(); // the old mount folders are gone
     };
-    const auto plan = decklab::planRelink(kStick, rows, size, {18});
-    ASSERT_EQ(2, plan.moves.size());
-    EXPECT_EQ(11, plan.moves[0].row.trackId);
-    EXPECT_EQ(now + "a.mp3", plan.moves[0].newLocation);
-    EXPECT_EQ(13, plan.moves[1].row.trackId);
-    EXPECT_EQ(now + "c.mp3", plan.moves[1].newLocation);
-    EXPECT_EQ(4, plan.skipped);
+    probe.isIn = [](const QString&) {
+        return false;
+    };
+    const QList<decklab::RelinkRow> rows{
+            {1, 11, old + "a.mp3", 1000},                             // moves
+            {2, 12, old + "b.mp3", 2000},                             // different file
+            {3, 13, old + "c.mp3", 0},                                // size unknown: left
+            {5, 15, old + "e.mp3", 5000},                             // not on the stick
+            {6, 16, "/run/media/user/DJ USB/Contents/a.mp3", 1000}, // a.mp3 again: merges
+            {7, 17, "/home/user/Music/x.mp3", 0},                   // not this stick
+            {8, 18, old + "f.mp3", 6000},                             // in use right now
+    };
+    const auto plan = decklab::planRelink(kStick, rows, {}, probe, {18});
+    ASSERT_EQ(1, plan.groups.size());
+    EXPECT_EQ(now + "a.mp3", plan.groups[0].target);
+    EXPECT_TRUE(plan.groups[0].relocate);
+    EXPECT_EQ(11, plan.groups[0].survivor.trackId);
+    ASSERT_EQ(1, plan.groups[0].merged.size());
+    EXPECT_EQ(16, plan.groups[0].merged[0].trackId);
+    EXPECT_EQ(2, plan.sizeMismatch);
+    EXPECT_EQ(1, plan.missing);
     EXPECT_EQ(1, plan.busy);
+    EXPECT_TRUE(plan.revived.isEmpty());
+    EXPECT_TRUE(plan.folders.isEmpty());
 }
 
 class DeckLabUsbRelinkDbTest : public LibraryTest {
@@ -510,28 +521,39 @@ class DeckLabUsbRelinkDbTest : public LibraryTest {
     }
 };
 
-TEST_F(DeckLabUsbRelinkDbTest, ApplyRewritesLocationsAndKeepsConflictsApart) {
-    const QString old = QStringLiteral("/media/djuser/DJ USB/Contents/");
+// r7-library: a row without a twin moves; a row whose file was loaded at
+// the new path before merges into that row (hidden, never deleted); the row
+// at the new path is found again. A second pass has nothing to do.
+TEST_F(DeckLabUsbRelinkDbTest, ApplyMovesRowsAndMergesTwins) {
+    const QString old = QStringLiteral("/media/user/DJ USB/Contents/");
     const QString now = QStringLiteral("/media/decklab/6A3F-1C2B/Contents/");
     const qint64 a = addRow(old + "a.mp3", 1000);
     const qint64 b = addRow(old + "b.mp3", 2000);
     const qint64 existing = addRow(now + "b.mp3", 2000); // loaded at the new path before
     const auto candidates = decklab::relinkCandidates(internalCollection()->database());
     EXPECT_EQ(3, candidates.size());
-    QList<decklab::RelinkMove> moves;
-    for (const auto& row : candidates) {
-        if (row.trackId == a) {
-            moves.append({row, now + "a.mp3"});
-        } else if (row.trackId == b) {
-            moves.append({row, now + "b.mp3"});
-        }
-    }
-    ASSERT_EQ(2, moves.size());
+    const QHash<QString, qint64> files{{now + "a.mp3", 1000}, {now + "b.mp3", 2000}};
+    decklab::RelinkProbe probe;
+    probe.fileSize = [&files](const QString& path) {
+        return files.value(path, -1);
+    };
+    probe.resolve = [](const QString&) {
+        return QString();
+    };
+    probe.isIn = [](const QString&) {
+        return false;
+    };
+    const auto plan = decklab::planRelink(kStick, candidates, {}, probe);
+    ASSERT_EQ(2, plan.groups.size());
     QSqlDatabase database = internalCollection()->database();
-    const auto result = decklab::applyRelink(database, moves);
-    ASSERT_EQ(1, result.moved.size());
-    EXPECT_EQ(a, result.moved.first().row.trackId);
-    EXPECT_EQ(QStringList{now + "b.mp3"}, result.conflicts);
+    const auto result = decklab::applyRelink(database, plan);
+    ASSERT_TRUE(result.ok);
+    ASSERT_EQ(1, result.relocated.size());
+    EXPECT_EQ(a, result.relocated.first().trackId);
+    ASSERT_EQ(1, result.merged.size());
+    EXPECT_EQ(existing, result.merged.first().survivor);
+    EXPECT_EQ(b, result.merged.first().hidden);
+    EXPECT_EQ(1, result.revived);
     EXPECT_EQ(now + "a.mp3", locationOf(a));
     EXPECT_EQ(old + "b.mp3", locationOf(b));
     EXPECT_EQ(now + "b.mp3", locationOf(existing));
@@ -542,10 +564,13 @@ TEST_F(DeckLabUsbRelinkDbTest, ApplyRewritesLocationsAndKeepsConflictsApart) {
     EXPECT_EQ(QString(now).chopped(1), query.value(0).toString());
     EXPECT_EQ("a.mp3", query.value(1).toString());
     EXPECT_EQ(0, query.value(2).toInt());
+    ASSERT_TRUE(query.exec(QStringLiteral("SELECT mixxx_deleted FROM library WHERE id=%1").arg(b)));
+    ASSERT_TRUE(query.next());
+    EXPECT_EQ(1, query.value(0).toInt());
     // Nothing is ever deleted, and a second pass changes nothing.
     EXPECT_EQ(3, count("library"));
     EXPECT_EQ(3, count("track_locations"));
-    EXPECT_TRUE(decklab::applyRelink(database, moves).moved.isEmpty());
+    EXPECT_TRUE(decklab::planRelink(kStick, decklab::relinkCandidates(database), {}, probe).isEmpty());
 }
 
 TEST_F(DeckLabUsbRelinkDbTest, RelinkerFollowsAStickToItsNewMountReadOnly) {

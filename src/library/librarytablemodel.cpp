@@ -1,5 +1,6 @@
 #include "library/librarytablemodel.h"
 
+#include "decklab/decklabmedia.h"
 #include "library/dao/trackschema.h"
 #include "library/queryutil.h"
 #include "library/trackcollection.h"
@@ -29,13 +30,16 @@ void LibraryTableModel::setTableModel() {
             << LIBRARYTABLE_COVERART_DIGEST + " AS " + LIBRARYTABLE_COVERART;
 
     QSqlQuery query(m_database);
+    // r7-library: tracks on a USB stick that is out are left out until it
+    // is back (decklabmedia.h).
     query.prepare(
             "CREATE TEMPORARY VIEW IF NOT EXISTS " + tableName +
             " AS SELECT " + columns.join(",") +
             " FROM library "
             "INNER JOIN track_locations "
             "ON library.location=track_locations.id "
-            "WHERE (mixxx_deleted=0 AND fs_deleted=0)");
+            "WHERE (mixxx_deleted=0 AND fs_deleted=0 AND " +
+            decklab::mediaShownCondition(m_database, QStringLiteral("library.location")) + ")");
     if (!query.exec()) {
         LOG_FAILED_QUERY(query);
     }

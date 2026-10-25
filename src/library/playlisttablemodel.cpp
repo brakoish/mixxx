@@ -1,5 +1,6 @@
 #include "library/playlisttablemodel.h"
 
+#include "decklab/decklabmedia.h"
 #include "library/dao/playlistdao.h"
 #include "library/dao/trackschema.h"
 #include "library/queryutil.h"
@@ -172,14 +173,19 @@ void PlaylistTableModel::selectPlaylist(int playlistId) {
             // the same value as the cover digest.
             << LIBRARYTABLE_COVERART_DIGEST + " AS " + LIBRARYTABLE_COVERART;
 
+    // r7-library: tracks on a USB stick that is out are left out (history and
+    // the Auto DJ queue too) and keep their place until it is back
+    // (decklabmedia.h).
     QString queryString = QString(
             "CREATE TEMPORARY VIEW IF NOT EXISTS %1 AS "
             "SELECT %2 FROM PlaylistTracks "
             "INNER JOIN library ON library.id = PlaylistTracks.track_id "
-            "WHERE PlaylistTracks.playlist_id = %3")
+            "WHERE PlaylistTracks.playlist_id = %3 AND %4")
                                   .arg(escaper.escapeString(playlistTableName),
                                           columns.join(","),
-                                          QString::number(playlistId));
+                                          QString::number(playlistId),
+                                          decklab::mediaShownCondition(
+                                                  m_database, QStringLiteral("library.location")));
     query.prepare(queryString);
     if (!query.exec()) {
         LOG_FAILED_QUERY(query);
