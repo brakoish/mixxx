@@ -4954,7 +4954,7 @@ TEST_F(NativeDeckLabTest, SamplerReplaceLoadsThatPadFromBrowse) {
     ASSERT_TRUE(replace->isEnabled());
     QTest::mousePress(replace, Qt::LeftButton);
     EXPECT_EQ(2, surface.currentPage()) << "on release";
-    QTest::mouseRelease(replace, Qt::LeftButton);
+    QTest::mouseRelease(replace, Qt::LeftButton); settle(); // [Tab] current follows, queued
     EXPECT_EQ(1, surface.currentPage()) << "Browse, loading pad 3";
     EXPECT_EQ(QStringLiteral("Load pad 3"), surface.findChild<QPushButton*>("decklab-load-1")->text());
     // Browse loads the new sample into pad 3: back to the pads, EDIT still on.
@@ -4973,7 +4973,7 @@ TEST_F(NativeDeckLabTest, SamplerReplaceLoadsThatPadFromBrowse) {
     EXPECT_EQ(3, page->sheetSampler());
     surface.findChild<QPushButton*>("decklab-sampler-sheet-done")->click();
     // An empty pad in EDIT, then Cancel (back to pads): EDIT still on.
-    QTest::mouseClick(surface.findChild<QPushButton*>("decklab-sample-1"), Qt::LeftButton);
+    QTest::mouseClick(surface.findChild<QPushButton*>("decklab-sample-1"), Qt::LeftButton); settle();
     ASSERT_EQ(1, surface.currentPage());
     auto* cancel = surface.findChild<QPushButton*>("decklab-load-2"); ASSERT_NE(nullptr, cancel);
     EXPECT_EQ(QStringLiteral("Cancel"), cancel->text());
@@ -4982,7 +4982,7 @@ TEST_F(NativeDeckLabTest, SamplerReplaceLoadsThatPadFromBrowse) {
     EXPECT_TRUE(page->editMode()) << "a cancelled load keeps EDIT on too";
     EXPECT_TRUE(edit->isChecked());
     // An empty pad in EDIT, then Decks: EDIT ends, and stays off back on the pads.
-    QTest::mouseClick(surface.findChild<QPushButton*>("decklab-sample-1"), Qt::LeftButton);
+    QTest::mouseClick(surface.findChild<QPushButton*>("decklab-sample-1"), Qt::LeftButton); settle();
     ASSERT_EQ(1, surface.currentPage());
     surface.findChild<QPushButton*>("decklab-tab-0")->click(); settle();
     EXPECT_EQ(0, surface.currentPage());
@@ -4991,7 +4991,7 @@ TEST_F(NativeDeckLabTest, SamplerReplaceLoadsThatPadFromBrowse) {
     EXPECT_FALSE(page->editMode()) << "another page ends EDIT";
     EXPECT_FALSE(edit->isChecked());
     // EDIT off when the trip starts: it comes back off.
-    QTest::mouseClick(surface.findChild<QPushButton*>("decklab-sample-1"), Qt::LeftButton);
+    QTest::mouseClick(surface.findChild<QPushButton*>("decklab-sample-1"), Qt::LeftButton); settle();
     ASSERT_EQ(1, surface.currentPage());
     surface.findChild<QPushButton*>("decklab-load-2")->click(); settle();
     EXPECT_EQ(2, surface.currentPage());
