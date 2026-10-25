@@ -1160,6 +1160,7 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
             timer->stop();
             // r7-browse: the last Browse capture left a pad waiting on SAMPLES.
             clickVisible(surface, QStringLiteral("decklab-load-2"), QStringLiteral("Cancel"));
+            QCoreApplication::processEvents();
             captureSampler(surface, output, check, failures, [=] { *samplerDone = true; timer->start(350); });
             return;
         }

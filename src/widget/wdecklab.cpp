@@ -1038,6 +1038,10 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
         m_autoDeckLayout = int(v); updateLayers();
     });
     watch(kTab, "current", [this](double v) {
+        // r7-browse: the queued echo of a page change that was already
+        // followed by another one is stale; following it would bounce the
+        // two pages back and forth for good.
+        if (v != value(kTab, QStringLiteral("current"))) return;
         int page = int(v);
         selectPage(page == 5 ? 4 : page == 4 ? 1 : page);
     });

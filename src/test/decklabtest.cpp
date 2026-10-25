@@ -7757,3 +7757,17 @@ TEST_F(NativeDeckLabTest, BackgroundAnalysisStopsTheMomentADeckPlays) {
     ControlObject::set(ConfigKey("[Recording]", "status"), 0); settle();
     analysis->setHooks({});
 }
+
+// r7-browse: two page changes in one event-loop turn (a pad's Cancel, then
+// Browse) settle on the last one: the queued echo of the first is stale and
+// never bounces the pages back and forth.
+TEST_F(NativeDeckLabTest, StalePageEchoNeverBounces) {
+    panel->selectPage(1); settle();
+    panel->selectPage(2);
+    panel->selectPage(1);
+    for (int pass = 0; pass < 12; ++pass) QCoreApplication::processEvents();
+    EXPECT_EQ(1, panel->currentPage());
+    EXPECT_EQ(1, ControlObject::get(ConfigKey("[Tab]", "current")));
+    for (int pass = 0; pass < 12; ++pass) QCoreApplication::processEvents();
+    EXPECT_EQ(1, panel->currentPage()) << "still there: no ping-pong";
+}
