@@ -198,7 +198,10 @@ void DeckLabPreview::play(qint64 serial, const QJsonObject& data) {
                 setState(State::Stopped);
             }
         }
-        if (!m_hooks.load(request.track, &error)) {
+        m_ownLoad = true;
+        const bool loading = m_hooks.load(request.track, &error);
+        m_ownLoad = false;
+        if (!loading) {
             refuse(serial,
                     QStringLiteral("failed"),
                     error.isEmpty() ? tr("That track could not be loaded.") : error);
@@ -304,9 +307,9 @@ QString DeckLabPreview::samplePath(const QString& folder, const QJsonValue& valu
 }
 
 void DeckLabPreview::onPreviewLoaded(int id) {
-    if (m_unloadWhenLoaded && id == m_current.track && id > 0) {
-        // The utility closed while our track was still loading.
-        m_unloadWhenLoaded = false;
+    if (std::exchange(m_unloadWhenLoaded, false) && id == m_current.track && id > 0) {
+        // Sample Maker closed while our track was still loading. Any other
+        // outcome (a failed load, another track) leaves the deck alone.
         m_hooks.eject();
         return;
     }
@@ -337,11 +340,32 @@ void DeckLabPreview::onPreviewLoaded(int id) {
     }
 }
 
-void DeckLabPreview::onUtilityChanged(bool open) {
-    if (open || m_state == State::Idle) {
+void DeckLabPreview::onPreviewLoading() {
+    if (m_ownLoad) {
         return;
     }
-    // Sample Maker closed: leave the preview deck as Browse expects it.
+    // Browse (or anything but us) loads the preview deck: what Sample Maker
+    // asked for is no longer coming, and nothing of ours is there to unload.
+    // Browse previewing the very track we load makes it Browse's too.
+    m_unloadWhenLoaded = false;
+    if (m_state == State::Loading) {
+        m_reason.clear();
+        setState(State::Idle);
+        sendReport();
+    }
+}
+
+void DeckLabPreview::onConnectionLost() {
+    if (m_state == State::Playing || m_state == State::Loading) {
+        halt(State::Stopped, tr("Deck Lab lost its link to Sample Maker, so the preview stopped."));
+    }
+}
+
+void DeckLabPreview::onUtilityChanged(const QString& app) {
+    if (app == kSampleMaker || m_state == State::Idle) {
+        return;
+    }
+    // Sample Maker is gone: leave the preview deck as Browse expects it.
     if (m_state == State::Loading) {
         m_unloadWhenLoaded = true;
     } else if (m_hooks.loadedTrack() == m_current.track) {

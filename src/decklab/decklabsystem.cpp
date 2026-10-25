@@ -291,6 +291,11 @@ bool DeckLabSystem::isReady() const {
 
 void DeckLabSystem::onReady(bool ready) {
     if (ready) {
+        // r7: a decklabd that restarted has forgotten an open utility and
+        // never reports its close; ask which one is open.
+        if (std::exchange(m_wasReady, true) || !m_utilities->openApp().isEmpty()) {
+            askOpenUtility();
+        }
         m_client->call(QStringLiteral("usb.list"), {}, [this](const DeckLabdReply& reply) {
             if (reply.ok) {
                 m_drives = reply.result.value(QStringLiteral("drives")).toArray();
@@ -319,8 +324,49 @@ void DeckLabSystem::onReady(bool ready) {
     } else {
         m_drives = QJsonArray();
         emit usbChanged(m_drives);
+        // Sample Maker reaches its preview only through decklabd: without it
+        // nothing could stop it, so it pauses (still loaded).
+        m_preview->onConnectionLost();
+        if (!m_utilities->openApp().isEmpty()) {
+            QTimer::singleShot(kUtilityLostMs, this, [this] {
+                if (!m_client->isReady() && !m_utilities->openApp().isEmpty()) {
+                    qInfo() << "DeckLab: decklabd is still away; the utility counts as closed";
+                    m_utilities->onAppsChanged(QJsonObject{{QStringLiteral("app"), QJsonValue::Null}});
+                    m_preview->onUtilityChanged(QString());
+                }
+            });
+        }
     }
     emit readyChanged(ready);
+}
+
+void DeckLabSystem::askOpenUtility() {
+    m_client->call(QStringLiteral("apps.status"), {}, [this](const DeckLabdReply& reply) {
+        const QJsonValue app = reply.result.value(QStringLiteral("app"));
+        QString open;
+        if (reply.ok && (app.isString() || app.isNull())) {
+            open = app.toString().left(32);
+        } else if (!m_utilities->openApp().isEmpty()) {
+            // An older decklabd cannot say. One that restarted would never
+            // report the close, which would hold every background job: the
+            // utility counts as closed (opening it from Deck Lab again tells).
+            qInfo() << "DeckLab: decklabd cannot say which utility is open; it counts as closed";
+        }
+        if (open == m_utilities->openApp()) {
+            return;
+        }
+        m_utilities->onAppsChanged(QJsonObject{
+                {QStringLiteral("app"), open.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(open)}});
+        m_preview->onUtilityChanged(m_utilities->openApp());
+    });
+}
+
+void DeckLabSystem::utilityLaunched(const QString& app) {
+    if (app.isEmpty() || app == m_utilities->openApp()) {
+        return;
+    }
+    m_utilities->onAppsChanged(QJsonObject{{QStringLiteral("app"), app}});
+    m_preview->onUtilityChanged(m_utilities->openApp());
 }
 
 void DeckLabSystem::onEvent(const QString& topic, const QJsonObject& data) {
@@ -347,7 +393,7 @@ void DeckLabSystem::onEvent(const QString& topic, const QJsonObject& data) {
         emit quitRequested(data.value(QStringLiteral("reason")).toString());
     } else if (topic == QStringLiteral("apps.changed")) {
         m_utilities->onAppsChanged(data);
-        m_preview->onUtilityChanged(!m_utilities->openApp().isEmpty());
+        m_preview->onUtilityChanged(m_utilities->openApp());
     } else {
         m_preview->onEvent(topic, data);
     }
@@ -538,6 +584,11 @@ void DeckLabSystem::watchPlayer(BaseTrackPlayer* player) {
     });
     connect(player, &BaseTrackPlayer::playerEmpty, this, [this, player] { m_loadingSince.remove(player); });
     if (player->getGroup() == kPreviewDeck) {
+        connect(player, &BaseTrackPlayer::loadingTrack, this, [this](TrackPointer newTrack, TrackPointer) {
+            if (newTrack) {
+                m_preview->onPreviewLoading();
+            }
+        });
         connect(player, &BaseTrackPlayer::newTrackLoaded, this, [this](TrackPointer track) {
             m_preview->onPreviewLoaded(libraryId(track));
         });

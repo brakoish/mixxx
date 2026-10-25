@@ -18,9 +18,11 @@
 /// `relay.reply` and pushes `preview.report` so the page can draw a playhead.
 ///
 /// It never changes what the decks hold, refuses while a deck or sampler
-/// plays, stops the preview when one starts and unloads it when the utility
-/// closes. Every Mixxx effect goes through Hooks, so the policy is testable
-/// without players, a library or an audio engine.
+/// plays, stops the preview when one starts and unloads it when Sample Maker
+/// is gone (closed, another utility opened, or decklabd says none is open).
+/// While decklabd is away nothing could stop it, so it pauses. It never
+/// unloads a preview Browse started. Every Mixxx effect goes through Hooks,
+/// so the policy is testable without players, a library or an audio engine.
 class DeckLabPreview : public QObject {
     Q_OBJECT
   public:
@@ -52,6 +54,8 @@ class DeckLabPreview : public QObject {
     /// Sends a request to decklabd without waiting for its answer.
     using Send = std::function<void(const QString& method, const QJsonObject& params)>;
 
+    /// decklabd's name for Sample Maker (apps.changed).
+    static inline const QString kSampleMaker = QStringLiteral("sample-maker");
     static constexpr int kReportIntervalMs = 250;
     static constexpr int kWatchIntervalMs = 10;
     static constexpr int kLoadTimeoutMs = 15000;
@@ -68,8 +72,14 @@ class DeckLabPreview : public QObject {
     bool onEvent(const QString& topic, const QJsonObject& data);
     /// [PreviewDeck1] finished loading library track `id`; 0 when it emptied or failed.
     void onPreviewLoaded(int id);
-    /// apps.changed: a utility window opened or closed.
-    void onUtilityChanged(bool open);
+    /// [PreviewDeck1] started loading a track: ours, or Browse taking the
+    /// preview deck.
+    void onPreviewLoading();
+    /// apps.changed: the utility window open now, empty when none. Anything
+    /// but Sample Maker leaves the preview deck as Browse expects it.
+    void onUtilityChanged(const QString& app);
+    /// decklabd went away: Sample Maker can no longer stop its preview.
+    void onConnectionLost();
 
     State state() const {
         return m_state;
@@ -110,7 +120,8 @@ class DeckLabPreview : public QObject {
     State m_state = State::Idle;
     Request m_current;
     double m_stoppedAt = 0;
-    bool m_unloadWhenLoaded = false;
+    bool m_unloadWhenLoaded = false; // Sample Maker closed while our track loaded
+    bool m_ownLoad = false;          // inside hooks.load: the load that starts is ours
     QString m_reason;
     QTimer m_watch;
     QTimer m_report;

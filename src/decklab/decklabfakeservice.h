@@ -54,6 +54,9 @@ class DeckLabFakeService : public QObject {
     bool respond = true;
     /// Methods that answer with {"error": {"code": "...", ...}}.
     QHash<QString, QString> failures;
+    /// r7: apps.status answers {"app": openApp} (a name or null); undefined
+    /// is a decklabd without apps.status (unknown_method).
+    QJsonValue openApp = QJsonValue::Undefined;
 
   signals:
     void requestReceived(const QString& method);

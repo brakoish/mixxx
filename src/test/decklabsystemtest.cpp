@@ -777,6 +777,151 @@ TEST_F(DeckLabSystemTest, SampleMakerPreviewPlaysTheCutOnThePreviewDeckOnly) {
     EXPECT_EQ(QStringLiteral("denied"), refusal(ask(QStringLiteral("preview.play"), cut)));
 }
 
+// r7: closing Sample Maker while its track loads unloads that track once it
+// is in, and nothing else. A failed load, or Browse taking the preview deck
+// first, clears that, so a later Browse preview of the same track is never
+// ejected.
+TEST_F(DeckLabSystemTest, ABrowsePreviewIsNeverEjectedForAClosedSampleMaker) {
+    DeckLabFakeService fake;
+    ASSERT_TRUE(fake.listen(socketPath()));
+    FakePreviewDeck deck;
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, socketPath());
+    system.preview()->setHooks(deck.hooks(system, m_dir.filePath(QStringLiteral("Samples"))));
+    system.utilities()->setHooks(DeckLabUtilities::Hooks());
+    system.utilities()->setStateDirectory(m_dir.filePath(QStringLiteral("run/decklab")));
+    system.start();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.isReady(); }, 3000));
+    const auto ask = [&fake](const QString& event, const QJsonObject& data) {
+        const qint64 serial = fake.relay(event, data);
+        EXPECT_TRUE(QTest::qWaitFor([&] { return !fake.relayReply(serial).isEmpty(); }, 2000)) << event.toStdString();
+        return fake.relayReply(serial);
+    };
+    const auto open = [&](bool on) {
+        fake.pushEvent(QStringLiteral("apps.changed"),
+                QJsonObject{{"app", on ? QJsonValue(QStringLiteral("sample-maker")) : QJsonValue(QJsonValue::Null)}});
+        EXPECT_TRUE(QTest::qWaitFor([&] { return system.utilities()->openApp().isEmpty() != on; }, 2000));
+    };
+    const QJsonObject cut{{"track_id", 7}, {"start", 2.0}, {"end", 4.0}};
+
+    // Closed while track 7 loads, and that load fails.
+    open(true);
+    ask(QStringLiteral("preview.play"), cut);
+    ASSERT_EQ(DeckLabPreview::State::Loading, system.preview()->state());
+    open(false);
+    system.preview()->onPreviewLoaded(0);
+    // Later Browse previews track 7: it stays.
+    deck.loaded = 7;
+    system.preview()->onPreviewLoading();
+    system.preview()->onPreviewLoaded(7);
+    EXPECT_EQ(0, deck.ejects);
+
+    // Closed while 7 loads, and Browse loads track 9 before 7 is in.
+    deck.loaded = 0;
+    open(true);
+    ask(QStringLiteral("preview.play"), cut);
+    ASSERT_EQ(DeckLabPreview::State::Loading, system.preview()->state());
+    open(false);
+    system.preview()->onPreviewLoading();
+    deck.loaded = 9;
+    system.preview()->onPreviewLoaded(9);
+    deck.loaded = 7;
+    system.preview()->onPreviewLoading();
+    system.preview()->onPreviewLoaded(7);
+    EXPECT_EQ(0, deck.ejects) << "Browse's preview of the same track stays";
+
+    // Browse takes the deck while Sample Maker's track loads: nothing of ours is coming.
+    deck.loaded = 0;
+    open(true);
+    ask(QStringLiteral("preview.play"), cut);
+    system.preview()->onPreviewLoading();
+    EXPECT_EQ(DeckLabPreview::State::Idle, system.preview()->state());
+
+    // Closed while 7 loads, and 7 comes in: that one is unloaded.
+    deck.loaded = 0;
+    ask(QStringLiteral("preview.play"), cut);
+    ASSERT_EQ(DeckLabPreview::State::Loading, system.preview()->state());
+    open(false);
+    deck.loaded = 7;
+    system.preview()->onPreviewLoaded(7);
+    EXPECT_EQ(1, deck.ejects);
+}
+
+// r7: Sample Maker's preview never outlives Sample Maker. decklabd going
+// away pauses it, still loaded (nothing could stop it then); after a
+// reconnect Mixxx asks decklabd which utility is open. One that cannot say
+// (an older or restarted decklabd) leaves none open, which unloads the
+// preview, so nothing waits forever for a window that may be gone; opening
+// it from Deck Lab again tells. Another utility opening unloads it too.
+TEST_F(DeckLabSystemTest, SampleMakerPreviewStopsWhenSampleMakerIsGone) {
+    DeckLabFakeService fake;
+    ASSERT_TRUE(fake.listen(socketPath()));
+    FakePreviewDeck deck;
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, socketPath());
+    system.client()->setReconnectBackoff(20, 80);
+    system.preview()->setHooks(deck.hooks(system, m_dir.filePath(QStringLiteral("Samples"))));
+    system.utilities()->setHooks(DeckLabUtilities::Hooks());
+    system.utilities()->setStateDirectory(m_dir.filePath(QStringLiteral("run/decklab")));
+    system.start();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.isReady(); }, 3000));
+    EXPECT_FALSE(fake.calls.contains(QStringLiteral("apps.status"))) << "the first connect has nothing to ask";
+    const auto ask = [&fake](const QString& event, const QJsonObject& data) {
+        const qint64 serial = fake.relay(event, data);
+        EXPECT_TRUE(QTest::qWaitFor([&] { return !fake.relayReply(serial).isEmpty(); }, 2000)) << event.toStdString();
+        return fake.relayReply(serial);
+    };
+    fake.pushEvent(QStringLiteral("apps.changed"), QJsonObject{{"app", "sample-maker"}});
+    ASSERT_TRUE(QTest::qWaitFor([&] { return !system.utilities()->openApp().isEmpty(); }, 2000));
+    deck.loaded = 7;
+    deck.duration = 180;
+    const QJsonObject looped{{"track_id", 7}, {"start", 2.0}, {"end", 4.0}, {"loop", true}};
+    ask(QStringLiteral("preview.play"), looped);
+    ASSERT_TRUE(deck.playing);
+
+    // decklabd drops and comes back saying Sample Maker is still open.
+    fake.openApp = QStringLiteral("sample-maker");
+    QSignalSpy ready(&system, &DeckLabSystem::readyChanged);
+    fake.disconnectClients();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.preview()->state() == DeckLabPreview::State::Stopped; }, 2000));
+    EXPECT_FALSE(deck.playing) << "nothing could stop it while decklabd is away";
+    EXPECT_EQ(0, deck.ejects) << "paused, still loaded";
+    ASSERT_TRUE(QTest::qWaitFor([&] { return ready.count() >= 2 && system.isReady(); }, 3000));
+    ASSERT_TRUE(QTest::qWaitFor([&] { return fake.calls.contains(QStringLiteral("apps.status")); }, 2000));
+    QTest::qWait(100);
+    EXPECT_EQ(QStringLiteral("sample-maker"), system.utilities()->openApp());
+    EXPECT_EQ(0, deck.ejects);
+
+    // A decklabd that cannot say (it restarted, or is older): none counts as open.
+    fake.openApp = QJsonValue(QJsonValue::Undefined);
+    const int asked = fake.calls.count(QStringLiteral("apps.status"));
+    fake.disconnectClients();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return fake.calls.count(QStringLiteral("apps.status")) > asked; }, 3000));
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.utilities()->openApp().isEmpty(); }, 2000));
+    EXPECT_EQ(1, deck.ejects) << "its preview leaves the preview deck";
+    EXPECT_EQ(DeckLabPreview::State::Idle, system.preview()->state());
+    EXPECT_FALSE(QFileInfo::exists(system.utilities()->stateFile()));
+    EXPECT_TRUE(system.quiet() || system.anyPlaying()) << "no open utility holds the background jobs";
+
+    // Opening it from Deck Lab again tells, though decklabd does not
+    // announce a window that was still open.
+    system.utilityLaunched(QStringLiteral("sample-maker"));
+    EXPECT_EQ(QStringLiteral("sample-maker"), system.utilities()->openApp());
+
+    // Get Music opening (decklabd closes Sample Maker for it) unloads the preview too.
+    deck.loaded = 7;
+    deck.duration = 180;
+    ask(QStringLiteral("preview.play"), looped);
+    ASSERT_TRUE(deck.playing);
+    fake.pushEvent(QStringLiteral("apps.changed"), QJsonObject{{"app", "get-music"}});
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.preview()->state() == DeckLabPreview::State::Idle; }, 2000));
+    EXPECT_FALSE(deck.playing);
+    EXPECT_EQ(2, deck.ejects);
+    EXPECT_EQ(QStringLiteral("get-music"), system.utilities()->openApp());
+}
+
 // PUT ON PAD: a saved sample's basename, resolved inside Deck Lab Samples
 // only, onto the first empty pad.
 TEST_F(DeckLabSystemTest, PutOnPadLoadsOnlyASampleFromTheSamplesFolder) {

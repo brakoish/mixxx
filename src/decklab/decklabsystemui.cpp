@@ -495,7 +495,15 @@ void DeckLabSystemUi::launchApp(const QString& app, const QString& name) {
     QPointer<DeckLabSystemUi> self(this);
     m_system->client()->call(QStringLiteral("apps.launch"), QJsonObject{{QStringLiteral("app"), app}},
             [self, name, app](const DeckLabdReply& reply) {
-                if (!self || reply.ok) {
+                if (!self) {
+                    return;
+                }
+                if (reply.ok) {
+                    // r7: a window still open after decklabd restarted is not
+                    // announced again; this answer says it is open.
+                    if (self->m_system) {
+                        self->m_system->utilityLaunched(app);
+                    }
                     return;
                 }
                 if (reply.errorCode == QStringLiteral("not_available")) {

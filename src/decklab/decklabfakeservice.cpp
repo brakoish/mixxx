@@ -349,6 +349,8 @@ void DeckLabFakeService::handle(QLocalSocket* socket, const QJsonObject& request
     } else if (method == QStringLiteral("apps.launch") || method == QStringLiteral("system.power") ||
             method == QStringLiteral("session.restart_mixxx")) {
         reply(socket, id, started);
+    } else if (method == QStringLiteral("apps.status") && !openApp.isUndefined()) {
+        reply(socket, id, QJsonObject{{QStringLiteral("app"), openApp}});
     } else if (method == QStringLiteral("apps.close") || method == QStringLiteral("relay.reply") ||
             method == QStringLiteral("preview.report")) {
         // v1.2: Mixxx's answers to relayed requests and its preview state (recorded in requests).
