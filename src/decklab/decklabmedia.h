@@ -17,7 +17,9 @@
 // r7: a stick plugged in mid-set stays cheap. While it is not quiet
 // (decklabquiet.h) only the track list on screen reads again; every other
 // list, the crate and playlist counts and the history's sets wait until
-// they are shown or until it is quiet (settled()).
+// they are shown or until it is quiet (settled()). The list Library last
+// showed counts as on screen only while Deck Lab's Browse page shows it
+// (setOnScreen): mid-set the DJ is mostly on Decks.
 
 #include <QObject>
 #include <QPointer>
@@ -90,6 +92,21 @@ class MediaPresence final : public QObject {
     QObject* shown() const {
         return m_shown;
     }
+    // r7: whether that list is on screen now (Deck Lab: the Browse page
+    // shows the track table); null counts it as always on screen.
+    void setOnScreen(std::function<bool()> onScreen) {
+        m_onScreen = std::move(onScreen);
+    }
+    bool onScreen(const QObject* model) const {
+        return model && model == m_shown && (!m_onScreen || m_onScreen());
+    }
+    // The shown list came on screen again (Browse shows the track table):
+    // a change that left it stale reads it now.
+    void shownOnScreen() {
+        if (m_shown) {
+            emit shownChanged(m_shown);
+        }
+    }
     // Something waits for settled().
     bool settling() const {
         return m_settle.isActive();
@@ -114,6 +131,7 @@ class MediaPresence final : public QObject {
     QSet<qint64> m_away;
     QStringList m_awayRoots;
     std::function<bool()> m_quiet;
+    std::function<bool()> m_onScreen;
     QPointer<QObject> m_shown;
     QTimer m_settle;
 };

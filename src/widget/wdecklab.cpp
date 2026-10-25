@@ -2716,6 +2716,11 @@ void WDeckLab::addOverview(QWidget* widget, int deck) {
 
 void WDeckLab::bindBrowser(WSearchLineEdit* search, WLibrarySidebar* sidebar, WLibrary* library) {
     m_search = search; m_sidebar = sidebar; m_libraryWidget = library;
+    // r7: a stick plugged in mid-set re-reads the track list only while
+    // Browse shows it; otherwise when Browse shows it again (showTracks).
+    decklab::MediaPresence::instance().setOnScreen([self = QPointer<WDeckLab>(this)] {
+        return !self || self->trackListOnScreen();
+    });
     search->setMinimumHeight(40); search->setMaximumHeight(40);
     search->setItemDelegate(new DeckLabComboDelegate(search));
     search->setMaxVisibleItems(6);
@@ -2921,8 +2926,12 @@ void WDeckLab::showTracks() {
     if (m_browseState) m_browseState->homeTimer.stop();
     restoreTableSelection(); // r5-fix2-history
     syncSelectedTrack();
+    if (m_page == 1) decklab::MediaPresence::instance().shownOnScreen(); // r7: a stale list reads now
     applyBrowsePresentation(); // r4-browse
     updateBreadcrumb(); refreshLoadButtons(); refreshBrowseCard(); updateMatchBar(); scheduleMatchCount();
+}
+bool WDeckLab::trackListOnScreen() const {
+    return m_page == 1 && m_browseStack && m_libraryWidget && m_browseStack->currentWidget() == m_libraryWidget;
 }
 void WDeckLab::browsePress() {
     if (m_page == 2 && m_sampler && m_sampler->knob(decklab::KnobAction::Press, 1)) return; // r4-sampler: pad sheet

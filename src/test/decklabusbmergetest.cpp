@@ -1376,3 +1376,50 @@ TEST_F(DeckLabMediaDbTest, MidSetOnlyTheListOnScreenReadsAgain) {
     EXPECT_FALSE(store.stale());
     EXPECT_EQ(0, store.sessions().at(0).count);
 }
+
+// r7: mid-set the DJ is mostly on Decks. The list Library showed last is on
+// screen only while Browse shows it: off screen it waits too, and reads
+// again when Browse shows it.
+TEST_F(DeckLabMediaDbTest, TheLastListWaitsWhileBrowseIsNotShown) {
+    const QString away = QStringLiteral("/media/user/5678-EF01/");
+    addTrack(kNow + QStringLiteral("a.mp3"), 1000);
+    addTrack(away + QStringLiteral("away-b.mp3"), 2000);
+    QSet<QString> in{kMount};
+    auto& presence = decklab::MediaPresence::instance();
+    presence.setRootProbeForTesting([&in](const QString& root) { return in.contains(root); });
+    bool quiet = false;
+    bool browsing = false;
+    presence.setQuiet([&quiet] { return quiet; });
+    presence.setOnScreen([&browsing] { return browsing; });
+    struct Reset {
+        ~Reset() {
+            decklab::MediaPresence::instance().setQuiet({});
+            decklab::MediaPresence::instance().setOnScreen({});
+            decklab::MediaPresence::instance().setShown(nullptr);
+        }
+    } reset;
+    EXPECT_TRUE(presence.refresh(database()));
+    connectLibraryCache();
+    LibraryTableModel tracks(nullptr, trackCollectionManager(), "mixxx.db.model.decklab.media.offscreen");
+    tracks.select();
+    presence.setShown(&tracks);
+    EXPECT_EQ(1, tracks.rowCount());
+    decklab::UsbRelinker relinker(std::shared_ptr<TrackCollectionManager>(
+            trackCollectionManager(), [](TrackCollectionManager*) {}));
+    relinker.setQuiet([&quiet] { return quiet; });
+
+    // Plugged in while a deck plays and the Decks page is up.
+    in.insert(away.chopped(1));
+    relinker.refreshMedia();
+    EXPECT_EQ(1, tracks.rowCount()) << "no list is on screen: nothing reads";
+    EXPECT_TRUE(tracks.mediaStale());
+    // Browse shows the track table again.
+    browsing = true;
+    presence.shownOnScreen();
+    EXPECT_EQ(2, tracks.rowCount());
+    EXPECT_FALSE(tracks.mediaStale());
+    // On screen, a change reads at once.
+    in.remove(away.chopped(1));
+    relinker.refreshMedia();
+    EXPECT_EQ(1, tracks.rowCount());
+}

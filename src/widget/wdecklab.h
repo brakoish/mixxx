@@ -293,6 +293,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     bool showFolderTracks(decklab::FolderList list, const QStringList& locations, const QString& key, const QString& title);
     void openSamples(bool forPad);
     bool folderTableShown() const;
+    bool trackListOnScreen() const; // r7: Browse shows the track table now
     // r7: what keeps background jobs waiting (decklab/decklabquiet.h): the
     // system's answer, or this surface's own players without one (tests).
     decklab::Activity backgroundActivity();

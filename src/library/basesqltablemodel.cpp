@@ -71,7 +71,7 @@ void BaseSqlTableModel::mediaChanged() {
         return;
     }
     const auto& media = decklab::MediaPresence::instance();
-    if (media.deferring() && media.shown() != this) {
+    if (media.deferring() && !media.onScreen(this)) {
         m_mediaStale = true;
         return;
     }
