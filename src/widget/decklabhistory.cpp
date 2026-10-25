@@ -710,7 +710,7 @@ QVector<Entry> Store::entries(int sessionId) {
 
 int Store::currentCount() const {
     const Session* current = session(m_currentId);
-    return current ? current->count : 0;
+    return current ? current->count + current->away : 0;
 }
 
 void Store::addPlayed(int playlistId, const Entry& added) {

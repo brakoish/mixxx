@@ -216,7 +216,8 @@ class Store {
     const Session* session(int id) const;
     // Tracks of one set, play order. Cached; the current set's grows live.
     QVector<Entry> entries(int sessionId);
-    // Tracks in the current set so far.
+    // Tracks in the current set so far (r7-library: also those on a USB
+    // stick that is out; the set is not empty).
     int currentCount() const;
 
     // A track joined a history playlist (PlaylistDAO::trackAdded).

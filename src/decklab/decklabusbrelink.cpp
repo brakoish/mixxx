@@ -488,8 +488,12 @@ bool isEarlierMountName(const UsbVolume& volume, const QString& name) {
             return false;
         }
         // udisks adds a number when the folder name is taken: "MY STICK1".
+        // Not after a name made of digits only, where it would be a guess.
+        const auto digit = [](QChar c) { return c.isDigit(); };
         const QStringView rest = QStringView(name).mid(base.size());
-        return std::all_of(rest.begin(), rest.end(), [](QChar c) { return c.isDigit(); });
+        return rest.isEmpty() ||
+                (std::all_of(rest.begin(), rest.end(), digit) &&
+                        !std::all_of(base.begin(), base.end(), digit));
     };
     return matches(volume.label, Qt::CaseSensitive) || matches(volume.uuid, Qt::CaseInsensitive);
 }

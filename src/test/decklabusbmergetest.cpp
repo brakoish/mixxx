@@ -128,6 +128,10 @@ TEST(DeckLabUsbMergeTest, EarlierMountNamesAreTheLabelOrUuidWithUdisksNumber) {
     EXPECT_FALSE(isEarlierMountName(kStick, QStringLiteral("..")));
     const decklab::UsbVolume unlabeled{QStringLiteral("1234-ABCD"), QString(), kMount};
     EXPECT_FALSE(isEarlierMountName(unlabeled, QStringLiteral("1")));
+    // After a label of digits only, a number would be a guess.
+    const decklab::UsbVolume numbered{QStringLiteral("1234-ABCD"), QStringLiteral("2024"), kMount};
+    EXPECT_TRUE(isEarlierMountName(numbered, QStringLiteral("2024")));
+    EXPECT_FALSE(isEarlierMountName(numbered, QStringLiteral("20241")));
     EXPECT_EQ(QStringList{QStringLiteral("Contents/a.mp3")},
             decklab::legacyRelativePaths(kStick, kSecond + QStringLiteral("Contents/a.mp3")));
 }
