@@ -180,7 +180,11 @@ void DeckLabPreview::play(qint64 serial, const QJsonObject& data) {
     }
     m_reason.clear();
     m_unloadWhenLoaded = false;
-    if (m_hooks.loadedTrack() == request.track && m_hooks.duration() > 0) {
+    if (m_state == State::Loading && m_current.track == request.track &&
+            m_hooks.loadedTrack() != request.track) {
+        // IN or OUT moved while the track loads: it will play the new cut.
+        m_current = request;
+    } else if (m_hooks.loadedTrack() == request.track && m_hooks.duration() > 0) {
         if (!begin(request, &error)) {
             refuse(serial, QStringLiteral("bad_request"), error);
             return;

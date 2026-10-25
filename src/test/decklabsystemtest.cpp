@@ -679,11 +679,17 @@ TEST_F(DeckLabSystemTest, SampleMakerPreviewPlaysTheCutOnThePreviewDeckOnly) {
     EXPECT_EQ(QStringLiteral("loading"), answer.value("result").toObject().value("state").toString());
     EXPECT_EQ(QList<int>{7}, deck.loads);
     EXPECT_TRUE(deck.plays.isEmpty());
+    // OUT moved while the track loads: no second load, and the load plays the new cut.
+    QJsonObject longer = cut;
+    longer.insert("end", 4.5);
+    answer = ask(QStringLiteral("preview.play"), longer);
+    EXPECT_EQ(QStringLiteral("loading"), answer.value("result").toObject().value("state").toString());
+    EXPECT_EQ(QList<int>{7}, deck.loads);
     deck.loaded = 7;
     deck.duration = 180;
     system.preview()->onPreviewLoaded(7);
     ASSERT_EQ(1, deck.plays.size());
-    EXPECT_EQ((QList<double>{2, 4, 0, 2}), deck.plays.last()) << "IN to OUT, no loop, from IN";
+    EXPECT_EQ((QList<double>{2, 4.5, 0, 2}), deck.plays.last()) << "IN to OUT, no loop, from IN";
     EXPECT_EQ(DeckLabPreview::State::Playing, system.preview()->state());
     const auto readState = [&] {
         QFile file(system.utilities()->stateFile());
@@ -697,7 +703,7 @@ TEST_F(DeckLabSystemTest, SampleMakerPreviewPlaysTheCutOnThePreviewDeckOnly) {
     EXPECT_EQ(7, fake.lastPreviewReport().value("track_id").toInt());
 
     // Without loop it stops at OUT by itself.
-    deck.position = 4.0;
+    deck.position = 4.5;
     ASSERT_TRUE(QTest::qWaitFor([&] { return system.preview()->state() == DeckLabPreview::State::Stopped; }, 1000));
     EXPECT_FALSE(deck.playing);
     EXPECT_FALSE(readState().value("playing").toBool(true));
@@ -705,7 +711,7 @@ TEST_F(DeckLabSystemTest, SampleMakerPreviewPlaysTheCutOnThePreviewDeckOnly) {
         return fake.lastPreviewReport().value("state").toString() == QStringLiteral("stopped");
     },
             2000));
-    EXPECT_DOUBLE_EQ(4.0, fake.lastPreviewReport().value("position").toDouble());
+    EXPECT_DOUBLE_EQ(4.5, fake.lastPreviewReport().value("position").toDouble());
 
     // Looped: Mixxx's loop wraps it, so nothing stops it at OUT. The track is in already.
     QJsonObject looped = cut;
