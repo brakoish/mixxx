@@ -19,7 +19,8 @@
 // - r7-sampler: EDIT stays on until it is tapped again or the page hides.
 //   While on, every tap on a loaded pad opens (or switches) its sheet and
 //   never plays it; loaded pads show an EDIT mark. An empty pad still opens
-//   Browse to load it.
+//   Browse to load it. The surface turns EDIT back on when a Load pad trip
+//   the page started with EDIT on (REPLACE or an empty pad) comes back.
 //
 // The page reads and writes samplers only through DeckLabSamplerEngine, so
 // it is tested and rendered with generated data; decklabsamplercontrols.h is

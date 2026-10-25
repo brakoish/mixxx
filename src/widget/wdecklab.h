@@ -445,6 +445,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     bool m_hasBrowsed = false;
     int m_sampleTarget = 0;
     int m_sampleReturnPage = 2;
+    bool m_sampleEdit = false; // r7-sampler: EDIT was on when the Sampler page sent Browse to load a pad
     QString m_touchCue;
     QElapsedTimer m_clock;
     QTimer m_fxTimer;

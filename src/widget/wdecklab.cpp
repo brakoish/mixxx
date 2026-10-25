@@ -2317,6 +2317,7 @@ QWidget* WDeckLab::buildSampler() {
     m_sampler = page;
     page->setInteractionEpoch([this] { return m_interactionEpoch; });
     connect(page, &DeckLabSampler::loadRequested, this, [this](int sampler) {
+        m_sampleEdit = m_sampler && m_sampler->editMode(); // r7-sampler: resumes back on the pads
         m_sampleTarget = sampler; m_sampleReturnPage = 2; selectPage(1); refreshLoadButtons();
     });
     // Any page that sent Browse to load a pad gets it back once it loads.
@@ -2770,6 +2771,11 @@ void WDeckLab::selectPage(int page) {
     // tap would put a page (and its knob claim) under it; close it first.
     if (m_railUi && m_railUi->sheet() && m_railUi->sheet()->isVisible()) m_railUi->sheet()->hide();
     if (m_page == 1 && page != 1) m_sampleTarget = 0;
+    // r7-sampler: a Load pad trip the Sampler page started with EDIT on
+    // (REPLACE or an empty pad) comes back to the pads with EDIT still on,
+    // loaded or cancelled; leaving Browse for any other page ends it.
+    const bool resumeEdit = m_page == 1 && page == 2 && m_sampleEdit;
+    if (m_page == 1 && page != 1) m_sampleEdit = false;
     releaseTouchCue(); ++m_interactionEpoch;
     m_page = page;
     // 44 px rail targets on every page.
@@ -2785,6 +2791,7 @@ void WDeckLab::selectPage(int page) {
     set(kTab, "current", page == 4 ? 5 : page);
     for (int n = 0; n < 5; ++n) m_tabs[n]->setChecked(n == page);
     m_pages->setCurrentIndex(page);
+    if (resumeEdit && m_sampler) m_sampler->setEditMode(true); // r7-sampler
     // Transport has a fixed place below the Decks waveforms. Keeping it out
     // of the expanding page stack avoids sibling-page minimum sizes pushing
     // the essential controls below a small display.
