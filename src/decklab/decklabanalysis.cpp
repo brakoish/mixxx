@@ -8,6 +8,8 @@
 
 #include "analyzer/analyzerprogress.h"
 #include "analyzer/analyzerscheduledtrack.h"
+#include "decklab/decklabmedia.h"
+#include "decklab/decklabsetupmodel.h"
 #include "library/library.h"
 #include "library/queryutil.h"
 #include "library/trackcollectionmanager.h"
@@ -97,8 +99,16 @@ void DeckLabBackgroundAnalysis::useLibrary(Library* library, UserSettingsPointer
         }
     };
     m_hooks.stop = [this] {
-        m_holding.reset();
+        // A track the analyzer was finishing may still change: its save
+        // waits until it is quiet, like an analyzed one.
+        if (m_holding) {
+            m_held.append(std::move(m_holding));
+        }
         parkScheduler();
+    };
+    m_hooks.closing = [this] {
+        sweepParked();
+        return !m_parked.empty();
     };
     m_hooks.release = [this] {
         m_held.clear();
@@ -171,6 +181,19 @@ void DeckLabBackgroundAnalysis::pause() {
     if (!m_current.isValid() || m_paused) {
         return;
     }
+    if (!decklab::mediaRootOf(m_currentLocation).isEmpty()) {
+        // A file left open on a USB stick for a whole set would keep the
+        // stick from being ejected: let go of the track instead. It starts
+        // again, from its beginning, after the next quiet spell.
+        const TrackId id = m_current;
+        letGoOfCurrent();
+        m_queue.prepend(id);
+        if (!m_timer.isActive()) {
+            m_timer.start();
+        }
+        emit progressChanged();
+        return;
+    }
     m_paused = true;
     if (m_hooks.pause) {
         m_hooks.pause();
@@ -179,6 +202,41 @@ void DeckLabBackgroundAnalysis::pause() {
         m_timer.start();
     }
     emit progressChanged();
+}
+
+void DeckLabBackgroundAnalysis::letGoOfCurrent() {
+    m_current = TrackId();
+    m_currentLocation.clear();
+    m_paused = false;
+    m_analyzerUp = false;
+    if (m_hooks.stop) {
+        m_hooks.stop();
+    }
+}
+
+bool DeckLabBackgroundAnalysis::letGo(const QString& mount) {
+    if (!mount.isEmpty()) {
+        m_leaving.insert(mount, m_clock.elapsed() + kLeavingMs);
+        if (m_current.isValid() && decklab::isPathOnMount(m_currentLocation, mount)) {
+            letGoOfCurrent();
+            emit progressChanged();
+        }
+    }
+    return m_hooks.closing && m_hooks.closing();
+}
+
+bool DeckLabBackgroundAnalysis::leaving(const QString& location) {
+    const qint64 now = m_clock.elapsed();
+    bool on = false;
+    for (auto it = m_leaving.begin(); it != m_leaving.end();) {
+        if (it.value() <= now) {
+            it = m_leaving.erase(it);
+            continue;
+        }
+        on = on || decklab::isPathOnMount(location, it.key());
+        ++it;
+    }
+    return on;
 }
 
 void DeckLabBackgroundAnalysis::trackFinished(TrackId trackId) {
@@ -190,6 +248,7 @@ void DeckLabBackgroundAnalysis::trackFinished(TrackId trackId) {
         return;
     }
     m_current = TrackId();
+    m_currentLocation.clear();
     m_paused = false;
     m_done = std::min(m_done + 1, m_total);
     // The next one starts at once while it is quiet (no "paused" between).
@@ -214,8 +273,12 @@ TrackId DeckLabBackgroundAnalysis::next() {
         }
         const TrackId id = m_queue.takeFirst();
         // A player's own analysis takes a track it holds; it comes back with
-        // the next batch if it still needs one.
+        // the next batch if it still needs one. So does one on a stick that
+        // is being ejected.
         if (!id.isValid() || m_tried.contains(id) || (m_hooks.loaded && m_hooks.loaded(id))) {
+            continue;
+        }
+        if (!m_leaving.isEmpty() && leaving(m_hooks.location ? m_hooks.location(id) : QString())) {
             continue;
         }
         return id;
@@ -227,12 +290,7 @@ void DeckLabBackgroundAnalysis::check() {
     if (m_current.isValid() && m_hooks.loaded && m_hooks.loaded(m_current)) {
         // A deck (or the preview) loaded the track being analyzed: two
         // decoders on one file help nobody. Let go of it, without waiting.
-        m_current = TrackId();
-        m_paused = false;
-        m_analyzerUp = false;
-        if (m_hooks.stop) {
-            m_hooks.stop();
-        }
+        letGoOfCurrent();
         emit progressChanged();
     }
     if (m_hooks.busy && m_hooks.busy()) {
@@ -282,6 +340,7 @@ void DeckLabBackgroundAnalysis::check() {
     }
     m_analyzerUp = true;
     m_current = id;
+    m_currentLocation = m_hooks.location ? m_hooks.location(id) : QString();
     m_total = m_done + 1 + static_cast<int>(m_queue.size());
     if (!m_timer.isActive()) {
         m_timer.start();
@@ -290,7 +349,7 @@ void DeckLabBackgroundAnalysis::check() {
 }
 
 QList<TrackId> DeckLabBackgroundAnalysis::tracksToAnalyze(
-        const QSqlDatabase& database, const QStringList& locations) {
+        const QSqlDatabase& database, const QStringList& locations, QHash<TrackId, QString>* where) {
     QHash<QString, TrackId> found;
     for (int from = 0; from < locations.size(); from += kLookupChunk) {
         const QStringList chunk = locations.mid(from, kLookupChunk);
@@ -323,6 +382,9 @@ QList<TrackId> DeckLabBackgroundAnalysis::tracksToAnalyze(
         const auto it = found.constFind(location);
         if (it != found.cend()) {
             ids.append(it.value());
+            if (where) {
+                where->insert(it.value(), location);
+            }
         }
     }
     return ids;

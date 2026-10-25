@@ -4376,6 +4376,10 @@ void WDeckLab::attachSystem(DeckLabSystem* system) {
         // r7: PUT ON PAD leaves the pad a Load pad trip is filling alone.
         const QPointer<WDeckLab> self(this);
         system->setPadTarget([self] { return self ? self->m_sampleTarget : 0; });
+        // r7: a stick being ejected is not held by the background analysis.
+        system->setDriveRelease([self](const QString& mount) {
+            return self && self->m_analysis && self->m_analysis->letGo(mount);
+        });
     }
 }
 void WDeckLab::updateStatus() {
@@ -6714,10 +6718,15 @@ void WDeckLab::initBackgroundAnalysis() {
     hooks.loaded = [this](TrackId trackId) { return loadedOnAPlayer(trackId); };
     if (m_library && m_library->trackCollectionManager()) {
         hooks.candidates = [this] {
+            m_analysisLocations.clear();
             return DeckLabBackgroundAnalysis::tracksToAnalyze(
                     m_library->trackCollectionManager()->internalCollection()->database(),
-                    decklab::allDownloads(currentDownloadFolders()));
+                    decklab::allDownloads(currentDownloadFolders()),
+                    &m_analysisLocations);
         };
+        // r7: a track on a USB stick is let go of, not paused, so the stick
+        // can be ejected mid-set.
+        hooks.location = [this](TrackId trackId) { return m_analysisLocations.value(trackId); };
     }
     m_analysis->setHooks(hooks);
     if (m_library) m_analysis->useLibrary(m_library, m_config);

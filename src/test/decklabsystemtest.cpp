@@ -438,6 +438,51 @@ TEST_F(DeckLabSystemTest, EjectIsRefusedWhileALoadedTrackLivesOnThatDrive) {
     EXPECT_TRUE(QTest::qWaitFor([&] { return system.usbDrives().size() == 1; }, 2000));
 }
 
+// r7: the background analysis may be reading a download on the stick (or
+// hold one open, paused). Eject asks it to let go first and goes out once
+// nothing holds the drive, never waiting on the GUI thread, and at most
+// kDriveReleaseMaxMs.
+TEST_F(DeckLabSystemTest, EjectWaitsUntilTheAnalysisLetsGoOfTheDrive) {
+    const QString mount = QStringLiteral("/media/decklab/1111-OTHER");
+    DeckLabFakeService fake;
+    fake.drives = QJsonArray{QJsonObject{{"id", "1111-OTHER"}, {"label", "OTHER"}, {"mount", mount},
+            {"size_mb", 1024}, {"free_mb", 512}, {"fs", "vfat"}, {"read_only", true}, {"rekordbox", false},
+            {"busy", false}}};
+    ASSERT_TRUE(fake.listen(socketPath()));
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, socketPath());
+    QStringList asked;
+    int holding = 3;
+    system.setDriveRelease([&](const QString& drive) {
+        asked.append(drive);
+        return holding-- > 0;
+    });
+    system.start();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.isReady() && system.usbDrives().size() == 1; }, 3000));
+    const QJsonObject drive = system.usbDrives().at(0).toObject();
+    bool ejected = false;
+    system.ejectDrive(drive, [&](bool ok, const QString&) { ejected = ok; });
+    ASSERT_EQ(1, asked.size()) << "asked at once";
+    EXPECT_EQ(mount, asked.first());
+    QCoreApplication::processEvents();
+    EXPECT_FALSE(fake.calls.contains(QStringLiteral("usb.eject"))) << "not while a file on it is open";
+    ASSERT_TRUE(QTest::qWaitFor([&] { return ejected; }, 2000));
+    EXPECT_EQ(4, asked.size());
+    EXPECT_TRUE(fake.calls.contains(QStringLiteral("usb.eject")));
+
+    // Something that never lets go does not hold the eject forever.
+    holding = 1000;
+    ejected = false;
+    const int ejects = fake.calls.count(QStringLiteral("usb.eject"));
+    QElapsedTimer waited;
+    waited.start();
+    system.ejectDrive(drive, [&](bool ok, const QString&) { ejected = ok; });
+    ASSERT_TRUE(QTest::qWaitFor([&] { return ejected; }, DeckLabSystem::kDriveReleaseMaxMs + 2000));
+    EXPECT_GE(waited.elapsed(), DeckLabSystem::kDriveReleaseMaxMs - 100);
+    EXPECT_EQ(ejects + 1, fake.calls.count(QStringLiteral("usb.eject")));
+}
+
 // --------------------------------------------- utilities (Get Music etc.) --
 
 // Replaces the old Ctrl+Shift+L injection: when decklabd reports that the

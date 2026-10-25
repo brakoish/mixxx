@@ -502,6 +502,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     QLabel* m_performanceStatus = nullptr;
     std::unique_ptr<DeckLabBrowseState> m_browseState;
     DeckLabBackgroundAnalysis* m_analysis = nullptr; // r7-browse
+    QHash<TrackId, QString> m_analysisLocations; // r7: where its candidates are (USB sticks)
     QPointer<DeckLabSystem> m_system; // r7: quiet and the empty pad come from it
     bool m_libraryScanning = false;   // r7: without a system, the scan is tracked here
 };

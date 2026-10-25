@@ -2,6 +2,7 @@
 #pragma once
 
 #include <QElapsedTimer>
+#include <QHash>
 #include <QList>
 #include <QObject>
 #include <QSet>
@@ -29,8 +30,13 @@ class Library;
 ///  * One track at a time. The next starts once nothing has kept it waiting
 ///    for kIdleMs (never in the first kStartupMs after Mixxx started).
 ///  * The moment it is not quiet the analyzer pauses before its next chunk
-///    and keeps its place; it goes on after the next quiet spell. Nothing on
-///    the GUI thread ever waits for the analyzer thread.
+///    and keeps its place; it goes on after the next quiet spell. A track on
+///    a USB stick is let go of instead (its file closes after one chunk, so
+///    the stick can be ejected mid-set) and starts again after the next
+///    quiet spell. Nothing on the GUI thread ever waits for the analyzer
+///    thread.
+///  * A stick about to be ejected (letGo) is left alone: a track on it is
+///    let go of, and none on it starts for kLeavingMs.
 ///  * A track a deck, sampler or the preview holds (or is loading) is left
 ///    to that player's own analysis: never started, and dropped if a player
 ///    loads it while it is analyzed.
@@ -56,6 +62,8 @@ class DeckLabBackgroundAnalysis : public QObject {
         std::function<void()> resume;                     // ... and goes on where it was
         std::function<void()> stop;                       // lets go of the analyzer and its track; never waits
         std::function<void()> release;                    // quiet: analyzed tracks may be saved now
+        std::function<QString(TrackId)> location;         // a candidate's file; empty when unknown
+        std::function<bool()> closing;                    // a let-go analyzer still has its file open
     };
     enum class State {
         Idle,    // nothing to do
@@ -65,6 +73,7 @@ class DeckLabBackgroundAnalysis : public QObject {
     static constexpr int kStartupMs = 30000;
     static constexpr int kIdleMs = 15000;
     static constexpr int kCheckMs = 1000;
+    static constexpr int kLeavingMs = 60000;
 
     explicit DeckLabBackgroundAnalysis(QObject* parent = nullptr);
     ~DeckLabBackgroundAnalysis() override;
@@ -101,12 +110,20 @@ class DeckLabBackgroundAnalysis : public QObject {
     void playbackChanged();
     /// From the analyzer: one track finished, analyzed or not.
     void trackFinished(TrackId trackId);
+    /// The USB stick mounted at `mount` is about to be ejected: a track on it
+    /// is let go of (not counted as tried: it comes back with the stick) and
+    /// none on it starts for a while. True while the analyzer still has a
+    /// file open; never waits.
+    bool letGo(const QString& mount);
     /// Decides now; the timer does this once a second while there is work.
     void check();
 
     /// The library tracks among locations that still need a BPM, a key or a
-    /// beat grid, in the order given. Read only.
-    static QList<TrackId> tracksToAnalyze(const QSqlDatabase& database, const QStringList& locations);
+    /// beat grid, in the order given, and where each one is (`where`, when
+    /// given). Read only.
+    static QList<TrackId> tracksToAnalyze(const QSqlDatabase& database,
+            const QStringList& locations,
+            QHash<TrackId, QString>* where = nullptr);
 
   signals:
     void progressChanged();
@@ -114,6 +131,8 @@ class DeckLabBackgroundAnalysis : public QObject {
   private:
     TrackId next();
     void pause();
+    void letGoOfCurrent();
+    bool leaving(const QString& location);
     void parkScheduler();
     void sweepParked();
 
@@ -125,6 +144,8 @@ class DeckLabBackgroundAnalysis : public QObject {
     qint64 m_quietSince = 0;
     bool m_pending = false; // there may be tracks to analyze that are not queued yet
     TrackId m_current;      // being analyzed
+    QString m_currentLocation; // ... its file (hooks.location)
+    QHash<QString, qint64> m_leaving; // mounts being ejected -> until (m_clock)
     bool m_paused = false;  // ... and paused because it is not quiet
     bool m_analyzerUp = false; // started and not let go of since (stop)
     int m_done = 0;

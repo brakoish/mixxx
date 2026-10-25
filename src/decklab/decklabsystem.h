@@ -125,6 +125,15 @@ class DeckLabSystem : public QObject {
     void setPadTarget(std::function<int()> target) {
         m_padTarget = std::move(target);
     }
+    /// r7: asked before a USB stick is ejected, so whatever still reads it
+    /// lets go (the background analysis, WDeckLab sets it). True while a file
+    /// on the drive mounted at `mount` is still open: the eject waits for it,
+    /// at most kDriveReleaseMaxMs.
+    void setDriveRelease(std::function<bool(const QString& mount)> release) {
+        m_driveRelease = std::move(release);
+    }
+    static constexpr int kDriveReleaseStepMs = 50;
+    static constexpr int kDriveReleaseMaxMs = 3000;
     /// A utility Deck Lab opened answered "started": decklabd announces only
     /// a new window, not one that was still open after it restarted.
     void utilityLaunched(const QString& app);
@@ -244,6 +253,7 @@ class DeckLabSystem : public QObject {
   private:
     void onReady(bool ready);
     void askOpenUtility();
+    void ejectWhenReleased(const QJsonObject& drive, const Done& done, int waitedMs);
     void onEvent(const QString& topic, const QJsonObject& data);
     void onDevicesChanged(const QJsonObject& data, const QStringList& added);
     void onRescanFinished();
@@ -272,6 +282,7 @@ class DeckLabSystem : public QObject {
     QSet<BaseTrackPlayer*> m_watchedPlayers;
     QHash<BaseTrackPlayer*, qint64> m_loadingSince;
     std::function<int()> m_padTarget;
+    std::function<bool(const QString& mount)> m_driveRelease;
     bool m_scanning = false;   // Mixxx's library scan runs
     bool m_wasReady = false;   // decklabd answered before: a ready is a reconnect
     bool m_askAgain = false;   // apps.status got no answer: asked again soon

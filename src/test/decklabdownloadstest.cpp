@@ -239,10 +239,14 @@ struct FakeAnalyzer {
     int resumes = 0;
     int stops = 0;
     int releases = 0;
+    QHash<TrackId, QString> where; // unset: the unit's own music
+    bool closing = false;
 
     DeckLabBackgroundAnalysis::Hooks hooks() {
         DeckLabBackgroundAnalysis::Hooks h;
         h.busy = [this] { return busy; };
+        h.location = [this](TrackId id) { return where.value(id); };
+        h.closing = [this] { return closing; };
         h.candidates = [this] { return left; };
         h.loaded = [this](TrackId id) { return onPlayers.contains(id); };
         h.start = [this](TrackId id) {
@@ -393,6 +397,83 @@ TEST(DeckLabBackgroundAnalysisTest, TracksOnAPlayerAreLeftToItsAnalysis) {
     EXPECT_EQ(id(3), analysis.current());
     analysis.trackFinished(id(3));
     EXPECT_EQ(DeckLabBackgroundAnalysis::State::Idle, analysis.state());
+}
+
+// r7: a paused track keeps its file open. On a USB stick that would keep
+// the stick from being ejected for the rest of the set, so a track there is
+// let go of instead (never waiting) and starts again after the next quiet
+// spell, still counted in its batch. One on the unit's own music pauses.
+TEST(DeckLabBackgroundAnalysisTest, ATrackOnAStickIsLetGoOfInsteadOfPaused) {
+    DeckLabBackgroundAnalysis analysis;
+    analysis.setDelays(0, 0);
+    FakeAnalyzer analyzer;
+    analyzer.left = {id(1), id(2)};
+    analyzer.where.insert(id(1), QStringLiteral("/media/dj/MY STICK/Deck Lab Downloads/Generated One.m4a"));
+    analyzer.where.insert(id(2), QStringLiteral("/home/dj/Music/Deck Lab Downloads/Generated Two.m4a"));
+    analysis.setHooks(analyzer.hooks());
+    analysis.wake();
+    analysis.check();
+    ASSERT_EQ(QList<TrackId>{id(1)}, analyzer.started);
+    EXPECT_EQ(QStringLiteral("Analyzing 1 of 2"), analysis.progressText());
+
+    // A deck plays: the stick's file is let go of.
+    analyzer.busy = true;
+    analysis.playbackChanged();
+    EXPECT_EQ(0, analyzer.pauses);
+    EXPECT_EQ(1, analyzer.stops) << "its file closes after one chunk";
+    EXPECT_FALSE(analysis.current().isValid());
+    EXPECT_EQ(DeckLabBackgroundAnalysis::State::Waiting, analysis.state());
+    EXPECT_EQ(QStringLiteral("Analysis paused at 1 of 2"), analysis.progressText());
+    analysis.check();
+    EXPECT_EQ(1, analyzer.started.size()) << "never while a deck plays";
+
+    // Quiet again: the same track starts again, still 1 of 2.
+    analyzer.busy = false;
+    analysis.check();
+    EXPECT_EQ((QList<TrackId>{id(1), id(1)}), analyzer.started);
+    EXPECT_EQ(QStringLiteral("Analyzing 1 of 2"), analysis.progressText());
+    analysis.trackFinished(id(1));
+    ASSERT_EQ(id(2), analysis.current());
+
+    // The unit's own music: a pause, it keeps its place.
+    analyzer.busy = true;
+    analysis.playbackChanged();
+    EXPECT_EQ(1, analyzer.pauses);
+    EXPECT_EQ(1, analyzer.stops);
+    EXPECT_EQ(id(2), analysis.current());
+}
+
+// r7: Eject asks first. A track on that stick is let go of (it comes back
+// with the stick), no other track on it starts for a while, and the answer
+// says whether the analyzer still has a file open.
+TEST(DeckLabBackgroundAnalysisTest, AStickBeingEjectedIsLeftAlone) {
+    const QString stick = QStringLiteral("/media/decklab/1234-ABCD");
+    DeckLabBackgroundAnalysis analysis;
+    analysis.setDelays(0, 0);
+    FakeAnalyzer analyzer;
+    analyzer.left = {id(1), id(2), id(3)};
+    analyzer.where.insert(id(1), stick + QStringLiteral("/Deck Lab Downloads/Generated One.m4a"));
+    analyzer.where.insert(id(2), stick + QStringLiteral("/Deck Lab Downloads/Generated Two.m4a"));
+    analyzer.where.insert(id(3), QStringLiteral("/media/decklab/1234-ABCDE/Deck Lab Downloads/Generated Three.m4a"));
+    analysis.setHooks(analyzer.hooks());
+    analysis.wake();
+    analysis.check();
+    ASSERT_EQ(id(1), analysis.current());
+
+    analyzer.closing = true;
+    EXPECT_TRUE(analysis.letGo(stick)) << "its file is still open";
+    EXPECT_EQ(1, analyzer.stops);
+    EXPECT_FALSE(analysis.current().isValid());
+    analyzer.closing = false;
+    EXPECT_FALSE(analysis.letGo(stick));
+    EXPECT_EQ(1, analyzer.stops) << "nothing more to let go of";
+    analysis.check();
+    EXPECT_EQ((QList<TrackId>{id(1), id(3)}), analyzer.started) << "track 2 is on the stick too";
+    analysis.trackFinished(id(3));
+    EXPECT_EQ(DeckLabBackgroundAnalysis::State::Idle, analysis.state());
+    const int stops = analyzer.stops;
+    EXPECT_FALSE(analysis.letGo(QStringLiteral("/media/decklab/9999-0000"))) << "another stick: nothing to do";
+    EXPECT_EQ(stops, analyzer.stops);
 }
 
 namespace {
@@ -562,7 +643,12 @@ TEST_F(DeckLabDownloadsDbTest, AnalysisTakesUnanalyzedDownloadsNewestFirst) {
     const TrackId freshId = addTrack(fresh, QStringLiteral("Generated Fresh"), 0, QString(), false);
     const TrackId keylessId = addTrack(keyless, QStringLiteral("Generated Keyless"), 120, QString(), true);
     const QString unknown = root.filePath(QStringLiteral("Deck Lab Downloads/Generated Unknown.m4a"));
+    QHash<TrackId, QString> where;
     EXPECT_EQ((QList<TrackId>{keylessId, freshId}),
             DeckLabBackgroundAnalysis::tracksToAnalyze(internalCollection()->database(),
-                    {unknown, keyless, done, fresh}));
+                    {unknown, keyless, done, fresh},
+                    &where));
+    EXPECT_EQ(2, where.size());
+    EXPECT_EQ(fresh, where.value(freshId));
+    EXPECT_EQ(keyless, where.value(keylessId));
 }

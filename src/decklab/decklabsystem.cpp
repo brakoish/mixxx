@@ -765,6 +765,29 @@ void DeckLabSystem::ejectDrive(const QJsonObject& drive, Done done) {
         done(false, refusal);
         return;
     }
+    ejectWhenReleased(drive, done, 0);
+}
+
+void DeckLabSystem::ejectWhenReleased(const QJsonObject& drive, const Done& done, int waitedMs) {
+    // r7: the background analysis may be reading a download on it (or keep
+    // one open, paused): it lets go first, and its file closes after one
+    // chunk. Never a wait on the GUI thread: the eject goes out once nothing
+    // holds the drive, or after kDriveReleaseMaxMs.
+    const QString mount = drive.value(QStringLiteral("mount")).toString();
+    if (m_driveRelease && m_driveRelease(mount) && waitedMs < kDriveReleaseMaxMs) {
+        QTimer::singleShot(kDriveReleaseStepMs, this, [this, drive, done, waitedMs] {
+            ejectWhenReleased(drive, done, waitedMs + kDriveReleaseStepMs);
+        });
+        return;
+    }
+    if (waitedMs > 0) {
+        // Something may have started using it meanwhile.
+        const QString refusal = ejectRefusal(drive);
+        if (!refusal.isEmpty()) {
+            done(false, refusal);
+            return;
+        }
+    }
     const QString id = drive.value(QStringLiteral("id")).toString();
     m_client->call(QStringLiteral("usb.eject"),
             QJsonObject{{QStringLiteral("id"), id}},
