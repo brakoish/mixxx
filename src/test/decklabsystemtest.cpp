@@ -556,6 +556,304 @@ TEST_F(DeckLabSystemTest, UtilityCloseAddsDownloadFolderAndRescansAfterDeckLoads
                     {QStringLiteral("/srv/Music/")}));
 }
 
+// ------------------------------------- Sample Maker preview and PUT ON PAD --
+
+namespace {
+// [PreviewDeck1] and the sampler pads as DeckLabPreview's hooks see them.
+struct FakePreviewDeck {
+    bool decksPlaying = false;
+    int loaded = 0;
+    double duration = 0;
+    double position = 0;
+    bool playing = false;
+    bool loop = false;
+    QList<int> loads;
+    QList<QList<double>> plays; // start, end, loop, from
+    int ejects = 0;
+    int emptyPad = 3;
+    QStringList pads;
+
+    DeckLabPreview::Hooks hooks(DeckLabSystem& system, const QString& samples) {
+        DeckLabPreview::Hooks hooks;
+        hooks.decksPlaying = [this] { return decksPlaying; };
+        hooks.utilityOpen = [&system] { return !system.utilities()->openApp().isEmpty(); };
+        hooks.loadedTrack = [this] { return loaded; };
+        hooks.load = [this](int id, QString* error) {
+            if (id == 404) {
+                *error = QStringLiteral("That track is not in the library.");
+                return false;
+            }
+            loads.append(id);
+            return true;
+        };
+        hooks.duration = [this] { return duration; };
+        hooks.position = [this] { return position; };
+        hooks.playing = [this] { return playing; };
+        hooks.play = [this](double start, double end, bool on, double from) {
+            plays.append({start, end, on ? 1.0 : 0.0, from});
+            loop = on;
+            playing = true;
+            if (from >= 0) {
+                position = from;
+            }
+        };
+        hooks.pause = [this] {
+            playing = false;
+            loop = false;
+        };
+        hooks.eject = [this] {
+            ++ejects;
+            loaded = 0;
+            duration = 0;
+        };
+        hooks.samplesFolder = [samples] { return samples; };
+        hooks.emptyPad = [this] { return emptyPad; };
+        hooks.loadPad = [this](int pad, const QString& path, QString*) {
+            pads.append(QStringLiteral("%1:%2").arg(pad).arg(path));
+            return true;
+        };
+        return hooks;
+    }
+};
+} // namespace
+
+// Sample Maker can't reach the sound card (Mixxx owns it through ALSA), so
+// decklabd relays its preview to Mixxx: [PreviewDeck1], in the headphones,
+// with Mixxx's own loop. Nothing on the decks changes, and nothing starts
+// while a deck or sampler plays.
+TEST_F(DeckLabSystemTest, SampleMakerPreviewPlaysTheCutOnThePreviewDeckOnly) {
+    DeckLabFakeService fake;
+    ASSERT_TRUE(fake.listen(socketPath()));
+    FakePreviewDeck deck;
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, socketPath());
+    system.preview()->setHooks(deck.hooks(system, m_dir.filePath(QStringLiteral("Samples"))));
+    DeckLabUtilities::Hooks utilityHooks;
+    utilityHooks.playing = [&deck] { return deck.playing || deck.decksPlaying; };
+    system.utilities()->setHooks(utilityHooks);
+    system.utilities()->setStateDirectory(m_dir.filePath(QStringLiteral("run/decklab")));
+    system.start();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.isReady(); }, 3000));
+    const QJsonArray topics = fake.requests.at(1).value("params").toObject().value("topics").toArray();
+    EXPECT_TRUE(topics.contains(QStringLiteral("preview")) && topics.contains(QStringLiteral("sampler")))
+            << "Mixxx asks for the relayed requests; an older decklabd ignores the topics";
+
+    const auto ask = [&fake](const QString& event, const QJsonObject& data) {
+        const qint64 serial = fake.relay(event, data);
+        EXPECT_TRUE(QTest::qWaitFor([&] { return !fake.relayReply(serial).isEmpty(); }, 2000)) << event.toStdString();
+        return fake.relayReply(serial);
+    };
+    const auto refusal = [](const QJsonObject& answer) {
+        return answer.value("error").toObject().value("code").toString();
+    };
+    const QJsonObject cut{{"track_id", 7}, {"start", 2.0}, {"end", 4.0}, {"loop", false}};
+
+    // Only for an open utility.
+    EXPECT_EQ(QStringLiteral("denied"), refusal(ask(QStringLiteral("preview.play"), cut)));
+    fake.pushEvent(QStringLiteral("apps.changed"), QJsonObject{{"app", "sample-maker"}});
+    ASSERT_TRUE(QTest::qWaitFor([&] { return !system.utilities()->openApp().isEmpty(); }, 2000));
+
+    // Checked again here, whatever decklabd let through.
+    for (const QJsonObject& bad : {QJsonObject{{"track_id", 0}, {"start", 0}, {"end", 1}},
+                 QJsonObject{{"track_id", 7.5}, {"start", 0}, {"end", 1}},
+                 QJsonObject{{"track_id", "7"}, {"start", 0}, {"end", 1}},
+                 QJsonObject{{"track_id", 7}, {"start", -1}, {"end", 1}},
+                 QJsonObject{{"track_id", 7}, {"start", 2}, {"end", 2}},
+                 QJsonObject{{"track_id", 7}, {"start", 0}, {"end", 7201}},
+                 QJsonObject{{"track_id", 7}, {"start", 0}, {"end", 1}, {"loop", 1}},
+                 QJsonObject{{"track_id", 7}, {"start", 1}, {"end", 2}, {"from", 2}}}) {
+        EXPECT_EQ(QStringLiteral("bad_request"), refusal(ask(QStringLiteral("preview.play"), bad)));
+    }
+    // Never over a playing deck or sampler.
+    deck.decksPlaying = true;
+    const QJsonObject busy = ask(QStringLiteral("preview.play"), cut);
+    EXPECT_EQ(QStringLiteral("busy"), refusal(busy));
+    EXPECT_EQ(QStringLiteral("Stop the decks and samplers to preview."),
+            busy.value("error").toObject().value("message").toString());
+    EXPECT_TRUE(deck.loads.isEmpty());
+    deck.decksPlaying = false;
+
+    // Load by library id, then play IN to OUT once the track is in.
+    QJsonObject answer = ask(QStringLiteral("preview.play"), cut);
+    EXPECT_EQ(QStringLiteral("loading"), answer.value("result").toObject().value("state").toString());
+    EXPECT_EQ(QList<int>{7}, deck.loads);
+    EXPECT_TRUE(deck.plays.isEmpty());
+    // OUT moved while the track loads: no second load, and the load plays the new cut.
+    QJsonObject longer = cut;
+    longer.insert("end", 4.5);
+    answer = ask(QStringLiteral("preview.play"), longer);
+    EXPECT_EQ(QStringLiteral("loading"), answer.value("result").toObject().value("state").toString());
+    EXPECT_EQ(QList<int>{7}, deck.loads);
+    deck.loaded = 7;
+    deck.duration = 180;
+    system.preview()->onPreviewLoaded(7);
+    ASSERT_EQ(1, deck.plays.size());
+    EXPECT_EQ((QList<double>{2, 4.5, 0, 2}), deck.plays.last()) << "IN to OUT, no loop, from IN";
+    EXPECT_EQ(DeckLabPreview::State::Playing, system.preview()->state());
+    const auto readState = [&] {
+        QFile file(system.utilities()->stateFile());
+        return file.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(file.readAll()).object() : QJsonObject();
+    };
+    EXPECT_TRUE(readState().value("playing").toBool()) << "deck-state.json says so at once: no decoding during a preview";
+    ASSERT_TRUE(QTest::qWaitFor([&] {
+        return fake.lastPreviewReport().value("state").toString() == QStringLiteral("playing");
+    },
+            2000));
+    EXPECT_EQ(7, fake.lastPreviewReport().value("track_id").toInt());
+
+    // Without loop it stops at OUT by itself.
+    deck.position = 4.5;
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.preview()->state() == DeckLabPreview::State::Stopped; }, 1000));
+    EXPECT_FALSE(deck.playing);
+    EXPECT_FALSE(readState().value("playing").toBool(true));
+    ASSERT_TRUE(QTest::qWaitFor([&] {
+        return fake.lastPreviewReport().value("state").toString() == QStringLiteral("stopped");
+    },
+            2000));
+    EXPECT_DOUBLE_EQ(4.5, fake.lastPreviewReport().value("position").toDouble());
+
+    // Looped: Mixxx's loop wraps it, so nothing stops it at OUT. The track is in already.
+    QJsonObject looped = cut;
+    looped.insert("loop", true);
+    answer = ask(QStringLiteral("preview.play"), looped);
+    EXPECT_EQ(QStringLiteral("playing"), answer.value("result").toObject().value("state").toString());
+    EXPECT_EQ((QList<double>{2, 4, 1, 2}), deck.plays.last());
+    EXPECT_EQ(QList<int>{7}, deck.loads) << "the same track is not loaded twice";
+    deck.position = 4.2;
+    QTest::qWait(60);
+    EXPECT_TRUE(deck.playing);
+
+    // A moved OUT while it plays carries on from where it is, without a seek...
+    deck.position = 3.0;
+    QJsonObject moved{{"track_id", 7}, {"start", 2.0}, {"end", 6.0}, {"loop", true}, {"from", 3.1}};
+    ask(QStringLiteral("preview.play"), moved);
+    EXPECT_EQ((QList<double>{2, 6, 1, -1}), deck.plays.last());
+    // ...but a far `from` seeks, and OUT past the end of the track stops at the end.
+    moved.insert("from", 5.0);
+    moved.insert("end", 190.0);
+    ask(QStringLiteral("preview.play"), moved);
+    EXPECT_EQ((QList<double>{2, 180, 1, 5}), deck.plays.last());
+
+    // A deck that starts stops the preview, and the page is told why.
+    deck.decksPlaying = true;
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.preview()->state() == DeckLabPreview::State::Stopped; }, 1500));
+    EXPECT_FALSE(deck.playing);
+    ASSERT_TRUE(QTest::qWaitFor([&] {
+        return fake.lastPreviewReport().value("reason").toString() ==
+                QStringLiteral("A deck or sampler started, so the preview stopped.");
+    },
+            2000));
+    deck.decksPlaying = false;
+
+    // STOP; Browse taking the preview deck; a track that is not in the library.
+    deck.loaded = 7;
+    ask(QStringLiteral("preview.play"), cut);
+    answer = ask(QStringLiteral("preview.stop"), QJsonObject());
+    EXPECT_EQ(QStringLiteral("stopped"), answer.value("result").toObject().value("state").toString());
+    EXPECT_FALSE(deck.playing);
+    system.preview()->onPreviewLoaded(9);
+    EXPECT_EQ(DeckLabPreview::State::Idle, system.preview()->state());
+    answer = ask(QStringLiteral("preview.play"), QJsonObject{{"track_id", 404}, {"start", 0}, {"end", 1}});
+    EXPECT_EQ(QStringLiteral("failed"), refusal(answer));
+    EXPECT_EQ(QStringLiteral("That track is not in the library."),
+            answer.value("error").toObject().value("message").toString());
+    // A load that fails is reported, not played.
+    ask(QStringLiteral("preview.play"), QJsonObject{{"track_id", 8}, {"start", 0}, {"end", 1}});
+    EXPECT_EQ(DeckLabPreview::State::Loading, system.preview()->state());
+    system.preview()->onPreviewLoaded(0);
+    EXPECT_EQ(DeckLabPreview::State::Idle, system.preview()->state());
+    EXPECT_EQ(QStringLiteral("The track could not be loaded."), system.preview()->report().value("reason").toString());
+
+    // Closing Sample Maker pauses and unloads its preview; the decks were never touched.
+    deck.loaded = 7;
+    deck.duration = 180;
+    ask(QStringLiteral("preview.play"), cut);
+    EXPECT_TRUE(deck.playing);
+    fake.pushEvent(QStringLiteral("apps.changed"), QJsonObject{{"app", QJsonValue::Null}});
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.preview()->state() == DeckLabPreview::State::Idle; }, 2000));
+    EXPECT_FALSE(deck.playing);
+    EXPECT_EQ(1, deck.ejects);
+    EXPECT_EQ(QStringLiteral("denied"), refusal(ask(QStringLiteral("preview.play"), cut)));
+}
+
+// PUT ON PAD: a saved sample's basename, resolved inside Deck Lab Samples
+// only, onto the first empty pad.
+TEST_F(DeckLabSystemTest, PutOnPadLoadsOnlyASampleFromTheSamplesFolder) {
+    const QString samples = m_dir.filePath(QStringLiteral("Music/Deck Lab Samples"));
+    ASSERT_TRUE(QDir().mkpath(samples + QStringLiteral("/Beats")));
+    const auto touch = [](const QString& path) {
+        QFile file(path);
+        return file.open(QIODevice::WriteOnly) && file.write("RIFF") == 4;
+    };
+    ASSERT_TRUE(touch(samples + QStringLiteral("/Hook - Cut.wav")));
+    ASSERT_TRUE(touch(samples + QStringLiteral("/Beats/Kick.wav")));
+    ASSERT_TRUE(touch(m_dir.filePath(QStringLiteral("Music/Outside.wav"))));
+    const bool linked = QFile::link(m_dir.filePath(QStringLiteral("Music/Outside.wav")),
+            samples + QStringLiteral("/Link.wav"));
+
+    DeckLabFakeService fake;
+    ASSERT_TRUE(fake.listen(socketPath()));
+    FakePreviewDeck deck;
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, socketPath());
+    system.preview()->setHooks(deck.hooks(system, samples));
+    system.utilities()->setStateDirectory(m_dir.filePath(QStringLiteral("run/decklab")));
+    system.start();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return system.isReady(); }, 3000));
+    const auto ask = [&fake](const QJsonValue& name) {
+        const qint64 serial = fake.relay(QStringLiteral("sampler.load"), QJsonObject{{"name", name}});
+        EXPECT_TRUE(QTest::qWaitFor([&] { return !fake.relayReply(serial).isEmpty(); }, 2000));
+        return fake.relayReply(serial);
+    };
+    const auto refusal = [](const QJsonObject& answer) {
+        return answer.value("error").toObject().value("code").toString();
+    };
+
+    EXPECT_EQ(QStringLiteral("denied"), refusal(ask(QStringLiteral("Hook - Cut.wav"))));
+    fake.pushEvent(QStringLiteral("apps.changed"), QJsonObject{{"app", "sample-maker"}});
+    ASSERT_TRUE(QTest::qWaitFor([&] { return !system.utilities()->openApp().isEmpty(); }, 2000));
+
+    QJsonObject answer = ask(QStringLiteral("Hook - Cut.wav"));
+    EXPECT_EQ(3, answer.value("result").toObject().value("pad").toInt());
+    EXPECT_EQ(QStringLiteral("Hook - Cut.wav"), answer.value("result").toObject().value("name").toString());
+    ASSERT_EQ(1, deck.pads.size());
+    EXPECT_EQ(QStringLiteral("3:") + QFileInfo(samples + QStringLiteral("/Hook - Cut.wav")).canonicalFilePath(),
+            deck.pads.first());
+
+    QJsonArray bad{QStringLiteral("../Outside.wav"),
+            QStringLiteral("Beats/Kick.wav"),
+            QStringLiteral("/tmp/Hook - Cut.wav"),
+            QStringLiteral(".Hook.wav"),
+            QStringLiteral("Hook - Cut.txt"),
+            QStringLiteral(" Hook - Cut.wav"),
+            QStringLiteral("Missing.wav"),
+            QStringLiteral("Beats"),
+            7};
+    if (linked) {
+        bad.append(QStringLiteral("Link.wav"));
+    }
+    for (const auto& name : std::as_const(bad)) {
+        EXPECT_EQ(QStringLiteral("bad_request"), refusal(ask(name))) << name.toString().toStdString();
+    }
+    EXPECT_EQ(1, deck.pads.size()) << "nothing outside Deck Lab Samples reaches a pad";
+
+    // Every pad full; anything playing (loading reads the disk).
+    deck.emptyPad = 0;
+    answer = ask(QStringLiteral("Hook - Cut.wav"));
+    EXPECT_EQ(QStringLiteral("busy"), refusal(answer));
+    EXPECT_EQ(QStringLiteral("Every pad is in use. Empty one on the Sampler page first."),
+            answer.value("error").toObject().value("message").toString());
+    deck.emptyPad = 4;
+    deck.decksPlaying = true;
+    EXPECT_EQ(QStringLiteral("busy"), refusal(ask(QStringLiteral("Hook - Cut.wav"))));
+    deck.decksPlaying = false;
+    deck.playing = true;
+    EXPECT_EQ(QStringLiteral("busy"), refusal(ask(QStringLiteral("Hook - Cut.wav"))));
+    EXPECT_EQ(1, deck.pads.size());
+}
+
 // ------------------------------------------------------------ persistence --
 
 TEST_F(DeckLabSystemTest, ControllerSetupPersistsPerDeviceKeyAcrossRestart) {

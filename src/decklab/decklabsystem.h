@@ -14,6 +14,7 @@
 #include "controllers/controllermappinginfo.h"
 #include "controllers/controllermappingmatcher.h"
 #include "decklab/decklabcontrollers.h"
+#include "decklab/decklabpreview.h"
 #include "decklab/decklabsetupmodel.h"
 #include "decklab/decklabutilities.h"
 #include "preferences/usersettings.h"
@@ -82,6 +83,10 @@ class DeckLabSystem : public QObject {
     DeckLabUtilities* utilities() const {
         return m_utilities;
     }
+    /// Sample Maker's headphone preview on [PreviewDeck1] and PUT ON PAD.
+    DeckLabPreview* preview() const {
+        return m_preview;
+    }
     bool isReady() const;
     UserSettingsPointer config() const {
         return m_services.config;
@@ -95,6 +100,8 @@ class DeckLabSystem : public QObject {
 
     // Live performance state; system actions refuse while music plays.
     bool anyPlaying() const;
+    /// A deck or sampler plays (the preview deck does not count).
+    bool decksOrSamplersPlaying() const;
     QList<decklab::LoadedTrack> loadedTracks() const;
     /// Test hook replacing PlayerManager lookups.
     void setLoadedTracksProvider(std::function<QList<decklab::LoadedTrack>()> provider);
@@ -216,6 +223,7 @@ class DeckLabSystem : public QObject {
     void forgetMissingRecordingDrive();
     bool preferencesOpen() const;
     DeckLabUtilities::Hooks utilityHooks();
+    DeckLabPreview::Hooks previewHooks();
     QStringList utilityFolders() const;
     void watchPlayers();
     void watchPlayer(BaseTrackPlayer* player);
@@ -231,6 +239,7 @@ class DeckLabSystem : public QObject {
     Services m_services;
     DeckLabdClient* m_client;
     DeckLabUtilities* m_utilities;
+    DeckLabPreview* m_preview;
     QSet<BaseTrackPlayer*> m_watchedPlayers;
     QHash<BaseTrackPlayer*, qint64> m_loadingSince;
     std::function<QList<decklab::LoadedTrack>()> m_loadedTracksProvider;

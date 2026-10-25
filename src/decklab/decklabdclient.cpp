@@ -67,7 +67,10 @@ QStringList DeckLabdClient::subscribedTopics() {
             QStringLiteral("bt"),
             QStringLiteral("power"),
             QStringLiteral("session"),
-            QStringLiteral("apps")};
+            QStringLiteral("apps"),
+            // v1.2: requests relayed from Sample Maker (decklabpreview.h).
+            QStringLiteral("preview"),
+            QStringLiteral("sampler")};
 }
 
 void DeckLabdClient::setReconnectBackoff(int minimumMs, int maximumMs) {
