@@ -58,9 +58,9 @@ const QString kRecordingFolder = QStringLiteral("Deck Lab Recordings");
 // Folders the utilities write to (apps/get-music, apps/sample-maker in the appliance repo).
 const QString kDownloadFolder = QStringLiteral("Deck Lab Downloads");
 const QString kPreviewDeck = QStringLiteral("[PreviewDeck1]");
-// decklabd went away while a utility was open: after this long without it
-// the utility counts as closed, so background jobs are not held forever.
-constexpr int kUtilityLostMs = 15000;
+// decklabd could not say which utility is open (it did not answer): asked
+// again after this long.
+constexpr int kUtilityAskRetryMs = 5000;
 // Deck Lab shows sixteen pads; PUT ON PAD fills the first empty one of those.
 constexpr int kPads = 16;
 constexpr qint64 kLoadingStaleMs = 20000;
@@ -295,7 +295,8 @@ bool DeckLabSystem::isReady() const {
 void DeckLabSystem::onReady(bool ready) {
     if (ready) {
         // r7: a decklabd that restarted has forgotten an open utility and
-        // never reports its close; ask which one is open.
+        // never reports its close (one that only dropped the socket may
+        // have reported it meanwhile); ask which one is open.
         if (std::exchange(m_wasReady, true) || !m_utilities->openApp().isEmpty()) {
             askOpenUtility();
         }
@@ -328,17 +329,10 @@ void DeckLabSystem::onReady(bool ready) {
         m_drives = QJsonArray();
         emit usbChanged(m_drives);
         // Sample Maker reaches its preview only through decklabd: without it
-        // nothing could stop it, so it pauses (still loaded).
+        // nothing could stop it, so it pauses (still loaded). The utility
+        // window itself runs on without decklabd: it stays counted as open
+        // until decklabd says otherwise.
         m_preview->onConnectionLost();
-        if (!m_utilities->openApp().isEmpty()) {
-            QTimer::singleShot(kUtilityLostMs, this, [this] {
-                if (!m_client->isReady() && !m_utilities->openApp().isEmpty()) {
-                    qInfo() << "DeckLab: decklabd is still away; the utility counts as closed";
-                    m_utilities->onAppsChanged(QJsonObject{{QStringLiteral("app"), QJsonValue::Null}});
-                    m_preview->onUtilityChanged(QString());
-                }
-            });
-        }
     }
     emit readyChanged(ready);
 }
@@ -346,15 +340,31 @@ void DeckLabSystem::onReady(bool ready) {
 void DeckLabSystem::askOpenUtility() {
     m_client->call(QStringLiteral("apps.status"), {}, [this](const DeckLabdReply& reply) {
         const QJsonValue app = reply.result.value(QStringLiteral("app"));
-        QString open;
-        if (reply.ok && (app.isString() || app.isNull())) {
-            open = app.toString().left(32);
-        } else if (!m_utilities->openApp().isEmpty()) {
-            // An older decklabd cannot say. One that restarted would never
-            // report the close, which would hold every background job: the
-            // utility counts as closed (opening it from Deck Lab again tells).
-            qInfo() << "DeckLab: decklabd cannot say which utility is open; it counts as closed";
+        if (!reply.ok || !(app.isString() || app.isNull())) {
+            if (m_utilities->openApp().isEmpty()) {
+                return;
+            }
+            // decklabd cannot say. The utility stays counted as open: its
+            // window may well still be there (a socket that only dropped, or
+            // a decklabd restart under a running utility), and Get Music's
+            // downloads or Sample Maker's previews must not compete with the
+            // background jobs or lose their link to Deck Lab. Opening a
+            // utility from Deck Lab tells again. A decklabd without
+            // apps.status never will; any other failure is asked again.
+            if (reply.errorCode == QStringLiteral("unknown_method")) {
+                qInfo() << "DeckLab: decklabd cannot say which utility is open;"
+                        << m_utilities->openApp() << "still counts as open";
+            } else if (!std::exchange(m_askAgain, true)) {
+                QTimer::singleShot(kUtilityAskRetryMs, this, [this] {
+                    m_askAgain = false;
+                    if (m_client->isReady() && !m_utilities->openApp().isEmpty()) {
+                        askOpenUtility();
+                    }
+                });
+            }
+            return;
         }
+        const QString open = app.toString().left(32);
         if (open == m_utilities->openApp()) {
             return;
         }

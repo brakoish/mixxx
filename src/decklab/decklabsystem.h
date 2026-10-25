@@ -274,6 +274,7 @@ class DeckLabSystem : public QObject {
     std::function<int()> m_padTarget;
     bool m_scanning = false;   // Mixxx's library scan runs
     bool m_wasReady = false;   // decklabd answered before: a ready is a reconnect
+    bool m_askAgain = false;   // apps.status got no answer: asked again soon
     std::function<QList<decklab::LoadedTrack>()> m_loadedTracksProvider;
     QJsonArray m_drives;
     QJsonObject m_devices;

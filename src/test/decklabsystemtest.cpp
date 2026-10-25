@@ -851,9 +851,10 @@ TEST_F(DeckLabSystemTest, ABrowsePreviewIsNeverEjectedForAClosedSampleMaker) {
 // r7: Sample Maker's preview never outlives Sample Maker. decklabd going
 // away pauses it, still loaded (nothing could stop it then); after a
 // reconnect Mixxx asks decklabd which utility is open. One that cannot say
-// (an older or restarted decklabd) leaves none open, which unloads the
-// preview, so nothing waits forever for a window that may be gone; opening
-// it from Deck Lab again tells. Another utility opening unloads it too.
+// (no apps.status, or no answer) leaves the utility counted as open: its
+// window runs on without decklabd, so its preview stays usable and nothing
+// heavy starts beside it. A decklabd that says none is open unloads the
+// preview; another utility opening unloads it too.
 TEST_F(DeckLabSystemTest, SampleMakerPreviewStopsWhenSampleMakerIsGone) {
     DeckLabFakeService fake;
     ASSERT_TRUE(fake.listen(socketPath()));
@@ -863,7 +864,13 @@ TEST_F(DeckLabSystemTest, SampleMakerPreviewStopsWhenSampleMakerIsGone) {
     DeckLabSystem system(services, nullptr, socketPath());
     system.client()->setReconnectBackoff(20, 80);
     system.preview()->setHooks(deck.hooks(system, m_dir.filePath(QStringLiteral("Samples"))));
-    system.utilities()->setHooks(DeckLabUtilities::Hooks());
+    int rescans = 0;
+    DeckLabUtilities::Hooks utilityHooks;
+    utilityHooks.startQuietScan = [&rescans] {
+        ++rescans;
+        return true;
+    };
+    system.utilities()->setHooks(utilityHooks);
     system.utilities()->setStateDirectory(m_dir.filePath(QStringLiteral("run/decklab")));
     system.start();
     ASSERT_TRUE(QTest::qWaitFor([&] { return system.isReady(); }, 3000));
@@ -872,6 +879,12 @@ TEST_F(DeckLabSystemTest, SampleMakerPreviewStopsWhenSampleMakerIsGone) {
         const qint64 serial = fake.relay(event, data);
         EXPECT_TRUE(QTest::qWaitFor([&] { return !fake.relayReply(serial).isEmpty(); }, 2000)) << event.toStdString();
         return fake.relayReply(serial);
+    };
+    const auto reconnect = [&] {
+        const int asked = fake.calls.count(QStringLiteral("apps.status"));
+        fake.disconnectClients();
+        EXPECT_TRUE(QTest::qWaitFor([&] { return fake.calls.count(QStringLiteral("apps.status")) > asked; }, 3000));
+        QTest::qWait(100);
     };
     fake.pushEvent(QStringLiteral("apps.changed"), QJsonObject{{"app", "sample-maker"}});
     ASSERT_TRUE(QTest::qWaitFor([&] { return !system.utilities()->openApp().isEmpty(); }, 2000));
@@ -894,16 +907,35 @@ TEST_F(DeckLabSystemTest, SampleMakerPreviewStopsWhenSampleMakerIsGone) {
     EXPECT_EQ(QStringLiteral("sample-maker"), system.utilities()->openApp());
     EXPECT_EQ(0, deck.ejects);
 
-    // A decklabd that cannot say (it restarted, or is older): none counts as open.
+    // A decklabd without apps.status (every one before it) cannot say:
+    // Sample Maker stays open, its preview stays usable, and nothing heavy
+    // starts beside it.
     fake.openApp = QJsonValue(QJsonValue::Undefined);
+    reconnect();
+    EXPECT_EQ(QStringLiteral("sample-maker"), system.utilities()->openApp());
+    EXPECT_EQ(0, deck.ejects);
+    EXPECT_TRUE(QFileInfo::exists(system.utilities()->stateFile()));
+    EXPECT_FALSE(system.quiet()) << "the open utility still holds the background jobs";
+    EXPECT_FALSE(system.utilities()->refreshPending());
+    QTest::qWait(DeckLabUtilities::kQuietRetryMs + 200);
+    EXPECT_EQ(0, rescans) << "no rescan beside a utility that may be open";
+    ask(QStringLiteral("preview.play"), looped);
+    EXPECT_TRUE(deck.playing) << "Sample Maker can preview again";
+    EXPECT_EQ(DeckLabPreview::State::Playing, system.preview()->state());
+
+    // No answer at all: still open, asked again a little later.
+    fake.failures.insert(QStringLiteral("apps.status"), QStringLiteral("timeout"));
+    reconnect();
+    EXPECT_EQ(QStringLiteral("sample-maker"), system.utilities()->openApp());
     const int asked = fake.calls.count(QStringLiteral("apps.status"));
-    fake.disconnectClients();
-    ASSERT_TRUE(QTest::qWaitFor([&] { return fake.calls.count(QStringLiteral("apps.status")) > asked; }, 3000));
+    fake.failures.remove(QStringLiteral("apps.status"));
+    fake.openApp = QJsonValue(QJsonValue::Null);
+    ASSERT_TRUE(QTest::qWaitFor([&] { return fake.calls.count(QStringLiteral("apps.status")) > asked; }, 8000));
+    // ... and decklabd says none is open now: the preview leaves the deck.
     ASSERT_TRUE(QTest::qWaitFor([&] { return system.utilities()->openApp().isEmpty(); }, 2000));
     EXPECT_EQ(1, deck.ejects) << "its preview leaves the preview deck";
     EXPECT_EQ(DeckLabPreview::State::Idle, system.preview()->state());
     EXPECT_FALSE(QFileInfo::exists(system.utilities()->stateFile()));
-    EXPECT_TRUE(system.quiet() || system.anyPlaying()) << "no open utility holds the background jobs";
 
     // Opening it from Deck Lab again tells, though decklabd does not
     // announce a window that was still open.
