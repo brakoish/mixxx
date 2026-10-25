@@ -1007,6 +1007,11 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
             if (!track) {
                 track = Track::newTemporary(result.path);
                 track->setTitle(QFileInfo(result.path).completeBaseName()); // the file's own title
+                if (result.sampleRate > 0) {
+                    track->setAudioProperties(mixxx::audio::ChannelCount::stereo(),
+                            mixxx::audio::SampleRate(static_cast<mixxx::audio::SampleRate::value_t>(result.sampleRate)),
+                            mixxx::audio::Bitrate(), mixxx::Duration::fromSeconds(double(result.frames) / result.sampleRate));
+                }
             }
             if (result.bpm > 0 && result.sampleRate > 0) {
                 track->setBpmLocked(false);
@@ -1027,18 +1032,16 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
         };
         host.tell = [this](int deck, const QString& text, bool error) {
             if (!m_browseState || !m_browseState->toast) return;
-            // On Decks, just above the deck's MORE (where TO PAD was).
+            // On Decks, just above the deck's pads (two decks) or its card's
+            // keys (four), in the band under the readout.
             QRect anchor;
             if (m_page == 0) {
-                QList<QString> prefixes;
+                QList<QWidget*> places;
                 for (int side = 0; side < 2; ++side)
-                    if (displayedDeck(side) == deck) prefixes << m_sidePrefixes[side];
-                prefixes << m_cardPrefixes[deck - 1];
-                for (const auto& prefix : std::as_const(prefixes)) {
-                    const auto found = m_transport.constFind(prefix);
-                    QPushButton* more = found != m_transport.cend() ? found.value().more : nullptr;
-                    if (more && more->isVisible()) anchor = QRect(more->mapTo(this, QPoint()), more->size());
-                }
+                    if (displayedDeck(side) == deck) places << m_sidePads[side];
+                places << m_cardTransports[deck - 1];
+                for (QWidget* place : std::as_const(places))
+                    if (place && place->isVisible()) anchor = QRect(place->mapTo(this, QPoint()), place->size());
             }
             m_browseState->toast->showMessage(text, error ? 3200 : 2400, error, anchor);
         };
