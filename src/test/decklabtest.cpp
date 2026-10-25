@@ -7610,7 +7610,7 @@ TEST_F(NativeDeckLabTest, DownloadsAndSamplesTilesOpenTheirLists) {
     auto* analysis = panel->backgroundAnalysis();
     ASSERT_NE(nullptr, analysis);
     auto hooks = analysis->hooks();
-    hooks.candidates = [] { return QList<TrackId>{TrackId(1), TrackId(2), TrackId(3)}; };
+    hooks.candidates = [] { return QList<TrackId>{TrackId(QVariant(1)), TrackId(QVariant(2)), TrackId(QVariant(3))}; };
     hooks.start = [](const QList<TrackId>&) { return true; };
     hooks.stop = [] {};
     analysis->setHooks(hooks);
@@ -7729,7 +7729,7 @@ TEST_F(NativeDeckLabTest, BackgroundAnalysisStopsTheMomentADeckPlays) {
     int stops = 0;
     auto hooks = analysis->hooks(); // keeps the surface's "anything plays"
     ASSERT_TRUE(hooks.busy);
-    hooks.candidates = [] { return QList<TrackId>{TrackId(7), TrackId(8)}; };
+    hooks.candidates = [] { return QList<TrackId>{TrackId(QVariant(7)), TrackId(QVariant(8))}; };
     hooks.start = [&starts](const QList<TrackId>&) {
         ++starts;
         return true;

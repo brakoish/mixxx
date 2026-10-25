@@ -187,7 +187,7 @@ TEST(DeckLabBackgroundAnalysisTest, StopsWhenSomethingPlaysAndGoesOnWhenQuiet) {
     DeckLabBackgroundAnalysis analysis;
     analysis.setDelays(0, 0);
     bool busy = false;
-    QList<TrackId> left{TrackId(1), TrackId(2), TrackId(3)};
+    QList<TrackId> left{TrackId(QVariant(1)), TrackId(QVariant(2)), TrackId(QVariant(3))};
     QList<QList<TrackId>> started;
     int stops = 0;
     DeckLabBackgroundAnalysis::Hooks hooks;
@@ -207,8 +207,8 @@ TEST(DeckLabBackgroundAnalysisTest, StopsWhenSomethingPlaysAndGoesOnWhenQuiet) {
     EXPECT_EQ(left, started[0]);
     EXPECT_EQ(DeckLabBackgroundAnalysis::State::Running, analysis.state());
     EXPECT_EQ(QStringLiteral("Analyzing 1 of 3"), analysis.progressText());
-    analysis.trackFinished(TrackId(1));
-    left.removeOne(TrackId(1));
+    analysis.trackFinished(TrackId(QVariant(1)));
+    left.removeOne(TrackId(QVariant(1)));
     EXPECT_EQ(QStringLiteral("Analyzing 2 of 3"), analysis.progressText());
 
     // A deck plays: the batch stops at once and nothing starts while it plays.
@@ -228,12 +228,12 @@ TEST(DeckLabBackgroundAnalysisTest, StopsWhenSomethingPlaysAndGoesOnWhenQuiet) {
     analysis.playbackChanged();
     analysis.check();
     ASSERT_EQ(2, started.size());
-    EXPECT_EQ((QList<TrackId>{TrackId(2), TrackId(3)}), started[1]);
+    EXPECT_EQ((QList<TrackId>{TrackId(QVariant(2)), TrackId(QVariant(3))}), started[1]);
     EXPECT_EQ(QStringLiteral("Analyzing 2 of 3"), analysis.progressText());
     // Track 2 could not be read (it still has no BPM): never queued again.
-    analysis.trackFinished(TrackId(2));
-    analysis.trackFinished(TrackId(3));
-    left = {TrackId(2)};
+    analysis.trackFinished(TrackId(QVariant(2)));
+    analysis.trackFinished(TrackId(QVariant(3)));
+    left = {TrackId(QVariant(2))};
     analysis.batchFinished();
     analysis.check();
     EXPECT_EQ(2, started.size());
@@ -241,7 +241,7 @@ TEST(DeckLabBackgroundAnalysisTest, StopsWhenSomethingPlaysAndGoesOnWhenQuiet) {
     EXPECT_TRUE(analysis.progressText().isEmpty());
 
     // A new download waits for a quiet minute after the last stop.
-    left = {TrackId(4)};
+    left = {TrackId(QVariant(4))};
     analysis.setDelays(0, 60000);
     analysis.playbackChanged();
     analysis.wake();
