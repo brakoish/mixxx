@@ -27,6 +27,7 @@ class DeckLabLabFx; // r4-labfx: the Lab FX page (widget/decklablabfx.h)
 class DeckLabLaneDecks; // r4-waveforms: the DECKS row under compact lanes (widget/decklablanes.h)
 class DeckLabSampler;
 class DeckLabPadBlock;
+class DeckLabBackgroundAnalysis; // r7-browse: new downloads analyzed while nothing plays
 class DeckLabDeckTools; // r5-decks: key sheet and GRID mode (widget/decklabdecktools.h)
 class DeckLabSync; // r6-sync: SYNC, MASTER and INST DOUBLES (widget/decklabsync.h)
 class DeckLabStemPads;
@@ -57,6 +58,7 @@ struct UsbStick;
 struct MatchReference; // r4-browse
 enum class SourceState; // r4-browse
 struct SourceEntry; // r5-history
+enum class FolderList; // r7-browse
 namespace history {
 struct Change; // r5-history
 } // namespace history
@@ -106,6 +108,9 @@ class WDeckLab : public QWidget, public WBaseWidget {
         return !m_waveformSuppressors.isEmpty();
     }
     Library* library() const { return m_library; }
+    /// r7-browse: Get Music's downloads analyzed in the background (tests
+    /// replace its hooks; decklab/decklabanalysis.h).
+    DeckLabBackgroundAnalysis* backgroundAnalysis() const { return m_analysis; }
 
   signals:
     void advancedPreferencesRequested();
@@ -272,6 +277,20 @@ class WDeckLab : public QWidget, public WBaseWidget {
     bool ensureMixTable(bool pressed = false);
     // r5-fix3-history: a Mixes row's table row, found by the row's file.
     QModelIndex mixTableRow(const QListWidgetItem* item) const;
+    // r7-browse: the DOWNLOADS and SAMPLES tiles, their lists in the folder
+    // table, a pad's Load on SAMPLES and the background analysis.
+    QStringList currentDownloadFolders() const;
+    QString downloadsDetail() const;
+    decklab::SourceEntry downloadsEntry(const QStringList& folders) const;
+    decklab::SourceEntry samplesEntry() const;
+    void refreshDownloadsTile();
+    void showDownloads(const QString& highlight);
+    void openDownloadsRow(int row);
+    bool showFolderTracks(decklab::FolderList list, const QStringList& locations, const QString& key, const QString& title);
+    void openSamples(bool forPad);
+    bool folderTableShown() const;
+    bool anythingPlaying();
+    void initBackgroundAnalysis();
     int displayedDeck(int side) const;
     void setDisplayedDeck(int side, int deck);
     QString channel(int deck) const;
@@ -467,4 +486,5 @@ class WDeckLab : public QWidget, public WBaseWidget {
     int m_droppedFrames = 0;
     QLabel* m_performanceStatus = nullptr;
     std::unique_ptr<DeckLabBrowseState> m_browseState;
+    DeckLabBackgroundAnalysis* m_analysis = nullptr; // r7-browse
 };

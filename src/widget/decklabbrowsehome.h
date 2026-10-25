@@ -30,7 +30,9 @@ enum class SourceState {
 };
 
 struct SourceEntry {
-    QString key; // KeyRole: "usb:<path>", "root:<icon>", "more", "nostick"
+    // KeyRole: "usb:<path>", "root:<icon>", "more", "nostick"; r7-browse:
+    // "downloads", "samples".
+    QString key;
     QString name;
     QString line1; // SubtitleRole
     QString line2; // DetailRole
@@ -47,13 +49,18 @@ struct HomeLayout {
 };
 
 constexpr int kHomeTiles = 4;
+// r7-browse: with DOWNLOADS or SAMPLES the home has six tiles, three a row.
+constexpr int kHomeTilesWide = 6;
 
 // The home in reading order: every stick first (a "plug one in" tile when
 // none is in), then the library's own sources in sidebar order, then "More
 // sources". The first four become tiles, the rest chips on the "Also" row.
+// r7-browse: extras (DOWNLOADS, SAMPLES) follow the Library, and then the
+// first six become tiles.
 HomeLayout arrangeHome(const QVector<SourceEntry>& sticks,
         const QVector<SourceEntry>& sources,
-        const SourceEntry& more);
+        const SourceEntry& more,
+        const QVector<SourceEntry>& extras = {});
 // The tile shown while no USB stick is in.
 SourceEntry missingStickEntry();
 // State words on a tile: "READY", "READING…", "COULDN'T READ"; empty for
@@ -83,7 +90,9 @@ class DeckLabBrowseDelegate : public DeckLabListDelegate {
     // Two tiles per row and two rows over one chip row, filling the viewport
     // (QListView's flow layout puts the spacing around every item). The home
     // turns its vertical scroll bar off so the layout keeps the full width.
-    static QSize tileSize(const QSize& viewport);
+    // r7-browse: three a row when the home has more than four tiles.
+    static QSize tileSize(const QSize& viewport, int columns = 2);
+    static int columnsFor(int tiles);
     // The "Try again" target inside a tile whose stick could not be read.
     static QRect retryRect(const QRect& tile);
 

@@ -1,6 +1,7 @@
 #include "library/librarytablemodel.h"
 
 #include "library/dao/trackschema.h"
+#include "library/decklabfoldertablemodel.h" // r7-browse: samples stay out of the song lists
 #include "library/queryutil.h"
 #include "library/trackcollection.h"
 #include "library/trackcollectionmanager.h"
@@ -35,7 +36,8 @@ void LibraryTableModel::setTableModel() {
             " FROM library "
             "INNER JOIN track_locations "
             "ON library.location=track_locations.id "
-            "WHERE (mixxx_deleted=0 AND fs_deleted=0)");
+            "WHERE (mixxx_deleted=0 AND fs_deleted=0)" +
+            decklab::songListSqlFilter());
     if (!query.exec()) {
         LOG_FAILED_QUERY(query);
     }

@@ -41,6 +41,8 @@
 #include "control/controlproxy.h"
 #include "decklab/decklabfakeservice.h"
 #include "decklab/decklabkeys.h" // r6-keys
+#include "decklab/decklabanalysis.h"  // r7-browse
+#include "decklab/decklabdownloads.h" // r7-browse
 #include "decklab/decklaboverlay.h"
 #include "decklab/decklabsetupwizard.h"
 #include "decklab/decklabsystem.h"
@@ -7572,4 +7574,185 @@ TEST_F(NativeDeckLabTest, KeyTextThatIsNotAKeyShowsAsStoredInMixes) {
     EXPECT_EQ(QStringLiteral("8A"), keys.value(QStringLiteral("Generated Tone 0")));
     EXPECT_EQ(QStringLiteral("Unknown"), keys.value(QStringLiteral("Generated Tone 1")));
     EXPECT_EQ(QStringLiteral("12B"), keys.value(QStringLiteral("Generated Tone 2")));
+}
+
+// r7-browse: Get Music's downloads and the samples get home tiles (three a
+// row with them). DOWNLOADS lists the single downloads, then each playlist
+// as a folder, newest first; a stick that is pulled takes its downloads
+// with it; the tile says how far the background analysis is.
+TEST_F(NativeDeckLabTest, DownloadsAndSamplesTilesOpenTheirLists) {
+    QTemporaryDir home;
+    const QString music = home.filePath(QStringLiteral("Music"));
+    struct Reset {
+        ~Reset() { decklab::setMusicFolderForTesting(QString()); }
+    } reset;
+    decklab::setMusicFolderForTesting(music);
+    const QString stick = makeStick(QStringLiteral("55AA-1234"), false);
+    const QDateTime at = QDateTime::currentDateTime().addDays(1);
+    const auto file = [](const QString& path, const QDateTime& when) {
+        QDir().mkpath(QFileInfo(path).path());
+        QFile out(path);
+        if (out.open(QIODevice::WriteOnly)) {
+            out.write("generated");
+            out.close();
+        }
+        if (out.open(QIODevice::ReadWrite)) {
+            out.setFileTime(when, QFileDevice::FileModificationTime);
+            out.close();
+        }
+    };
+    file(stick + QStringLiteral("/Deck Lab Downloads/Generated Single [aaaaaaaaaaa].m4a"), at.addSecs(60));
+    file(stick + QStringLiteral("/Deck Lab Downloads/Generated Playlist/01 - Fixture - One.m4a"), at.addSecs(120));
+    file(stick + QStringLiteral("/Deck Lab Downloads/Generated Playlist/02 - Fixture - Two.m4a"), at.addSecs(180));
+    file(music + QStringLiteral("/New Music/Generated Card Single [bbbbbbbbbbb].m4a"), at.addSecs(30));
+    file(music + QStringLiteral("/Deck Lab Samples/Generated Hit.wav"), at);
+    // Generated analysis hooks: nothing is analyzed, the tile only reports.
+    auto* analysis = panel->backgroundAnalysis();
+    ASSERT_NE(nullptr, analysis);
+    auto hooks = analysis->hooks();
+    hooks.candidates = [] { return QList<TrackId>{TrackId(1), TrackId(2), TrackId(3)}; };
+    hooks.start = [](const QList<TrackId>&) { return true; };
+    hooks.stop = [] {};
+    analysis->setHooks(hooks);
+    analysis->setDelays(0, 0);
+
+    panel->selectPage(1); settle();
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_sources"), 1);
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_sources"), 0);
+    settle();
+    auto* list = browseList(); ASSERT_NE(nullptr, list);
+    EXPECT_EQ((QStringList{"USB stick", "USB library", "Library", "Downloads", "Samples", "More sources"}), listTexts());
+    ASSERT_EQ(6, list->count());
+    for (int row = 0; row < 6; ++row) EXPECT_EQ(1, list->item(row)->data(DeckLabListDelegate::TileRole).toInt()) << row;
+    const QRect a = list->visualItemRect(list->item(0));
+    const QRect c = list->visualItemRect(list->item(2));
+    const QRect d = list->visualItemRect(list->item(3));
+    EXPECT_EQ(a.top(), c.top()); EXPECT_GT(c.left(), a.right()); EXPECT_GT(d.top(), a.bottom());
+    EXPECT_GE(a.width(), 240); EXPECT_GE(a.height(), 96);
+    EXPECT_TRUE(list->viewport()->rect().contains(list->visualItemRect(list->item(5))));
+    QListWidgetItem* downloads = list->item(3);
+    EXPECT_EQ(QString::fromUtf8("4 tracks · 1 playlist"), downloads->data(DeckLabListDelegate::SubtitleRole).toString());
+    EXPECT_EQ(QStringLiteral("Newest first"), downloads->data(DeckLabListDelegate::DetailRole).toString());
+    EXPECT_EQ(QStringLiteral("1 sample"), list->item(4)->data(DeckLabListDelegate::SubtitleRole).toString());
+    analysis->wake();
+    analysis->check();
+    settle();
+    EXPECT_EQ(QStringLiteral("Analyzing 1 of 3"), downloads->data(DeckLabListDelegate::DetailRole).toString());
+    capture(QStringLiteral("browse-home-downloads-samples.png"));
+
+    ASSERT_TRUE(selectRow(QStringLiteral("Downloads")));
+    panel->browsePress(); settle();
+    EXPECT_EQ(QStringList{QStringLiteral("Downloads")}, crumbs());
+    EXPECT_EQ((QStringList{"Tracks", "Generated Playlist"}), listTexts());
+    EXPECT_EQ(QStringLiteral("2"), list->item(0)->data(DeckLabListDelegate::CountRole).toString());
+    EXPECT_EQ(QStringLiteral("2"), list->item(1)->data(DeckLabListDelegate::CountRole).toString());
+    EXPECT_GE(list->visualItemRect(list->item(1)).height(), 44);
+    capture(QStringLiteral("browse-downloads.png"));
+    panel->browseBack(); settle();
+    EXPECT_EQ(QStringList{QStringLiteral("Sources")}, crumbs());
+    ASSERT_NE(nullptr, list->currentItem());
+    EXPECT_EQ(QStringLiteral("Downloads"), list->currentItem()->text());
+
+    // The stick is pulled: only the Pi card's download is left.
+    ASSERT_TRUE(QDir(stick).removeRecursively());
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_sources"), 1);
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_sources"), 0);
+    settle();
+    EXPECT_EQ((QStringList{"No USB stick", "USB library", "Library", "Downloads", "Samples", "More sources"}), listTexts());
+    EXPECT_EQ(QStringLiteral("1 track"), list->item(3)->data(DeckLabListDelegate::SubtitleRole).toString());
+    analysis->setHooks({});
+}
+
+// r7-browse: a pad's Load opens Browse on SAMPLES, with ALL MUSIC where
+// MATCH sits for the rest of Browse. Leaving it (Cancel, or the load),
+// Browse comes back on the home, never on samples.
+TEST_F(NativeDeckLabTest, LoadPadOpensOnSamples) {
+    QTemporaryDir home;
+    struct Reset {
+        ~Reset() { decklab::setMusicFolderForTesting(QString()); }
+    } reset;
+    decklab::setMusicFolderForTesting(home.filePath(QStringLiteral("Music")));
+    ASSERT_TRUE(QDir().mkpath(home.filePath(QStringLiteral("Music/Deck Lab Samples"))));
+    auto controls = makeSamplerControls(1, 2);
+    auto* sampler = panel->findChild<DeckLabSampler*>(QStringLiteral("decklab-sampler"));
+    ASSERT_NE(nullptr, sampler);
+    panel->selectPage(2); settle();
+    emit sampler->loadRequested(2);
+    settle();
+    EXPECT_EQ(1, panel->currentPage());
+    EXPECT_EQ(QStringList{QStringLiteral("Samples")}, crumbs());
+    auto* all = panel->findChild<QPushButton*>(QStringLiteral("decklab-browse-all-music"));
+    ASSERT_NE(nullptr, all);
+    EXPECT_TRUE(all->isVisible());
+    EXPECT_GE(all->height(), 44);
+    EXPECT_FALSE(panel->findChild<QWidget*>(QStringLiteral("decklab-browse-match"))->isVisible());
+    auto* load = panel->findChild<QPushButton*>(QStringLiteral("decklab-load-1"));
+    ASSERT_NE(nullptr, load);
+    EXPECT_EQ(QStringLiteral("Load pad 2"), load->text());
+    capture(QStringLiteral("browse-load-pad-samples.png"));
+
+    // ALL MUSIC: the home, the Library highlighted, still loading pad 2.
+    all->click(); settle();
+    EXPECT_EQ(QStringList{QStringLiteral("Sources")}, crumbs());
+    ASSERT_NE(nullptr, browseList()->currentItem());
+    EXPECT_EQ(QStringLiteral("Library"), browseList()->currentItem()->text());
+    EXPECT_EQ(QStringLiteral("Load pad 2"), load->text());
+    EXPECT_FALSE(all->isVisible());
+
+    // On SAMPLES again, Cancel: the pads, and Browse comes back on the home.
+    emit sampler->loadRequested(2);
+    settle();
+    EXPECT_EQ(QStringList{QStringLiteral("Samples")}, crumbs());
+    panel->findChild<QPushButton*>(QStringLiteral("decklab-load-2"))->click();
+    settle();
+    EXPECT_EQ(2, panel->currentPage());
+    panel->selectPage(1); settle();
+    EXPECT_EQ(QStringList{QStringLiteral("Sources")}, crumbs());
+    EXPECT_FALSE(all->isVisible());
+    // SAMPLES from the home is a plain list: no ALL MUSIC, Back goes home.
+    ASSERT_TRUE(selectRow(QStringLiteral("Samples")));
+    panel->browsePress(); settle();
+    EXPECT_EQ(QStringList{QStringLiteral("Samples")}, crumbs());
+    EXPECT_FALSE(all->isVisible());
+    panel->browseBack(); settle();
+    EXPECT_EQ(QStringList{QStringLiteral("Sources")}, crumbs());
+    EXPECT_EQ(QStringLiteral("Samples"), browseList()->currentItem()->text());
+}
+
+// r7-browse: the background analysis stops the moment a deck plays (or a
+// recording runs) and starts again once it is quiet: the surface's own play
+// controls feed it.
+TEST_F(NativeDeckLabTest, BackgroundAnalysisStopsTheMomentADeckPlays) {
+    auto* analysis = panel->backgroundAnalysis();
+    ASSERT_NE(nullptr, analysis);
+    int starts = 0;
+    int stops = 0;
+    auto hooks = analysis->hooks(); // keeps the surface's "anything plays"
+    ASSERT_TRUE(hooks.busy);
+    hooks.candidates = [] { return QList<TrackId>{TrackId(7), TrackId(8)}; };
+    hooks.start = [&starts](const QList<TrackId>&) {
+        ++starts;
+        return true;
+    };
+    hooks.stop = [&stops] { ++stops; };
+    analysis->setHooks(hooks);
+    analysis->setDelays(0, 0);
+    loadGenerated(1, 124); ProcessBuffer(); settle();
+    analysis->wake();
+    analysis->check();
+    ASSERT_EQ(1, starts);
+    EXPECT_EQ(DeckLabBackgroundAnalysis::State::Running, analysis->state());
+    ControlObject::set(ConfigKey("[Channel1]", "play"), 1); ProcessBuffer(); settle();
+    EXPECT_EQ(1, stops) << "a deck plays: the batch stops at once";
+    analysis->batchFinished();
+    analysis->check();
+    EXPECT_EQ(1, starts) << "never while a deck plays";
+    EXPECT_EQ(DeckLabBackgroundAnalysis::State::Waiting, analysis->state());
+    ControlObject::set(ConfigKey("[Channel1]", "play"), 0); ProcessBuffer(); settle();
+    analysis->check();
+    EXPECT_EQ(2, starts);
+    ControlObject::set(ConfigKey("[Recording]", "status"), 2); settle();
+    EXPECT_EQ(2, stops) << "a recording counts as playing";
+    ControlObject::set(ConfigKey("[Recording]", "status"), 0); settle();
+    analysis->setHooks({});
 }

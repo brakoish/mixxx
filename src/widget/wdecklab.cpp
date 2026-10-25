@@ -72,6 +72,9 @@
 #include "mixer/previewdeck.h"
 #include "preferences/colorpalettesettings.h"
 #include "decklab/decklabkeys.h" // r6-keys
+#include "decklab/decklabanalysis.h"          // r7-browse: background analysis
+#include "decklab/decklabdownloads.h"         // r7-browse: DOWNLOADS and SAMPLES
+#include "library/decklabfoldertablemodel.h"  // r7-browse
 #include "track/keyutils.h"
 #include "track/cueinfo.h"
 #include "track/track.h"
@@ -554,6 +557,17 @@ class DeckLabPlayButton final : public QPushButton {
 };
 }
 
+// r7-browse: what the folder table (DeckLabFolderTableModel) shows.
+namespace decklab {
+enum class FolderList {
+    None,
+    Tracks,       // single downloads, newest first
+    Playlist,     // one playlist folder, in playlist order
+    AllDownloads, // every download, newest first (search in DOWNLOADS)
+    Samples,      // ~/Music/Deck Lab Samples, newest first
+};
+} // namespace decklab
+
 // Browse page state (browse-ui). Lives here so other pages never see it.
 struct DeckLabBrowseState {
     enum class List {
@@ -564,6 +578,7 @@ struct DeckLabBrowseState {
         Folder,     // a USB stick's folders (files view)
         Mixes,      // r4-browse: tracks that mix with the reference deck
         History,    // r5-history: the sets, then one set's tracks in play order
+        Downloads,  // r7-browse: Get Music's downloads: Tracks, then playlist folders
     };
     List list = List::Home;
     List itemsList = List::Sources; // what the category/value list currently holds
@@ -676,6 +691,16 @@ struct DeckLabBrowseState {
     bool mixDirty = false;
     QPointer<QAbstractItemModel> mixWatched;
     QList<QMetaObject::Connection> mixModelConnections;
+    // r7-browse: the DOWNLOADS and SAMPLES lists. Their tracks are library
+    // rows in the folder table; a pad's Load opens on SAMPLES, with ALL
+    // MUSIC beside the breadcrumb for the rest of Browse.
+    decklab::FolderList folderList = decklab::FolderList::None;
+    QString folderTitle;  // the playlist folder shown (its name)
+    QString downloadsKey; // the DOWNLOADS row to return to
+    DeckLabFolderTableModel* folderModel = nullptr;
+    bool samplesForPad = false; // SAMPLES opened by a pad's Load
+    bool homeOnReturn = false;  // ... left by the load: Browse comes back on the home
+    DeckLabActionButton* allMusic = nullptr;
 };
 
 WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
@@ -1808,6 +1833,13 @@ QWidget* WDeckLab::buildBrowse() {
     b.breadcrumb->setObjectName(QStringLiteral("decklab-breadcrumb"));
     b.breadcrumb->setSegments({tr("Sources")});
     heading->addWidget(b.breadcrumb, 1);
+    // r7-browse: a pad's Load opens on SAMPLES; this is the way to the rest.
+    b.allMusic = browseButton(m_browser, tr("All music"), QStringLiteral("decklab-browse-all-music"),
+            tr("Load the pad from the library, a USB stick or a playlist"), decklab::Glyph::None, 128);
+    b.allMusic->setDetail(tr("Other sources"));
+    connect(b.allMusic, &QPushButton::clicked, this, [this] { showHome(QStringLiteral("root:tracks")); });
+    b.allMusic->hide();
+    heading->addWidget(b.allMusic);
     b.match = browseButton(m_browser, tr("Match"), QStringLiteral("decklab-browse-match"),
             tr("Highlight tracks that mix with the playing deck"), decklab::Glyph::None, 128);
     connect(b.match, &QPushButton::clicked, this, [this] {
@@ -2233,7 +2265,9 @@ QWidget* WDeckLab::buildSampler() {
     m_sampler = page;
     page->setInteractionEpoch([this] { return m_interactionEpoch; });
     connect(page, &DeckLabSampler::loadRequested, this, [this](int sampler) {
-        m_sampleTarget = sampler; m_sampleReturnPage = 2; selectPage(1); refreshLoadButtons();
+        m_sampleTarget = sampler; m_sampleReturnPage = 2; selectPage(1);
+        openSamples(true); // r7-browse: the samples first, ALL MUSIC for the rest
+        refreshLoadButtons();
     });
     // Any page that sent Browse to load a pad gets it back once it loads.
     connect(samplers, &DeckLabSamplerControls::sampleLoaded, this, [this](int sampler) {
@@ -2674,6 +2708,7 @@ void WDeckLab::bindBrowser(WSearchLineEdit* search, WLibrarySidebar* sidebar, WL
     }
     if (m_library) m_library->setRowHeight(44);
     initHistory(); // r5-history
+    initBackgroundAnalysis(); // r7-browse
     showSources();
 }
 
@@ -2685,7 +2720,14 @@ void WDeckLab::selectPage(int page) {
     // round5: the status sheet covers the page area but not the rail, so a tab
     // tap would put a page (and its knob claim) under it; close it first.
     if (m_railUi && m_railUi->sheet() && m_railUi->sheet()->isVisible()) m_railUi->sheet()->hide();
-    if (m_page == 1 && page != 1) m_sampleTarget = 0;
+    if (m_page == 1 && page != 1) {
+        // r7-browse: a pad's SAMPLES list, left by the load or Cancel: Browse
+        // comes back on the home, never on samples.
+        if (m_browseState && m_browseState->samplesForPad && folderTableShown()) {
+            m_browseState->homeOnReturn = true;
+        }
+        m_sampleTarget = 0;
+    }
     releaseTouchCue(); ++m_interactionEpoch;
     m_page = page;
     // 44 px rail targets on every page.
@@ -2724,7 +2766,8 @@ void WDeckLab::selectPage(int page) {
     m_waveforms->setVisible(lanes != decklab::lanes::Presentation::None);
     m_root->setStretchFactor(m_pages, page == 0 ? 0 : 1);
     if (page == 1) {
-        if (!m_hasBrowsed) { m_hasBrowsed = true; showSources(); }
+        if (m_browseState && std::exchange(m_browseState->homeOnReturn, false)) { m_hasBrowsed = true; showHome(QStringLiteral("samples")); }
+        else if (!m_hasBrowsed) { m_hasBrowsed = true; showSources(); }
         else if (m_browseStack->currentIndex() == 0) showSources(); else showTracks();
     }
     updateLayers();
@@ -2807,6 +2850,7 @@ void WDeckLab::browseEnter() {
     case DeckLabList::Sources: openSource(); return;
     case DeckLabList::Mixes: return; // r4-browse: rows are tracks; the press previews
     case DeckLabList::History: openHistoryRow(b.items->currentRow()); return; // r5-history
+    case DeckLabList::Downloads: openDownloadsRow(b.items->currentRow()); return; // r7-browse
     }
 }
 void WDeckLab::browseMove(int delta, bool listLevel) {
@@ -2882,6 +2926,12 @@ void WDeckLab::browseBack() {
     if (!m_sidebar) return;
     auto& b = *m_browseState;
     if (m_browseStack->currentIndex() != 0) {
+        // r7-browse: the tracks of DOWNLOADS go back to its list, SAMPLES to the home.
+        if (folderTableShown()) {
+            if (b.list == DeckLabList::Downloads) showDownloads(b.downloadsKey);
+            else showHome(QStringLiteral("samples"));
+            return;
+        }
         // Leaving a category's tracks restores the whole source.
         clearBrowseFilter();
         b.fromCategories = false;
@@ -2912,6 +2962,9 @@ void WDeckLab::browseBack() {
         return;
     case DeckLabList::History: // r5-history
         historyBack();
+        return;
+    case DeckLabList::Downloads: // r7-browse
+        showHome(QStringLiteral("downloads"));
         return;
     case DeckLabList::Values:
         showCategories();
@@ -2981,7 +3034,12 @@ QStringList WDeckLab::browseSegments() const {
     if (tracks) {
         const QString typed = m_search ? m_search->currentText().trimmed() : QString();
         QStringList path;
-        if (b.list == DeckLabList::Folder) {
+        if (folderTableShown()) { // r7-browse
+            if (b.folderList == decklab::FolderList::Samples) path << tr("Samples");
+            else path << tr("Downloads");
+            if (b.folderList == decklab::FolderList::Playlist) path << b.folderTitle;
+            if (b.folderList == decklab::FolderList::Tracks && typed.isEmpty()) path << tr("Tracks");
+        } else if (b.list == DeckLabList::Folder) {
             path = folderPath();
             if (typed.isEmpty() && !b.matchOnly) path << tr("Tracks");
         } else if (b.source.isValid() && b.fromCategories) {
@@ -3027,6 +3085,8 @@ QStringList WDeckLab::browseSegments() const {
     }
     case DeckLabList::History: // r5-history
         return historySegments();
+    case DeckLabList::Downloads: // r7-browse
+        return {tr("Downloads")};
     case DeckLabList::Sources:
         break;
     }
@@ -3136,6 +3196,8 @@ void WDeckLab::resetBrowseLevels() {
     b.loadFailed = false;
     b.loadingSince = -1;
     b.loadingTimer.stop();
+    b.folderList = decklab::FolderList::None; // r7-browse
+    b.samplesForPad = false;
 }
 void WDeckLab::clearBrowseFilter() {
     auto& b = *m_browseState;
@@ -3457,8 +3519,23 @@ void WDeckLab::refreshBrowseCard() {
             hint = tr("Everything else this unit can browse");
         } else if (key == QStringLiteral("root:tracks")) {
             hint = tr("By artist, album, BPM and key");
+        } else if (key == QStringLiteral("downloads")) {
+            hint = tr("Newest first; a Spotify playlist is a folder"); // r7-browse
+        } else if (key == QStringLiteral("samples")) {
+            hint = tr("Load them into the sampler pads");
         }
         b.card->showItem(glyph, item->text(), subtitle, hint);
+        return;
+    }
+    if (b.list == DeckLabList::Downloads) { // r7-browse
+        const QListWidgetItem* item = b.items->currentItem();
+        if (!item) return;
+        const bool open = item->flags().testFlag(Qt::ItemIsEnabled);
+        const QString count = item->data(DeckLabListDelegate::CountRole).toString();
+        b.card->showItem(static_cast<decklab::Glyph>(item->data(DeckLabListDelegate::GlyphRole).toInt()), item->text(),
+                count.isEmpty() ? item->data(DeckLabListDelegate::SubtitleRole).toString()
+                                : countText(count.toInt(), tr("1 track"), tr("%1 tracks")),
+                open ? tr("Press or tap to show them") : QString());
         return;
     }
     if (b.list != DeckLabList::Sources) {
@@ -4325,6 +4402,10 @@ void WDeckLab::setSearchOpen(bool open) {
                                 m_sidebar->rootIndex() == b.returnRoot));
         if (b.list == DeckLabList::Folder) {
             openFolderTracks();
+        } else if (b.list == DeckLabList::Downloads) {
+            // r7-browse: search every download, newest first.
+            showFolderTracks(decklab::FolderList::AllDownloads,
+                    decklab::allDownloads(currentDownloadFolders()), QStringLiteral("downloads:all"), QString());
         } else if (inSource && b.rekordbox && !rekordboxImported(b.source)) {
             if (b.toast) b.toast->showMessage(tr("Still reading %1…").arg(currentSourceName()), 2000);
             return;
@@ -4450,7 +4531,15 @@ void WDeckLab::rebuildHome(const QString& highlight) {
         more.line2 = tr("Everything else this unit can browse");
         more.glyph = decklab::Glyph::Sources;
     }
-    const decklab::HomeLayout layout = decklab::arrangeHome(stickEntries, sources, more);
+    // r7-browse: DOWNLOADS (Get Music's folders on plugged-in sticks and the
+    // Pi card) and SAMPLES follow the Library, once their folders exist.
+    QVector<decklab::SourceEntry> extras;
+    QStringList stickPaths;
+    for (const auto& stick : sticks) stickPaths << stick.path;
+    const QStringList downloads = decklab::downloadFolders(stickPaths);
+    if (!downloads.isEmpty()) extras.append(downloadsEntry(downloads));
+    if (QFileInfo(decklab::samplesFolder()).isDir()) extras.append(samplesEntry());
+    const decklab::HomeLayout layout = decklab::arrangeHome(stickEntries, sources, more, extras);
     QString keep = highlight;
     if (keep.isEmpty() && b.itemsList == DeckLabList::Home && b.items->currentItem()) {
         keep = b.items->currentItem()->data(DeckLabListDelegate::KeyRole).toString();
@@ -4574,6 +4663,8 @@ void WDeckLab::openHomeRow(int rowIndex) {
     const QString key = item->data(DeckLabListDelegate::KeyRole).toString();
     b.homeKey = key;
     if (key == QStringLiteral("root:history")) { showHistory(false); return; } // r5-history
+    if (key == QStringLiteral("downloads")) { showDownloads(QString()); return; } // r7-browse
+    if (key == QStringLiteral("samples")) { openSamples(false); return; }
     if (key.startsWith(QStringLiteral("usb:"))) {
         openStick(key.mid(4));
         return;
@@ -5116,7 +5207,10 @@ void WDeckLab::applyBrowsePresentation() {
     // round4: ... except the pane while the keyboard is up: it holds the dock.
     setVisibleIf(b.pane, !home || (m_keyboard && !m_keyboard->isHidden()));
     setVisibleIf(b.back, !home);
-    setVisibleIf(b.match, !home);
+    // r7-browse: a pad's SAMPLES list puts ALL MUSIC where MATCH sits.
+    const bool padSamples = m_sampleTarget && b.folderList == decklab::FolderList::Samples && folderTableShown();
+    setVisibleIf(b.allMusic, padSamples);
+    setVisibleIf(b.match, !home && !padSamples);
     // Tiles flow left to right in reading order; every other level is a list.
     const bool tiles = home && b.itemsList == DeckLabList::Home;
     if (b.items && (b.items->flow() == QListView::LeftToRight) != tiles) {
@@ -6292,4 +6386,221 @@ void WDeckLab::repaintPlayed(const QSet<QString>& locations) {
             }
         }
     }
+}
+
+// r7-browse: the DOWNLOADS and SAMPLES tiles (decklab/decklabdownloads.h),
+// their lists in the folder table (library/decklabfoldertablemodel.h: library
+// rows in a given order), a pad's Load on SAMPLES, and the background
+// analysis of new downloads (decklab/decklabanalysis.h).
+QStringList WDeckLab::currentDownloadFolders() const {
+    QStringList sticks;
+    for (const auto& stick : decklab::findUsbSticks()) sticks << stick.path;
+    return decklab::downloadFolders(sticks);
+}
+QString WDeckLab::downloadsDetail() const {
+    const QString progress = m_analysis ? m_analysis->progressText() : QString();
+    return progress.isEmpty() ? tr("Newest first") : progress;
+}
+decklab::SourceEntry WDeckLab::downloadsEntry(const QStringList& folders) const {
+    decklab::SourceEntry entry;
+    entry.key = QStringLiteral("downloads");
+    entry.name = tr("Downloads");
+    entry.glyph = decklab::Glyph::Download;
+    int tracks = 0;
+    int playlists = 0;
+    for (const auto& item : decklab::listDownloads(folders)) {
+        tracks += item.tracks;
+        playlists += item.folder ? 1 : 0;
+    }
+    QStringList parts;
+    if (tracks) parts << countText(tracks, tr("1 track"), tr("%1 tracks"));
+    if (playlists) parts << countText(playlists, tr("1 playlist"), tr("%1 playlists"));
+    entry.line1 = parts.isEmpty() ? tr("Nothing downloaded yet") : parts.join(QStringLiteral(" · "));
+    entry.line2 = downloadsDetail();
+    if (tracks) entry.count = QLocale().toString(tracks);
+    return entry;
+}
+decklab::SourceEntry WDeckLab::samplesEntry() const {
+    decklab::SourceEntry entry;
+    entry.key = QStringLiteral("samples");
+    entry.name = tr("Samples");
+    entry.glyph = decklab::Glyph::Sample;
+    const int count = static_cast<int>(decklab::audioFilesNewestFirst(decklab::samplesFolder()).size());
+    entry.line1 = count ? countText(count, tr("1 sample"), tr("%1 samples")) : tr("No samples yet");
+    entry.line2 = tr("For the sampler pads");
+    if (count) entry.count = QLocale().toString(count);
+    return entry;
+}
+void WDeckLab::refreshDownloadsTile() {
+    // The analysis moved on: only the DOWNLOADS tile's second line changes.
+    if (!m_browseState || !m_browseState->items || m_browseState->itemsList != DeckLabList::Home) return;
+    auto& b = *m_browseState;
+    const QString detail = downloadsDetail();
+    for (int row = 0; row < b.items->count(); ++row) {
+        auto* item = b.items->item(row);
+        if (item->data(DeckLabListDelegate::KeyRole).toString() == QStringLiteral("downloads") &&
+                item->data(DeckLabListDelegate::DetailRole).toString() != detail) {
+            item->setData(DeckLabListDelegate::DetailRole, detail);
+        }
+    }
+}
+void WDeckLab::showDownloads(const QString& highlight) {
+    if (!m_browseState || !m_sidebar) return;
+    auto& b = *m_browseState;
+    resetBrowseLevels();
+    b.homeKey = QStringLiteral("downloads");
+    b.list = DeckLabList::Downloads;
+    b.downloadsKey = highlight;
+    // Single downloads (one row, newest first), then each Spotify playlist
+    // as a folder, newest first. A stick that is not plugged in adds nothing.
+    const auto entries = decklab::listDownloads(currentDownloadFolders());
+    int singles = 0;
+    for (const auto& entry : entries) singles += entry.folder ? 0 : 1;
+    const auto saved = [this](const QDateTime& when) {
+        const QDate day = when.date();
+        const QDate today = QDate::currentDate();
+        if (day == today) return tr("saved today");
+        if (day == today.addDays(-1)) return tr("saved yesterday");
+        return tr("saved %1").arg(QLocale().toString(day,
+                day.year() == today.year() ? QStringLiteral("d MMM") : QStringLiteral("d MMM yyyy")));
+    };
+    {
+        const QSignalBlocker blocker(b.items);
+        b.items->clear();
+        int current = 0;
+        if (singles) {
+            auto* item = new QListWidgetItem(tr("Tracks"), b.items);
+            item->setData(DeckLabListDelegate::KeyRole, QStringLiteral("tracks"));
+            item->setData(DeckLabListDelegate::GlyphRole, static_cast<int>(decklab::Glyph::Tracks));
+            item->setData(DeckLabListDelegate::CountRole, QString::number(singles));
+            item->setData(DeckLabListDelegate::SubtitleRole, tr("Single downloads, newest first"));
+            item->setData(DeckLabListDelegate::ChevronRole, true);
+        }
+        for (const auto& entry : entries) {
+            if (!entry.folder) continue;
+            const QString key = QStringLiteral("folder:") + entry.path;
+            auto* item = new QListWidgetItem(entry.name, b.items);
+            item->setData(DeckLabListDelegate::KeyRole, key);
+            item->setData(DeckLabListDelegate::GlyphRole, static_cast<int>(decklab::Glyph::Playlist));
+            item->setData(DeckLabListDelegate::CountRole, QString::number(entry.tracks));
+            item->setData(DeckLabListDelegate::SubtitleRole, tr("Playlist · %1").arg(saved(entry.arrived)));
+            item->setData(DeckLabListDelegate::ChevronRole, true);
+            if (key == highlight) current = b.items->count() - 1;
+        }
+        if (!b.items->count()) {
+            auto* item = new QListWidgetItem(tr("Nothing downloaded yet"), b.items);
+            item->setData(DeckLabListDelegate::SubtitleRole, tr("Get Music saves here, on a USB stick or the Pi card"));
+            item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
+        }
+        b.items->setCurrentRow(current);
+    }
+    b.itemsList = DeckLabList::Downloads;
+    showSources();
+}
+void WDeckLab::openDownloadsRow(int rowIndex) {
+    auto& b = *m_browseState;
+    auto* item = b.items->item(rowIndex);
+    if (!item || !(item->flags() & Qt::ItemIsEnabled)) return;
+    const QString key = item->data(DeckLabListDelegate::KeyRole).toString();
+    b.downloadsKey = key;
+    if (key == QStringLiteral("tracks")) {
+        showFolderTracks(decklab::FolderList::Tracks, decklab::newestDownloads(currentDownloadFolders()),
+                QStringLiteral("downloads:tracks"), tr("Tracks"));
+    } else if (key.startsWith(QStringLiteral("folder:"))) {
+        const QString folder = key.mid(7);
+        showFolderTracks(decklab::FolderList::Playlist, decklab::playlistOrder(folder),
+                QStringLiteral("downloads:") + folder, QFileInfo(folder).fileName());
+    }
+}
+bool WDeckLab::showFolderTracks(decklab::FolderList list,
+        const QStringList& locations,
+        const QString& key,
+        const QString& title) {
+    auto& b = *m_browseState;
+    clearBrowseFilter();
+    b.fromCategories = false;
+    b.folderList = list;
+    b.folderTitle = title;
+    int rows = -1;
+    if (m_library && m_library->trackCollectionManager()) {
+        // The library's own rows, in this order: BPM, key and analysis come
+        // from the library, and LOAD, pads and Preview work as anywhere.
+        if (!b.folderModel) b.folderModel = new DeckLabFolderTableModel(this, m_library->trackCollectionManager());
+        rows = b.folderModel->setLocations(locations, key);
+        m_library->slotShowTrackModel(b.folderModel);
+    }
+    showTracks();
+    if (rows == 0 && b.toast) {
+        b.toast->showMessage(list == decklab::FolderList::Samples
+                        ? tr("No samples yet. Sample Maker and loop capture save them here.")
+                        : tr("These tracks are not in the library yet."),
+                2600);
+    }
+    return rows >= 0;
+}
+void WDeckLab::openSamples(bool forPad) {
+    if (!m_browseState || !m_sidebar) return;
+    auto& b = *m_browseState;
+    resetBrowseLevels();
+    b.homeKey = QStringLiteral("samples");
+    showFolderTracks(decklab::FolderList::Samples, decklab::audioFilesNewestFirst(decklab::samplesFolder()),
+            QStringLiteral("samples"), tr("Samples"));
+    b.samplesForPad = forPad;
+    applyBrowsePresentation();
+}
+bool WDeckLab::folderTableShown() const {
+    if (!m_browseState || !m_browseStack || m_browseStack->currentIndex() == 0) return false;
+    const auto& b = *m_browseState;
+    if (b.folderList == decklab::FolderList::None) return false;
+    // Another table swapped in (a stick read finishing) is not the list.
+    auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+    return !b.folderModel || !table || table->model() == b.folderModel;
+}
+bool WDeckLab::anythingPlaying() {
+    for (int deck = 1; deck <= 4; ++deck) {
+        if (value(channel(deck), QStringLiteral("play")) > 0) return true;
+    }
+    const int samplers = std::max(16, m_players ? m_players->numberOfSamplers() : 0);
+    for (int sampler = 1; sampler <= samplers; ++sampler) {
+        if (value(QStringLiteral("[Sampler%1]").arg(sampler), QStringLiteral("play")) > 0) return true;
+    }
+    const int previews = std::max(1, m_players ? m_players->numberOfPreviewDecks() : 0);
+    for (int preview = 1; preview <= previews; ++preview) {
+        if (value(QStringLiteral("[PreviewDeck%1]").arg(preview), QStringLiteral("play")) > 0) return true;
+    }
+    // [Recording] status: 2 recording, 3 recording into the next split file.
+    const int recording = int(value(QStringLiteral("[Recording]"), QStringLiteral("status")));
+    return recording == 2 || recording == 3;
+}
+void WDeckLab::initBackgroundAnalysis() {
+    if (m_analysis) return;
+    m_analysis = new DeckLabBackgroundAnalysis(this);
+    DeckLabBackgroundAnalysis::Hooks hooks;
+    hooks.busy = [this] { return anythingPlaying(); };
+    if (m_library && m_library->trackCollectionManager()) {
+        hooks.candidates = [this] {
+            return DeckLabBackgroundAnalysis::tracksToAnalyze(
+                    m_library->trackCollectionManager()->internalCollection()->database(),
+                    decklab::allDownloads(currentDownloadFolders()));
+        };
+    }
+    m_analysis->setHooks(hooks);
+    if (m_library) m_analysis->useLibrary(m_library, m_config);
+    // The moment anything plays the batch stops; a quiet spell starts it again.
+    const auto changed = [this](double) {
+        if (m_analysis) m_analysis->playbackChanged();
+    };
+    for (int deck = 1; deck <= 4; ++deck) watch(channel(deck), QStringLiteral("play"), changed);
+    const int samplers = std::max(16, m_players ? m_players->numberOfSamplers() : 0);
+    for (int sampler = 1; sampler <= samplers; ++sampler) watch(QStringLiteral("[Sampler%1]").arg(sampler), QStringLiteral("play"), changed);
+    const int previews = std::max(1, m_players ? m_players->numberOfPreviewDecks() : 0);
+    for (int preview = 1; preview <= previews; ++preview) watch(QStringLiteral("[PreviewDeck%1]").arg(preview), QStringLiteral("play"), changed);
+    watch(QStringLiteral("[Recording]"), QStringLiteral("status"), changed);
+    connect(m_analysis, &DeckLabBackgroundAnalysis::progressChanged, this, [this] { refreshDownloadsTile(); });
+    // New downloads arrive with a library scan (after Get Music closes).
+    if (m_library && m_library->trackCollectionManager()) {
+        connect(m_library->trackCollectionManager(), &TrackCollectionManager::libraryScanFinished,
+                m_analysis, &DeckLabBackgroundAnalysis::wake);
+    }
+    m_analysis->wake();
 }
