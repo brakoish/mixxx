@@ -4928,6 +4928,9 @@ TEST_F(NativeDeckLabTest, SamplerBanksFollowTheConfiguredSamplerCount) {
 // (REPLACE or an empty pad) comes back with EDIT still on, loaded or
 // cancelled; going anywhere else from Browse ends EDIT.
 TEST_F(NativeDeckLabTest, SamplerReplaceLoadsThatPadFromBrowse) {
+    // One surface, as on the unit: the fixture's follows [Tab] page changes
+    // a beat late and would drag this one back to Browse.
+    panel.reset();
     auto controls = makeSamplerControls(1, 3);
     ControlObject::set(ConfigKey("[Sampler3]", "track_loaded"), 1);
     ControlObject::set(ConfigKey("[Sampler3]", "duration"), 4);
