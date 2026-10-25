@@ -157,6 +157,14 @@ void DeckLabUtilities::tryRefresh() {
     if (!m_pending) {
         return;
     }
+    // r7: a scan holds the library's write lock for as long as it reads every
+    // folder: never while anything plays or records, another scan runs or a
+    // utility is open. New tracks may show up a little later.
+    if (m_hooks.quiet && !m_hooks.quiet()) {
+        m_waiting.restart(); // the bounded wait for a loading deck starts when it is quiet
+        m_retry.start(kQuietRetryMs);
+        return;
+    }
     // Loading reads the track file and its metadata; never compete with it.
     // The wait is bounded so a stuck load cannot block new tracks forever.
     if (m_hooks.loading && m_hooks.loading() && m_waiting.elapsed() < kLoadingMaxWaitMs) {

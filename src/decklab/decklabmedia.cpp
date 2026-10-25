@@ -80,6 +80,24 @@ MediaPresence& MediaPresence::instance() {
     return presence;
 }
 
+MediaPresence::MediaPresence() {
+    m_settle.setInterval(kSettleCheckMs);
+    connect(&m_settle, &QTimer::timeout, this, &MediaPresence::checkSettled);
+}
+
+void MediaPresence::setShown(QObject* model) {
+    m_shown = model;
+    emit shownChanged(model);
+}
+
+void MediaPresence::checkSettled() {
+    if (deferring()) {
+        return;
+    }
+    m_settle.stop();
+    emit settled();
+}
+
 bool MediaPresence::refresh(QSqlDatabase database, bool force) {
     ensureAwayTable(database);
     QHash<QString, QList<qint64>> byRoot;
@@ -142,6 +160,10 @@ bool MediaPresence::refresh(QSqlDatabase database, bool force) {
     }
     if (different || force) {
         emit changed();
+        // What waited reads again once it is quiet.
+        if (deferring() && !m_settle.isActive()) {
+            m_settle.start();
+        }
     }
     return different;
 }

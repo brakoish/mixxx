@@ -64,6 +64,7 @@
 #include "widget/wglwidget.h"
 #include "widget/wmainmenubar.h"
 #include "widget/wdecklab.h"
+#include "decklab/decklabmedia.h"
 #include "decklab/decklabsignals.h"
 #include "decklab/decklabsystem.h"
 #include "decklab/decklabusbrelink.h"
@@ -1426,9 +1427,14 @@ bool MixxxMainWindow::loadConfiguredSkin() {
                 // current mount path (FS-UUID + relative path). Read-only.
                 // r7-library: duplicates merge onto it, and tracks on sticks
                 // that are out are hidden until they are back. At start-up
-                // and when a stick is mounted; never while anything plays.
+                // and when a stick is mounted; only while it is quiet
+                // (decklab/decklabquiet.h).
                 auto* relinker = new decklab::UsbRelinker(services.library, system);
-                relinker->setPlaying([system] { return system->anyPlaying(); });
+                relinker->setQuiet([system] { return system->quiet(); });
+                // r7: a stick plugged in mid-set re-reads only the list on
+                // screen; the rest once it is quiet (decklab/decklabmedia.h).
+                decklab::MediaPresence::instance().setQuiet(
+                        [weak = QPointer<DeckLabSystem>(system)] { return !weak || weak->quiet(); });
                 connect(system, &DeckLabSystem::usbChanged, relinker, &decklab::UsbRelinker::relinkDrives);
                 relinker->watchMediaFolders();
                 relinker->relinkMounted();

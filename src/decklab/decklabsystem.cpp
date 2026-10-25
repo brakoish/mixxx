@@ -225,6 +225,9 @@ DeckLabSystem::DeckLabSystem(Services services, QObject* parent, const QString& 
                 [this](const LibraryScanResultSummary& result) {
                     m_utilities->onScanSummary(result.numNewTracks, result.quiet);
                 });
+        // r7: a scan holds one long write transaction; background jobs wait.
+        connect(library, &TrackCollectionManager::libraryScanStarted, this, [this] { m_scanning = true; });
+        connect(library, &TrackCollectionManager::libraryScanFinished, this, [this] { m_scanning = false; });
     }
     if (auto* players = m_services.players) {
         watchPlayers();
@@ -367,6 +370,8 @@ DeckLabUtilities::Hooks DeckLabSystem::utilityHooks() {
         return result == DirectoryDAO::AddResult::Ok || result == DirectoryDAO::AddResult::AlreadyWatching;
     };
     hooks.utilityFolders = [this] { return utilityFolders(); };
+    // r7: the rescan waits until it is quiet (decklab/decklabquiet.h).
+    hooks.quiet = [this] { return quiet(); };
     hooks.startQuietScan = [this] {
         auto* library = m_services.library.get();
         return library && library->startLibraryScanQuietly();
@@ -584,6 +589,42 @@ QString DeckLabSystem::thermalWarning() const {
 
 bool DeckLabSystem::anyPlaying() const {
     return decksOrSamplersPlaying() || controlValue(kPreviewDeck, QStringLiteral("play")) > 0;
+}
+
+decklab::Activity DeckLabSystem::activity() const {
+    decklab::Activity activity;
+    activity.playing = anyPlaying();
+    // [Recording] status: 2 recording, 3 recording into the next split file.
+    const int recording = static_cast<int>(controlValue(kRecording, QStringLiteral("status")));
+    activity.recording = recording == 2 || recording == 3;
+    activity.scanning = m_scanning;
+    activity.utilityOpen = !m_utilities->openApp().isEmpty();
+    return activity;
+}
+
+int DeckLabSystem::emptyPad() const {
+    const auto loading = [this](BaseTrackPlayer* sampler) { return m_loadingSince.contains(sampler); };
+    return firstEmptyPad(m_services.players, kPads, m_padTarget ? m_padTarget() : 0, loading);
+}
+
+int DeckLabSystem::firstEmptyPad(PlayerManagerInterface* players,
+        int pads,
+        int target,
+        const std::function<bool(BaseTrackPlayer*)>& loading) {
+    for (int pad = 1; players && pad <= pads; ++pad) {
+        const QString group = QStringLiteral("[Sampler%1]").arg(pad);
+        auto* sampler = players->getPlayer(group);
+        if (!sampler || pad == target || controlValue(group, QStringLiteral("track_loaded")) > 0) {
+            continue;
+        }
+        // A pad that is loading already holds its new track (track_loaded
+        // is still 0 then).
+        if (sampler->getLoadedTrack() || (loading && loading(sampler))) {
+            continue;
+        }
+        return pad;
+    }
+    return 0;
 }
 
 bool DeckLabSystem::decksOrSamplersPlaying() const {

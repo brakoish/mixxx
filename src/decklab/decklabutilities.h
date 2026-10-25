@@ -17,9 +17,11 @@
 ///   `$XDG_RUNTIME_DIR/decklab/deck-state.json` (tmpfs, once a second), so
 ///   Sample Maker only edits audio while nothing plays;
 /// * when the utility closes it makes sure the folders the utilities write to
-///   are library folders, then starts a quiet in-process library rescan, never
-///   while a deck is loading a track (it waits, bounded). This replaces the
-///   old Ctrl+Shift+L keystroke injection.
+///   are library folders, then starts a quiet in-process library rescan once
+///   it is quiet (decklab/decklabquiet.h: nothing plays or records, no other
+///   scan, no utility open; as soon as it is) and never while a deck is
+///   loading a track (that wait is bounded). This replaces the old
+///   Ctrl+Shift+L keystroke injection.
 ///
 /// Every system effect goes through Hooks, so the policy is testable without a
 /// library, players or decklabd.
@@ -37,10 +39,13 @@ class DeckLabUtilities : public QObject {
         std::function<QStringList()> utilityFolders;
         /// Starts a rescan without dialogs; false if none could start.
         std::function<bool()> startQuietScan;
+        /// r7: background jobs may run (DeckLabSystem::quiet); unset counts as quiet.
+        std::function<bool()> quiet;
     };
 
     static constexpr int kPublishIntervalMs = 1000;
     static constexpr int kLoadingRetryMs = 500;
+    static constexpr int kQuietRetryMs = 1000;
     static constexpr int kLoadingMaxWaitMs = 30000;
     static inline const QString kStateFileName = QStringLiteral("deck-state.json");
 

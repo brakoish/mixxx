@@ -20,7 +20,9 @@
 #include <algorithm>
 #include <string>
 
+#include "control/controlobject.h"
 #include "decklab/decklabmedia.h"
+#include "decklab/decklabsystem.h"
 #include "decklab/decklabusbrelink.h"
 #include "library/basetrackcache.h"
 #include "library/dao/playlistdao.h"
@@ -666,7 +668,7 @@ TEST_F(DeckLabUsbMergeDbTest, RelinkerWaitsWhileAnythingPlays) {
             trackCollectionManager(), [](TrackCollectionManager*) {}));
     relinker.setProbe(disk.probe());
     bool playing = true;
-    relinker.setPlaying([&playing] { return playing; });
+    relinker.setQuiet([&playing] { return !playing; });
     QSignalSpy done(&relinker, &decklab::UsbRelinker::relinked);
     QJsonArray drives;
     drives.append(QJsonObject{{"id", kStick.uuid}, {"label", kStick.label}, {"mount", kMount}});
@@ -678,6 +680,78 @@ TEST_F(DeckLabUsbMergeDbTest, RelinkerWaitsWhileAnythingPlays) {
     relinker.relinkDrives(drives);
     ASSERT_TRUE(done.wait(5000));
     EXPECT_EQ(1, done.first().at(0).toInt());
+    EXPECT_EQ(kNow + QStringLiteral("b.mp3"), locationOf(alone));
+}
+
+// r7: one rule for every background job (decklab/decklabquiet.h): nothing
+// plays or records, Mixxx's library scan is not running and no utility window
+// is open. The relinker's merge and the rescan after a utility both wait for
+// it, and run as soon as it is quiet.
+TEST_F(DeckLabUsbMergeDbTest, BackgroundJobsWaitUntilItIsQuiet) {
+    ControlObject play(ConfigKey(QStringLiteral("[Channel1]"), QStringLiteral("play")));
+    ControlObject recording(ConfigKey(QStringLiteral("[Recording]"), QStringLiteral("status")));
+    QTemporaryDir run;
+    DeckLabSystem::Services services;
+    services.config = config();
+    services.library = std::shared_ptr<TrackCollectionManager>(trackCollectionManager(), [](TrackCollectionManager*) {});
+    DeckLabSystem system(services, nullptr, run.filePath(QStringLiteral("decklabd.sock")));
+    system.utilities()->setStateDirectory(run.filePath(QStringLiteral("decklab")));
+    int scans = 0;
+    DeckLabUtilities::Hooks hooks;
+    hooks.quiet = [&system] { return system.quiet(); };
+    hooks.startQuietScan = [&scans] {
+        ++scans;
+        return true;
+    };
+    system.utilities()->setHooks(hooks);
+    EXPECT_TRUE(system.quiet());
+    play.set(1);
+    EXPECT_TRUE(system.activity().playing);
+    EXPECT_FALSE(system.quiet());
+    play.set(0);
+    recording.set(2);
+    EXPECT_TRUE(system.activity().recording);
+    EXPECT_FALSE(system.quiet());
+    recording.set(1); // ready, not recording
+    EXPECT_TRUE(system.quiet());
+    recording.set(0);
+    emit trackCollectionManager()->libraryScanStarted();
+    EXPECT_TRUE(system.activity().scanning);
+    EXPECT_FALSE(system.quiet());
+    emit trackCollectionManager()->libraryScanFinished();
+    EXPECT_TRUE(system.quiet());
+    system.utilities()->onAppsChanged(QJsonObject{{QStringLiteral("app"), QStringLiteral("get-music")}});
+    EXPECT_TRUE(system.activity().utilityOpen);
+    EXPECT_FALSE(system.quiet());
+
+    // A stick while Get Music is open: its merge waits.
+    const qint64 alone = addTrack(kSecond + QStringLiteral("b.mp3"), 2000, true);
+    FakeDisk disk;
+    disk.in.insert(kMount);
+    disk.files.insert(kNow + QStringLiteral("b.mp3"), 2000);
+    decklab::UsbRelinker relinker(services.library);
+    relinker.setProbe(disk.probe());
+    relinker.setQuiet([&system] { return system.quiet(); });
+    QSignalSpy done(&relinker, &decklab::UsbRelinker::relinked);
+    QJsonArray drives;
+    drives.append(QJsonObject{{"id", kStick.uuid}, {"label", kStick.label}, {"mount", kMount}});
+    relinker.relinkDrives(drives);
+    EXPECT_FALSE(relinker.isRunning());
+    EXPECT_FALSE(done.wait(200));
+    EXPECT_EQ(kSecond + QStringLiteral("b.mp3"), locationOf(alone));
+
+    // Get Music closes while a deck plays: the rescan waits for the deck.
+    play.set(1);
+    system.utilities()->onAppsChanged(QJsonObject{{QStringLiteral("app"), QJsonValue::Null}});
+    EXPECT_TRUE(system.utilities()->refreshPending());
+    QTest::qWait(DeckLabUtilities::kQuietRetryMs * 2 + 200);
+    EXPECT_EQ(0, scans) << "never while a deck plays";
+    play.set(0);
+    ASSERT_TRUE(QTest::qWaitFor([&] { return scans == 1; }, DeckLabUtilities::kQuietRetryMs * 3));
+    EXPECT_FALSE(system.utilities()->refreshPending());
+    // ... and the merge runs once it is quiet too.
+    relinker.relinkDrives(drives);
+    ASSERT_TRUE(done.wait(5000));
     EXPECT_EQ(kNow + QStringLiteral("b.mp3"), locationOf(alone));
 }
 

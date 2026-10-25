@@ -15,6 +15,7 @@
 #include "controllers/controllermappingmatcher.h"
 #include "decklab/decklabcontrollers.h"
 #include "decklab/decklabpreview.h"
+#include "decklab/decklabquiet.h"
 #include "decklab/decklabsetupmodel.h"
 #include "decklab/decklabutilities.h"
 #include "preferences/usersettings.h"
@@ -100,6 +101,33 @@ class DeckLabSystem : public QObject {
 
     // Live performance state; system actions refuse while music plays.
     bool anyPlaying() const;
+    /// r7: what keeps Deck Lab's background jobs waiting (decklab/decklabquiet.h):
+    /// playing, recording, Mixxx's library scan, an open utility window.
+    decklab::Activity activity() const;
+    /// Nothing does: the background analysis, the USB relinker, the rescan
+    /// after a utility and TO PAD's library add may run.
+    bool quiet() const {
+        return decklab::isQuiet(activity());
+    }
+    /// r7: the first pad (1-based) a new sample may take: nothing loaded or
+    /// loading on it, and not the pad a Load pad trip is filling. 0 when
+    /// every pad is taken. PUT ON PAD and TO PAD both ask this.
+    int emptyPad() const;
+    /// The rule itself, for any player manager (a surface without a system):
+    /// the first of `pads` pads with a player, nothing loaded (track_loaded),
+    /// nothing loading (the player holds its new track at once, or `loading`
+    /// says so) and not `target`.
+    static int firstEmptyPad(PlayerManagerInterface* players,
+            int pads,
+            int target,
+            const std::function<bool(BaseTrackPlayer*)>& loading = {});
+    /// The pad a Load pad trip is filling, 0 when none (WDeckLab sets it).
+    void setPadTarget(std::function<int()> target) {
+        m_padTarget = std::move(target);
+    }
+    /// A utility Deck Lab opened answered "started": decklabd announces only
+    /// a new window, not one that was still open after it restarted.
+    void utilityLaunched(const QString& app);
     /// A deck or sampler plays (the preview deck does not count).
     bool decksOrSamplersPlaying() const;
     QList<decklab::LoadedTrack> loadedTracks() const;
@@ -215,6 +243,7 @@ class DeckLabSystem : public QObject {
 
   private:
     void onReady(bool ready);
+    void askOpenUtility();
     void onEvent(const QString& topic, const QJsonObject& data);
     void onDevicesChanged(const QJsonObject& data, const QStringList& added);
     void onRescanFinished();
@@ -242,6 +271,9 @@ class DeckLabSystem : public QObject {
     DeckLabPreview* m_preview;
     QSet<BaseTrackPlayer*> m_watchedPlayers;
     QHash<BaseTrackPlayer*, qint64> m_loadingSince;
+    std::function<int()> m_padTarget;
+    bool m_scanning = false;   // Mixxx's library scan runs
+    bool m_wasReady = false;   // decklabd answered before: a ready is a reconnect
     std::function<QList<decklab::LoadedTrack>()> m_loadedTracksProvider;
     QJsonArray m_drives;
     QJsonObject m_devices;

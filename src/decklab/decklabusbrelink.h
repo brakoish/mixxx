@@ -214,13 +214,14 @@ std::optional<QString> backupLibraryDatabase(const QSqlDatabase& database, int k
 // Session glue: when a stick is in (start-up, decklabd's drive list, a mount
 // seen in the media folders), rows at its earlier addresses follow it and
 // tracks on sticks that are out are hidden (decklabmedia.h). File checks run
-// on a worker thread; database work on the GUI thread, only while nothing
-// plays.
+// on a worker thread; database work on the GUI thread, only while it is
+// quiet (decklabquiet.h: nothing plays or records, no library scan, no
+// utility open).
 class UsbRelinker final : public QObject {
     Q_OBJECT
   public:
     using BusyTracks = std::function<QSet<qint64>()>;
-    using Playing = std::function<bool()>;
+    using Quiet = std::function<bool()>;
     explicit UsbRelinker(std::shared_ptr<TrackCollectionManager> library,
             QObject* parent = nullptr);
     ~UsbRelinker() override;
@@ -228,9 +229,9 @@ class UsbRelinker final : public QObject {
     void setBusyTracks(BusyTracks busy) {
         m_busy = std::move(busy);
     }
-    // Default: nothing plays. The appliance: any deck, sampler or preview.
-    void setPlaying(Playing playing) {
-        m_playing = std::move(playing);
+    // Default: always quiet. The appliance: DeckLabSystem::quiet.
+    void setQuiet(Quiet quiet) {
+        m_quiet = std::move(quiet);
     }
     // Default: the real filesystem.
     void setProbe(RelinkProbe probe) {
@@ -265,9 +266,11 @@ class UsbRelinker final : public QObject {
     void finish();
     void notify(const RelinkResult& result);
     void rewatch();
+    void emitCounts();
+    void retryBusy();
     std::shared_ptr<TrackCollectionManager> m_library;
     BusyTracks m_busy;
-    Playing m_playing;
+    Quiet m_quiet;
     RelinkProbe m_probe;
     QList<UsbVolume> m_pending;
     QSet<QString> m_done; // uuid + mount handled while the stick is in
@@ -275,7 +278,7 @@ class UsbRelinker final : public QObject {
     QFutureWatcher<RelinkPlan> m_watcher;
     std::optional<UsbVolume> m_running; // none: rename maps only
     bool m_runningRenames = false;
-    QTimer m_retry; // a stick seen while something played: tried when it stops
+    QTimer m_retry; // a stick seen while it was not quiet: tried when it is
     bool m_scanning = false; // Mixxx's library scan is running
     QFileSystemWatcher* m_folders = nullptr;
     QTimer m_settle; // media folder changes come in bursts

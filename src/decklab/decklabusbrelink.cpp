@@ -1258,8 +1258,8 @@ void UsbRelinker::startNext() {
     if (m_watcher.isRunning() || (m_pending.isEmpty() && !m_renamesPending) || !m_library || m_scanning) {
         return;
     }
-    // Never while anything plays: tried again when it stops.
-    if (m_playing && m_playing()) {
+    // Only while it is quiet: tried again when it is.
+    if (m_quiet && !m_quiet()) {
         m_retry.start();
         return;
     }
@@ -1309,9 +1309,9 @@ void UsbRelinker::startNext() {
 void UsbRelinker::finish() {
     const std::optional<UsbVolume> volume = m_running;
     RelinkPlan plan = m_watcher.result();
-    if (m_scanning || (m_playing && m_playing())) {
-        // A deck started (or a library scan) while the stick was read:
-        // later, planned afresh.
+    if (m_scanning || (m_quiet && !m_quiet())) {
+        // A deck started (or a library scan, a recording, a utility) while
+        // the stick was read: later, planned afresh.
         if (volume) {
             m_pending.prepend(*volume);
         }
