@@ -3,8 +3,10 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QDataStream>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QFontInfo>
 #include <QHelpEvent>
 #include <QJsonArray>
@@ -26,6 +28,7 @@
 #include <memory>
 #include "control/controlobject.h"
 #include "decklab/decklabdclient.h"
+#include "decklab/decklabdownloads.h" // r7-browse
 #include "decklab/decklabfakeservice.h"
 #include "decklab/decklabrail.h"
 #include "decklab/decklabsettings.h"
@@ -416,6 +419,53 @@ void seedDemoStick(const QString& root) {
     decklab::setUsbStickRootsForTesting({QDir(root).filePath(QStringLiteral("decklab"))});
 }
 
+// r7-browse: generated Get Music downloads and Sample Maker samples for the
+// DOWNLOADS and SAMPLES captures: a single download on the Pi card and one on
+// the demo stick, a numbered playlist folder on the stick, two samples. They
+// are library tracks with a BPM and key, so the background analysis has
+// nothing to do. Times are set so the list order is fixed.
+void seedDemoDownloads(Library* library, const QString& stickRoot, const QString& musicFolder) {
+    if (!library || !library->trackCollectionManager()) return;
+    decklab::setMusicFolderForTesting(musicFolder);
+    const QString stick = QDir(stickRoot).filePath(QStringLiteral("decklab/3A1F-0C2D/Deck Lab Downloads"));
+    const QString card = QDir(musicFolder).filePath(QStringLiteral("New Music"));
+    const QString samples = QDir(musicFolder).filePath(QStringLiteral("Deck Lab Samples"));
+    const QString playlist = QDir(stick).filePath(QStringLiteral("Demo Playlist"));
+    struct Demo {
+        QString path;
+        const char* title;
+        const char* artist;
+        double bpm;
+        const char* key;
+        int minutes; // arrival, from now
+    };
+    const QList<Demo> demos{
+            {QDir(card).filePath(QStringLiteral("Demo Single One [demo0000001].wav")), "Morning Call", "Demo Artist G", 118.0, "6A", 10},
+            {QDir(playlist).filePath(QStringLiteral("01 - Demo Artist H - First Light.wav")), "First Light", "Demo Artist H", 124.0, "8A", 20},
+            {QDir(playlist).filePath(QStringLiteral("02 - Demo Artist H - Second Wind.wav")), "Second Wind", "Demo Artist H", 125.0, "9A", 30},
+            {QDir(playlist).filePath(QStringLiteral("03 - Demo Artist J - Third Wave.wav")), "Third Wave", "Demo Artist J", 126.0, "9B", 40},
+            {QDir(stick).filePath(QStringLiteral("Demo Single Two [demo0000002].wav")), "Night Bus", "Demo Artist K", 122.0, "7A", 50},
+            {QDir(samples).filePath(QStringLiteral("Demo Hit.wav")), "Demo Hit", "Sample Maker", 0, "", 60},
+            {QDir(samples).filePath(QStringLiteral("Demo Loop.wav")), "Demo Loop", "Sample Maker", 124.0, "8A", 70},
+    };
+    const QDateTime now = QDateTime::currentDateTime();
+    for (const Demo& demo : demos) {
+        if (!QDir().mkpath(QFileInfo(demo.path).path()) || !writeSilentWav(demo.path, 2)) continue;
+        QFile file(demo.path);
+        if (file.open(QIODevice::ReadWrite)) {
+            file.setFileTime(now.addSecs(60LL * demo.minutes), QFileDevice::FileModificationTime);
+            file.close();
+        }
+        const TrackPointer track = library->trackCollectionManager()->getOrAddTrack(TrackRef::fromFilePath(demo.path));
+        if (!track) continue;
+        track->setTitle(QString::fromUtf8(demo.title));
+        track->setArtist(QString::fromUtf8(demo.artist));
+        if (demo.bpm > 0) track->trySetBpm(demo.bpm);
+        if (*demo.key) track->setKeyText(QString::fromUtf8(demo.key));
+        library->trackCollectionManager()->saveTrack(track);
+    }
+}
+
 // r5-history: a generated history for the History captures: last night's
 // set (two demo tracks, moved back a day) and this set (three, two of them
 // on paused decks). Rows go into Mixxx's own history playlists as the setlog
@@ -796,6 +846,8 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
             clickVisible(surface, QStringLiteral("decklab-setup-close"));
             seedDemoLibrary(surface->library(), QDir(config->getSettingsPath()).filePath("decklab-demo-music"));
             seedDemoStick(QDir(config->getSettingsPath()).filePath("decklab-demo-media"));
+            seedDemoDownloads(surface->library(), QDir(config->getSettingsPath()).filePath("decklab-demo-media"),
+                    QDir(config->getSettingsPath()).filePath("decklab-demo-home/Music")); // r7-browse
             const auto press = [surface] { surface->browsePress(); return true; };
             auto captures = std::make_shared<QList<BrowseCapture>>(QList<BrowseCapture>{
                     {"sources", 500, [surface] {
@@ -1043,6 +1095,53 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                          });
                          return true;
                      }},
+                    {"downloads", 900, [surface, failures] {
+                         // r7-browse: the home's DOWNLOADS tile opens the single
+                         // downloads (newest first) and each playlist as a folder.
+                         clickVisible(surface, QStringLiteral("decklab-usb"));
+                         QCoreApplication::processEvents();
+                         auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
+                         if (!selectListItem(surface, QStringLiteral("Samples"))) failures->append(QStringLiteral("No SAMPLES tile"));
+                         if (!selectListItem(surface, QStringLiteral("Downloads"))) return false;
+                         surface->browsePress();
+                         QCoreApplication::processEvents();
+                         if (!list || list->count() != 2 || list->item(0)->text() != QStringLiteral("Tracks") ||
+                                 list->item(1)->text() != QStringLiteral("Demo Playlist")) {
+                             failures->append(QStringLiteral("DOWNLOADS does not list Tracks, then the playlist folder"));
+                         }
+                         return selectListItem(surface, QStringLiteral("Demo Playlist"));
+                     }},
+                    {"downloads-playlist", 900, [surface, failures] {
+                         // The playlist folder in playlist order, from the library.
+                         surface->browsePress();
+                         QCoreApplication::processEvents();
+                         auto* library = surface->findChild<WLibrary*>();
+                         auto* table = library ? library->getCurrentTrackTableView() : nullptr;
+                         auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
+                         const int title = tracks ? tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Title) : -1;
+                         QStringList order;
+                         for (int row = 0; tracks && row < table->model()->rowCount(); ++row) {
+                             order << table->model()->index(row, title).data().toString();
+                         }
+                         if (order != QStringList{QStringLiteral("First Light"), QStringLiteral("Second Wind"), QStringLiteral("Third Wave")})
+                             failures->append(QString(QStringLiteral("Playlist folder out of order: ") + order.join(QStringLiteral(", "))));
+                         return selectTrack(surface, QStringLiteral("Second Wind"));
+                     }},
+                    {"samples-pad", 900, [surface, failures] {
+                         // A pad's Load opens on SAMPLES, with ALL MUSIC for the rest.
+                         auto* page = surface->findChild<DeckLabSampler*>(QStringLiteral("decklab-sampler"));
+                         if (!page) return false;
+                         // The page switch echoes back through [Tab],current (queued):
+                         // let it land before the pad asks, as a tap on the pad would.
+                         surface->selectPage(2);
+                         QCoreApplication::processEvents();
+                         emit page->loadRequested(4);
+                         QCoreApplication::processEvents();
+                         auto* all = surface->findChild<QPushButton*>(QStringLiteral("decklab-browse-all-music"));
+                         if (!all || !all->isVisible()) failures->append(QStringLiteral("Load pad: no ALL MUSIC on SAMPLES"));
+                         if (!selectTrack(surface, QStringLiteral("Demo Loop"))) failures->append(QStringLiteral("Load pad: SAMPLES lists no samples"));
+                         return surface->currentPage() == 1;
+                     }},
             });
             auto index = std::make_shared<int>(0);
             auto next = std::make_shared<std::function<void()>>();
@@ -1078,6 +1177,9 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
         else if (!*samplerDone) {
             // r4-sampler: Sampler captures after Browse (uncounted).
             timer->stop();
+            // r7-browse: the last Browse capture left a pad waiting on SAMPLES.
+            clickVisible(surface, QStringLiteral("decklab-load-2"), QStringLiteral("Cancel"));
+            QCoreApplication::processEvents();
             captureSampler(surface, output, check, failures, [=] { *samplerDone = true; timer->start(350); });
             return;
         }

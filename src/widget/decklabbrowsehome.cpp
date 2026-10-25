@@ -36,20 +36,31 @@ SourceEntry missingStickEntry() {
 
 HomeLayout arrangeHome(const QVector<SourceEntry>& sticks,
         const QVector<SourceEntry>& sources,
-        const SourceEntry& more) {
+        const SourceEntry& more,
+        const QVector<SourceEntry>& extras) {
     QVector<SourceEntry> all;
     if (sticks.isEmpty()) {
         all.append(missingStickEntry());
     } else {
         all += sticks;
     }
-    all += sources;
+    int extrasAt = static_cast<int>(all.size());
+    for (const SourceEntry& source : sources) {
+        all.append(source);
+        if (source.key == QStringLiteral("root:tracks")) {
+            extrasAt = static_cast<int>(all.size());
+        }
+    }
+    for (int n = 0; n < extras.size(); ++n) {
+        all.insert(extrasAt + n, extras[n]);
+    }
     if (!more.key.isEmpty()) {
         all.append(more);
     }
+    const int tiles = extras.isEmpty() ? kHomeTiles : kHomeTilesWide;
     HomeLayout layout;
     for (int n = 0; n < all.size(); ++n) {
-        if (n < kHomeTiles) {
+        if (n < tiles) {
             layout.tiles.append(all[n]);
         } else {
             layout.also.append(all[n]);
@@ -159,11 +170,16 @@ DeckLabBrowseDelegate::DeckLabBrowseDelegate(QObject* parent)
         : DeckLabListDelegate(parent) {
 }
 
-QSize DeckLabBrowseDelegate::tileSize(const QSize& viewport) {
+int DeckLabBrowseDelegate::columnsFor(int tiles) {
+    return tiles > kHomeTiles ? 3 : 2;
+}
+
+QSize DeckLabBrowseDelegate::tileSize(const QSize& viewport, int columns) {
     // QListView's flow layout pads every item with the spacing on all four
     // sides: two tiles take 2w + 4s across, two tile rows and the chip row
     // 2h + 44 + 6s down. One pixel to spare keeps two tiles on a row.
-    const int width = std::max(120, (viewport.width() - 4 * kSpacing) / 2 - 1);
+    columns = std::max(1, columns);
+    const int width = std::max(120, (viewport.width() - 2 * columns * kSpacing) / columns - 1);
     const int height = std::clamp((viewport.height() - 6 * kSpacing - kChipHeight) / 2, 96, 200);
     return QSize(width, height);
 }
@@ -185,8 +201,13 @@ QSize DeckLabBrowseDelegate::viewportSize(const QStyleOptionViewItem& option) co
 
 QSize DeckLabBrowseDelegate::sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const {
     switch (index.data(TileRole).toInt()) {
-    case 1:
-        return tileSize(viewportSize(option));
+    case 1: {
+        int tiles = 0;
+        for (int row = 0; index.model() && row < index.model()->rowCount(index.parent()); ++row) {
+            tiles += index.model()->index(row, 0, index.parent()).data(TileRole).toInt() == 1;
+        }
+        return tileSize(viewportSize(option), columnsFor(tiles));
+    }
     case 2: {
         const int lead = index.data(AlsoLeadRole).toBool() ? kAlsoLead : 0;
         return QSize(lead + chipContentWidth(option.font, index), kChipHeight);
@@ -261,6 +282,9 @@ void DeckLabBrowseDelegate::paintTile(QPainter& painter,
             static_cast<Glyph>(index.data(GlyphRole).toInt()), glyphColor);
     const int textLeft = r.left() + kTilePad + 24 + 12;
     const int right = r.right() - kTilePad;
+    // r7-browse: in a narrow tile (three a row) the two lines start under
+    // the glyph, so they keep their words.
+    const int lineLeft = r.width() < 300 ? r.left() + kTilePad : textLeft;
 
     // State, top right: a white lamp (filled when read) and a 14 px word.
     int nameRight = right;
@@ -310,9 +334,9 @@ void DeckLabBrowseDelegate::paintTile(QPainter& painter,
         if (state == SourceState::Failed && y + lineMetrics.height() > retry.top()) {
             lineRight = retry.left() - 8;
         }
-        painter.drawText(QRect(textLeft, y, std::max(0, lineRight - textLeft), lineMetrics.height()),
+        painter.drawText(QRect(lineLeft, y, std::max(0, lineRight - lineLeft), lineMetrics.height()),
                 Qt::AlignLeft | Qt::AlignVCenter,
-                lineMetrics.elidedText(line, Qt::ElideRight, std::max(0, lineRight - textLeft)));
+                lineMetrics.elidedText(line, Qt::ElideRight, std::max(0, lineRight - lineLeft)));
         y += lineMetrics.height();
     }
 
@@ -333,7 +357,7 @@ void DeckLabBrowseDelegate::paintTile(QPainter& painter,
     }
     if (index.data(ReadOnlyRole).toBool() && y + 26 <= r.bottom() - 6) {
         const QString tag = QCoreApplication::translate("DeckLabBrowse", "Read-only");
-        const QRect box(textLeft, r.bottom() - 10 - 24 + 1, tagMetrics.horizontalAdvance(tag) + 16, 24);
+        const QRect box(lineLeft, r.bottom() - 10 - 24 + 1, tagMetrics.horizontalAdvance(tag) + 16, 24);
         if (state != SourceState::Failed || box.right() < retry.left() - 8) {
             painter.setPen(QPen(colors::edge, 1));
             painter.setBrush(Qt::NoBrush);

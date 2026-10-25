@@ -1435,6 +1435,9 @@ add_library(
   src/decklab/decklabusbrelink.cpp
   src/decklab/decklabusbname.cpp
   src/decklab/decklabkeys.cpp
+  src/decklab/decklabdownloads.cpp
+  src/decklab/decklabanalysis.cpp
+  src/library/decklabfoldertablemodel.cpp
   src/library/rhythmbox/rhythmboxfeature.cpp
   src/library/scanner/importfilestask.cpp
   src/library/scanner/libraryscanner.cpp
@@ -2834,6 +2837,7 @@ if(BUILD_TESTING)
     src/test/decklablabfxtest.cpp
     src/test/decklablanestest.cpp
     src/test/decklabkeystest.cpp
+    src/test/decklabdownloadstest.cpp
     src/test/waveformmarklabeltest.cpp
     src/test/enginefilterbiquadtest.cpp
     src/test/enginemixertest.cpp

@@ -827,6 +827,18 @@ void paintGlyph(QPainter& painter, const QRectF& box, Glyph glyph, const QColor&
         painter.drawArc(QRectF(at(0.14, 0.14), at(0.86, 0.86)), 60 * 16, 290 * 16);
         painter.drawPolyline(QPolygonF{at(0.5, 0.04), at(0.7, 0.16), at(0.52, 0.32)});
         break;
+    case Glyph::Download:
+        // An arrow into a tray: what Get Music saved.
+        painter.drawLine(at(0.5, 0.08), at(0.5, 0.62));
+        painter.drawPolyline(QPolygonF{at(0.28, 0.42), at(0.5, 0.64), at(0.72, 0.42)});
+        painter.drawPolyline(QPolygonF{at(0.12, 0.66), at(0.12, 0.9), at(0.88, 0.9), at(0.88, 0.66)});
+        break;
+    case Glyph::Sample:
+        // A pad holding a short sound.
+        painter.drawRoundedRect(QRectF(at(0.08, 0.08), at(0.92, 0.92)), s * 0.12, s * 0.12);
+        painter.drawPolyline(QPolygonF{at(0.24, 0.5), at(0.36, 0.5), at(0.44, 0.28), at(0.54, 0.72),
+                at(0.62, 0.38), at(0.68, 0.5), at(0.78, 0.5)});
+        break;
     case Glyph::Mixes:
         // Two keys that overlap: what mixes with the playing deck.
         painter.drawEllipse(QRectF(at(0.06, 0.22), at(0.62, 0.78)));

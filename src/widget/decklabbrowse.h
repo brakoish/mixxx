@@ -194,6 +194,9 @@ enum class Glyph {
     Retry,
     // r4-browse: "Mixes with deck N" (two overlapping key circles).
     Mixes,
+    // r7-browse: the DOWNLOADS and SAMPLES tiles.
+    Download,
+    Sample,
 };
 void paintGlyph(QPainter& painter, const QRectF& box, Glyph glyph, const QColor& color);
 
