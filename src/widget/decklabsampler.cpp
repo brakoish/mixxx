@@ -58,6 +58,7 @@ const QString kSamplerStyle = QStringLiteral(R"(
  QWidget#decklab-sampler QLabel[muted="true"] {color:#9AA3AF;}
  QWidget#decklab-sampler QLabel[heading="true"] {font-size:18px;font-weight:600;}
  QWidget#decklab-sampler QLabel[readout="true"] {font-family:"Barlow Semi Condensed";font-size:24px;font-weight:600;}
+ QWidget#decklab-sampler QLabel[hint="true"] {font-size:14px;}
  DeckLabSamplerPad {min-height:0px;max-height:4000px;padding:0px;margin:0px;}
  DeckLabSamplerDecks {min-height:44px;max-height:44px;padding:0px;margin:0px;border:0px;}
  QWidget#decklab-sampler-side QPushButton, QWidget#decklab-sampler-sheet QPushButton {background:#16191E;color:#F2F4F7;
@@ -343,6 +344,12 @@ void DeckLabSamplerPad::paintEvent(QPaintEvent*) {
     } else {
         painter.setPen(QPen(!enabled ? kOffLine : lit ? kText : kLine, 1));
         painter.drawPath(body);
+        if (m_state.editing && loaded && !lit) {
+            // r7-sampler: EDIT is on. A dashed inner outline says "a tap
+            // edits this pad"; it never plays.
+            painter.setPen(QPen(kMuted, 1, Qt::DashLine));
+            painter.drawRoundedRect(QRectF(area).adjusted(3.5, 3.5, -3.5, -3.5), 2, 2);
+        }
     }
     painter.setRenderHint(QPainter::Antialiasing, false);
     // Every element is drawn in the panel ink outside the lit part and in
@@ -432,14 +439,28 @@ void DeckLabSamplerPad::paintEvent(QPaintEvent*) {
         painter.setPen(ink);
         painter.drawText(titleRect, Qt::AlignLeft | (compact ? Qt::AlignVCenter : Qt::AlignTop), lines);
     });
-    // Bottom row: "⋯" teaches the hold; the time left while playing, the
-    // length while idle.
+    // Bottom row: "⋯" teaches the hold (r7-sampler: an EDIT mark while EDIT
+    // is on); the time left while playing, the length while idle.
     const QRect bottom(12, h - 23, w - 22, 18);
-    inked(kMuted, [&](const QColor& ink) {
-        for (int dot = 0; dot < 3; ++dot) {
-            painter.fillRect(QRect(bottom.left() + dot * 6, bottom.center().y(), 3, 3), ink);
-        }
-    });
+    int markRight = bottom.left() + 15;
+    if (m_state.editing) {
+        painter.setFont(fonts.label);
+        const QFontMetrics labelMetrics(fonts.label);
+        const QString mark = tr("EDIT");
+        const QRect chip(bottom.left() - 2, bottom.top(), labelMetrics.horizontalAdvance(mark) + 10, bottom.height());
+        markRight = chip.right() + 1;
+        inked(kText, [&](const QColor& ink) {
+            painter.setPen(QPen(ink, 1));
+            painter.drawRect(chip.adjusted(0, 0, -1, -1));
+            painter.drawText(chip, Qt::AlignCenter, mark);
+        });
+    } else {
+        inked(kMuted, [&](const QColor& ink) {
+            for (int dot = 0; dot < 3; ++dot) {
+                painter.fillRect(QRect(bottom.left() + dot * 6, bottom.center().y(), 3, 3), ink);
+            }
+        });
+    }
     const QString time = timeText(m_seconds, lit);
     int timeLeft = bottom.right();
     if (!time.isEmpty()) {
@@ -455,7 +476,8 @@ void DeckLabSamplerPad::paintEvent(QPaintEvent*) {
     }
     if (!bpm.isEmpty() && compact) {
         painter.setFont(fonts.numeral16);
-        const QRect bpmRect(bottom.left() + 24, bottom.top(), std::max(0, timeLeft - 10 - (bottom.left() + 24)), bottom.height());
+        const int bpmLeft = markRight + 9;
+        const QRect bpmRect(bpmLeft, bottom.top(), std::max(0, timeLeft - 10 - bpmLeft), bottom.height());
         inked(kMuted, [&](const QColor& ink) {
             painter.setPen(ink);
             painter.drawText(bpmRect, Qt::AlignRight | Qt::AlignVCenter, bpm);
@@ -887,7 +909,7 @@ QWidget* DeckLabSampler::buildSide() {
     m_sync = key(tr("SYNC"), QStringLiteral("decklab-sampler-sync"), tr("Sync loop pads"),
             tr("Loop pads follow the master tempo."));
     m_edit = key(tr("EDIT"), QStringLiteral("decklab-sampler-edit"), tr("Edit pads"),
-            tr("Tap a pad to edit it instead of playing it. You can also hold a pad."));
+            tr("Turn on, then tap pads to edit them; they do not play. You can also hold a pad."));
     m_fx = key(tr("FX"), QStringLiteral("decklab-sampler-fx"), tr("Send pads 1 to 4 through Lab FX"),
             tr("Pads 1 to 4 go through Lab FX while it is on."));
     connect(m_quantize, &QPushButton::clicked, this, [this] {
@@ -898,14 +920,8 @@ QWidget* DeckLabSampler::buildSide() {
         m_engine->setSyncLoops(!m_engine->syncLoops());
         refreshSide();
     });
-    connect(m_edit, &QPushButton::clicked, this, [this] {
-        if (m_editMode || sheetOpen()) {
-            closeSheet();
-        } else {
-            m_editMode = true;
-        }
-        refreshSide();
-    });
+    // r7-sampler: EDIT stays on until it is tapped again (or the page hides).
+    connect(m_edit, &QPushButton::clicked, this, [this] { setEditMode(!m_editMode); });
     connect(m_fx, &QPushButton::clicked, this, [this] {
         m_fxRouting = !m_fxRouting;
         refreshSide();
@@ -1040,8 +1056,9 @@ QWidget* DeckLabSampler::buildSheet() {
     identity->addWidget(done);
     column->addLayout(identity);
     column->addStretch(1);
-    // Row two: MODE, the knob hint and CLEAR (destructive: on release, never
-    // while playing, at the far corner from STOP).
+    // Row two: MODE, the hint, REPLACE and CLEAR (r7-sampler: REPLACE beside
+    // CLEAR; both on release, never while playing, at the far corner from
+    // STOP).
     auto* controls = new QHBoxLayout;
     controls->setSpacing(4);
     controls->addWidget(label(tr("MODE"), "muted"));
@@ -1050,7 +1067,7 @@ QWidget* DeckLabSampler::buildSheet() {
     for (int mode = 0; mode < 3; ++mode) {
         auto* b = button(modes[mode], QStringLiteral("decklab-sampler-sheet-mode-%1").arg(mode));
         b->setCheckable(true);
-        b->setMinimumWidth(96);
+        b->setMinimumWidth(88);
         b->setAccessibleDescription(modeName(static_cast<DeckLabSamplerEngine::Mode>(mode)));
         connect(b, &QPushButton::clicked, this, [this, mode] {
             const int sampler = sheetSampler();
@@ -1065,13 +1082,28 @@ QWidget* DeckLabSampler::buildSheet() {
         m_sheetModes[mode] = b;
         controls->addWidget(b);
     }
-    auto* hint = label(tr("Knob: gain · Back: close"), "muted");
-    hint->setObjectName(QStringLiteral("decklab-sampler-sheet-hint"));
-    hint->setAlignment(Qt::AlignCenter);
-    hint->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    controls->addWidget(hint, 1);
+    // r7-sampler: what a tap and the knob do, on two short lines.
+    m_sheetHint = label(QString(), "muted");
+    m_sheetHint->setProperty("hint", true);
+    m_sheetHint->setObjectName(QStringLiteral("decklab-sampler-sheet-hint"));
+    m_sheetHint->setAlignment(Qt::AlignCenter);
+    m_sheetHint->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    controls->addWidget(m_sheetHint, 1);
+    // r7-sampler: REPLACE opens Browse in its "Load pad N" mode for this pad;
+    // the chosen track replaces the sample.
+    m_sheetReplace = button(tr("REPLACE"), QStringLiteral("decklab-sampler-sheet-replace"));
+    m_sheetReplace->setMinimumWidth(104);
+    connect(m_sheetReplace, &QPushButton::clicked, this, [this] {
+        const int sampler = sheetSampler();
+        if (sampler > 0 && m_engine->loaded(sampler) && !m_engine->playing(sampler)) {
+            emit loadRequested(sampler);
+        } else {
+            refreshSheet();
+        }
+    });
+    controls->addWidget(m_sheetReplace);
     m_sheetClear = button(tr("CLEAR"), QStringLiteral("decklab-sampler-sheet-clear"));
-    m_sheetClear->setMinimumWidth(104);
+    m_sheetClear->setMinimumWidth(96);
     connect(m_sheetClear, &QPushButton::clicked, this, [this] {
         const int sampler = sheetSampler();
         if (sampler > 0 && m_engine->loaded(sampler) && !m_engine->playing(sampler)) {
@@ -1083,6 +1115,7 @@ QWidget* DeckLabSampler::buildSheet() {
     });
     controls->addWidget(m_sheetClear);
     column->addLayout(controls);
+    refreshHint();
     return sheet;
 }
 
@@ -1222,7 +1255,7 @@ void DeckLabSampler::openSheet(int index) {
 
 void DeckLabSampler::closeSheet() {
     const int previous = std::exchange(m_sheetPad, -1);
-    m_editMode = false;
+    // r7-sampler: EDIT stays on; only its own key and a hide turn it off.
     // isHidden(), not isVisible(): this also runs while the page hides.
     if (!m_sheet->isHidden()) {
         m_sheet->hide();
@@ -1273,6 +1306,35 @@ void DeckLabSampler::editPad(int sampler) {
     const int index = sampler - 1 - m_bank * kPads;
     if (m_engine->loaded(sampler)) {
         openSheet(index);
+    }
+}
+
+void DeckLabSampler::setEditMode(bool on) {
+    if (on != m_editMode) {
+        m_editMode = on;
+        // Nothing left pending from a touch before the switch.
+        m_hold.stop();
+        m_holdPad = -1;
+        if (!on) {
+            closeSheet();
+        }
+        refreshPads();
+        refreshHint();
+    }
+    refreshSide();
+}
+
+void DeckLabSampler::setPadMode(int sampler, DeckLabSamplerEngine::Mode mode) {
+    if (!exists(sampler)) {
+        return;
+    }
+    m_engine->setMode(sampler, mode);
+    const int index = sampler - 1 - m_bank * kPads;
+    if (index >= 0 && index < kPads) {
+        refreshPad(index);
+    }
+    if (sampler == sheetSampler()) {
+        refreshSheet();
     }
 }
 
@@ -1390,6 +1452,7 @@ void DeckLabSampler::refreshPad(int index) {
     state.exists = exists(sampler);
     state.loaded = state.exists && m_engine->loaded(sampler);
     state.selected = index == m_sheetPad;
+    state.editing = m_editMode && state.loaded; // r7-sampler
     if (state.loaded) {
         state.title = m_engine->title(sampler).trimmed();
         if (state.title.isEmpty()) {
@@ -1414,6 +1477,7 @@ void DeckLabSampler::refreshPad(int index) {
                     (playing ? tr(", playing") : QString());
     setIf<QWidget>(pad, &QWidget::setAccessibleName, &QWidget::accessibleName, name);
     const QString description = !state.loaded ? tr("Tap to load from Browse")
+            : state.editing ? tr("EDIT is on: tap to edit this pad. It does not play.")
             : state.mode == DeckLabSamplerEngine::Mode::Gate
             ? tr("Plays while held. Turn EDIT on to edit.")
             : state.mode == DeckLabSamplerEngine::Mode::Loop
@@ -1491,19 +1555,27 @@ void DeckLabSampler::refreshSheetState() {
         return;
     }
     const bool playing = m_engine->playing(sampler);
-    if (m_sheetStop->isEnabled() == playing && m_sheetClear->isEnabled() == !playing) {
+    const QString clearName = playing ? tr("Clear pad %1: stop it first").arg(sampler)
+                                      : tr("Clear pad %1 (ejects the sample)").arg(sampler);
+    if (m_sheetStop->isEnabled() == playing && m_sheetClear->isEnabled() == !playing &&
+            m_sheetReplace->isEnabled() == !playing && m_sheetClear->accessibleName() == clearName) {
         return;
     }
     setEnabledIf(m_sheetStop, playing);
     setEnabledIf(m_sheetClear, !playing);
-    m_sheetClear->setAccessibleName(playing ? tr("Clear pad %1: stop it first").arg(sampler)
-                                            : tr("Clear pad %1 (ejects the sample)").arg(sampler));
+    setEnabledIf(m_sheetReplace, !playing);
+    m_sheetClear->setAccessibleName(clearName);
+    m_sheetReplace->setAccessibleName(playing
+                    ? tr("Replace pad %1: stop it first").arg(sampler)
+                    : tr("Replace pad %1: load another sample from Browse").arg(sampler));
 }
 
 void DeckLabSampler::refreshSide() {
     setCheckedIf(m_quantize, m_engine->quantize());
     setCheckedIf(m_sync, m_engine->syncLoops());
-    setCheckedIf(m_edit, m_editMode || sheetOpen());
+    setCheckedIf(m_edit, m_editMode); // r7-sampler: the mode, not the sheet
+    setIf<QWidget>(m_edit, &QWidget::setAccessibleName, &QWidget::accessibleName,
+            m_editMode ? tr("Edit pads, on: tap a pad to edit it; tap EDIT to finish") : tr("Edit pads"));
     setCheckedIf(m_fx, m_fxRouting);
     setEnabledIf(m_stopAll, anyPlaying());
     if (!m_level->isSliderDown()) {
@@ -1520,6 +1592,12 @@ void DeckLabSampler::refreshSide() {
         m_level->setValueText(dbText(db));
         m_level->setAccessibleDescription(tr("All pads, %1").arg(dbText(db)));
     }
+}
+
+void DeckLabSampler::refreshHint() {
+    // r7-sampler: what a tap does now, beside MODE.
+    setIf<QLabel>(m_sheetHint, &QLabel::setText, &QLabel::text,
+            m_editMode ? tr("EDIT on: tap\na pad to edit it") : tr("Knob: gain\nBack: close"));
 }
 
 void DeckLabSampler::refreshBanks() {
@@ -1557,5 +1635,12 @@ void DeckLabSampler::hideEvent(QHideEvent* event) {
     m_holdPad = -1;
     endGate();
     closeSheet();
+    // r7-sampler: leaving the page ends EDIT.
+    if (m_editMode) {
+        m_editMode = false;
+        refreshPads();
+        refreshHint();
+        refreshSide();
+    }
     QWidget::hideEvent(event);
 }

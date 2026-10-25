@@ -87,6 +87,7 @@
 #include "widget/decklabdecktools.h" // r5-decks: key sheet and GRID mode
 #include "widget/decklabsync.h" // r6-sync: SYNC, MASTER and INST DOUBLES
 #include "widget/decklabmoreknob.h" // r6-sync: the knob in MORE
+#include "widget/decklabcapture.h"  // r7-sampler: TO PAD
 #include "engine/sync/decklabcdjsync.h" // r6-sync: the engine's CDJ BEAT SYNC rules
 #include "widget/decklabbrowsedock.h"
 #include "widget/decklabbrowsehome.h"
@@ -973,6 +974,82 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
             if (v >= 1 && v <= 4) m_sync->instantDoubles(static_cast<int>(v));
         });
     }
+    // r7-sampler: TO PAD saves a deck's loop as a sample on a pad
+    // (widget/decklabcapture.h).
+    {
+        DeckLabLoopCapture::Host host;
+        host.read = [this](int deck, const QString& item) { return value(channel(deck), item); };
+        host.track = [this](int deck) {
+            auto* player = m_players ? m_players->getPlayer(channel(deck)) : nullptr;
+            return player ? player->getLoadedTrack() : TrackPointer();
+        };
+        host.pads = [this] { return std::max(16, static_cast<int>(value(QStringLiteral("[App]"), QStringLiteral("num_samplers")))); };
+        host.pad = [this](int sampler) {
+            const QString group = QStringLiteral("[Sampler%1]").arg(sampler);
+            DeckLabLoopCapture::Pad pad;
+            pad.loaded = value(group, QStringLiteral("track_loaded")) > 0;
+            pad.playing = pad.loaded && value(group, QStringLiteral("play")) > 0;
+            auto* player = pad.loaded && m_players ? m_players->getPlayer(group) : nullptr;
+            if (const TrackPointer track = player ? player->getLoadedTrack() : TrackPointer()) {
+                pad.title = track->getTitle().trimmed();
+                if (pad.title.isEmpty()) pad.title = QFileInfo(track->getLocation()).completeBaseName();
+            }
+            return pad;
+        };
+        host.load = [this](int sampler, const decklab::capture::Result& result) {
+            const QString group = QStringLiteral("[Sampler%1]").arg(sampler);
+            auto* player = m_players ? m_players->getPlayer(group) : nullptr;
+            if (!player || value(group, QStringLiteral("play")) > 0) return false;
+            // Into the library like any other file, with the loop's grid
+            // (whole beats over its length), locked so analysis keeps it.
+            TrackPointer track = m_library && m_library->trackCollectionManager()
+                    ? m_library->trackCollectionManager()->getOrAddTrack(TrackRef::fromFilePath(result.path))
+                    : TrackPointer();
+            if (!track) {
+                track = Track::newTemporary(result.path);
+                track->setTitle(QFileInfo(result.path).completeBaseName()); // the file's own title
+                if (result.sampleRate > 0) {
+                    track->setAudioProperties(mixxx::audio::ChannelCount::stereo(),
+                            mixxx::audio::SampleRate(static_cast<mixxx::audio::SampleRate::value_t>(result.sampleRate)),
+                            mixxx::audio::Bitrate(), mixxx::Duration::fromSeconds(double(result.frames) / result.sampleRate));
+                }
+            }
+            if (result.bpm > 0 && result.sampleRate > 0) {
+                track->setBpmLocked(false);
+                if (track->trySetBeats(mixxx::Beats::fromConstTempo(
+                            mixxx::audio::SampleRate(static_cast<mixxx::audio::SampleRate::value_t>(result.sampleRate)),
+                            mixxx::audio::kStartFramePos, mixxx::Bpm(result.bpm)))) {
+                    track->setBpmLocked(true);
+                }
+            }
+            // A captured loop is a LOOP pad (SYNC'd loop pads follow the master).
+            if (m_sampler) m_sampler->setPadMode(sampler, DeckLabSamplerEngine::Mode::Loop);
+            player->slotLoadTrack(track,
+#ifdef __STEM__
+                    mixxx::StemChannelSelection(),
+#endif
+                    false);
+            return true;
+        };
+        host.tell = [this](int deck, const QString& text, bool error) {
+            if (!m_browseState || !m_browseState->toast) return;
+            // On Decks, just above the deck's pads (two decks) or its card's
+            // keys (four), in the band under the readout.
+            QRect anchor;
+            if (m_page == 0) {
+                QList<QWidget*> places;
+                for (int side = 0; side < 2; ++side)
+                    if (displayedDeck(side) == deck) places << m_sidePads[side];
+                places << m_cardTransports[deck - 1];
+                for (QWidget* place : std::as_const(places))
+                    if (place && place->isVisible()) anchor = QRect(place->mapTo(this, QPoint()), place->size());
+            }
+            m_browseState->toast->showMessage(text, error ? 3200 : 2400, error, anchor);
+        };
+        host.sheetParent = [this]() -> QWidget* { return this; };
+        m_capture = new DeckLabLoopCapture(std::move(host), this);
+        watch(kTab, QStringLiteral("current"), [this](double) { m_capture->cancelChoice(); });
+    }
     m_deckControls = buildDecks();
     m_pages->addWidget(buildBrowse());
     m_pages->addWidget(buildSampler());
@@ -1325,7 +1402,14 @@ QWidget* WDeckLab::buildTransport(int deck, bool followsLayer, QWidget* parent) 
                 owner, prefix + QStringLiteral("grid"));
         grid->setStyleSheet(kActionStyle); grid->setFixedHeight(44);
         grid->setAccessibleName(tr("Edit the beat grid on the waveform"));
-        return QList<QWidget*>{info, grid};
+        // r7-sampler: TO PAD saves exactly the active loop as a sample on
+        // the first empty sampler pad (rekordbox's Capture); lit by a loop.
+        auto* toPad = button(tr("TO PAD"), [this, target, menu] { menu->close(); m_capture->capture(target()); },
+                owner, prefix + QStringLiteral("to-pad"));
+        toPad->setStyleSheet(kActionStyle); toPad->setFixedHeight(44);
+        toPad->setAccessibleDescription(tr("Saves exactly this loop, up to 32 bars or 60 s, on the first empty sampler pad"));
+        m_transport[prefix].capture = toPad;
+        return QList<QWidget*>{info, grid, toPad};
     };
     // QNT, KEY LOCK and SLIP: set once and left, so they live in MORE; the
     // readout lights KEY and SLIP, and QNT OFF only when quantize is off.
@@ -2234,6 +2318,7 @@ QWidget* WDeckLab::buildSampler() {
     m_sampler = page;
     page->setInteractionEpoch([this] { return m_interactionEpoch; });
     connect(page, &DeckLabSampler::loadRequested, this, [this](int sampler) {
+        m_sampleEdit = m_sampler && m_sampler->editMode(); // r7-sampler: resumes back on the pads
         m_sampleTarget = sampler; m_sampleReturnPage = 2; selectPage(1); refreshLoadButtons();
     });
     // Any page that sent Browse to load a pad gets it back once it loads.
@@ -2687,6 +2772,11 @@ void WDeckLab::selectPage(int page) {
     // tap would put a page (and its knob claim) under it; close it first.
     if (m_railUi && m_railUi->sheet() && m_railUi->sheet()->isVisible()) m_railUi->sheet()->hide();
     if (m_page == 1 && page != 1) m_sampleTarget = 0;
+    // r7-sampler: a Load pad trip the Sampler page started with EDIT on
+    // (REPLACE or an empty pad) comes back to the pads with EDIT still on,
+    // loaded or cancelled; leaving Browse for any other page ends it.
+    const bool resumeEdit = m_page == 1 && page == 2 && m_sampleEdit;
+    if (m_page == 1 && page != 1) m_sampleEdit = false;
     releaseTouchCue(); ++m_interactionEpoch;
     m_page = page;
     // 44 px rail targets on every page.
@@ -2702,6 +2792,7 @@ void WDeckLab::selectPage(int page) {
     set(kTab, "current", page == 4 ? 5 : page);
     for (int n = 0; n < 5; ++n) m_tabs[n]->setChecked(n == page);
     m_pages->setCurrentIndex(page);
+    if (resumeEdit && m_sampler) m_sampler->setEditMode(true); // r7-sampler
     // Transport has a fixed place below the Decks waveforms. Keeping it out
     // of the expanding page stack avoids sibling-page minimum sizes pushing
     // the essential controls below a small display.
@@ -4075,6 +4166,11 @@ void WDeckLab::refreshTransport(int deck, const QString& prefix) {
         setCheckedIf(t.loop, state.looping); setTextIf(t.loop, tr("LOOP\n%1").arg(sizeText));
         setAccessibleNameIf(t.loop, tr("Deck %1 loop %2 beats, %3").arg(deck).arg(sizeText, state.looping ? tr("on") : tr("off")));
         setAccessibleDescriptionIf(t.loop, tr("Toggle the selected beat loop; half and double change its beat length"));
+    }
+    if (t.capture) { // r7-sampler: TO PAD needs an active loop
+        setEnabledIf(t.capture, state.loaded && state.looping);
+        setAccessibleNameIf(t.capture, state.loaded && state.looping ? tr("Save deck %1's loop to a sampler pad").arg(deck)
+                                                                     : tr("Save a loop to a pad: set a loop on deck %1 first").arg(deck));
     }
     if (t.halve) setAccessibleNameIf(t.halve, tr("Deck %1 halve loop length").arg(deck));
     if (t.twice) setAccessibleNameIf(t.twice, tr("Deck %1 double loop length").arg(deck));

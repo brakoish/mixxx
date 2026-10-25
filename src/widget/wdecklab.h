@@ -29,6 +29,7 @@ class DeckLabSampler;
 class DeckLabPadBlock;
 class DeckLabDeckTools; // r5-decks: key sheet and GRID mode (widget/decklabdecktools.h)
 class DeckLabSync; // r6-sync: SYNC, MASTER and INST DOUBLES (widget/decklabsync.h)
+class DeckLabLoopCapture; // r7-sampler: TO PAD (widget/decklabcapture.h)
 class DeckLabStemPads;
 class DeckLabRail;
 class DeckLabSettingsPage;
@@ -335,6 +336,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
         QPushButton* slip = nullptr;
         QPushButton* master = nullptr; // r6-sync: MORE
         QPushButton* doubles = nullptr; // r6-sync: MORE
+        QPushButton* capture = nullptr; // r7-sampler: TO PAD in MORE
         QPushButton* more = nullptr;
         TransportState shown;
     };
@@ -422,6 +424,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     std::array<DeckLabPadBlock*, 4> m_cardPads{};
     DeckLabDeckTools* m_deckTools = nullptr; // r5-decks
     std::unique_ptr<DeckLabSync> m_sync; // r6-sync
+    DeckLabLoopCapture* m_capture = nullptr; // r7-sampler: TO PAD
     bool m_sideBySideWaveforms = false;
     double m_linkedZoom = 0;
     bool m_zoomPending = false;
@@ -442,6 +445,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     bool m_hasBrowsed = false;
     int m_sampleTarget = 0;
     int m_sampleReturnPage = 2;
+    bool m_sampleEdit = false; // r7-sampler: EDIT was on when the Sampler page sent Browse to load a pad
     QString m_touchCue;
     QElapsedTimer m_clock;
     QTimer m_fxTimer;

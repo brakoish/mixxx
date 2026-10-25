@@ -79,6 +79,8 @@
 #include "widget/decklabgridmode.h"
 #include "widget/decklabkeysheet.h"
 #include "widget/decklabmoreknob.h" // r6-sync
+#include "widget/decklabcapture.h"  // r7-sampler: TO PAD
+#include "sources/soundsourceproxy.h" // r7-sampler
 #include "widget/decklabpads.h"
 #include "widget/decklabhistory.h"     // r5-history
 #include "widget/decklabhistoryview.h" // r5-history
@@ -133,9 +135,10 @@ void tapTouch(QWidget* viewport, const QPoint& point) {
 class TestPlayers final : public PlayerManagerInterface {
   public:
     std::array<BaseTrackPlayer*,4> decks{};
+    QHash<QString, BaseTrackPlayer*> others; // r7-sampler: a sampler stand-in
     BaseTrackPlayer* getPlayer(const QString& group) const override {
         for(int n=0;n<4;++n)if(group==QStringLiteral("[Channel%1]").arg(n+1))return decks[n];
-        return nullptr;
+        return others.value(group);
     }
     BaseTrackPlayer* getPlayer(const ChannelHandle&) const override {return nullptr;}
     BaseTrackPlayer* getDeckBase(int n) const override {return n>=0&&n<4?decks[n]:nullptr;}
@@ -4918,6 +4921,188 @@ TEST_F(NativeDeckLabTest, SamplerBanksFollowTheConfiguredSamplerCount) {
     EXPECT_EQ(1, surface.currentPage());
     EXPECT_EQ(QStringLiteral("Load pad 17"), surface.findChild<QPushButton*>("decklab-load-1")->text());
     surface.hide();
+}
+
+// r7-sampler: REPLACE in a pad's sheet sends Browse to load that pad; the new
+// sample brings Browse back to the pads. A Load pad trip started with EDIT on
+// (REPLACE or an empty pad) comes back with EDIT still on, loaded or
+// cancelled; going anywhere else from Browse ends EDIT.
+TEST_F(NativeDeckLabTest, SamplerReplaceLoadsThatPadFromBrowse) {
+    // One surface, as on the unit: the fixture's follows [Tab] page changes
+    // a beat late and would drag this one back to Browse.
+    panel.reset();
+    auto controls = makeSamplerControls(1, 3);
+    ControlObject::set(ConfigKey("[Sampler3]", "track_loaded"), 1);
+    ControlObject::set(ConfigKey("[Sampler3]", "duration"), 4);
+    WDeckLab surface(config(), nullptr, players.get(), m_pEffectsManager.get());
+    surface.resize(800, 480); surface.show(); surface.selectPage(2); QCoreApplication::processEvents();
+    auto* page = surface.findChild<DeckLabSampler*>("decklab-sampler"); ASSERT_NE(nullptr, page);
+    PulseCounter stutter(QStringLiteral("[Sampler3]"), QStringLiteral("play_stutter"), &surface);
+    surface.findChild<QPushButton*>("decklab-sampler-edit")->click();
+    ASSERT_TRUE(page->editMode());
+    QTest::mouseClick(surface.findChild<QPushButton*>("decklab-sample-3"), Qt::LeftButton);
+    EXPECT_EQ(0, stutter.count) << "EDIT: the tap edits, never plays";
+    ASSERT_EQ(3, page->sheetSampler());
+    auto* replace = surface.findChild<QPushButton*>("decklab-sampler-sheet-replace"); ASSERT_NE(nullptr, replace);
+    EXPECT_TRUE(replace->isVisible()); EXPECT_GE(replace->height(), 44);
+    // Never while the pad plays.
+    ControlObject::set(ConfigKey("[Sampler3]", "play"), 1); QTest::qWait(250);
+    EXPECT_FALSE(replace->isEnabled());
+    replace->click();
+    EXPECT_EQ(2, surface.currentPage());
+    ControlObject::set(ConfigKey("[Sampler3]", "play"), 0); QTest::qWait(250);
+    ASSERT_TRUE(replace->isEnabled());
+    QTest::mousePress(replace, Qt::LeftButton);
+    EXPECT_EQ(2, surface.currentPage()) << "on release";
+    QTest::mouseRelease(replace, Qt::LeftButton); settle(); // [Tab] current follows, queued
+    EXPECT_EQ(1, surface.currentPage()) << "Browse, loading pad 3";
+    EXPECT_EQ(QStringLiteral("Load pad 3"), surface.findChild<QPushButton*>("decklab-load-1")->text());
+    // Browse loads the new sample into pad 3: back to the pads, EDIT still on.
+    ControlObject::set(ConfigKey("[Sampler3]", "track_loaded"), 0); settle();
+    ControlObject::set(ConfigKey("[Sampler3]", "track_loaded"), 1); settle();
+    EXPECT_EQ(2, surface.currentPage()) << "the replaced pad brings Browse back to the pads";
+    auto* edit = surface.findChild<QPushButton*>("decklab-sampler-edit");
+    EXPECT_TRUE(page->editMode()) << "EDIT survives the Load pad trip";
+    EXPECT_TRUE(edit->isChecked());
+    EXPECT_FALSE(page->sheetOpen());
+    auto* pad3 = surface.findChild<DeckLabSamplerPad*>("decklab-sample-3");
+    EXPECT_TRUE(pad3->state().editing);
+    // The next tap still edits, pad to pad.
+    QTest::mouseClick(pad3, Qt::LeftButton);
+    EXPECT_EQ(0, stutter.count);
+    EXPECT_EQ(3, page->sheetSampler());
+    surface.findChild<QPushButton*>("decklab-sampler-sheet-done")->click();
+    // An empty pad in EDIT, then Cancel (back to pads): EDIT still on.
+    QTest::mouseClick(surface.findChild<QPushButton*>("decklab-sample-1"), Qt::LeftButton); settle();
+    ASSERT_EQ(1, surface.currentPage());
+    auto* cancel = surface.findChild<QPushButton*>("decklab-load-2"); ASSERT_NE(nullptr, cancel);
+    EXPECT_EQ(QStringLiteral("Cancel"), cancel->text());
+    cancel->click(); settle();
+    EXPECT_EQ(2, surface.currentPage());
+    EXPECT_TRUE(page->editMode()) << "a cancelled load keeps EDIT on too";
+    EXPECT_TRUE(edit->isChecked());
+    // An empty pad in EDIT, then Decks: EDIT ends, and stays off back on the pads.
+    QTest::mouseClick(surface.findChild<QPushButton*>("decklab-sample-1"), Qt::LeftButton); settle();
+    ASSERT_EQ(1, surface.currentPage());
+    surface.findChild<QPushButton*>("decklab-tab-0")->click(); settle();
+    EXPECT_EQ(0, surface.currentPage());
+    surface.findChild<QPushButton*>("decklab-tab-2")->click(); settle();
+    EXPECT_EQ(2, surface.currentPage());
+    EXPECT_FALSE(page->editMode()) << "another page ends EDIT";
+    EXPECT_FALSE(edit->isChecked());
+    // EDIT off when the trip starts: it comes back off.
+    QTest::mouseClick(surface.findChild<QPushButton*>("decklab-sample-1"), Qt::LeftButton); settle();
+    ASSERT_EQ(1, surface.currentPage());
+    surface.findChild<QPushButton*>("decklab-load-2")->click(); settle();
+    EXPECT_EQ(2, surface.currentPage());
+    EXPECT_FALSE(page->editMode());
+    // EDIT on, then Lab FX straight from the pads: EDIT ends.
+    edit->click();
+    ASSERT_TRUE(page->editMode());
+    surface.findChild<QPushButton*>("decklab-tab-3")->click(); settle();
+    surface.findChild<QPushButton*>("decklab-tab-2")->click(); settle();
+    EXPECT_FALSE(page->editMode());
+    surface.hide();
+}
+
+// r7-sampler: TO PAD in a deck's MORE sheet saves exactly the deck's loop,
+// while it plays, as a WAV in the samples folder and loads it onto the first
+// empty pad as a LOOP pad with the track's tempo. A real decoder and a real
+// player stand in for sampler 3; nothing plays audio.
+TEST_F(NativeDeckLabTest, ToPadSavesTheDeckLoopOnTheFirstEmptyPad) {
+    panel.reset();
+    ASSERT_TRUE(SoundSourceProxy::isFileTypeSupported(QStringLiteral("wav")) || SoundSourceProxy::registerProviders());
+    QTemporaryDir samples;
+    decklab::capture::setSamplesFolderForTesting(samples.filePath(QStringLiteral("Deck Lab Samples")));
+    // Pads 1 and 2 are taken; sampler 3 is a real (empty) player.
+    auto controls = makeSamplerControls(1, 2);
+    ControlObject::set(ConfigKey("[Sampler1]", "track_loaded"), 1);
+    ControlObject::set(ConfigKey("[Sampler2]", "track_loaded"), 1);
+    auto sampler = std::make_unique<Deck>(nullptr, config(), m_pEngineMixer.get(), m_pEffectsManager.get(),
+            EngineChannel::CENTER, m_pEngineMixer->registerChannelGroup(QStringLiteral("[Sampler3]")));
+    players->others.insert(QStringLiteral("[Sampler3]"), sampler.get());
+    WDeckLab surface(config(), nullptr, players.get(), m_pEffectsManager.get());
+    for (int deck = 1; deck <= 4; ++deck) {
+        auto* slot = new QWidget(&surface); slot->setStyleSheet("background:#000");
+        surface.addWaveform(slot, deck);
+        auto* overview = new QWidget(&surface); overview->setStyleSheet("background:#181818");
+        surface.addOverview(overview, deck);
+    }
+    surface.resize(800, 480); surface.show(); surface.selectPage(0); QCoreApplication::processEvents();
+    // A generated sine on deck 1 at 120 BPM.
+    auto track = Track::newTemporary(getTestDir().filePath(QStringLiteral("sine-30.wav")));
+    track->setTitle(QStringLiteral("Generated Sine"));
+    track->setAudioProperties(mixxx::audio::ChannelCount::mono(), mixxx::audio::SampleRate(44100),
+            mixxx::audio::Bitrate(), mixxx::Duration::fromSeconds(30));
+    ASSERT_TRUE(track->trySetBpm(120));
+    loadTrack(m_pMixerDeck1.get(), track);
+    for (int n = 0; n < 4; ++n) ProcessBuffer();
+    settle();
+    auto* toPad = surface.findChild<QPushButton*>("decklab-1-to-pad"); ASSERT_NE(nullptr, toPad);
+    EXPECT_EQ(QStringLiteral("TO PAD"), toPad->text());
+    EXPECT_EQ(44, toPad->height());
+    EXPECT_NE(nullptr, surface.findChild<QPushButton*>("decklab-card-1-to-pad")) << "four decks: in the card's MORE";
+    EXPECT_FALSE(toPad->isEnabled()) << "no loop yet";
+    // A four-beat loop, and the deck plays (DJs capture live).
+    ControlObject::set(ConfigKey("[Channel1]", "beatloop_4_activate"), 1);
+    ControlObject::set(ConfigKey("[Channel1]", "beatloop_4_activate"), 0);
+    ControlObject::set(ConfigKey("[Channel1]", "play"), 1);
+    ProcessBuffer(); settle();
+    ASSERT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel1]", "loop_enabled")));
+    ASSERT_TRUE(QTest::qWaitFor([&] { return toPad->isEnabled(); }, 2000)) << "a loop lights TO PAD";
+    const double loopFrames = (ControlObject::get(ConfigKey("[Channel1]", "loop_end_position")) -
+                                      ControlObject::get(ConfigKey("[Channel1]", "loop_start_position"))) / 2;
+    EXPECT_NEAR(2 * 44100, loopFrames, 2) << "four beats at 120 BPM";
+    const QString output = qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
+    if (!output.isEmpty()) {
+        surface.findChild<QPushButton*>("decklab-1-more")->click(); settle();
+        auto* menu = surface.findChild<QMenu*>("decklab-1-more-menu");
+        if (menu && menu->isVisible()) EXPECT_TRUE(menu->grab().save(QDir(output).filePath("decks-more-to-pad.png")));
+        if (menu) menu->close();
+        settle();
+    }
+    auto* capture = surface.findChild<DeckLabLoopCapture*>("decklab-loop-capture"); ASSERT_NE(nullptr, capture);
+    int padUsed = -1;
+    decklab::capture::Result saved;
+    QObject::connect(capture, &DeckLabLoopCapture::finished, &surface,
+            [&](int, int pad, const decklab::capture::Result& result) { padUsed = pad; saved = result; });
+    toPad->click();
+    ASSERT_TRUE(QTest::qWaitFor([&] { ProcessBuffer(); return padUsed >= 0; }, 10000));
+    EXPECT_EQ(3, padUsed) << "the first empty pad";
+    EXPECT_EQ(samples.filePath(QStringLiteral("Deck Lab Samples/Generated Sine - Loop 1 bar.wav")), saved.path);
+    EXPECT_TRUE(QFile::exists(saved.path));
+    EXPECT_NEAR(loopFrames, saved.frames, 1) << "exactly the loop";
+    EXPECT_EQ(44100, saved.sampleRate);
+    EXPECT_NEAR(120.0, saved.bpm, 0.1);
+    auto* toast = surface.findChild<QLabel*>("decklab-toast"); ASSERT_NE(nullptr, toast);
+    EXPECT_TRUE(toast->isVisible());
+    EXPECT_EQ(QStringLiteral("Saved to pad 3"), toast->text());
+    if (!output.isEmpty()) EXPECT_TRUE(surface.grab().save(QDir(output).filePath("decks-to-pad-saved.png")));
+    // Pad 3 holds the loop as a LOOP pad with the deck's tempo, grid locked.
+    ASSERT_TRUE(QTest::qWaitFor([&] {
+        ProcessBuffer();
+        return ControlObject::get(ConfigKey("[Sampler3]", "track_loaded")) > 0;
+    }, 5000));
+    for (int n = 0; n < 4; ++n) ProcessBuffer();
+    settle();
+    const TrackPointer loaded = sampler->getLoadedTrack(); ASSERT_TRUE(loaded);
+    EXPECT_EQ(saved.path, loaded->getLocation());
+    EXPECT_EQ(QStringLiteral("Generated Sine - Loop 1 bar"), loaded->getTitle()) << "the whole name, not split at the dash";
+    EXPECT_TRUE(loaded->isBpmLocked());
+    EXPECT_NEAR(120.0, loaded->getBpm(), 0.1);
+    EXPECT_EQ(1, config()->getValue(ConfigKey("[DeckLabSampler]", "pad_3_mode"), 0)) << "a captured loop is a LOOP pad";
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Sampler3]", "repeat")));
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Sampler3]", "play"))) << "loaded, never played";
+    surface.selectPage(2); QTest::qWait(250);
+    auto* pad3 = surface.findChild<DeckLabSamplerPad*>("decklab-sample-3"); ASSERT_NE(nullptr, pad3);
+    EXPECT_TRUE(pad3->state().loaded);
+    EXPECT_EQ(DeckLabSamplerEngine::Mode::Loop, pad3->state().mode);
+    if (!output.isEmpty()) EXPECT_TRUE(surface.grab().save(QDir(output).filePath("sampler-captured-loop.png")));
+    ControlObject::set(ConfigKey("[Channel1]", "play"), 0); ProcessBuffer();
+    config()->setValue(ConfigKey("[DeckLabSampler]", "pad_3_mode"), 0);
+    decklab::capture::setSamplesFolderForTesting(QString());
+    surface.hide();
+    players->others.clear();
 }
 
 TEST_F(NativeDeckLabTest, FourDeckBpmRoundsInsteadOfCutting) {

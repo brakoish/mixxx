@@ -407,12 +407,163 @@ TEST_F(DeckLabSamplerTest, EditKeyOpensTheSheetWithoutPlayingAndTheKnobSetsGain)
     EXPECT_TRUE(page->knob(decklab::KnobAction::Move, -40));
     EXPECT_DOUBLE_EQ(-12, samplers.at(13).gain);
     EXPECT_EQ(0, pad(13)->state().level) << "the level bar follows the gain";
-    // Press (or back) closes the sheet and EDIT.
+    // Press (or back) closes the sheet. r7-sampler: EDIT stays on until
+    // its own key turns it off.
     EXPECT_TRUE(page->knob(decklab::KnobAction::Press, 1));
     EXPECT_FALSE(page->sheetOpen());
+    EXPECT_TRUE(page->editMode());
+    EXPECT_TRUE(key("decklab-sampler-edit")->isChecked());
+    EXPECT_TRUE(pad(1)->isVisible());
+    QTest::mouseClick(key("decklab-sampler-edit"), Qt::LeftButton);
     EXPECT_FALSE(page->editMode());
     EXPECT_FALSE(key("decklab-sampler-edit")->isChecked());
-    EXPECT_TRUE(pad(1)->isVisible());
+}
+
+// r7-sampler: EDIT stays on across pads and sheets. While on, a tap on a
+// loaded pad opens (or switches) its sheet and never plays it, gates
+// included; an empty pad still loads from Browse. It ends on its own key or
+// when the page hides; holding a pad still edits with EDIT off.
+TEST_F(DeckLabSamplerTest, EditStaysOnAcrossPadsAndATapNeverPlays) {
+    samplers.load(1, QStringLiteral("Generated Horn"), 3, 120);
+    samplers.load(6, QStringLiteral("Generated Loop"), 8, 124);
+    samplers.at(6).mode = Mode::Loop;
+    samplers.load(11, QStringLiteral("Generated Gate"), 2);
+    samplers.at(11).mode = Mode::Gate;
+    settle();
+    QSignalSpy load(page.get(), &DeckLabSampler::loadRequested);
+    auto* edit = key("decklab-sampler-edit");
+    QTest::mouseClick(edit, Qt::LeftButton);
+    ASSERT_TRUE(page->editMode());
+    EXPECT_TRUE(edit->isChecked()) << "EDIT is lit while it is on";
+    EXPECT_TRUE(pad(1)->state().editing) << "loaded pads show the edit look";
+    EXPECT_TRUE(pad(6)->state().editing);
+    EXPECT_FALSE(pad(2)->state().editing) << "an empty pad keeps its +";
+    EXPECT_TRUE(pad(1)->accessibleDescription().startsWith(QStringLiteral("EDIT is on: tap to edit")));
+    // The look: a dashed outline and an EDIT mark where the hold dots were.
+    const QImage editing = pad(1)->grab().toImage();
+    int outline = 0;
+    for (int x = 12; x < editing.width() - 12; ++x) {
+        outline += editing.pixelColor(x, 3) != panel || editing.pixelColor(x, 4) != panel;
+    }
+    EXPECT_GT(outline, 20) << "the dashed outline along the top";
+    capture(QStringLiteral("sampler-unit-edit-mode.png"));
+    // Pad 1: its sheet, no sound.
+    QTest::mouseClick(pad(1), Qt::LeftButton);
+    ASSERT_TRUE(page->sheetOpen());
+    EXPECT_EQ(1, page->sheetSampler());
+    EXPECT_EQ(0, samplers.at(1).triggers);
+    // Pad 6 (top half, still in view): the sheet switches, no sound.
+    QTest::mouseClick(pad(6), Qt::LeftButton);
+    EXPECT_EQ(6, page->sheetSampler());
+    EXPECT_EQ(0, samplers.at(6).triggers);
+    EXPECT_FALSE(samplers.at(6).playing);
+    EXPECT_TRUE(page->editMode());
+    EXPECT_EQ(QStringLiteral("EDIT on: tap\na pad to edit it"),
+            page->findChild<QLabel*>(QStringLiteral("decklab-sampler-sheet-hint"))->text())
+            << "the hint says what a tap does";
+    // DONE closes the sheet; EDIT stays on for the next pad.
+    QTest::mouseClick(key("decklab-sampler-sheet-done"), Qt::LeftButton);
+    EXPECT_FALSE(page->sheetOpen());
+    EXPECT_TRUE(page->editMode());
+    EXPECT_TRUE(edit->isChecked());
+    // A gate pad edits too and never sounds, held or not.
+    QTest::mousePress(pad(11), Qt::LeftButton);
+    EXPECT_FALSE(samplers.at(11).playing);
+    EXPECT_EQ(11, page->sheetSampler());
+    QTest::qWait(DeckLabSampler::kHoldMs + 150);
+    QTest::mouseRelease(pad(11), Qt::LeftButton);
+    EXPECT_EQ(0, samplers.at(11).triggers);
+    // A long hold in EDIT never plays a pad either.
+    QTest::mouseClick(key("decklab-sampler-sheet-done"), Qt::LeftButton);
+    QTest::mousePress(pad(1), Qt::LeftButton);
+    QTest::qWait(DeckLabSampler::kHoldMs + 150);
+    QTest::mouseRelease(pad(1), Qt::LeftButton);
+    EXPECT_EQ(0, samplers.at(1).triggers);
+    QTest::mouseClick(key("decklab-sampler-sheet-done"), Qt::LeftButton);
+    // An empty pad still opens Browse to load it (on release).
+    QTest::mousePress(pad(2), Qt::LeftButton);
+    EXPECT_EQ(0, load.count());
+    QTest::mouseRelease(pad(2), Qt::LeftButton);
+    ASSERT_EQ(1, load.count());
+    EXPECT_EQ(2, load.takeFirst().at(0).toInt());
+    // EDIT again: off, and pads play on touch-down as before.
+    QTest::mouseClick(edit, Qt::LeftButton);
+    EXPECT_FALSE(page->editMode());
+    EXPECT_FALSE(edit->isChecked());
+    EXPECT_FALSE(pad(1)->state().editing);
+    EXPECT_EQ(QStringLiteral("Knob: gain\nBack: close"),
+            page->findChild<QLabel*>(QStringLiteral("decklab-sampler-sheet-hint"))->text());
+    QTest::mouseClick(pad(1), Qt::LeftButton);
+    EXPECT_EQ(1, samplers.at(1).triggers);
+    // Turning it off closes an open sheet; leaving the page ends EDIT.
+    QTest::mouseClick(edit, Qt::LeftButton);
+    QTest::mouseClick(pad(6), Qt::LeftButton);
+    ASSERT_TRUE(page->sheetOpen());
+    QTest::mouseClick(edit, Qt::LeftButton);
+    EXPECT_FALSE(page->sheetOpen());
+    QTest::mouseClick(edit, Qt::LeftButton);
+    ASSERT_TRUE(page->editMode());
+    page->hide();
+    EXPECT_FALSE(page->editMode());
+    page->show();
+    settle();
+    EXPECT_FALSE(key("decklab-sampler-edit")->isChecked());
+    EXPECT_FALSE(pad(1)->state().editing);
+    // Holding a pad still edits with EDIT off (the sample plays from the
+    // touch, as before).
+    samplers.at(1).playing = false;
+    QTest::mousePress(pad(1), Qt::LeftButton);
+    EXPECT_EQ(2, samplers.at(1).triggers);
+    QTest::qWait(DeckLabSampler::kHoldMs + 150);
+    QTest::mouseRelease(pad(1), Qt::LeftButton);
+    EXPECT_TRUE(page->sheetOpen());
+    EXPECT_FALSE(page->editMode()) << "a hold opens one sheet; it does not turn EDIT on";
+}
+
+// r7-sampler: REPLACE, beside CLEAR, sends Browse to load another sample into
+// this pad ("Load pad N"). On release, never while the pad plays.
+TEST_F(DeckLabSamplerTest, ReplaceLoadsAnotherSampleIntoThisPadFromBrowse) {
+    samplers.load(7, QStringLiteral("Generated Vocal"), 4, 120);
+    samplers.load(3, QStringLiteral("Generated Horn"), 3);
+    settle();
+    QSignalSpy load(page.get(), &DeckLabSampler::loadRequested);
+    page->editPad(7);
+    ASSERT_TRUE(page->sheetOpen());
+    settle();
+    auto* replace = key("decklab-sampler-sheet-replace");
+    auto* clear = key("decklab-sampler-sheet-clear");
+    ASSERT_NE(nullptr, replace);
+    EXPECT_TRUE(replace->isVisible());
+    EXPECT_TRUE(replace->isEnabled());
+    EXPECT_GE(replace->height(), 44);
+    EXPECT_GE(replace->width(), 44);
+    EXPECT_EQ(clear->y(), replace->y()) << "beside CLEAR";
+    EXPECT_LT(replace->x(), clear->x());
+    auto* sheet = page->findChild<QWidget*>(QStringLiteral("decklab-sampler-sheet"));
+    EXPECT_TRUE(QRect(QPoint(), sheet->size()).contains(QRect(replace->mapTo(sheet, QPoint()), replace->size())));
+    EXPECT_EQ(QStringLiteral("Replace pad 7: load another sample from Browse"), replace->accessibleName());
+    capture(QStringLiteral("sampler-unit-replace.png"));
+    QTest::mousePress(replace, Qt::LeftButton);
+    EXPECT_EQ(0, load.count()) << "nothing happens on touch-down";
+    QTest::mouseRelease(replace, Qt::LeftButton);
+    ASSERT_EQ(1, load.count());
+    EXPECT_EQ(7, load.takeFirst().at(0).toInt()) << "Browse loads into this pad";
+    EXPECT_EQ(0, samplers.at(7).ejects) << "the sample stays until the new one loads";
+    // Never while the pad plays.
+    samplers.trigger(7);
+    tick();
+    EXPECT_FALSE(replace->isEnabled());
+    EXPECT_FALSE(clear->isEnabled());
+    EXPECT_EQ(QStringLiteral("Replace pad 7: stop it first"), replace->accessibleName());
+    QTest::mouseClick(replace, Qt::LeftButton);
+    EXPECT_EQ(0, load.count());
+    // The sheet follows its pad: pad 3's REPLACE loads pad 3.
+    samplers.stop(7);
+    page->editPad(3);
+    tick();
+    QTest::mouseClick(key("decklab-sampler-sheet-replace"), Qt::LeftButton);
+    ASSERT_EQ(1, load.count());
+    EXPECT_EQ(3, load.takeFirst().at(0).toInt());
 }
 
 TEST_F(DeckLabSamplerTest, LoopPadsStopOnASecondTouchAndGatePadsPlayWhileHeld) {

@@ -551,12 +551,31 @@ void captureSampler(WDeckLab* surface, const QString& output, const std::functio
                  page->editPad(2);
                  return page->sheetOpen();
              }},
+            // r7-sampler: EDIT on (it stays on): loaded pads show the edit
+            // look; then a tap's sheet, with REPLACE beside CLEAR.
+            {QStringLiteral("app-sampler-03-edit-mode.png"), 400, [surface] {
+                 auto* page = surface->findChild<DeckLabSampler*>(QStringLiteral("decklab-sampler"));
+                 if (!page) return false;
+                 page->closeSheet();
+                 page->setEditMode(true);
+                 return page->editMode() && !page->sheetOpen();
+             }},
+            {QStringLiteral("app-sampler-04-edit-replace.png"), 400, [surface] {
+                 auto* page = surface->findChild<DeckLabSampler*>(QStringLiteral("decklab-sampler"));
+                 if (!page) return false;
+                 page->editPad(5);
+                 return page->editMode() && page->sheetOpen() &&
+                         surface->findChild<QPushButton*>(QStringLiteral("decklab-sampler-sheet-replace"))->isVisible();
+             }},
     });
     auto index = std::make_shared<int>(0);
     auto next = std::make_shared<std::function<void()>>();
     *next = [=] {
         if (*index >= captures->size()) {
-            if (auto* page = surface->findChild<DeckLabSampler*>(QStringLiteral("decklab-sampler"))) page->closeSheet();
+            if (auto* page = surface->findChild<DeckLabSampler*>(QStringLiteral("decklab-sampler"))) {
+                page->closeSheet();
+                page->setEditMode(false); // r7-sampler
+            }
             done();
             return;
         }
