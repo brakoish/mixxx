@@ -1424,8 +1424,14 @@ bool MixxxMainWindow::loadConfiguredSkin() {
                 system = new DeckLabSystem(services, this);
                 // usb-first: library rows of a known stick follow it to its
                 // current mount path (FS-UUID + relative path). Read-only.
+                // r7-library: duplicates merge onto it, and tracks on sticks
+                // that are out are hidden until they are back. At start-up
+                // and when a stick is mounted; never while anything plays.
                 auto* relinker = new decklab::UsbRelinker(services.library, system);
+                relinker->setPlaying([system] { return system->anyPlaying(); });
                 connect(system, &DeckLabSystem::usbChanged, relinker, &decklab::UsbRelinker::relinkDrives);
+                relinker->watchMediaFolders();
+                relinker->relinkMounted();
                 system->start();
             }
             native->attachSystem(system);

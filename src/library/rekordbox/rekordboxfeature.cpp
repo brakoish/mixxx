@@ -273,6 +273,12 @@ QList<TreeItem*> findRekordboxDevices() {
             devices += QDir(root).entryInfoList(QDir::AllDirs | QDir::NoDotAndDotDot, QDir::Name);
         }
     } else {
+    // Deck Lab mounts every stick read-only at /media/decklab/<FS-UUID>,
+    // whatever the appliance user is called. r7-library: listed first, so
+    // the appliance's link /media/<user>/<label> to the same stick is not a
+    // second device (its tracks would become second library rows).
+    devices += QDir(kDeckLabMediaRoot).entryInfoList(QDir::AllDirs | QDir::NoDotAndDotDot);
+
     // Add folders under /media to devices.
     devices += QDir(QStringLiteral("/media")).entryInfoList(QDir::AllDirs | QDir::NoDotAndDotDot);
 
@@ -285,13 +291,10 @@ QList<TreeItem*> findRekordboxDevices() {
     QDir runMediaUserDir(QStringLiteral("/run/media/") + QString::fromLocal8Bit(qgetenv("USER")));
     devices += runMediaUserDir.entryInfoList(
             QDir::AllDirs | QDir::NoDotAndDotDot);
-
-    // Deck Lab mounts every stick read-only at /media/decklab/<FS-UUID>,
-    // whatever the appliance user is called.
-    devices += QDir(kDeckLabMediaRoot).entryInfoList(QDir::AllDirs | QDir::NoDotAndDotDot);
     }
 
     QSet<QString> seenPaths;
+    QSet<QString> seenFolders; // r7-library: links resolved
     QSet<QString> names;
     const QHash<QString, QString> stickNames = deckLabStickNames();
     foreach (QFileInfo device, devices) {
@@ -299,6 +302,11 @@ QList<TreeItem*> findRekordboxDevices() {
             continue;
         }
         seenPaths.insert(device.filePath());
+        const QString folder = device.canonicalFilePath();
+        if (!folder.isEmpty() && seenFolders.contains(folder)) {
+            continue;
+        }
+        seenFolders.insert(folder);
         if (!findRekordboxPdbPath(device.filePath()).isEmpty()) {
             // r5-polish: shown by the stick's friendly name rather than its
             // UUID mount folder. Only for display: the device is its path

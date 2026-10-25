@@ -1431,6 +1431,7 @@ add_library(
   src/library/rekordbox/rekordboxanlz.cpp
   src/decklab/decklabphrase.cpp
   src/decklab/decklabphraseview.cpp
+  src/decklab/decklabmedia.cpp
   src/decklab/decklabusbrelink.cpp
   src/decklab/decklabusbname.cpp
   src/decklab/decklabkeys.cpp
@@ -2819,6 +2820,7 @@ if(BUILD_TESTING)
     src/test/decklabwaveformcachetest.cpp
     src/test/decklabsystemtest.cpp
     src/test/decklabusbfirsttest.cpp
+    src/test/decklabusbmergetest.cpp
     src/test/decklabstemgesturestest.cpp
     src/test/decklabsamplertest.cpp
     src/test/decklabstemstest.cpp

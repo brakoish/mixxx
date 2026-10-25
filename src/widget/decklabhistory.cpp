@@ -23,6 +23,7 @@
 #include <unistd.h>
 #endif
 
+#include "decklab/decklabmedia.h"
 #include "library/dao/playlistdao.h"
 #include "library/dao/trackdao.h"
 #include "library/trackcollection.h"
@@ -149,6 +150,11 @@ class MixxxBackend final : public Backend {
         };
         QObject::connect(tracks, &TrackDAO::tracksChanged, &m_context, moved);
         QObject::connect(tracks, &TrackDAO::tracksRemoved, &m_context, moved);
+        // r7-library: a USB stick in or out, or its tracks merged: the sets
+        // are read again (decklabmedia.h).
+        QObject::connect(&MediaPresence::instance(), &MediaPresence::changed, &m_context, [this] {
+            m_reload.start();
+        });
     }
 
     QVector<Playlist> playlists() override {
@@ -158,13 +164,17 @@ class MixxxBackend final : public Backend {
         }
         QSqlQuery query(database());
         query.setForwardOnly(true);
+        // r7-library: tracks on a USB stick that is out are counted apart.
+        const QString away = mediaAwayCondition(database(), QStringLiteral("library.location"));
         const QString sql = QStringLiteral(
                 "SELECT Playlists.id, Playlists.name, Playlists.date_created, "
-                "COUNT(PlaylistTracks.track_id), MIN(PlaylistTracks.pl_datetime_added), "
-                "MAX(PlaylistTracks.pl_datetime_added) "
+                "COUNT(PlaylistTracks.track_id) - SUM(CASE WHEN %2 THEN 1 ELSE 0 END), "
+                "MIN(PlaylistTracks.pl_datetime_added), MAX(PlaylistTracks.pl_datetime_added), "
+                "SUM(CASE WHEN %2 THEN 1 ELSE 0 END) "
                 "FROM Playlists LEFT JOIN PlaylistTracks ON PlaylistTracks.playlist_id = Playlists.id "
+                "LEFT JOIN library ON library.id = PlaylistTracks.track_id "
                 "WHERE Playlists.hidden = %1 GROUP BY Playlists.id ORDER BY Playlists.id DESC")
-                                    .arg(static_cast<int>(PlaylistDAO::PLHT_SET_LOG));
+                                    .arg(QString::number(static_cast<int>(PlaylistDAO::PLHT_SET_LOG)), away);
         if (!query.exec(sql)) {
             qWarning() << "DeckLab history: could not read the sets" << query.lastError().text();
             m_readOk = false; // r5-fix3-history
@@ -180,6 +190,7 @@ class MixxxBackend final : public Backend {
             playlist.count = query.value(3).toInt();
             playlist.first = localFromUtc(query.value(4));
             playlist.last = localFromUtc(query.value(5));
+            playlist.away = query.value(6).toInt();
             m_history.insert(playlist.id);
             result.append(playlist);
         }
@@ -362,9 +373,11 @@ class MixxxBackend final : public Backend {
                 "track_locations.location FROM PlaylistTracks "
                 "INNER JOIN library ON library.id = PlaylistTracks.track_id "
                 "LEFT JOIN track_locations ON track_locations.id = library.location "
-                "WHERE PlaylistTracks.playlist_id = :id%1 ORDER BY PlaylistTracks.position")
+                "WHERE PlaylistTracks.playlist_id = :id%1 AND %2 ORDER BY PlaylistTracks.position")
                         .arg(position >= 0 ? QStringLiteral(" AND PlaylistTracks.position = :position")
-                                           : QString()));
+                                           : QString(),
+                                // r7-library: not tracks on a USB stick that is out.
+                                mediaShownCondition(database(), QStringLiteral("library.location"))));
         query.bindValue(QStringLiteral(":id"), playlistId);
         if (position >= 0) {
             query.bindValue(QStringLiteral(":position"), position);
@@ -573,6 +586,7 @@ void Store::buildSessions() {
         Session& session = ascending.last();
         session.playlists.append(playlist.id);
         session.count += playlist.count;
+        session.away += playlist.away;
         if (playlist.first.isValid() && (!session.first.isValid() || playlist.first < session.first)) {
             session.first = playlist.first;
         }
@@ -958,7 +972,8 @@ QString sessionTitle(const Session& session, bool clockTrusted) {
 
 QString sessionDetail(const Session& session, bool clockTrusted) {
     if (session.count <= 0) {
-        return tr("Nothing played yet");
+        // r7-library: what was played is on a USB stick that is out.
+        return session.away > 0 ? tr("Played from a USB stick that is out") : tr("Nothing played yet");
     }
     const QString length = session.first.isValid() && session.last.isValid()
             ? durationText(session.first.secsTo(session.last))
@@ -978,6 +993,9 @@ QVector<ListRow> sessionRows(const QVector<Session>& sessions, const QDate& toda
             rows.append(ListRow{RowKind::Session, sessionTitle(session, clockTrusted), session.id});
             rows.append(ListRow{RowKind::NewSet, tr("New set"), -1});
             continue;
+        }
+        if (session.count <= 0 && session.away > 0) {
+            continue; // r7-library: back with its USB stick
         }
         if (!clockTrusted) {
             // No clock to trust: earlier sets by order, under one label.

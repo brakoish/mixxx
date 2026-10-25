@@ -2,6 +2,7 @@
 
 #include <QtDebug>
 
+#include "decklab/decklabmedia.h"
 #include "library/dao/trackschema.h"
 #include "library/trackcollection.h"
 #include "library/trackcollectionmanager.h"
@@ -54,18 +55,22 @@ void CrateTableModel::selectCrate(CrateId crateId) {
     // (mixxx_deleted = 0) from the view.
     // They are kept in the database, because we treat crate membership as a
     // track property, which persist over a hide / unhide cycle.
+    // r7-library: so are tracks on a USB stick that is out, until it is back
+    // (decklabmedia.h).
     QString queryString =
             QString("CREATE TEMPORARY VIEW IF NOT EXISTS %1 AS "
                     "SELECT %2 FROM %3 "
                     "WHERE %4 IN (%5) "
-                    "AND %6=0")
+                    "AND %6=0 AND %7")
                     .arg(tableName,
                             columns.join(","),
                             LIBRARY_TABLE,
                             LIBRARYTABLE_ID,
                             CrateStorage::formatSubselectQueryForCrateTrackIds(
                                     crateId),
-                            LIBRARYTABLE_MIXXXDELETED);
+                            LIBRARYTABLE_MIXXXDELETED,
+                            decklab::mediaShownCondition(m_database,
+                                    LIBRARY_TABLE + QLatin1Char('.') + LIBRARYTABLE_LOCATION));
     FwdSqlQuery(m_database, queryString).execPrepared();
 
     columns[0] = LIBRARYTABLE_ID;

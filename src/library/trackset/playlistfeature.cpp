@@ -4,6 +4,7 @@
 #include <QSqlTableModel>
 #include <QtDebug>
 
+#include "decklab/decklabmedia.h"
 #include "library/library.h"
 #include "library/parser.h"
 #include "library/playlisttablemodel.h"
@@ -160,16 +161,18 @@ QList<BasePlaylistFeature::IdAndLabel> PlaylistFeature::createPlaylistLabels() {
             m_pLibrary->trackCollectionManager()->internalCollection()->database();
 
     QList<BasePlaylistFeature::IdAndLabel> playlistLabels;
+    // r7-library: tracks on a USB stick that is out are not counted, as the
+    // playlist's own list leaves them out (decklabmedia.h).
     QString queryString = QStringLiteral(
             "CREATE TEMPORARY VIEW IF NOT EXISTS %1 "
             "AS SELECT "
             "  Playlists.id AS id, "
             "  Playlists.name AS name, "
             "  LOWER(Playlists.name) AS sort_name, "
-            "  COUNT(case library.mixxx_deleted when 0 then 1 else null end) "
+            "  COUNT(case when library.mixxx_deleted=0 and %3 then 1 else null end) "
             "    AS count, "
-            "  SUM(case library.mixxx_deleted "
-            "    when 0 then library.duration else 0 end) AS durationSeconds "
+            "  SUM(case when library.mixxx_deleted=0 and %3 "
+            "    then library.duration else 0 end) AS durationSeconds "
             "FROM Playlists "
             "LEFT JOIN PlaylistTracks "
             "  ON PlaylistTracks.playlist_id = Playlists.id "
@@ -179,7 +182,9 @@ QList<BasePlaylistFeature::IdAndLabel> PlaylistFeature::createPlaylistLabels() {
             "  GROUP BY Playlists.id")
                                   .arg(m_countsDurationTableName,
                                           QString::number(
-                                                  PlaylistDAO::PLHT_NOT_HIDDEN));
+                                                  PlaylistDAO::PLHT_NOT_HIDDEN),
+                                          decklab::mediaShownCondition(database,
+                                                  QStringLiteral("library.location")));
     queryString.append(
             mixxx::DbConnection::collateLexicographically(
                     " ORDER BY sort_name"));

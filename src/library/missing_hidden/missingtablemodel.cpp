@@ -1,5 +1,6 @@
 #include "library/missing_hidden/missingtablemodel.h"
 
+#include "decklab/decklabmedia.h"
 #include "library/dao/trackschema.h"
 #include "library/trackcollection.h"
 #include "library/trackcollectionmanager.h"
@@ -25,13 +26,17 @@ void MissingTableModel::setTableModel() {
     columns << "library." + LIBRARYTABLE_ID;
 
     QSqlQuery query(m_database);
+    // r7-library: tracks on a USB stick that is out are not missing, only
+    // away; they are not listed here, so they cannot be purged until the
+    // stick is back (decklabmedia.h).
     query.prepare(
             "CREATE TEMPORARY VIEW IF NOT EXISTS " + tableName +
             " AS SELECT " + columns.join(",") +
             " FROM library "
             "INNER JOIN track_locations "
             "ON library.location=track_locations.id "
-            "WHERE fs_deleted=1");
+            "WHERE fs_deleted=1 AND " +
+            decklab::mediaShownCondition(m_database, QStringLiteral("library.location")));
     if (!query.exec()) {
         qDebug() << query.executedQuery() << query.lastError();
     }

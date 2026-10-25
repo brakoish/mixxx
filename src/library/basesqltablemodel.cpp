@@ -4,6 +4,7 @@
 #include <QtDebug>
 #include <algorithm>
 
+#include "decklab/decklabmedia.h"
 #include "library/dao/trackschema.h"
 #include "library/queryutil.h"
 #include "library/starrating.h"
@@ -46,6 +47,13 @@ BaseSqlTableModel::BaseSqlTableModel(
           m_pTrackCollectionManager(pTrackCollectionManager),
           m_database(pTrackCollectionManager->internalCollection()->database()),
           m_bInitialized(false) {
+    // r7-library: a USB stick plugged in or taken out (or its tracks merged)
+    // shows or hides rows in every list, also the ones not on screen now
+    // (decklabmedia.h). Nothing happens before the table is set.
+    connect(&decklab::MediaPresence::instance(),
+            &decklab::MediaPresence::changed,
+            this,
+            &BaseSqlTableModel::select);
 }
 
 BaseSqlTableModel::~BaseSqlTableModel() {

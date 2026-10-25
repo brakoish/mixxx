@@ -1,5 +1,6 @@
 #include "library/trackset/crate/cratestorage.h"
 
+#include "decklab/decklabmedia.h"
 #include "library/dao/trackschema.h"
 #include "library/queryutil.h"
 #include "library/trackset/crate/crate.h"
@@ -29,11 +30,13 @@ const QString kLibraryTracksJoin = kCrateTracksJoin +
         QStringLiteral(" LEFT JOIN %3 ON %3.%4=%1.%2")
                 .arg(CRATE_TRACKS_TABLE, CRATETRACKSTABLE_TRACKID, LIBRARY_TABLE, LIBRARYTABLE_ID);
 
+// r7-library: %7 leaves out tracks on a USB stick that is out
+// (decklabmedia.h), as the crate's own list does.
 const QString kCrateSummaryViewSelect =
         QStringLiteral(
                 "SELECT %1.*,"
-                "COUNT(CASE %2.%4 WHEN 0 THEN 1 ELSE NULL END) AS %5,"
-                "SUM(CASE %2.%4 WHEN 0 THEN %2.%3 ELSE 0 END) AS %6 "
+                "COUNT(CASE WHEN %2.%4=0 AND %7 THEN 1 ELSE NULL END) AS %5,"
+                "SUM(CASE WHEN %2.%4=0 AND %7 THEN %2.%3 ELSE 0 END) AS %6 "
                 "FROM %1")
                 .arg(
                         CRATE_TABLE,
@@ -232,8 +235,13 @@ void CrateStorage::disconnectDatabase() {
 }
 
 void CrateStorage::createViews() {
+    const QString query = QString(kCrateSummaryViewQuery)
+                                  .replace(QStringLiteral("%7"),
+                                          decklab::mediaShownCondition(m_database,
+                                                  LIBRARY_TABLE + QLatin1Char('.') +
+                                                          LIBRARYTABLE_LOCATION));
     VERIFY_OR_DEBUG_ASSERT(
-            FwdSqlQuery(m_database, kCrateSummaryViewQuery).execPrepared()) {
+            FwdSqlQuery(m_database, query).execPrepared()) {
         kLogger.critical()
                 << "Failed to create database view for crate summaries!";
     }
