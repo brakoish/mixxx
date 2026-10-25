@@ -4909,7 +4909,9 @@ void WDeckLab::updateMatchBar() {
     auto& b = *m_browseState;
     const bool tracks = m_browseStack && m_libraryWidget && m_browseStack->currentWidget() == m_libraryWidget;
     const bool keyboard = m_keyboard && m_keyboard->isVisible();
-    const bool shown = b.matchEnabled && tracks && (!keyboard || b.matchOnly);
+    // r7-browse: a pad's SAMPLES list has ALL MUSIC instead of MATCH, and no Match bar.
+    const bool padSamples = m_sampleTarget && b.folderList == decklab::FolderList::Samples && folderTableShown();
+    const bool shown = b.matchEnabled && tracks && (!keyboard || b.matchOnly) && !padSamples;
     setVisibleIf(b.matchBar, shown);
     // r5-history: re-lay the column now; a layout request taken while Browse
     // was hidden left the bar's 46 px reserved over the list (History, home).

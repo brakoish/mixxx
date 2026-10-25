@@ -7686,6 +7686,7 @@ TEST_F(NativeDeckLabTest, LoadPadOpensOnSamples) {
     EXPECT_TRUE(all->isVisible());
     EXPECT_GE(all->height(), 44);
     EXPECT_FALSE(panel->findChild<QWidget*>(QStringLiteral("decklab-browse-match"))->isVisible());
+    EXPECT_FALSE(panel->findChild<QWidget*>(QStringLiteral("decklab-match-bar"))->isVisible());
     auto* load = panel->findChild<QPushButton*>(QStringLiteral("decklab-load-1"));
     ASSERT_NE(nullptr, load);
     EXPECT_EQ(QStringLiteral("Load pad 2"), load->text());
