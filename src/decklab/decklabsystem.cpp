@@ -769,10 +769,10 @@ void DeckLabSystem::ejectDrive(const QJsonObject& drive, Done done) {
 }
 
 void DeckLabSystem::ejectWhenReleased(const QJsonObject& drive, const Done& done, int waitedMs) {
-    // r7: the background analysis may be reading a download on it (or keep
-    // one open, paused): it lets go first, and its file closes after one
-    // chunk. Never a wait on the GUI thread: the eject goes out once nothing
-    // holds the drive, or after kDriveReleaseMaxMs.
+    // r7: the background analysis may be reading a download on it: it lets
+    // go first, and its file closes after one chunk. Never a wait on the GUI
+    // thread: the eject goes out once nothing holds the drive, or after
+    // kDriveReleaseMaxMs.
     const QString mount = drive.value(QStringLiteral("mount")).toString();
     if (m_driveRelease && m_driveRelease(mount) && waitedMs < kDriveReleaseMaxMs) {
         QTimer::singleShot(kDriveReleaseStepMs, this, [this, drive, done, waitedMs] {

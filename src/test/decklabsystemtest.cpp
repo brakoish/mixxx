@@ -438,10 +438,9 @@ TEST_F(DeckLabSystemTest, EjectIsRefusedWhileALoadedTrackLivesOnThatDrive) {
     EXPECT_TRUE(QTest::qWaitFor([&] { return system.usbDrives().size() == 1; }, 2000));
 }
 
-// r7: the background analysis may be reading a download on the stick (or
-// hold one open, paused). Eject asks it to let go first and goes out once
-// nothing holds the drive, never waiting on the GUI thread, and at most
-// kDriveReleaseMaxMs.
+// r7: the background analysis may be reading a download on the stick.
+// Eject asks it to let go first and goes out once nothing holds the drive,
+// never waiting on the GUI thread, and at most kDriveReleaseMaxMs.
 TEST_F(DeckLabSystemTest, EjectWaitsUntilTheAnalysisLetsGoOfTheDrive) {
     const QString mount = QStringLiteral("/media/decklab/1111-OTHER");
     DeckLabFakeService fake;
