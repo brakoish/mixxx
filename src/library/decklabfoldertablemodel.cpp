@@ -50,6 +50,32 @@ DeckLabFolderTableModel::~DeckLabFolderTableModel() = default;
 int DeckLabFolderTableModel::setLocations(const QStringList& locations, const QString& key) {
     m_locations = locations;
     m_key = key;
+    if (!createView()) {
+        return 0;
+    }
+    setTable(m_viewName,
+            LIBRARYTABLE_ID,
+            QStringList{LIBRARYTABLE_ID,
+                    LIBRARYTABLE_PREVIEW,
+                    LIBRARYTABLE_COVERART,
+                    PLAYLISTTRACKSTABLE_POSITION},
+            m_pTrackCollectionManager->internalCollection()->getTrackSource());
+    setSearch(QString());
+    setSort(fieldIndex(ColumnCache::COLUMN_PLAYLISTTRACKSTABLE_POSITION), Qt::AscendingOrder);
+    select();
+    return rowCount();
+}
+
+void DeckLabFolderTableModel::refreshForMedia() {
+    // r7: a merge or rename pass may have moved a file's address to another
+    // row (and hidden the one shown): find each file's row again.
+    if (initialized() && createView()) {
+        select();
+    }
+}
+
+bool DeckLabFolderTableModel::createView() {
+    const QStringList& locations = m_locations;
     // The library's row for each file (read only: a file the library does
     // not know yet waits for the next library scan).
     QHash<QString, qint64> ids;
@@ -95,9 +121,12 @@ int DeckLabFolderTableModel::setLocations(const QStringList& locations, const QS
     const QString position = cases.isEmpty()
             ? QStringLiteral("0")
             : QStringLiteral("CASE library.id %1 END").arg(cases.join(QLatin1Char(' ')));
+    // A row hidden later (mixxx_deleted: merged into another) leaves the
+    // list at the next select, even before the list is built again.
     const QString create = QStringLiteral(
             "CREATE TEMPORARY VIEW %1 AS SELECT library.%2 AS %2, '' AS %3, "
-            "library.%4 AS %5, %6 AS %7 FROM library WHERE library.id IN (%8)")
+            "library.%4 AS %5, %6 AS %7 FROM library WHERE library.id IN (%8) "
+            "AND library.mixxx_deleted = 0")
                                    .arg(m_viewName,
                                            LIBRARYTABLE_ID,
                                            LIBRARYTABLE_PREVIEW,
@@ -109,19 +138,9 @@ int DeckLabFolderTableModel::setLocations(const QStringList& locations, const QS
                                                            : known.join(QLatin1Char(',')));
     if (!query.exec(create)) {
         LOG_FAILED_QUERY(query);
-        return 0;
+        return false;
     }
-    setTable(m_viewName,
-            LIBRARYTABLE_ID,
-            QStringList{LIBRARYTABLE_ID,
-                    LIBRARYTABLE_PREVIEW,
-                    LIBRARYTABLE_COVERART,
-                    PLAYLISTTRACKSTABLE_POSITION},
-            m_pTrackCollectionManager->internalCollection()->getTrackSource());
-    setSearch(QString());
-    setSort(fieldIndex(ColumnCache::COLUMN_PLAYLISTTRACKSTABLE_POSITION), Qt::AscendingOrder);
-    select();
-    return rowCount();
+    return true;
 }
 
 void DeckLabFolderTableModel::initSortColumnMapping() {

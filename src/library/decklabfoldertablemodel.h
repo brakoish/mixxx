@@ -22,7 +22,8 @@ QString songListSqlFilter();
 /// from the library, and every load path (decks, pads, preview) works as in
 /// any track table. Files the library does not know yet are left out. The
 /// order is fixed (no header sorting); the position column numbers the files
-/// as given.
+/// as given. r7: hidden rows (mixxx_deleted) never show, and after a USB
+/// merge or rename pass each file's row is found again by its location.
 class DeckLabFolderTableModel final : public BaseSqlTableModel {
     Q_OBJECT
   public:
@@ -45,8 +46,12 @@ class DeckLabFolderTableModel final : public BaseSqlTableModel {
 
   protected:
     void initSortColumnMapping() override;
+    void refreshForMedia() override;
 
   private:
+    // The view of the library rows at m_locations, in that order.
+    bool createView();
+
     const QString m_viewName;
     QStringList m_locations;
     QString m_key;

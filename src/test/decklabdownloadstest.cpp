@@ -16,6 +16,7 @@
 
 #include "decklab/decklabanalysis.h"
 #include "decklab/decklabdownloads.h"
+#include "decklab/decklabmedia.h"
 #include "library/basetrackcache.h"
 #include "library/dao/trackschema.h"
 #include "library/decklabfoldertablemodel.h"
@@ -511,6 +512,43 @@ TEST_F(DeckLabDownloadsDbTest, SamplesStayOutOfSongListsButLoadFromSamples) {
     QSqlQuery count(internalCollection()->database());
     ASSERT_TRUE(count.exec(QStringLiteral("SELECT COUNT(*) FROM library WHERE mixxx_deleted = 0")) && count.next());
     EXPECT_EQ(3, count.value(0).toInt()) << "samples stay in the library";
+}
+
+// r7: DOWNLOADS and SAMPLES never show a hidden row, and after a USB merge
+// or rename pass each file's row is found again by its location. A rename
+// takeover gives the DJ's row the address of the row the scan added at the
+// new name, and hides that one.
+TEST_F(DeckLabDownloadsDbTest, FolderListsFollowARenameTakeover) {
+    QTemporaryDir root;
+    const QString renamed = root.filePath(QStringLiteral("Deck Lab Downloads/01 Generated Renamed.m4a"));
+    const QString old = root.filePath(QStringLiteral("Deck Lab Downloads/Generated Renamed.m4a"));
+    const TrackId mine = addTrack(old, QStringLiteral("Generated Renamed"), 124, QStringLiteral("8A"), true);
+    const TrackId scanned = addTrack(renamed, QStringLiteral("Generated Renamed"), 0, QString(), false);
+    connectLibraryCache();
+    DeckLabFolderTableModel list(nullptr, trackCollectionManager());
+    ASSERT_EQ(1, list.setLocations({renamed}, QStringLiteral("downloads:tracks")));
+    EXPECT_EQ(scanned, list.getTrackId(list.index(0, 0)));
+    // The takeover, as the relinker applies it.
+    QSqlQuery query(internalCollection()->database());
+    const auto locationOf = [&query](TrackId track) {
+        EXPECT_TRUE(query.exec(QStringLiteral("SELECT location FROM library WHERE id=%1").arg(track.toString())));
+        return query.next() ? query.value(0).toLongLong() : -1;
+    };
+    const qint64 oldAddress = locationOf(mine);
+    const qint64 newAddress = locationOf(scanned);
+    ASSERT_TRUE(query.exec(QStringLiteral("UPDATE library SET location=%1 WHERE id=%2")
+                                   .arg(newAddress)
+                                   .arg(mine.toString())));
+    ASSERT_TRUE(query.exec(QStringLiteral("UPDATE library SET location=%1, mixxx_deleted=1 WHERE id=%2")
+                                   .arg(oldAddress)
+                                   .arg(scanned.toString())));
+    // Even before the list is built again, the hidden row is gone from it.
+    list.select();
+    EXPECT_EQ(0, list.rowCount()) << "a hidden row never shows (LOAD would get a missing file)";
+    // The pass ends with a forced media refresh: the file's row is found again.
+    decklab::MediaPresence::instance().refresh(internalCollection()->database(), true);
+    ASSERT_EQ(1, list.rowCount());
+    EXPECT_EQ(mine, list.getTrackId(list.index(0, 0)));
 }
 
 // The analysis takes the downloads the library knows that still lack a BPM,
