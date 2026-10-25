@@ -408,8 +408,8 @@ TEST(DeckLabBackgroundAnalysisTest, ATrackOnAStickIsLetGoOfInsteadOfPaused) {
     analysis.setDelays(0, 0);
     FakeAnalyzer analyzer;
     analyzer.left = {id(1), id(2)};
-    analyzer.where.insert(id(1), QStringLiteral("/media/dj/MY STICK/Deck Lab Downloads/Generated One.m4a"));
-    analyzer.where.insert(id(2), QStringLiteral("/home/dj/Music/Deck Lab Downloads/Generated Two.m4a"));
+    analyzer.where.insert(id(1), QStringLiteral("/media/user/MY STICK/Deck Lab Downloads/Generated One.m4a"));
+    analyzer.where.insert(id(2), QStringLiteral("/home/user/Music/Deck Lab Downloads/Generated Two.m4a"));
     analysis.setHooks(analyzer.hooks());
     analysis.wake();
     analysis.check();
