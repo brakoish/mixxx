@@ -445,7 +445,7 @@ TEST(DeckLabUsbRelinkTest, LegacyPathsMatchUuidAndLabelMountsOnly) {
 // relative path and recorded size; an unknown size is not enough); a twin
 // merges into the oldest row instead of being left apart.
 TEST(DeckLabUsbRelinkTest, PlanMovesOnlyRowsOfTheSameFile) {
-    const QString old = QStringLiteral("/media/djuser/DJ USB/Contents/");
+    const QString old = QStringLiteral("/media/user/DJ USB/Contents/");
     const QString now = QStringLiteral("/media/decklab/6A3F-1C2B/Contents/");
     const QHash<QString, qint64> files{
             {now + "a.mp3", 1000},
@@ -468,8 +468,8 @@ TEST(DeckLabUsbRelinkTest, PlanMovesOnlyRowsOfTheSameFile) {
             {2, 12, old + "b.mp3", 2000},                             // different file
             {3, 13, old + "c.mp3", 0},                                // size unknown: left
             {5, 15, old + "e.mp3", 5000},                             // not on the stick
-            {6, 16, "/run/media/djuser/DJ USB/Contents/a.mp3", 1000}, // a.mp3 again: merges
-            {7, 17, "/home/djuser/Music/x.mp3", 0},                   // not this stick
+            {6, 16, "/run/media/user/DJ USB/Contents/a.mp3", 1000}, // a.mp3 again: merges
+            {7, 17, "/home/user/Music/x.mp3", 0},                   // not this stick
             {8, 18, old + "f.mp3", 6000},                             // in use right now
     };
     const auto plan = decklab::planRelink(kStick, rows, {}, probe, {18});
@@ -525,7 +525,7 @@ class DeckLabUsbRelinkDbTest : public LibraryTest {
 // the new path before merges into that row (hidden, never deleted); the row
 // at the new path is found again. A second pass has nothing to do.
 TEST_F(DeckLabUsbRelinkDbTest, ApplyMovesRowsAndMergesTwins) {
-    const QString old = QStringLiteral("/media/djuser/DJ USB/Contents/");
+    const QString old = QStringLiteral("/media/user/DJ USB/Contents/");
     const QString now = QStringLiteral("/media/decklab/6A3F-1C2B/Contents/");
     const qint64 a = addRow(old + "a.mp3", 1000);
     const qint64 b = addRow(old + "b.mp3", 2000);

@@ -191,3 +191,34 @@ at the new path while the stick was away remain separate.
 - The stick label shows in Browse; relink after moving a stick that was used under `/media/<user>/<label>` to the
   appliance mount: cues and play counts remain, nothing new appears in the library.
 - `kColorForIDRed` against rekordbox's red.
+
+## 8. Round 7 (r7-library): one entry per song, only the sticks that are in
+
+Supersedes the relink limits in section 4 (proposal steps 2 and 6 are now implemented, without deleting rows).
+
+- **Earlier addresses of a stick** (`decklabusbrelink.*`): a link to its mount (the appliance's
+  `/media/<user>/<label>`, whatever it is called), a folder named after its label or FS UUID (any case), alone or with
+  udisks' number (`<label>1`), under `/media/<user>`, `/run/media/<user>` or `/media`. A named folder that holds
+  another filesystem now is never this stick. Same song = same relative path and the same recorded file size; never
+  title or artist.
+- **Merge**: twins merge onto the row at the current address (or, without one, the oldest row moves there). Cues and
+  loops the survivor lacks move (one per hot cue slot, one main/intro/outro, saved loops not twice), crate memberships
+  are united, playlist/history/Auto DJ entries point at the survivor in place, play count = max, last played = latest,
+  added = earliest, rating and colour filled in, grid and key from the row the DJ edited (locked BPM, user key), else
+  the analysed one. The merged row is hidden (`mixxx_deleted=1`) with whatever the survivor already had: nothing is
+  deleted. Rows at the current address marked missing whose file is back are found again; library folders at an
+  earlier address follow the stick.
+- **When**: start-up (sticks under `/media/decklab`, no decklabd needed), decklabd's drive list, and a mount seen in
+  the media folders; only while no deck, sampler or preview plays (retried every 10 s otherwise) and no library scan
+  runs; songs whose track
+  is loaded or cached wait for the next time. One transaction, after `VACUUM INTO <db>.decklab-merge-<time>` (the
+  newest two copies are kept). The log line `Deck Lab USB merge` gives the counts.
+- **Sticks that are out** (`decklabmedia.*`): the location ids of rows under a media folder that is not in (no folder,
+  an empty one, a dangling link) go into `temp.decklab_media_away`; Tracks, crates, playlists, history (Mixxx's and
+  Deck Lab's), Missing tracks, search, Mixes, the crate/playlist counts and the home count leave them out. They come
+  back when the stick is in. Nothing is written to the library file; the stick's folder stays in `directories`
+  and Mixxx's scanner skips it while it is out. Table models select again by themselves on a change.
+- **Prevention**: the rekordbox device scan lists `/media/decklab` first and skips links to a folder already listed,
+  so the appliance's label link is no second device.
+- Tests: `src/test/decklabusbmergetest.cpp` (`DeckLabUsbMergeTest`, `DeckLabUsbMergeDbTest`, `DeckLabMediaTest`,
+  `DeckLabMediaDbTest`).

@@ -35,6 +35,7 @@
 #include <QTimer>
 #include <functional>
 #include <memory>
+#include <optional>
 
 class TrackCollectionManager;
 
@@ -157,9 +158,10 @@ RelinkResult applyRelink(QSqlDatabase& database, const RelinkPlan& plan);
 
 // Copies the library database beside itself (SQLite's VACUUM INTO, a
 // consistent snapshot) as "<file>.decklab-merge-<time>" and keeps the newest
-// `keep` copies. Returns the copy's path, empty when it could not be made.
+// `keep` copies. Returns the copy's path; an empty path for a database in
+// memory (tests: nothing to copy); nullopt when no copy could be made.
 // Never inside a transaction.
-QString backupLibraryDatabase(const QSqlDatabase& database, int keep = 2);
+std::optional<QString> backupLibraryDatabase(const QSqlDatabase& database, int keep = 2);
 
 // Session glue: when a stick is in (start-up, decklabd's drive list, a mount
 // seen in the media folders), rows at its earlier addresses follow it and
@@ -220,6 +222,7 @@ class UsbRelinker final : public QObject {
     QFutureWatcher<RelinkPlan> m_watcher;
     UsbVolume m_running;
     QTimer m_retry; // a stick seen while something played: tried when it stops
+    bool m_scanning = false; // Mixxx's library scan is running
     QFileSystemWatcher* m_folders = nullptr;
     QTimer m_settle; // media folder changes come in bursts
 };

@@ -783,11 +783,23 @@ RelinkResult applyRelink(QSqlDatabase& database, const RelinkPlan& plan) {
     return result;
 }
 
-QString backupLibraryDatabase(const QSqlDatabase& database, int keep) {
-    const QFileInfo file(database.databaseName());
-    if (!file.isFile()) {
-        return QString();
+std::optional<QString> backupLibraryDatabase(const QSqlDatabase& database, int keep) {
+    // The file SQLite has open (Mixxx opens it through a "file:" URI).
+    QSqlQuery list(database);
+    if (!list.exec(QStringLiteral("PRAGMA database_list"))) {
+        LOG_FAILED_QUERY(list);
+        return std::nullopt;
     }
+    QString path;
+    while (list.next()) {
+        if (list.value(1).toString() == QStringLiteral("main")) {
+            path = list.value(2).toString();
+        }
+    }
+    if (path.isEmpty()) {
+        return QString(); // in memory (tests): nothing to copy beside it
+    }
+    const QFileInfo file(path);
     const QDir folder = file.dir();
     const QString stem = file.fileName() + QStringLiteral(".decklab-merge-");
     // Names sort by time.
@@ -802,7 +814,7 @@ QString backupLibraryDatabase(const QSqlDatabase& database, int keep) {
     if (!query.exec(QStringLiteral("VACUUM INTO '%1'").arg(literal))) {
         LOG_FAILED_QUERY(query);
         QFile::remove(copy);
-        return QString();
+        return std::nullopt;
     }
     QStringList copies = folder.entryList(QStringList{stem + QLatin1Char('*')}, QDir::Files, QDir::Name);
     while (copies.size() > std::max(1, keep)) {
@@ -824,6 +836,17 @@ UsbRelinker::UsbRelinker(std::shared_ptr<TrackCollectionManager> library, QObjec
         return ids;
     };
     connect(&m_watcher, &QFutureWatcher<RelinkPlan>::finished, this, &UsbRelinker::finish);
+    if (m_library) {
+        // Mixxx's library scan writes in one long transaction: wait for it.
+        connect(m_library.get(), &TrackCollectionManager::libraryScanStarted, this, [this] {
+            m_scanning = true;
+        });
+        connect(m_library.get(), &TrackCollectionManager::libraryScanFinished, this, [this] {
+            m_scanning = false;
+            refreshMedia(); // files found missing or found again
+            startNext();
+        });
+    }
     m_retry.setSingleShot(true);
     m_retry.setInterval(10000);
     connect(&m_retry, &QTimer::timeout, this, &UsbRelinker::startNext);
@@ -962,7 +985,7 @@ void UsbRelinker::queue(const QList<UsbVolume>& volumes) {
 }
 
 void UsbRelinker::startNext() {
-    if (m_watcher.isRunning() || m_pending.isEmpty() || !m_library) {
+    if (m_watcher.isRunning() || m_pending.isEmpty() || !m_library || m_scanning) {
         return;
     }
     // Never while anything plays: tried again when it stops.
@@ -991,10 +1014,13 @@ void UsbRelinker::startNext() {
 void UsbRelinker::finish() {
     const UsbVolume volume = m_running;
     RelinkPlan plan = m_watcher.result();
-    if (m_playing && m_playing()) {
-        // A deck started while the stick was read: later, planned afresh.
+    if (m_scanning || (m_playing && m_playing())) {
+        // A deck started (or a library scan) while the stick was read:
+        // later, planned afresh.
         m_pending.prepend(volume);
-        m_retry.start();
+        if (!m_scanning) {
+            m_retry.start();
+        }
         return;
     }
     // A track may have been loaded while the worker checked files: its song waits.
@@ -1017,8 +1043,7 @@ void UsbRelinker::finish() {
     TrackCollection* collection = m_library ? m_library->internalCollection() : nullptr;
     if (collection && !plan.isEmpty()) {
         QSqlDatabase database = collection->database();
-        const QString copy = backupLibraryDatabase(database);
-        if (copy.isEmpty()) {
+        if (!backupLibraryDatabase(database)) {
             qWarning() << "Deck Lab USB merge: the library could not be copied first; nothing changed";
             result.ok = false;
         } else {

@@ -11,10 +11,12 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QSignalSpy>
+#include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QTemporaryDir>
 #include <QTest>
+#include <algorithm>
 #include <string>
 
 #include "decklab/decklabmedia.h"
@@ -44,13 +46,13 @@ const decklab::UsbVolume kStick{QStringLiteral("1234-ABCD"),
 const QString kMount = QStringLiteral("/media/decklab/1234-ABCD");
 const QString kNow = QStringLiteral("/media/decklab/1234-ABCD/");
 // The appliance's link /media/<user>/<label> to the stick's mount.
-const QString kLinkFolder = QStringLiteral("/media/dj/MY STICK");
-const QString kLink = QStringLiteral("/media/dj/MY STICK/");
+const QString kLinkFolder = QStringLiteral("/media/user/MY STICK");
+const QString kLink = QStringLiteral("/media/user/MY STICK/");
 // udisks before Deck Lab: the label taken, so "MY STICK1" (left empty).
-const QString kSecondFolder = QStringLiteral("/media/dj/MY STICK1");
-const QString kSecond = QStringLiteral("/media/dj/MY STICK1/");
+const QString kSecondFolder = QStringLiteral("/media/user/MY STICK1");
+const QString kSecond = QStringLiteral("/media/user/MY STICK1/");
 // udisks before Deck Lab, for a stick without a label.
-const QString kUuid = QStringLiteral("/media/dj/1234-ABCD/");
+const QString kUuid = QStringLiteral("/media/user/1234-ABCD/");
 
 // The filesystem as planning sees it.
 struct FakeDisk {
@@ -133,8 +135,8 @@ TEST(DeckLabUsbMergeTest, EarlierMountNamesAreTheLabelOrUuidWithUdisksNumber) {
 TEST(DeckLabUsbMergeTest, EveryEarlierAddressMovesToTheCurrentOne) {
     FakeDisk disk = stickWithLink();
     // A link to the mount counts whatever it is called.
-    disk.links.insert(QStringLiteral("/media/dj/RENAMED"), kMount);
-    disk.in.insert(QStringLiteral("/media/dj/RENAMED"));
+    disk.links.insert(QStringLiteral("/media/user/RENAMED"), kMount);
+    disk.in.insert(QStringLiteral("/media/user/RENAMED"));
     for (const char* name : {"a", "b", "c", "d", "e", "f"}) {
         disk.files.insert(kNow + QStringLiteral("Music/%1.mp3").arg(QLatin1String(name)), 1000);
     }
@@ -142,10 +144,10 @@ TEST(DeckLabUsbMergeTest, EveryEarlierAddressMovesToTheCurrentOne) {
             row(1, kLink + QStringLiteral("Music/a.mp3"), 1000),
             row(2, kSecond + QStringLiteral("Music/b.mp3"), 1000, true),
             row(3, kUuid + QStringLiteral("Music/c.mp3"), 1000, true),
-            row(4, QStringLiteral("/run/media/dj/MY STICK/Music/d.mp3"), 1000, true),
+            row(4, QStringLiteral("/run/media/user/MY STICK/Music/d.mp3"), 1000, true),
             row(5, QStringLiteral("/media/MY STICK/Music/e.mp3"), 1000, true),
-            row(6, QStringLiteral("/media/dj/RENAMED/Music/f.mp3"), 1000),
-            row(7, QStringLiteral("/home/dj/Music/a.mp3"), 1000), // the unit's own music
+            row(6, QStringLiteral("/media/user/RENAMED/Music/f.mp3"), 1000),
+            row(7, QStringLiteral("/home/user/Music/a.mp3"), 1000), // the unit's own music
     };
     const RelinkPlan plan = decklab::planRelink(kStick, rows, {}, disk.probe());
     ASSERT_EQ(6, plan.groups.size());
@@ -196,16 +198,16 @@ TEST(DeckLabUsbMergeTest, LibraryFoldersFollowTheStick) {
     FakeDisk disk;
     disk.in.insert(kMount);
     disk.files.insert(kNow + QStringLiteral("Music/a.mp3"), 1000);
-    const QStringList folders{QStringLiteral("/home/dj/Music"),
-            QStringLiteral("/media/dj/1234-ABCD"),
-            QStringLiteral("/media/dj/MY STICK1/Music"),
+    const QStringList folders{QStringLiteral("/home/user/Music"),
+            QStringLiteral("/media/user/1234-ABCD"),
+            QStringLiteral("/media/user/MY STICK1/Music"),
             kNow + QStringLiteral("Deck Lab Downloads"),
-            QStringLiteral("/media/dj/5678-EF01")};
+            QStringLiteral("/media/user/5678-EF01")};
     const RelinkPlan plan = decklab::planRelink(kStick, {}, folders, disk.probe());
     ASSERT_EQ(2, plan.folders.size());
-    EXPECT_EQ(QStringLiteral("/media/dj/1234-ABCD"), plan.folders[0].first);
+    EXPECT_EQ(QStringLiteral("/media/user/1234-ABCD"), plan.folders[0].first);
     EXPECT_EQ(kMount, plan.folders[0].second);
-    EXPECT_EQ(QStringLiteral("/media/dj/MY STICK1/Music"), plan.folders[1].first);
+    EXPECT_EQ(QStringLiteral("/media/user/MY STICK1/Music"), plan.folders[1].first);
     EXPECT_EQ(kNow + QStringLiteral("Music"), plan.folders[1].second);
 }
 
@@ -411,7 +413,7 @@ class DeckLabUsbMergeDbTest : public LibraryTest {
     decklab::RelinkResult mergeTwins(const Twins&) {
         const RelinkPlan merge = plan(twinsDisk());
         EXPECT_EQ(1, merge.groups.size());
-        EXPECT_FALSE(decklab::backupLibraryDatabase(database()).isEmpty());
+        EXPECT_TRUE(decklab::backupLibraryDatabase(database()).has_value()); // in memory: nothing to copy
         const auto result = apply(merge);
         EXPECT_TRUE(result.ok);
         return result;
@@ -500,15 +502,12 @@ TEST_F(DeckLabUsbMergeDbTest, NothingIsDeleted) {
     const QList<int> before = totals();
     mergeTwins(t);
     EXPECT_EQ(before, totals());
-    // The copy made first sits next to the library.
-    const QFileInfo file(database().databaseName());
-    EXPECT_FALSE(file.dir().entryList({file.fileName() + QStringLiteral(".decklab-merge-*")}, QDir::Files).isEmpty());
 }
 
 TEST_F(DeckLabUsbMergeDbTest, SecondRunChangesNothing) {
     const Twins t = twins();
     const qint64 alone = addTrack(kSecond + QStringLiteral("Contents/b.mp3"), 2000, true);
-    exec(QStringLiteral("INSERT INTO directories (directory) VALUES ('/media/dj/1234-ABCD')"));
+    exec(QStringLiteral("INSERT INTO directories (directory) VALUES ('/media/user/1234-ABCD')"));
     FakeDisk disk = twinsDisk();
     disk.files.insert(kNow + QStringLiteral("Contents/b.mp3"), 2000);
     const auto first = apply(plan(disk));
@@ -592,9 +591,9 @@ TEST_F(DeckLabUsbMergeDbTest, SymlinkAliasMoves) {
 // library folder follows it too.
 TEST_F(DeckLabUsbMergeDbTest, UuidPathAliasMovesWithItsLibraryFolder) {
     const qint64 upper = addTrack(kUuid + QStringLiteral("Music/a.mp3"), 1000, true);
-    const qint64 lower = addTrack(QStringLiteral("/run/media/dj/1234-abcd/Music/b.mp3"), 2000, true);
-    exec(QStringLiteral("INSERT INTO directories (directory) VALUES ('/media/dj/1234-ABCD')"));
-    exec(QStringLiteral("INSERT INTO directories (directory) VALUES ('/home/dj/Music')"));
+    const qint64 lower = addTrack(QStringLiteral("/run/media/user/1234-abcd/Music/b.mp3"), 2000, true);
+    exec(QStringLiteral("INSERT INTO directories (directory) VALUES ('/media/user/1234-ABCD')"));
+    exec(QStringLiteral("INSERT INTO directories (directory) VALUES ('/home/user/Music')"));
     FakeDisk disk;
     disk.in.insert(kMount);
     disk.files.insert(kNow + QStringLiteral("Music/a.mp3"), 1000);
@@ -607,20 +606,48 @@ TEST_F(DeckLabUsbMergeDbTest, UuidPathAliasMovesWithItsLibraryFolder) {
     EXPECT_EQ(1, result.folders);
     QStringList folders = decklab::libraryFolders(database());
     folders.sort();
-    EXPECT_EQ((QStringList{QStringLiteral("/home/dj/Music"), kMount}), folders);
+    EXPECT_EQ((QStringList{QStringLiteral("/home/user/Music"), kMount}), folders);
 }
 
-TEST_F(DeckLabUsbMergeDbTest, BackupKeepsTheNewestTwo) {
+// The copy beside the library file (the tests' library lives in memory: a
+// database file of its own here). The newest two are kept.
+TEST(DeckLabUsbMergeTest, BackupKeepsTheNewestTwo) {
+    QTemporaryDir folder;
+    ASSERT_TRUE(folder.isValid());
+    const QString file = folder.filePath(QStringLiteral("library.sqlite"));
     QStringList copies;
-    for (int n = 0; n < 3; ++n) {
-        copies << decklab::backupLibraryDatabase(database());
-        ASSERT_FALSE(copies.last().isEmpty());
+    {
+        QSqlDatabase database = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("decklab-backup"));
+        database.setDatabaseName(file);
+        ASSERT_TRUE(database.open());
+        QSqlQuery query(database);
+        ASSERT_TRUE(query.exec(QStringLiteral("CREATE TABLE generated (value INTEGER)")));
+        ASSERT_TRUE(query.exec(QStringLiteral("INSERT INTO generated (value) VALUES (42)")));
+        for (int n = 0; n < 3; ++n) {
+            const auto copy = decklab::backupLibraryDatabase(database);
+            ASSERT_TRUE(copy.has_value());
+            ASSERT_FALSE(copy->isEmpty());
+            copies << *copy;
+        }
+        database.close();
     }
+    QSqlDatabase::removeDatabase(QStringLiteral("decklab-backup"));
+    EXPECT_TRUE(copies.at(0).startsWith(file + QStringLiteral(".decklab-merge-")));
     EXPECT_FALSE(QFileInfo::exists(copies.at(0)));
     EXPECT_TRUE(QFileInfo::exists(copies.at(1)));
     EXPECT_TRUE(QFileInfo::exists(copies.at(2)));
     // A real copy of the library.
-    EXPECT_GT(QFileInfo(copies.at(2)).size(), 0);
+    {
+        QSqlDatabase copy = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("decklab-backup-copy"));
+        copy.setDatabaseName(copies.at(2));
+        ASSERT_TRUE(copy.open());
+        QSqlQuery query(copy);
+        ASSERT_TRUE(query.exec(QStringLiteral("SELECT value FROM generated")));
+        ASSERT_TRUE(query.next());
+        EXPECT_EQ(42, query.value(0).toInt());
+        copy.close();
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("decklab-backup-copy"));
 }
 
 // The session glue: nothing while a deck plays; the stick's turn comes once
@@ -656,9 +683,9 @@ TEST(DeckLabMediaTest, MediaRootsAreMountFolders) {
     EXPECT_EQ(kMount, mediaRootOf(kNow + QStringLiteral("Contents/a.mp3")));
     EXPECT_EQ(kLinkFolder, mediaRootOf(kLink + QStringLiteral("a.mp3")));
     EXPECT_EQ(QStringLiteral("/media/MY STICK"), mediaRootOf(QStringLiteral("/media/MY STICK/a.mp3")));
-    EXPECT_EQ(QStringLiteral("/run/media/dj/MY STICK"), mediaRootOf(QStringLiteral("/run/media/dj/MY STICK/x/a.mp3")));
-    EXPECT_TRUE(mediaRootOf(QStringLiteral("/home/dj/Music/a.mp3")).isEmpty());
-    EXPECT_TRUE(mediaRootOf(QStringLiteral("/run/user/1000/doc/a.mp3")).isEmpty());
+    EXPECT_EQ(QStringLiteral("/run/media/user/MY STICK"), mediaRootOf(QStringLiteral("/run/media/user/MY STICK/x/a.mp3")));
+    EXPECT_TRUE(mediaRootOf(QStringLiteral("/home/user/Music/a.mp3")).isEmpty());
+    EXPECT_TRUE(mediaRootOf(QStringLiteral("/run/user/1234/doc/a.mp3")).isEmpty());
     EXPECT_TRUE(mediaRootOf(QStringLiteral("/media/a.mp3")).isEmpty());
     EXPECT_TRUE(mediaRootOf(QStringLiteral("relative/media/a.mp3")).isEmpty());
 }
@@ -727,11 +754,11 @@ class DeckLabMediaDbTest : public DeckLabUsbMergeDbTest {
 // come back when it is plugged in. Nothing is written but the temporary
 // table; nothing is deleted.
 TEST_F(DeckLabMediaDbTest, AbsentStickHiddenThenShownWhenMounted) {
-    const QString away = QStringLiteral("/media/dj/5678-EF01/");
+    const QString away = QStringLiteral("/media/user/5678-EF01/");
     const qint64 onStick = addTrack(kNow + QStringLiteral("a.mp3"), 1000);
     const qint64 awayB = addTrack(away + QStringLiteral("away-b.mp3"), 2000);
     const qint64 awayC = addTrack(away + QStringLiteral("away-c.mp3"), 3000, true);
-    const qint64 home = addTrack(QStringLiteral("/home/dj/Music/d.mp3"), 4000);
+    const qint64 home = addTrack(QStringLiteral("/home/user/Music/d.mp3"), 4000);
     const qint64 crate = addCrate(QStringLiteral("Generated crate"));
     addToCrate(crate, onStick);
     addToCrate(crate, awayB);
