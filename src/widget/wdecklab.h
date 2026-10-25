@@ -19,6 +19,8 @@
 #include "widget/wbasewidget.h"
 #include "widget/decklabdeckwidgets.h"
 #include "widget/decklabtempopresenter.h"
+#include "decklab/decklabquiet.h"
+#include "track/trackid.h"
 #include <QWidget>
 
 class ControlObject;
@@ -290,7 +292,14 @@ class WDeckLab : public QWidget, public WBaseWidget {
     bool showFolderTracks(decklab::FolderList list, const QStringList& locations, const QString& key, const QString& title);
     void openSamples(bool forPad);
     bool folderTableShown() const;
-    bool anythingPlaying();
+    // r7: what keeps background jobs waiting (decklab/decklabquiet.h): the
+    // system's answer, or this surface's own players without one (tests).
+    decklab::Activity backgroundActivity();
+    bool backgroundQuiet() {
+        return decklab::isQuiet(backgroundActivity());
+    }
+    // A deck, sampler or preview holds (or is loading) this track.
+    bool loadedOnAPlayer(TrackId trackId) const;
     void initBackgroundAnalysis();
     int displayedDeck(int side) const;
     void setDisplayedDeck(int side, int deck);
@@ -491,4 +500,6 @@ class WDeckLab : public QWidget, public WBaseWidget {
     QLabel* m_performanceStatus = nullptr;
     std::unique_ptr<DeckLabBrowseState> m_browseState;
     DeckLabBackgroundAnalysis* m_analysis = nullptr; // r7-browse
+    QPointer<DeckLabSystem> m_system; // r7: quiet and the empty pad come from it
+    bool m_libraryScanning = false;   // r7: without a system, the scan is tracked here
 };

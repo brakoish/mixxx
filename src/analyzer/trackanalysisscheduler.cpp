@@ -1,5 +1,7 @@
 #include "analyzer/trackanalysisscheduler.h"
 
+#include <algorithm>
+
 #include "analyzer/analyzerscheduledtrack.h"
 #include "analyzer/analyzertrack.h"
 #include "moc_trackanalysisscheduler.cpp"
@@ -260,6 +262,12 @@ int TrackAnalysisScheduler::scheduleTracks(const QList<AnalyzerScheduledTrack>& 
         }
     }
     return scheduledCount;
+}
+
+bool TrackAnalysisScheduler::hasRunningWorkers() const {
+    return std::any_of(m_workers.begin(), m_workers.end(), [](const Worker& worker) {
+        return worker.hasThread();
+    });
 }
 
 void TrackAnalysisScheduler::suspend() {

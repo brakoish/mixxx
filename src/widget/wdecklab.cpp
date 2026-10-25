@@ -4371,8 +4371,14 @@ void WDeckLab::setAudioOutputConfigured(bool configured) {
     updateStatus();
 }
 void WDeckLab::attachSystem(DeckLabSystem* system) {
+    m_system = system;
     if (m_systemUi) m_systemUi->attach(system);
     historyAttachSystem(system); // r5-history
+    if (system) {
+        // r7: PUT ON PAD leaves the pad a Load pad trip is filling alone.
+        const QPointer<WDeckLab> self(this);
+        system->setPadTarget([self] { return self ? self->m_sampleTarget : 0; });
+    }
 }
 void WDeckLab::updateStatus() {
     int overloads = int(value("[App]", "audio_latency_overload_count"));
@@ -6665,27 +6671,48 @@ bool WDeckLab::folderTableShown() const {
     auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
     return !b.folderModel || !table || table->model() == b.folderModel;
 }
-bool WDeckLab::anythingPlaying() {
-    for (int deck = 1; deck <= 4; ++deck) {
-        if (value(channel(deck), QStringLiteral("play")) > 0) return true;
+decklab::Activity WDeckLab::backgroundActivity() {
+    // One rule for every background job (decklab/decklabquiet.h); the
+    // system also knows the open utility.
+    if (m_system) return m_system->activity();
+    decklab::Activity activity;
+    for (int deck = 1; deck <= 4 && !activity.playing; ++deck) {
+        activity.playing = value(channel(deck), QStringLiteral("play")) > 0;
     }
     const int samplers = std::max(16, m_players ? m_players->numberOfSamplers() : 0);
-    for (int sampler = 1; sampler <= samplers; ++sampler) {
-        if (value(QStringLiteral("[Sampler%1]").arg(sampler), QStringLiteral("play")) > 0) return true;
+    for (int sampler = 1; sampler <= samplers && !activity.playing; ++sampler) {
+        activity.playing = value(QStringLiteral("[Sampler%1]").arg(sampler), QStringLiteral("play")) > 0;
     }
     const int previews = std::max(1, m_players ? m_players->numberOfPreviewDecks() : 0);
-    for (int preview = 1; preview <= previews; ++preview) {
-        if (value(QStringLiteral("[PreviewDeck%1]").arg(preview), QStringLiteral("play")) > 0) return true;
+    for (int preview = 1; preview <= previews && !activity.playing; ++preview) {
+        activity.playing = value(QStringLiteral("[PreviewDeck%1]").arg(preview), QStringLiteral("play")) > 0;
     }
     // [Recording] status: 2 recording, 3 recording into the next split file.
     const int recording = int(value(QStringLiteral("[Recording]"), QStringLiteral("status")));
-    return recording == 2 || recording == 3;
+    activity.recording = recording == 2 || recording == 3;
+    activity.scanning = m_libraryScanning;
+    return activity;
+}
+bool WDeckLab::loadedOnAPlayer(TrackId trackId) const {
+    if (!m_players || !trackId.isValid()) return false;
+    QStringList groups;
+    for (int deck = 0; deck < m_players->numberOfDecks(); ++deck) groups << PlayerManager::groupForDeck(deck);
+    for (int sampler = 0; sampler < m_players->numberOfSamplers(); ++sampler) groups << PlayerManager::groupForSampler(sampler);
+    for (int preview = 0; preview < m_players->numberOfPreviewDecks(); ++preview) groups << PlayerManager::groupForPreviewDeck(preview);
+    for (const QString& group : std::as_const(groups)) {
+        // A player that is loading already holds its new track.
+        auto* player = m_players->getPlayer(group);
+        const TrackPointer track = player ? player->getLoadedTrack() : TrackPointer();
+        if (track && track->getId() == trackId) return true;
+    }
+    return false;
 }
 void WDeckLab::initBackgroundAnalysis() {
     if (m_analysis) return;
     m_analysis = new DeckLabBackgroundAnalysis(this);
     DeckLabBackgroundAnalysis::Hooks hooks;
-    hooks.busy = [this] { return anythingPlaying(); };
+    hooks.busy = [this] { return !backgroundQuiet(); };
+    hooks.loaded = [this](TrackId trackId) { return loadedOnAPlayer(trackId); };
     if (m_library && m_library->trackCollectionManager()) {
         hooks.candidates = [this] {
             return DeckLabBackgroundAnalysis::tracksToAnalyze(
@@ -6695,7 +6722,7 @@ void WDeckLab::initBackgroundAnalysis() {
     }
     m_analysis->setHooks(hooks);
     if (m_library) m_analysis->useLibrary(m_library, m_config);
-    // The moment anything plays the batch stops; a quiet spell starts it again.
+    // The moment it is not quiet the analyzer pauses; a quiet spell goes on.
     const auto changed = [this](double) {
         if (m_analysis) m_analysis->playbackChanged();
     };
@@ -6706,10 +6733,22 @@ void WDeckLab::initBackgroundAnalysis() {
     for (int preview = 1; preview <= previews; ++preview) watch(QStringLiteral("[PreviewDeck%1]").arg(preview), QStringLiteral("play"), changed);
     watch(QStringLiteral("[Recording]"), QStringLiteral("status"), changed);
     connect(m_analysis, &DeckLabBackgroundAnalysis::progressChanged, this, [this] { refreshDownloadsTile(); });
-    // New downloads arrive with a library scan (after Get Music closes).
     if (m_library && m_library->trackCollectionManager()) {
-        connect(m_library->trackCollectionManager(), &TrackCollectionManager::libraryScanFinished,
-                m_analysis, &DeckLabBackgroundAnalysis::wake);
+        auto* collection = m_library->trackCollectionManager();
+        // A library scan holds its write transaction until it ends: the
+        // analyzer waits (queued, so the system has seen the scan first).
+        connect(collection, &TrackCollectionManager::libraryScanStarted, this, [this] {
+            m_libraryScanning = true;
+            if (m_analysis) m_analysis->playbackChanged();
+        }, Qt::QueuedConnection);
+        // New downloads arrive with a library scan (after Get Music closes).
+        connect(collection, &TrackCollectionManager::libraryScanFinished, this, [this] {
+            m_libraryScanning = false;
+            if (m_analysis) {
+                m_analysis->playbackChanged();
+                m_analysis->wake();
+            }
+        }, Qt::QueuedConnection);
     }
     m_analysis->wake();
 }

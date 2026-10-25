@@ -12,6 +12,7 @@
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QTemporaryDir>
+#include <QTest>
 
 #include "decklab/decklabanalysis.h"
 #include "decklab/decklabdownloads.h"
@@ -180,82 +181,172 @@ TEST(DeckLabDownloadsTest, HomeTilesWithDownloadsAndSamplesAreThreeARow) {
     EXPECT_GE(tile.height(), 96);
 }
 
-// The analysis runs only while nothing plays: it stops the moment something
-// plays, goes on after a quiet spell, counts one batch across pauses and
-// never queues a track the analyzer already finished (or could not read).
-TEST(DeckLabBackgroundAnalysisTest, StopsWhenSomethingPlaysAndGoesOnWhenQuiet) {
+namespace {
+
+// The analyzer as DeckLabBackgroundAnalysis's hooks see it: what started,
+// paused, went on, stopped and was let go.
+struct FakeAnalyzer {
+    bool busy = false;
+    QList<TrackId> left;
+    QSet<TrackId> onPlayers;
+    QList<TrackId> started;
+    int pauses = 0;
+    int resumes = 0;
+    int stops = 0;
+    int releases = 0;
+
+    DeckLabBackgroundAnalysis::Hooks hooks() {
+        DeckLabBackgroundAnalysis::Hooks h;
+        h.busy = [this] { return busy; };
+        h.candidates = [this] { return left; };
+        h.loaded = [this](TrackId id) { return onPlayers.contains(id); };
+        h.start = [this](TrackId id) {
+            started << id;
+            return true;
+        };
+        h.pause = [this] { ++pauses; };
+        h.resume = [this] { ++resumes; };
+        h.stop = [this] { ++stops; };
+        h.release = [this] { ++releases; };
+        return h;
+    }
+};
+
+TrackId id(int n) {
+    return TrackId(QVariant(n));
+}
+
+} // namespace
+
+// r7: the analysis runs only while it is quiet. The moment it is not, the
+// analyzer pauses where it is (TrackAnalysisScheduler's own pause: nothing
+// is torn down, so the GUI never waits for the analyzer thread) and goes on
+// with the same track after a quiet spell. One track at a time, newest
+// first; one batch is counted across pauses; a track the analyzer finished
+// (or could not read) is never queued again.
+TEST(DeckLabBackgroundAnalysisTest, PausesWhenNotQuietAndGoesOnWhereItWas) {
     DeckLabBackgroundAnalysis analysis;
     analysis.setDelays(0, 0);
-    bool busy = false;
-    QList<TrackId> left{TrackId(QVariant(1)), TrackId(QVariant(2)), TrackId(QVariant(3))};
-    QList<QList<TrackId>> started;
-    int stops = 0;
-    DeckLabBackgroundAnalysis::Hooks hooks;
-    hooks.busy = [&busy] { return busy; };
-    hooks.candidates = [&left] { return left; };
-    hooks.start = [&started](const QList<TrackId>& ids) {
-        started << ids;
-        return true;
-    };
-    hooks.stop = [&stops] { ++stops; };
-    analysis.setHooks(hooks);
+    FakeAnalyzer analyzer;
+    analyzer.left = {id(1), id(2), id(3)};
+    analysis.setHooks(analyzer.hooks());
     analysis.check();
-    EXPECT_TRUE(started.isEmpty()) << "nothing to look for before a wake";
+    EXPECT_TRUE(analyzer.started.isEmpty()) << "nothing to look for before a wake";
     analysis.wake();
     analysis.check();
-    ASSERT_EQ(1, started.size());
-    EXPECT_EQ(left, started[0]);
+    EXPECT_EQ(QList<TrackId>{id(1)}, analyzer.started) << "one track at a time, newest first";
+    EXPECT_EQ(id(1), analysis.current());
     EXPECT_EQ(DeckLabBackgroundAnalysis::State::Running, analysis.state());
     EXPECT_EQ(QStringLiteral("Analyzing 1 of 3"), analysis.progressText());
-    analysis.trackFinished(TrackId(QVariant(1)));
-    left.removeOne(TrackId(QVariant(1)));
+    analysis.trackFinished(id(1));
+    analyzer.left.removeOne(id(1));
+    EXPECT_EQ((QList<TrackId>{id(1), id(2)}), analyzer.started) << "the next starts at once";
     EXPECT_EQ(QStringLiteral("Analyzing 2 of 3"), analysis.progressText());
 
-    // A deck plays: the batch stops at once and nothing starts while it plays.
-    busy = true;
+    // A deck plays: the analyzer pauses at once; nothing is stopped or torn down.
+    analyzer.busy = true;
     analysis.playbackChanged();
-    EXPECT_EQ(1, stops);
+    EXPECT_EQ(1, analyzer.pauses);
+    EXPECT_EQ(0, analyzer.stops);
+    EXPECT_EQ(id(2), analysis.current()) << "it keeps its place";
     EXPECT_EQ(DeckLabBackgroundAnalysis::State::Waiting, analysis.state());
     EXPECT_EQ(QStringLiteral("Analysis paused at 2 of 3"), analysis.progressText());
     analysis.playbackChanged();
-    EXPECT_EQ(1, stops) << "one stop per batch";
-    analysis.batchFinished();
     analysis.check();
-    EXPECT_EQ(1, started.size());
+    EXPECT_EQ(1, analyzer.pauses) << "one pause";
+    // Waiting for longer than any stop timeout changes nothing.
+    QTest::qWait(DeckLabBackgroundAnalysis::kCheckMs * 2 + 200);
+    EXPECT_EQ(0, analyzer.stops);
+    EXPECT_EQ(id(2), analysis.current());
+    EXPECT_EQ(2, analyzer.started.size());
 
-    // Quiet again: what is left goes on, counted in the same batch.
-    busy = false;
-    analysis.playbackChanged();
-    analysis.check();
-    ASSERT_EQ(2, started.size());
-    EXPECT_EQ((QList<TrackId>{TrackId(QVariant(2)), TrackId(QVariant(3))}), started[1]);
-    EXPECT_EQ(QStringLiteral("Analyzing 2 of 3"), analysis.progressText());
-    // Track 2 could not be read (it still has no BPM): never queued again.
-    analysis.trackFinished(TrackId(QVariant(2)));
-    analysis.trackFinished(TrackId(QVariant(3)));
-    left = {TrackId(QVariant(2))};
-    analysis.batchFinished();
-    analysis.check();
-    EXPECT_EQ(2, started.size());
-    EXPECT_EQ(DeckLabBackgroundAnalysis::State::Idle, analysis.state());
-    EXPECT_TRUE(analysis.progressText().isEmpty());
-
-    // A new download waits for a quiet minute after the last stop.
-    left = {TrackId(QVariant(4))};
+    // Quiet again, after the quiet spell: the same track goes on.
+    analyzer.busy = false;
     analysis.setDelays(0, 60000);
     analysis.playbackChanged();
-    analysis.wake();
     analysis.check();
-    EXPECT_EQ(2, started.size());
+    EXPECT_EQ(0, analyzer.resumes) << "a quiet spell first";
     analysis.setDelays(0, 0);
     analysis.check();
-    ASSERT_EQ(3, started.size());
-    EXPECT_EQ(QStringLiteral("Analyzing 1 of 1"), analysis.progressText()) << "a new batch counts from one";
-    // A batch that ends without a word on a track (it could not even load)
-    // never brings that track back.
-    analysis.batchFinished();
+    EXPECT_EQ(1, analyzer.resumes);
+    EXPECT_EQ(2, analyzer.started.size()) << "not started again";
+    EXPECT_EQ(QStringLiteral("Analyzing 2 of 3"), analysis.progressText());
+    // Track 2 could not be read (it still has no BPM): never queued again.
+    analysis.trackFinished(id(2));
+    EXPECT_EQ(id(3), analyzer.started.last());
+    analysis.trackFinished(id(3));
+    analyzer.left = {id(2)};
+    analysis.wake();
     analysis.check();
-    EXPECT_EQ(3, started.size());
+    EXPECT_EQ(3, analyzer.started.size());
+    EXPECT_EQ(DeckLabBackgroundAnalysis::State::Idle, analysis.state());
+    EXPECT_TRUE(analysis.progressText().isEmpty());
+    EXPECT_GE(analyzer.stops, 1) << "nothing left: the analyzer's thread may exit";
+
+    // A new download counts from one.
+    analyzer.left = {id(4)};
+    analysis.wake();
+    analysis.check();
+    EXPECT_EQ(id(4), analyzer.started.last());
+    EXPECT_EQ(QStringLiteral("Analyzing 1 of 1"), analysis.progressText()) << "a new batch counts from one";
+}
+
+// r7: a library scan, a recording or an open utility keeps it waiting like
+// play does (one rule, decklab/decklabquiet.h). An analyzed track is let go,
+// so the library saves it, only once it is quiet: never beside a scan's
+// write transaction or during a set.
+TEST(DeckLabBackgroundAnalysisTest, ScansKeepItWaitingAndSavesWaitUntilQuiet) {
+    DeckLabBackgroundAnalysis analysis;
+    analysis.setDelays(0, 0);
+    FakeAnalyzer analyzer;
+    analyzer.left = {id(1), id(2)};
+    analysis.setHooks(analyzer.hooks());
+    analyzer.busy = true; // a scan runs
+    analysis.wake();
+    analysis.check();
+    EXPECT_TRUE(analyzer.started.isEmpty()) << "never during a scan";
+    EXPECT_EQ(0, analyzer.releases);
+    analyzer.busy = false;
+    analysis.check();
+    ASSERT_EQ(QList<TrackId>{id(1)}, analyzer.started);
+    const int released = analyzer.releases;
+    // The scan starts again while track 1 finishes its save.
+    analyzer.busy = true;
+    analysis.playbackChanged();
+    EXPECT_EQ(1, analyzer.pauses);
+    analysis.trackFinished(id(1));
+    EXPECT_EQ(1, analyzer.started.size()) << "the next waits";
+    analysis.check();
+    EXPECT_EQ(released, analyzer.releases) << "the analyzed track is kept while it is not quiet";
+    analyzer.busy = false;
+    analysis.check();
+    EXPECT_GT(analyzer.releases, released);
+    EXPECT_EQ(id(2), analyzer.started.last());
+}
+
+// r7: a track a deck, sampler or the preview holds (or loads) is left to
+// that player's own analysis: never started, and let go of (without waiting)
+// when a player loads it while it is analyzed.
+TEST(DeckLabBackgroundAnalysisTest, TracksOnAPlayerAreLeftToItsAnalysis) {
+    DeckLabBackgroundAnalysis analysis;
+    analysis.setDelays(0, 0);
+    FakeAnalyzer analyzer;
+    analyzer.left = {id(1), id(2), id(3)};
+    analyzer.onPlayers = {id(1)};
+    analysis.setHooks(analyzer.hooks());
+    analysis.wake();
+    analysis.check();
+    EXPECT_EQ(QList<TrackId>{id(2)}, analyzer.started) << "track 1 is on a deck";
+    EXPECT_EQ(QStringLiteral("Analyzing 1 of 2"), analysis.progressText());
+    // The DJ loads track 2 to cue it while it is analyzed.
+    analyzer.onPlayers.insert(id(2));
+    analysis.check();
+    EXPECT_EQ(1, analyzer.stops) << "two decoders on one file help nobody";
+    EXPECT_EQ((QList<TrackId>{id(2), id(3)}), analyzer.started);
+    EXPECT_EQ(id(3), analysis.current());
+    analysis.trackFinished(id(2)); // a late word from the analyzer let go of
+    EXPECT_EQ(id(3), analysis.current());
+    analysis.trackFinished(id(3));
     EXPECT_EQ(DeckLabBackgroundAnalysis::State::Idle, analysis.state());
 }
 

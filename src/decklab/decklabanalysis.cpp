@@ -9,7 +9,10 @@
 #include "analyzer/analyzerscheduledtrack.h"
 #include "library/library.h"
 #include "library/queryutil.h"
+#include "library/trackcollectionmanager.h"
 #include "moc_decklabanalysis.cpp"
+#include "track/globaltrackcache.h"
+#include "track/track.h"
 
 namespace {
 // SQLite's host parameter limit is 999 on older builds.
@@ -22,10 +25,6 @@ DeckLabBackgroundAnalysis::DeckLabBackgroundAnalysis(QObject* parent)
     m_clock.start();
     m_timer.setInterval(kCheckMs);
     connect(&m_timer, &QTimer::timeout, this, &DeckLabBackgroundAnalysis::check);
-    m_stopTimeout.setSingleShot(true);
-    m_stopTimeout.setInterval(kStopTimeoutMs);
-    // A batch that never reports its end after a stop counts as ended.
-    connect(&m_stopTimeout, &QTimer::timeout, this, &DeckLabBackgroundAnalysis::batchFinished);
 }
 
 DeckLabBackgroundAnalysis::~DeckLabBackgroundAnalysis() = default;
@@ -42,53 +41,102 @@ void DeckLabBackgroundAnalysis::setDelays(int startupMs, int idleMs) {
 void DeckLabBackgroundAnalysis::useLibrary(Library* library, UserSettingsPointer config) {
     m_library = library;
     m_config = std::move(config);
-    m_hooks.start = [this](const QList<TrackId>& ids) {
-        // The last batch's analyzer is still letting go: try again shortly.
-        if (!m_library || ids.isEmpty() || m_scheduler) {
+    m_hooks.start = [this](TrackId id) {
+        if (!m_library || !id.isValid()) {
             return false;
         }
-        int flags = AnalyzerModeFlags::WithBeats | AnalyzerModeFlags::LowPriority;
-        if (!m_config ||
-                m_config->getValue<bool>(
-                        ConfigKey("[Library]", "EnableWaveformGenerationWithAnalysis"), true)) {
-            flags |= AnalyzerModeFlags::WithWaveform;
-        }
-        // One thread: the Pi's other cores belong to the GUI and the audio.
-        m_scheduler = m_library->createTrackAnalysisScheduler(1, static_cast<AnalyzerModeFlags>(flags));
-        connect(m_scheduler.get(),
-                &TrackAnalysisScheduler::trackProgress,
-                this,
-                [this](TrackId trackId, AnalyzerProgress progress) {
-                    // Done (1) or failed (unknown); busy progress lies between.
-                    if (progress >= kAnalyzerProgressDone || progress == kAnalyzerProgressUnknown) {
+        if (!m_scheduler) {
+            int flags = AnalyzerModeFlags::WithBeats | AnalyzerModeFlags::LowPriority;
+            if (!m_config ||
+                    m_config->getValue<bool>(
+                            ConfigKey("[Library]", "EnableWaveformGenerationWithAnalysis"), true)) {
+                flags |= AnalyzerModeFlags::WithWaveform;
+            }
+            // One thread: the Pi's other cores belong to the GUI and the audio.
+            m_scheduler = m_library->createTrackAnalysisScheduler(1, static_cast<AnalyzerModeFlags>(flags));
+            connect(m_scheduler.get(),
+                    &TrackAnalysisScheduler::trackProgress,
+                    this,
+                    [this](TrackId trackId, AnalyzerProgress progress) {
+                        // Done (1) or failed (unknown); busy progress lies between.
+                        if (progress < kAnalyzerProgressDone && progress != kAnalyzerProgressUnknown) {
+                            return;
+                        }
+                        if (trackId == m_current && m_holding) {
+                            m_held.append(std::move(m_holding));
+                        }
                         trackFinished(trackId);
-                    }
-                });
-        connect(m_scheduler.get(),
-                &TrackAnalysisScheduler::finished,
-                this,
-                &DeckLabBackgroundAnalysis::batchFinished);
-        QList<AnalyzerScheduledTrack> tracks;
-        tracks.reserve(ids.size());
-        for (const TrackId& id : ids) {
-            tracks.append(AnalyzerScheduledTrack(id));
+                    });
+            // Ended without a word on our track: it could not even be loaded.
+            connect(m_scheduler.get(), &TrackAnalysisScheduler::finished, this, [this] {
+                if (m_current.isValid()) {
+                    trackFinished(m_current);
+                }
+            });
         }
-        m_scheduler->scheduleTracks(tracks);
+        // Kept while it is analyzed and after: the save to the library runs
+        // when the last reference goes, and that waits until it is quiet.
+        m_holding = GlobalTrackCacheLocker().lookupTrackById(id);
+        if (!m_holding && m_library->trackCollectionManager()) {
+            m_holding = m_library->trackCollectionManager()->getTrackById(id);
+        }
+        m_scheduler->scheduleTrack(AnalyzerScheduledTrack(id));
         m_scheduler->resume();
         return true;
     };
-    m_hooks.stop = [this] {
+    // TrackAnalysisScheduler's own pause: the worker sleeps between chunks.
+    m_hooks.pause = [this] {
         if (m_scheduler) {
-            m_scheduler->stop();
+            m_scheduler->suspend();
         }
+    };
+    m_hooks.resume = [this] {
+        if (m_scheduler) {
+            m_scheduler->resume();
+        }
+    };
+    m_hooks.stop = [this] {
+        m_holding.reset();
+        parkScheduler();
+    };
+    m_hooks.release = [this] {
+        m_held.clear();
+        sweepParked();
     };
 }
 
-DeckLabBackgroundAnalysis::State DeckLabBackgroundAnalysis::state() const {
-    if (m_running && !m_stopping) {
-        return State::Running;
+void DeckLabBackgroundAnalysis::parkScheduler() {
+    if (!m_scheduler) {
+        return;
     }
-    return m_total > m_done && (m_pending || m_stopping) ? State::Waiting : State::Idle;
+    // Stopping only raises a flag: the worker lets go of its file after the
+    // chunk it is on (or its save) and exits by itself. The scheduler is
+    // deleted once its thread is gone, so nothing here waits for it.
+    disconnect(m_scheduler.get(), nullptr, this, nullptr);
+    m_scheduler->stop();
+    connect(m_scheduler.get(),
+            &TrackAnalysisScheduler::finished,
+            this,
+            &DeckLabBackgroundAnalysis::sweepParked,
+            Qt::QueuedConnection);
+    m_parked.push_back(std::move(m_scheduler));
+    m_scheduler = TrackAnalysisScheduler::NullPointer();
+}
+
+void DeckLabBackgroundAnalysis::sweepParked() {
+    m_parked.erase(std::remove_if(m_parked.begin(),
+                           m_parked.end(),
+                           [](const TrackAnalysisScheduler::Pointer& parked) {
+                               return !parked || !parked->hasRunningWorkers();
+                           }),
+            m_parked.end());
+}
+
+DeckLabBackgroundAnalysis::State DeckLabBackgroundAnalysis::state() const {
+    if (m_current.isValid()) {
+        return m_paused ? State::Waiting : State::Running;
+    }
+    return m_total > m_done && (m_pending || !m_queue.isEmpty()) ? State::Waiting : State::Idle;
 }
 
 QString DeckLabBackgroundAnalysis::progressText() const {
@@ -114,20 +162,18 @@ void DeckLabBackgroundAnalysis::playbackChanged() {
     // Quiet is counted from the last change, so a stop starts the wait.
     m_quietSince = m_clock.elapsed();
     if (m_hooks.busy && m_hooks.busy()) {
-        requestStop();
+        pause();
     }
 }
 
-void DeckLabBackgroundAnalysis::requestStop() {
-    if (!m_running || m_stopping) {
+void DeckLabBackgroundAnalysis::pause() {
+    if (!m_current.isValid() || m_paused) {
         return;
     }
-    m_stopping = true;
-    m_pending = true; // what is left goes on once it is quiet
-    if (m_hooks.stop) {
-        m_hooks.stop();
+    m_paused = true;
+    if (m_hooks.pause) {
+        m_hooks.pause();
     }
-    m_stopTimeout.start();
     if (!m_timer.isActive()) {
         m_timer.start();
     }
@@ -135,70 +181,89 @@ void DeckLabBackgroundAnalysis::requestStop() {
 }
 
 void DeckLabBackgroundAnalysis::trackFinished(TrackId trackId) {
-    if (!trackId.isValid() || m_tried.contains(trackId)) {
+    if (!trackId.isValid()) {
         return;
     }
     m_tried.insert(trackId);
-    if (m_running) {
-        m_done = std::min(m_done + 1, m_total);
-        emit progressChanged();
-    }
-}
-
-void DeckLabBackgroundAnalysis::batchFinished() {
-    if (!m_running) {
+    if (trackId != m_current) {
         return;
     }
-    // A batch that ran to its end has tried every track it was given (one
-    // the analyzer could not even load reports nothing): none comes back.
-    if (!m_stopping) {
-        for (const TrackId& id : std::as_const(m_batch)) {
-            m_tried.insert(id);
-        }
-    }
-    m_batch.clear();
-    m_running = false;
-    m_stopping = false;
-    m_stopTimeout.stop();
-    // Look again: tracks may have come in meanwhile, or the batch stopped.
-    m_pending = true;
-    // Its thread has let go; the scheduler is deleted later by Qt, and a late
-    // signal from it never reaches the next batch.
-    if (m_scheduler) {
-        disconnect(m_scheduler.get(), nullptr, this, nullptr);
-        m_scheduler.reset();
-    }
-    if (!m_timer.isActive()) {
-        m_timer.start();
-    }
+    m_current = TrackId();
+    m_paused = false;
+    m_done = std::min(m_done + 1, m_total);
+    // The next one starts at once while it is quiet (no "paused" between).
+    check();
     emit progressChanged();
+}
+
+TrackId DeckLabBackgroundAnalysis::next() {
+    while (true) {
+        if (m_queue.isEmpty()) {
+            if (!m_pending) {
+                return TrackId();
+            }
+            m_pending = false;
+            m_queue = m_hooks.candidates ? m_hooks.candidates() : QList<TrackId>();
+            if (m_done >= m_total) {
+                m_done = 0; // a new batch counts from one
+            }
+            if (m_queue.isEmpty()) {
+                return TrackId();
+            }
+        }
+        const TrackId id = m_queue.takeFirst();
+        // A player's own analysis takes a track it holds; it comes back with
+        // the next batch if it still needs one.
+        if (!id.isValid() || m_tried.contains(id) || (m_hooks.loaded && m_hooks.loaded(id))) {
+            continue;
+        }
+        return id;
+    }
 }
 
 void DeckLabBackgroundAnalysis::check() {
     const qint64 now = m_clock.elapsed();
+    if (m_current.isValid() && m_hooks.loaded && m_hooks.loaded(m_current)) {
+        // A deck (or the preview) loaded the track being analyzed: two
+        // decoders on one file help nobody. Let go of it, without waiting.
+        m_current = TrackId();
+        m_paused = false;
+        if (m_hooks.stop) {
+            m_hooks.stop();
+        }
+        emit progressChanged();
+    }
     if (m_hooks.busy && m_hooks.busy()) {
         m_quietSince = now;
-        requestStop();
+        pause();
         return;
     }
-    if (m_running) {
-        return; // its progress and its end come from the analyzer
-    }
-    if (!m_pending) {
-        m_timer.stop();
-        return;
+    if (m_hooks.release) {
+        m_hooks.release();
     }
     if (now < m_startupMs || now - m_quietSince < m_idleMs) {
+        if ((m_current.isValid() || m_pending || !m_queue.isEmpty()) && !m_timer.isActive()) {
+            m_timer.start();
+        }
         return;
     }
-    QList<TrackId> ids = m_hooks.candidates ? m_hooks.candidates() : QList<TrackId>();
-    ids.erase(std::remove_if(ids.begin(),
-                      ids.end(),
-                      [this](const TrackId& id) { return !id.isValid() || m_tried.contains(id); }),
-            ids.end());
-    if (ids.isEmpty() || !m_hooks.start) {
-        m_pending = false;
+    if (m_current.isValid()) {
+        if (m_paused) {
+            m_paused = false;
+            if (m_hooks.resume) {
+                m_hooks.resume();
+            }
+            emit progressChanged();
+        }
+        return; // its end comes from the analyzer
+    }
+    const TrackId id = next();
+    if (!id.isValid()) {
+        // Nothing left: the analyzer's thread may exit.
         m_timer.stop();
+        if (m_hooks.stop) {
+            m_hooks.stop();
+        }
         if (m_total || m_done) {
             m_total = 0;
             m_done = 0;
@@ -206,16 +271,18 @@ void DeckLabBackgroundAnalysis::check() {
         }
         return;
     }
-    if (m_done >= m_total) {
-        m_done = 0; // a new batch counts from one
+    if (!m_hooks.start || !m_hooks.start(id)) {
+        m_queue.prepend(id); // the analyzer is not free: the next check tries again
+        if (!m_timer.isActive()) {
+            m_timer.start();
+        }
+        return;
     }
-    m_total = m_done + static_cast<int>(ids.size());
-    if (!m_hooks.start(ids)) {
-        return; // the analyzer is not free yet: the next check tries again
+    m_current = id;
+    m_total = m_done + 1 + static_cast<int>(m_queue.size());
+    if (!m_timer.isActive()) {
+        m_timer.start();
     }
-    m_pending = false;
-    m_running = true;
-    m_batch = ids;
     emit progressChanged();
 }
 

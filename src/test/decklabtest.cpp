@@ -7796,8 +7796,11 @@ TEST_F(NativeDeckLabTest, DownloadsAndSamplesTilesOpenTheirLists) {
     ASSERT_NE(nullptr, analysis);
     auto hooks = analysis->hooks();
     hooks.candidates = [] { return QList<TrackId>{TrackId(QVariant(1)), TrackId(QVariant(2)), TrackId(QVariant(3))}; };
-    hooks.start = [](const QList<TrackId>&) { return true; };
+    hooks.start = [](TrackId) { return true; };
+    hooks.pause = [] {};
+    hooks.resume = [] {};
     hooks.stop = [] {};
+    hooks.release = [] {};
     analysis->setHooks(hooks);
     analysis->setDelays(0, 0);
 
@@ -7905,22 +7908,29 @@ TEST_F(NativeDeckLabTest, LoadPadOpensOnSamples) {
     EXPECT_EQ(QStringLiteral("Samples"), browseList()->currentItem()->text());
 }
 
-// r7-browse: the background analysis stops the moment a deck plays (or a
-// recording runs) and starts again once it is quiet: the surface's own play
-// controls feed it.
-TEST_F(NativeDeckLabTest, BackgroundAnalysisStopsTheMomentADeckPlays) {
+// r7-browse: the background analysis pauses the moment a deck plays (or a
+// recording runs) and goes on with the same track once it is quiet: the
+// surface's own play controls feed it. r7: a pause, never a stop, so the GUI
+// never waits for the analyzer thread.
+TEST_F(NativeDeckLabTest, BackgroundAnalysisPausesTheMomentADeckPlays) {
     auto* analysis = panel->backgroundAnalysis();
     ASSERT_NE(nullptr, analysis);
     int starts = 0;
+    int pauses = 0;
+    int resumes = 0;
     int stops = 0;
-    auto hooks = analysis->hooks(); // keeps the surface's "anything plays"
+    auto hooks = analysis->hooks(); // keeps the surface's quiet rule and its players
     ASSERT_TRUE(hooks.busy);
+    ASSERT_TRUE(hooks.loaded);
     hooks.candidates = [] { return QList<TrackId>{TrackId(QVariant(7)), TrackId(QVariant(8))}; };
-    hooks.start = [&starts](const QList<TrackId>&) {
+    hooks.start = [&starts](TrackId) {
         ++starts;
         return true;
     };
+    hooks.pause = [&pauses] { ++pauses; };
+    hooks.resume = [&resumes] { ++resumes; };
     hooks.stop = [&stops] { ++stops; };
+    hooks.release = [] {};
     analysis->setHooks(hooks);
     analysis->setDelays(0, 0);
     loadGenerated(1, 124); ProcessBuffer(); settle();
@@ -7929,16 +7939,17 @@ TEST_F(NativeDeckLabTest, BackgroundAnalysisStopsTheMomentADeckPlays) {
     ASSERT_EQ(1, starts);
     EXPECT_EQ(DeckLabBackgroundAnalysis::State::Running, analysis->state());
     ControlObject::set(ConfigKey("[Channel1]", "play"), 1); ProcessBuffer(); settle();
-    EXPECT_EQ(1, stops) << "a deck plays: the batch stops at once";
-    analysis->batchFinished();
+    EXPECT_EQ(1, pauses) << "a deck plays: the analyzer pauses at once";
     analysis->check();
     EXPECT_EQ(1, starts) << "never while a deck plays";
     EXPECT_EQ(DeckLabBackgroundAnalysis::State::Waiting, analysis->state());
     ControlObject::set(ConfigKey("[Channel1]", "play"), 0); ProcessBuffer(); settle();
     analysis->check();
-    EXPECT_EQ(2, starts);
+    EXPECT_EQ(1, resumes) << "the same track goes on";
+    EXPECT_EQ(1, starts);
+    EXPECT_EQ(0, stops);
     ControlObject::set(ConfigKey("[Recording]", "status"), 2); settle();
-    EXPECT_EQ(2, stops) << "a recording counts as playing";
+    EXPECT_EQ(2, pauses) << "a recording keeps it waiting too";
     ControlObject::set(ConfigKey("[Recording]", "status"), 0); settle();
     analysis->setHooks({});
 }

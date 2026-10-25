@@ -53,6 +53,10 @@ class TrackAnalysisScheduler : public QObject {
     bool scheduleTrack(AnalyzerScheduledTrack track);
     int scheduleTracks(const QList<AnalyzerScheduledTrack>& tracks);
 
+    // Deck Lab: a worker thread has not reported its exit yet. Once none has,
+    // deleting the scheduler never waits for a thread (after stop()).
+    bool hasRunningWorkers() const;
+
   public slots:
     void suspend();
 
