@@ -1117,6 +1117,9 @@ UsbRelinker::UsbRelinker(std::shared_ptr<TrackCollectionManager> library, QObjec
             m_renamesPending = true;
             startNext();
         });
+        // r7: the start-up scan began before this existed (its scanStarted
+        // never comes here); its scanFinished does.
+        m_scanning = m_library->isLibraryScanRunning();
     }
     m_retry.setSingleShot(true);
     m_retry.setInterval(10000);
@@ -1290,8 +1293,12 @@ bool UsbRelinker::queue(const QList<UsbVolume>& volumes) {
     return added;
 }
 
+bool UsbRelinker::scanning() const {
+    return m_scanning || (m_library && m_library->isLibraryScanRunning());
+}
+
 void UsbRelinker::startNext() {
-    if (m_watcher.isRunning() || (m_pending.isEmpty() && !m_renamesPending) || !m_library || m_scanning) {
+    if (m_watcher.isRunning() || (m_pending.isEmpty() && !m_renamesPending) || !m_library || scanning()) {
         return;
     }
     // Only while it is quiet: tried again when it is.
@@ -1346,14 +1353,14 @@ void UsbRelinker::startNext() {
 void UsbRelinker::finish() {
     const std::optional<UsbVolume> volume = m_running;
     RelinkPlan plan = m_watcher.result();
-    if (m_scanning || (m_quiet && !m_quiet())) {
+    if (scanning() || (m_quiet && !m_quiet())) {
         // A deck started (or a library scan, a recording, a utility) while
         // the stick was read: later, planned afresh.
         if (volume) {
             m_pending.prepend(*volume);
         }
         m_renamesPending = m_renamesPending || m_runningRenames;
-        if (!m_scanning) {
+        if (!scanning()) {
             m_retry.start();
         }
         return;

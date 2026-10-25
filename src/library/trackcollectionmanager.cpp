@@ -182,6 +182,10 @@ bool TrackCollectionManager::startLibraryScanQuietly() {
     return m_pScanner && m_pScanner->scanQuietly();
 }
 
+bool TrackCollectionManager::isLibraryScanRunning() const {
+    return m_scanRunningForTesting || (m_pScanner && m_pScanner->isScanning());
+}
+
 void TrackCollectionManager::startLibraryScan() {
     VERIFY_OR_DEBUG_ASSERT(m_pScanner) {
         return;

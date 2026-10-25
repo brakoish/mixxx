@@ -269,6 +269,8 @@ class UsbRelinker final : public QObject {
   private:
     // true when a stick was added to the queue.
     bool queue(const QList<UsbVolume>& volumes);
+    // Mixxx's library scan is starting or running (its signals, or its own state).
+    bool scanning() const;
     void startNext();
     void finish();
     void notify(const RelinkResult& result);

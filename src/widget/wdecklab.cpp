@@ -6687,7 +6687,9 @@ decklab::Activity WDeckLab::backgroundActivity() {
     // [Recording] status: 2 recording, 3 recording into the next split file.
     const int recording = int(value(QStringLiteral("[Recording]"), QStringLiteral("status")));
     activity.recording = recording == 2 || recording == 3;
-    activity.scanning = m_libraryScanning;
+    activity.scanning = m_libraryScanning ||
+            (m_library && m_library->trackCollectionManager() &&
+                    m_library->trackCollectionManager()->isLibraryScanRunning());
     return activity;
 }
 bool WDeckLab::loadedOnAPlayer(TrackId trackId) const {
@@ -6733,7 +6735,11 @@ void WDeckLab::initBackgroundAnalysis() {
     if (m_library && m_library->trackCollectionManager()) {
         auto* collection = m_library->trackCollectionManager();
         // A library scan holds its write transaction until it ends: the
-        // analyzer waits (queued, so the system has seen the scan first).
+        // analyzer waits. The quiet rule reads the scanner's own state, so
+        // it already counts the scan here (also the start-up scan, which
+        // began before this was connected); the signals only say when to
+        // decide again.
+        m_libraryScanning = collection->isLibraryScanRunning();
         connect(collection, &TrackCollectionManager::libraryScanStarted, this, [this] {
             m_libraryScanning = true;
             if (m_analysis) m_analysis->playbackChanged();

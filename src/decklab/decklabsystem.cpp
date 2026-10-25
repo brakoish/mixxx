@@ -227,8 +227,11 @@ DeckLabSystem::DeckLabSystem(Services services, QObject* parent, const QString& 
                     m_utilities->onScanSummary(result.numNewTracks, result.quiet);
                 });
         // r7: a scan holds one long write transaction; background jobs wait.
+        // The start-up scan began before Deck Lab existed: its scanStarted
+        // never reaches this, so the scanner's own state counts too.
         connect(library, &TrackCollectionManager::libraryScanStarted, this, [this] { m_scanning = true; });
         connect(library, &TrackCollectionManager::libraryScanFinished, this, [this] { m_scanning = false; });
+        m_scanning = library->isLibraryScanRunning();
     }
     if (auto* players = m_services.players) {
         watchPlayers();
@@ -636,7 +639,7 @@ decklab::Activity DeckLabSystem::activity() const {
     // [Recording] status: 2 recording, 3 recording into the next split file.
     const int recording = static_cast<int>(controlValue(kRecording, QStringLiteral("status")));
     activity.recording = recording == 2 || recording == 3;
-    activity.scanning = m_scanning;
+    activity.scanning = m_scanning || (m_services.library && m_services.library->isLibraryScanRunning());
     activity.utilityOpen = !m_utilities->openApp().isEmpty();
     return activity;
 }

@@ -755,6 +755,48 @@ TEST_F(DeckLabUsbMergeDbTest, BackgroundJobsWaitUntilItIsQuiet) {
     EXPECT_EQ(kNow + QStringLiteral("b.mp3"), locationOf(alone));
 }
 
+// r7: Mixxx starts its library scan before the skin loads, so Deck Lab never
+// hears that one start. The scanner's own state counts: nothing runs beside
+// the start-up scan, and the relinker's start-up pass follows its end.
+TEST_F(DeckLabUsbMergeDbTest, TheStartUpScanCountsThoughItBeganFirst) {
+    struct Reset {
+        TrackCollectionManager* library;
+        ~Reset() {
+            library->setLibraryScanRunningForTesting(false);
+        }
+    } reset{trackCollectionManager()};
+    trackCollectionManager()->setLibraryScanRunningForTesting(true); // started, its signal long gone
+    QTemporaryDir run;
+    DeckLabSystem::Services services;
+    services.config = config();
+    services.library = std::shared_ptr<TrackCollectionManager>(trackCollectionManager(), [](TrackCollectionManager*) {});
+    DeckLabSystem system(services, nullptr, run.filePath(QStringLiteral("decklabd.sock")));
+    EXPECT_TRUE(system.activity().scanning);
+    EXPECT_FALSE(system.quiet());
+
+    const qint64 alone = addTrack(kSecond + QStringLiteral("b.mp3"), 2000, true);
+    FakeDisk disk;
+    disk.in.insert(kMount);
+    disk.files.insert(kNow + QStringLiteral("b.mp3"), 2000);
+    decklab::UsbRelinker relinker(services.library);
+    relinker.setProbe(disk.probe());
+    QSignalSpy done(&relinker, &decklab::UsbRelinker::relinked);
+    QJsonArray drives;
+    drives.append(QJsonObject{{"id", kStick.uuid}, {"label", kStick.label}, {"mount", kMount}});
+    relinker.relinkDrives(drives);
+    EXPECT_FALSE(relinker.isRunning()) << "never beside the scan's write transaction";
+    EXPECT_FALSE(done.wait(200));
+    EXPECT_EQ(kSecond + QStringLiteral("b.mp3"), locationOf(alone));
+
+    // The scan ends: that signal does come.
+    trackCollectionManager()->setLibraryScanRunningForTesting(false);
+    emit trackCollectionManager()->libraryScanFinished();
+    EXPECT_FALSE(system.activity().scanning);
+    EXPECT_TRUE(system.quiet());
+    ASSERT_TRUE(done.wait(5000));
+    EXPECT_EQ(kNow + QStringLiteral("b.mp3"), locationOf(alone));
+}
+
 // --- Get Music's rename maps ---
 
 namespace {

@@ -101,6 +101,13 @@ class TrackCollectionManager: public QObject,
     // shows its own notice). False when a scan is already running or there is
     // no scanner (tests).
     bool startLibraryScanQuietly();
+    // Deck Lab: the scanner's own state, so a listener created after a scan
+    // started (the start-up scan begins before the skin loads) knows too.
+    bool isLibraryScanRunning() const;
+    // Tests run without a scanner.
+    void setLibraryScanRunningForTesting(bool running) {
+        m_scanRunningForTesting = running;
+    }
 
   signals:
     void libraryScanStarted();
@@ -139,4 +146,5 @@ class TrackCollectionManager: public QObject,
 
     // TODO: Extract and decouple LibraryScanner from TrackCollectionManager
     std::unique_ptr<LibraryScanner> m_pScanner;
+    bool m_scanRunningForTesting = false;
 };

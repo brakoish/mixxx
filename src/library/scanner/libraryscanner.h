@@ -46,6 +46,12 @@ class LibraryScanner : public QThread {
     // when a scan is already starting or running.
     bool scanQuietly();
 
+    // Deck Lab: a scan is starting, running or being canceled. Any thread;
+    // right also before scanStarted() reaches a receiver that connected late.
+    bool isScanning() const {
+        return m_state != IDLE;
+    }
+
     // Call from any thread to cancel the scan.
     void slotCancel();
 
