@@ -244,8 +244,7 @@ TEST_F(DeckLabCaptureTest, WritesExactlyTheLoopFramesAsA16BitStereoWav) {
     EXPECT_EQ(frames, readBack->frameLength());
     readBack->close();
     mixxx::TrackMetadata metadata;
-    SoundSourceProxy::importTrackMetadataAndCoverImageFromFile(
-            mixxx::FileAccess(mixxx::FileInfo(result.path)), &metadata, nullptr, false);
+    SoundSourceProxy(Track::newTemporary(result.path)).importTrackMetadataAndCoverImage(&metadata, nullptr, false);
     EXPECT_EQ(QStringLiteral("Generated Tone - Loop 1 bar"), metadata.getTrackInfo().getTitle());
     // The same loop again gets the next free name; nothing half-written stays.
     const auto again = decklab::capture::write(request(start, frames, 4));
