@@ -1787,6 +1787,7 @@ add_library(
   src/widget/decklabdeckwidgets.cpp
   src/widget/decklabsampler.cpp
   src/widget/decklabsamplercontrols.cpp
+  src/widget/decklabcapture.cpp
   src/widget/decklabpads.cpp
   src/widget/decklabkeysheet.cpp
   src/widget/decklabgridmode.cpp
@@ -2821,6 +2822,7 @@ if(BUILD_TESTING)
     src/test/decklabusbfirsttest.cpp
     src/test/decklabstemgesturestest.cpp
     src/test/decklabsamplertest.cpp
+    src/test/decklabcapturetest.cpp
     src/test/decklabstemstest.cpp
     src/test/decklabpadstest.cpp
     src/test/decklabdecktoolstest.cpp

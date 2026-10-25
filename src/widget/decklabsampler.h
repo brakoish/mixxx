@@ -13,8 +13,13 @@
 // - Side column: QNT, SYNC, EDIT, FX (the Lab FX sampler send), LEVEL for
 //   all pads, BANK (only with more than 16 samplers) and STOP ALL.
 // - Hold a pad (or turn EDIT on and tap it) for the docked edit sheet: MODE
-//   (one-shot, loop, gate), GAIN in dB, STOP and CLEAR (ejects the sample).
-//   CLEAR is destructive: it acts on release, and never while playing.
+//   (one-shot, loop, gate), GAIN in dB, STOP, REPLACE (Browse loads another
+//   sample into the pad) and CLEAR (ejects the sample). REPLACE and CLEAR act
+//   on release, and never while the pad plays.
+// - r7-sampler: EDIT stays on until it is tapped again or the page hides.
+//   While on, every tap on a loaded pad opens (or switches) its sheet and
+//   never plays it; loaded pads show an EDIT mark. An empty pad still opens
+//   Browse to load it.
 //
 // The page reads and writes samplers only through DeckLabSamplerEngine, so
 // it is tested and rendered with generated data; decklabsamplercontrols.h is
@@ -112,6 +117,7 @@ struct DeckLabSamplerPadState {
     int bpm = 0;           // whole BPM; 0 none
     int level = 500;       // gain bar 0..1000 (0 dB = 500)
     bool selected = false; // the edit sheet's pad
+    bool editing = false;  // r7-sampler: EDIT is on, a tap edits this pad
     bool operator==(const DeckLabSamplerPadState&) const = default;
 };
 
@@ -249,6 +255,11 @@ class DeckLabSampler final : public QWidget {
     bool editMode() const {
         return m_editMode;
     }
+    // r7-sampler: EDIT on or off. Off closes the sheet.
+    void setEditMode(bool on);
+    // r7-sampler: a pad's MODE from outside the sheet (a captured loop
+    // arrives as a LOOP pad).
+    void setPadMode(int sampler, DeckLabSamplerEngine::Mode mode);
     bool anyPlaying() const;
     // The browse knob while the edit sheet is open: turn = GAIN in 1 dB
     // steps, press = done, back = close. False when the page does not take
@@ -261,7 +272,8 @@ class DeckLabSampler final : public QWidget {
     }
 
   signals:
-    // An empty pad was tapped: load this sampler from Browse.
+    // An empty pad was tapped, or REPLACE (r7-sampler): load this sampler
+    // from Browse.
     void loadRequested(int sampler);
     void decksRequested();
     // The FX lamp was tapped: send pads 1-4 through Lab FX (or stop).
@@ -296,6 +308,7 @@ class DeckLabSampler final : public QWidget {
     void refreshSheet();
     void refreshSheetState();
     void refreshSide();
+    void refreshHint(); // r7-sampler
     void refreshBanks();
     void stepGain(double db);
     DeckLabSamplerEngine* m_engine;
@@ -317,6 +330,8 @@ class DeckLabSampler final : public QWidget {
     std::array<QPushButton*, 3> m_sheetModes{};
     QPushButton* m_sheetStop = nullptr;
     QPushButton* m_sheetClear = nullptr;
+    QPushButton* m_sheetReplace = nullptr; // r7-sampler
+    QLabel* m_sheetHint = nullptr;         // r7-sampler
     QTimer m_hold;
     int m_holdPad = -1;
     int m_sheetPad = -1;
