@@ -269,8 +269,8 @@ class DeckLabDownloadsDbTest : public LibraryTest {
         EXPECT_TRUE(query.exec()) << query.lastError().text().toStdString();
         const QVariant locationId = query.lastInsertId();
         query.prepare(QStringLiteral(
-                "INSERT INTO library (location, title, artist, bpm, key, beats, header_parsed) "
-                "VALUES (:location, :title, 'Deck Lab Fixture', :bpm, :key, :beats, 1)"));
+                "INSERT INTO library (location, title, artist, bpm, key, beats, header_parsed, mixxx_deleted) "
+                "VALUES (:location, :title, 'Deck Lab Fixture', :bpm, :key, :beats, 1, 0)"));
         query.bindValue(QStringLiteral(":location"), locationId);
         query.bindValue(QStringLiteral(":title"), title);
         query.bindValue(QStringLiteral(":bpm"), bpm);
