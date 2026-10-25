@@ -25,10 +25,16 @@ inline const QString kDownloadsFolderName = QStringLiteral("Deck Lab Downloads")
 inline const QString kCardDownloadsFolderName = QStringLiteral("New Music");
 inline const QString kSamplesFolderName = QStringLiteral("Deck Lab Samples");
 
-/// ~/Music. Tests point it at a generated folder; empty restores the real one.
+/// ~/Music: the Music folder in the home folder, the one Get Music and
+/// Sample Maker name (and their systemd units allow), never the desktop's
+/// localized or XDG_MUSIC_DIR music folder. Tests point it at a generated
+/// folder; empty restores the real one.
 QString musicFolder();
 void setMusicFolderForTesting(const QString& folder);
-/// ~/Music/Deck Lab Samples and ~/Music/New Music (whether or not they exist).
+/// ~/Music/Deck Lab Samples and ~/Music/New Music (whether or not they
+/// exist). The one definition of each: TO PAD, PUT ON PAD (sampler.load),
+/// the SAMPLES tile and list, the song lists' filter and the library folders
+/// all use these.
 QString samplesFolder();
 QString cardDownloadsFolder();
 

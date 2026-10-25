@@ -16,6 +16,7 @@
 #include <memory>
 #include <vector>
 
+#include "decklab/decklabdownloads.h"
 #include "sources/soundsourceproxy.h"
 #include "track/beats.h"
 #include "track/track.h"
@@ -131,11 +132,13 @@ class DeckLabCaptureTest : public ::testing::Test {
         ASSERT_TRUE(dir.isValid());
         source = dir.filePath(QStringLiteral("Generated Tone.wav"));
         ASSERT_TRUE(writeSource(source));
+        // r7: one samples folder for TO PAD, PUT ON PAD, SAMPLES and the
+        // song lists' filter: decklab::samplesFolder(), ~/Music/Deck Lab Samples.
+        decklab::setMusicFolderForTesting(dir.filePath(QStringLiteral("Music")));
         folder = dir.filePath(QStringLiteral("Music/Deck Lab Samples"));
-        decklab::capture::setSamplesFolderForTesting(folder);
     }
     void TearDown() override {
-        decklab::capture::setSamplesFolderForTesting(QString());
+        decklab::setMusicFolderForTesting(QString());
     }
     decklab::capture::Request request(qint64 start, qint64 frames, double beats) const {
         decklab::capture::Request r;
@@ -406,6 +409,92 @@ TEST_F(DeckLabCaptureTest, TheLoopGoesOnTheFirstEmptyPadOffTheGuiThread) {
     EXPECT_TRUE(decks.errors.last());
     EXPECT_EQ(Refusal::NoTrack, capture.capture(2));
     EXPECT_EQ(1, saved().size());
+}
+
+// r7: the pad comes from the one empty-pad rule PUT ON PAD uses too
+// (DeckLabSystem::emptyPad): a pad that is loading, or that a Load pad trip
+// is filling, is not empty even while nothing is loaded on it.
+TEST_F(DeckLabCaptureTest, TheLoopGoesOnThePadTheSharedEmptyPadRuleNames) {
+    FakeDecks decks;
+    decks.track = Track::newTemporary(source);
+    decks.track->setAudioProperties(mixxx::audio::ChannelCount::stereo(),
+            mixxx::audio::SampleRate(kRate),
+            mixxx::audio::Bitrate(),
+            mixxx::Duration::fromSeconds(6));
+    ASSERT_TRUE(decks.track->trySetBeats(grid(120)));
+    decks.start = 0;
+    decks.end = samples(framesFor(4, 120));
+    DeckLabLoopCapture::Host host = decks.host();
+    int empty = 5; // pads 1 to 4 show nothing loaded, but are loading or a trip's target
+    host.emptyPad = [&empty] { return empty; };
+    DeckLabLoopCapture capture(host);
+    int doneSampler = -1;
+    QObject::connect(&capture, &DeckLabLoopCapture::finished, &capture, [&](int, int sampler, const decklab::capture::Result&) {
+        doneSampler = sampler;
+    });
+    ASSERT_EQ(Refusal::None, capture.capture(1));
+    ASSERT_TRUE(QTest::qWaitFor([&] { return doneSampler >= 0; }, 10000));
+    EXPECT_EQ(5, doneSampler);
+    ASSERT_EQ(1, decks.loads.size());
+    EXPECT_EQ(5, decks.loads[0].first);
+    // No pad free by that rule: it asks (no sheet here: saved, on no pad).
+    empty = 0;
+    doneSampler = -1;
+    ASSERT_EQ(Refusal::None, capture.capture(1));
+    ASSERT_TRUE(QTest::qWaitFor([&] { return doneSampler >= 0; }, 10000));
+    EXPECT_EQ(0, doneSampler);
+    EXPECT_EQ(1, decks.loads.size()) << "pad 1 shows nothing loaded, yet the rule keeps it";
+}
+
+// r7: TO PAD never writes the library database while the deck plays. The
+// pad gets a temporary track with the loop's grid at once; the sample joins
+// the library, with that grid, once it is quiet.
+TEST_F(DeckLabCaptureTest, CapturedSamplesJoinTheLibraryOnlyOnceItIsQuiet) {
+    decklab::capture::Result result;
+    result.status = decklab::capture::Result::Status::Saved;
+    result.path = QDir(folder).filePath(QStringLiteral("Generated Tone - Loop 1 bar.wav"));
+    result.frames = framesFor(4, 120);
+    result.sampleRate = kRate;
+    result.bpm = 120;
+    const TrackPointer pad = decklab::capture::padTrack(result);
+    ASSERT_TRUE(pad);
+    EXPECT_FALSE(pad->getId().isValid()) << "not a library track";
+    EXPECT_EQ(result.path, pad->getLocation());
+    EXPECT_EQ(QStringLiteral("Generated Tone - Loop 1 bar"), pad->getTitle());
+    EXPECT_TRUE(pad->isBpmLocked());
+    EXPECT_NEAR(120.0, pad->getBpm(), 0.01);
+    EXPECT_NEAR(2.0, pad->getDuration(), 0.01);
+
+    bool quiet = false;
+    QStringList added;
+    TrackPointer row;
+    DeckLabCaptureLibrary::Hooks hooks;
+    hooks.quiet = [&quiet] { return quiet; };
+    hooks.add = [&](const QString& path) {
+        added.append(path);
+        row = Track::newTemporary(path);
+        return row;
+    };
+    DeckLabCaptureLibrary library(hooks);
+    library.add(result);
+    EXPECT_TRUE(added.isEmpty()) << "nothing touches the library while a deck plays";
+    EXPECT_EQ(1, library.pending());
+    library.flush();
+    EXPECT_TRUE(added.isEmpty());
+    quiet = true;
+    ASSERT_TRUE(QTest::qWaitFor([&] { return !added.isEmpty(); }, DeckLabCaptureLibrary::kRetryMs + 2000));
+    EXPECT_EQ(QStringList{result.path}, added);
+    EXPECT_EQ(0, library.pending());
+    ASSERT_TRUE(row);
+    EXPECT_TRUE(row->isBpmLocked()) << "the library row keeps the loop's grid";
+    EXPECT_NEAR(120.0, row->getBpm(), 0.01);
+    // A quiet capture joins at once; a track whose tempo is locked keeps it.
+    library.add(result);
+    EXPECT_EQ(2, added.size());
+    decklab::capture::Result other = result;
+    other.bpm = 90;
+    EXPECT_FALSE(decklab::capture::applyGrid(row, other));
+    EXPECT_NEAR(120.0, row->getBpm(), 0.01);
 }
 
 TEST_F(DeckLabCaptureTest, WithNoEmptyPadASheetAsksWhichPadToReplace) {

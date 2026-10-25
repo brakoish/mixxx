@@ -14,12 +14,14 @@
 #include <QTemporaryFile>
 #include <QThread>
 #include <QVBoxLayout>
+#include <QtDebug>
 #include <QtEndian>
 #include <algorithm>
 #include <cmath>
 #include <utility>
 #include <vector>
 
+#include "decklab/decklabdownloads.h"
 #include "decklab/decklaboverlay.h"
 #include "sources/audiosourcestereoproxy.h"
 #include "sources/soundsourceproxy.h"
@@ -35,8 +37,6 @@ namespace {
 QString tr(const char* text) {
     return QCoreApplication::translate("DeckLabCapture", text);
 }
-
-QString s_folderForTesting;
 
 // Frames decoded and written per step; the cancel flag is read between them.
 constexpr SINT kChunkFrames = 8192;
@@ -206,17 +206,6 @@ QString uniquePath(const QString& folder, const QString& name) {
         }
     }
     return QString();
-}
-
-QString samplesFolder() {
-    if (!s_folderForTesting.isEmpty()) {
-        return s_folderForTesting;
-    }
-    return QDir::home().filePath(QStringLiteral("Music/Deck Lab Samples"));
-}
-
-void setSamplesFolderForTesting(const QString& folder) {
-    s_folderForTesting = folder;
 }
 
 Plan plan(bool enabled,
@@ -429,6 +418,33 @@ Result write(const Request& request, const std::atomic<bool>* cancel) {
     return failed(Status::NotWritable);
 }
 
+TrackPointer padTrack(const Result& result) {
+    TrackPointer track = Track::newTemporary(result.path);
+    track->setTitle(QFileInfo(result.path).completeBaseName()); // the file's own title
+    if (result.sampleRate > 0) {
+        track->setAudioProperties(mixxx::audio::ChannelCount::stereo(),
+                mixxx::audio::SampleRate(static_cast<mixxx::audio::SampleRate::value_t>(result.sampleRate)),
+                mixxx::audio::Bitrate(),
+                mixxx::Duration::fromSeconds(double(result.frames) / result.sampleRate));
+    }
+    applyGrid(track, result);
+    return track;
+}
+
+bool applyGrid(const TrackPointer& track, const Result& result) {
+    if (!track || !(result.bpm > 0) || result.sampleRate <= 0 || track->isBpmLocked()) {
+        return false;
+    }
+    if (!track->trySetBeats(mixxx::Beats::fromConstTempo(
+                mixxx::audio::SampleRate(static_cast<mixxx::audio::SampleRate::value_t>(result.sampleRate)),
+                mixxx::audio::kStartFramePos,
+                mixxx::Bpm(result.bpm)))) {
+        return false;
+    }
+    track->setBpmLocked(true);
+    return true;
+}
+
 } // namespace decklab::capture
 
 // ---------------------------------------------------------------------------
@@ -621,7 +637,7 @@ decklab::capture::Refusal DeckLabLoopCapture::capture(int deck) {
     request.startFrame = plan.startFrame;
     request.frames = plan.frames;
     request.beats = plan.beats;
-    request.folder = decklab::capture::samplesFolder();
+    request.folder = decklab::samplesFolder();
     m_cancel->store(false);
     auto result = std::make_shared<decklab::capture::Result>();
     auto cancel = m_cancel;
@@ -651,10 +667,17 @@ void DeckLabLoopCapture::written(int deck, const decklab::capture::Result& resul
         return;
     }
     const int pads = m_host.pads ? m_host.pads() : 0;
-    for (int sampler = 1; sampler <= pads; ++sampler) {
-        if (m_host.pad && !m_host.pad(sampler).loaded) {
+    if (m_host.emptyPad) {
+        if (const int sampler = m_host.emptyPad(); sampler > 0) {
             place(deck, sampler, result);
             return;
+        }
+    } else {
+        for (int sampler = 1; sampler <= pads; ++sampler) {
+            if (m_host.pad && !m_host.pad(sampler).loaded) {
+                place(deck, sampler, result);
+                return;
+            }
         }
     }
     // Every pad is taken: ask which to replace (the first bank's pads).
@@ -711,5 +734,42 @@ void DeckLabLoopCapture::place(int deck, int sampler, const decklab::capture::Re
 void DeckLabLoopCapture::cancelChoice() {
     if (m_chooser) {
         m_chooser->cancel();
+    }
+}
+
+DeckLabCaptureLibrary::DeckLabCaptureLibrary(Hooks hooks, QObject* parent)
+        : QObject(parent),
+          m_hooks(std::move(hooks)) {
+    m_retry.setSingleShot(true);
+    m_retry.setInterval(kRetryMs);
+    connect(&m_retry, &QTimer::timeout, this, &DeckLabCaptureLibrary::flush);
+}
+
+void DeckLabCaptureLibrary::add(const decklab::capture::Result& result) {
+    if (result.path.isEmpty()) {
+        return;
+    }
+    m_pending.append(result);
+    flush();
+}
+
+void DeckLabCaptureLibrary::flush() {
+    if (m_pending.isEmpty()) {
+        return;
+    }
+    if (!m_hooks.add || (m_hooks.quiet && !m_hooks.quiet())) {
+        m_retry.start();
+        return;
+    }
+    const QList<decklab::capture::Result> pending = std::exchange(m_pending, {});
+    for (const auto& result : pending) {
+        // Its tags are read and its row written now; the grid is saved with
+        // the row when the last reference goes (a moment later, still quiet).
+        const TrackPointer track = m_hooks.add(result.path);
+        if (track) {
+            decklab::capture::applyGrid(track, result);
+        } else {
+            qWarning() << "Deck Lab TO PAD: the sample could not be added to the library; the next scan adds it";
+        }
     }
 }

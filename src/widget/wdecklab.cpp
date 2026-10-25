@@ -1021,32 +1021,21 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
             }
             return pad;
         };
+        // r7: a pad that is loading, or that a Load pad trip is filling, is
+        // not empty: the same rule as PUT ON PAD (DeckLabSystem::emptyPad).
+        host.emptyPad = [this] {
+            return m_system ? m_system->emptyPad()
+                            : DeckLabSystem::firstEmptyPad(m_players, DeckLabPadChooser::kPads, m_sampleTarget);
+        };
         host.load = [this](int sampler, const decklab::capture::Result& result) {
             const QString group = QStringLiteral("[Sampler%1]").arg(sampler);
             auto* player = m_players ? m_players->getPlayer(group) : nullptr;
             if (!player || value(group, QStringLiteral("play")) > 0) return false;
-            // Into the library like any other file, with the loop's grid
-            // (whole beats over its length), locked so analysis keeps it.
-            TrackPointer track = m_library && m_library->trackCollectionManager()
-                    ? m_library->trackCollectionManager()->getOrAddTrack(TrackRef::fromFilePath(result.path))
-                    : TrackPointer();
-            if (!track) {
-                track = Track::newTemporary(result.path);
-                track->setTitle(QFileInfo(result.path).completeBaseName()); // the file's own title
-                if (result.sampleRate > 0) {
-                    track->setAudioProperties(mixxx::audio::ChannelCount::stereo(),
-                            mixxx::audio::SampleRate(static_cast<mixxx::audio::SampleRate::value_t>(result.sampleRate)),
-                            mixxx::audio::Bitrate(), mixxx::Duration::fromSeconds(double(result.frames) / result.sampleRate));
-                }
-            }
-            if (result.bpm > 0 && result.sampleRate > 0) {
-                track->setBpmLocked(false);
-                if (track->trySetBeats(mixxx::Beats::fromConstTempo(
-                            mixxx::audio::SampleRate(static_cast<mixxx::audio::SampleRate::value_t>(result.sampleRate)),
-                            mixxx::audio::kStartFramePos, mixxx::Bpm(result.bpm)))) {
-                    track->setBpmLocked(true);
-                }
-            }
+            // r7: the pad plays it at once from a temporary track with the
+            // loop's grid (whole beats over its length), locked so analysis
+            // keeps it. No database work now: the deck is usually playing.
+            // It joins the library, with that grid, once it is quiet.
+            const TrackPointer track = decklab::capture::padTrack(result);
             // A captured loop is a LOOP pad (SYNC'd loop pads follow the master).
             if (m_sampler) m_sampler->setPadMode(sampler, DeckLabSamplerEngine::Mode::Loop);
             player->slotLoadTrack(track,
@@ -1054,6 +1043,7 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
                     mixxx::StemChannelSelection(),
 #endif
                     false);
+            if (m_captureLibrary) m_captureLibrary->add(result);
             return true;
         };
         host.tell = [this](int deck, const QString& text, bool error) {
@@ -1073,6 +1063,14 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
         };
         host.sheetParent = [this]() -> QWidget* { return this; };
         m_capture = new DeckLabLoopCapture(std::move(host), this);
+        if (m_library && m_library->trackCollectionManager()) {
+            DeckLabCaptureLibrary::Hooks adds;
+            adds.quiet = [this] { return backgroundQuiet(); };
+            adds.add = [this](const QString& path) {
+                return m_library->trackCollectionManager()->getOrAddTrack(TrackRef::fromFilePath(path));
+            };
+            m_captureLibrary = new DeckLabCaptureLibrary(std::move(adds), this);
+        }
         watch(kTab, QStringLiteral("current"), [this](double) { m_capture->cancelChoice(); });
     }
     m_deckControls = buildDecks();

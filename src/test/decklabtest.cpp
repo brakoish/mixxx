@@ -5015,7 +5015,8 @@ TEST_F(NativeDeckLabTest, ToPadSavesTheDeckLoopOnTheFirstEmptyPad) {
     panel.reset();
     ASSERT_TRUE(SoundSourceProxy::isFileTypeSupported(QStringLiteral("wav")) || SoundSourceProxy::registerProviders());
     QTemporaryDir samples;
-    decklab::capture::setSamplesFolderForTesting(samples.filePath(QStringLiteral("Deck Lab Samples")));
+    // r7: TO PAD saves into decklab::samplesFolder(), like SAMPLES and PUT ON PAD.
+    decklab::setMusicFolderForTesting(samples.path());
     // Pads 1 and 2 are taken; sampler 3 is a real (empty) player.
     auto controls = makeSamplerControls(1, 2);
     ControlObject::set(ConfigKey("[Sampler1]", "track_loaded"), 1);
@@ -5102,8 +5103,48 @@ TEST_F(NativeDeckLabTest, ToPadSavesTheDeckLoopOnTheFirstEmptyPad) {
     if (!output.isEmpty()) EXPECT_TRUE(surface.grab().save(QDir(output).filePath("sampler-captured-loop.png")));
     ControlObject::set(ConfigKey("[Channel1]", "play"), 0); ProcessBuffer();
     config()->setValue(ConfigKey("[DeckLabSampler]", "pad_3_mode"), 0);
-    decklab::capture::setSamplesFolderForTesting(QString());
+    decklab::setMusicFolderForTesting(QString());
     surface.hide();
+    players->others.clear();
+}
+
+// r7: one empty-pad rule for TO PAD and PUT ON PAD (DeckLabSystem): a pad
+// that is loading (its player holds the new track before track_loaded rises)
+// or that a Load pad trip is filling is not empty.
+TEST_F(NativeDeckLabTest, ANewSampleSkipsLoadingPadsAndTheLoadPadTarget) {
+    panel.reset();
+    std::vector<std::unique_ptr<Deck>> pads;
+    for (int pad = 1; pad <= 3; ++pad) {
+        const QString group = QStringLiteral("[Sampler%1]").arg(pad);
+        pads.push_back(std::make_unique<Deck>(nullptr, config(), m_pEngineMixer.get(), m_pEffectsManager.get(),
+                EngineChannel::CENTER, m_pEngineMixer->registerChannelGroup(group)));
+        players->others.insert(group, pads.back().get());
+    }
+    EXPECT_EQ(1, DeckLabSystem::firstEmptyPad(players.get(), 16, 0));
+    // Pad 1 starts loading: nothing is loaded yet, but it is taken.
+    auto track = Track::newTemporary(getTestDir().filePath(QStringLiteral("sine-30.wav")));
+    pads[0]->slotLoadTrack(track,
+#ifdef __STEM__
+            mixxx::StemChannelSelection(),
+#endif
+            false);
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Sampler1]", "track_loaded")));
+    EXPECT_EQ(2, DeckLabSystem::firstEmptyPad(players.get(), 16, 0));
+    // Pad 2 is the one a Load pad trip fills.
+    EXPECT_EQ(3, DeckLabSystem::firstEmptyPad(players.get(), 16, 2));
+    EXPECT_EQ(0, DeckLabSystem::firstEmptyPad(players.get(), 2, 2)) << "no pad left";
+    // The system's own rule asks the surface for its trip target.
+    DeckLabSystem::Services services;
+    services.config = config();
+    services.players = players.get();
+    DeckLabSystem system(services, nullptr, QDir::temp().filePath(QStringLiteral("decklab-no-socket")));
+    EXPECT_EQ(2, system.emptyPad());
+    int target = 2;
+    system.setPadTarget([&target] { return target; });
+    EXPECT_EQ(3, system.emptyPad());
+    target = 0;
+    EXPECT_EQ(2, system.emptyPad());
+    for (int n = 0; n < 4; ++n) ProcessBuffer();
     players->others.clear();
 }
 

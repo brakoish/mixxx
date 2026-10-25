@@ -17,13 +17,17 @@
 //   plays on CDJs and in rekordbox from an export, and most DJ files carry
 //   16 bits anyway. The source rate is kept, so the sample has exactly the
 //   loop's frames and its grid needs no resampling.
-// - ~/Music/Deck Lab Samples (created if missing), named
+// - ~/Music/Deck Lab Samples (decklab::samplesFolder, the folder Sample
+//   Maker uses; created if missing), named
 //   "<Title> - Loop <n> bars" (or beats) as Sample Maker's clean_name cleans
 //   it, with " 2", " 3" ... when taken. Written to a hidden temporary file in
 //   the folder and renamed, so a half-written sample never shows in Browse.
 //   The title is also in the file (RIFF INFO), so the pad shows it whole.
 // - At most kMaxBeats (32 bars) and kMaxSeconds; longer loops are refused
 //   with a message that says the limit.
+// - The pad plays the sample at once from a temporary track with the loop's
+//   grid; nothing touches the library database then. The sample joins the
+//   library (with that grid) once it is quiet (DeckLabCaptureLibrary).
 //
 // The writing and naming are free functions, tested on generated files;
 // DeckLabLoopCapture reaches the surface only through its Host.
@@ -31,6 +35,7 @@
 #include <QList>
 #include <QObject>
 #include <QString>
+#include <QTimer>
 #include <QWidget>
 #include <array>
 #include <atomic>
@@ -67,9 +72,7 @@ QString sampleName(const QString& title, double beats, double seconds);
 // empty after 999.
 QString uniquePath(const QString& folder, const QString& name);
 QString candidatePath(const QString& folder, const QString& name, int number);
-// ~/Music/Deck Lab Samples, where Sample Maker saves too.
-QString samplesFolder();
-void setSamplesFolderForTesting(const QString& folder);
+// The folder is decklab::samplesFolder() (decklab/decklabdownloads.h).
 
 // What TO PAD found on the deck.
 enum class Refusal {
@@ -126,6 +129,13 @@ QString errorText(Result::Status status);
 // it. `cancel` is checked between chunks; a cancelled or failed write leaves
 // nothing behind.
 Result write(const Request& request, const std::atomic<bool>* cancel = nullptr);
+// The saved sample as a temporary track for a pad, without the library: the
+// file's name as its title, its length, and the loop's grid (whole beats
+// over its length), locked so a pad's analysis keeps it.
+TrackPointer padTrack(const Result& result);
+// The loop's grid on a track (unless its tempo is locked already); false
+// without a tempo.
+bool applyGrid(const TrackPointer& track, const Result& result);
 
 } // namespace decklab::capture
 
@@ -183,6 +193,10 @@ class DeckLabLoopCapture final : public QObject {
         // Samplers that can take a sample, numbered from 1.
         std::function<int()> pads;
         std::function<Pad(int sampler)> pad;
+        // r7: the pad a new sample takes (DeckLabSystem::emptyPad: nothing
+        // loaded or loading, not the pad a Load pad trip fills), 0 when none.
+        // Unset: the first pad that is not loaded.
+        std::function<int()> emptyPad;
         // Loads the saved sample onto the pad (as a LOOP pad with the beat
         // grid); false when the pad cannot take it now.
         std::function<bool(int sampler, const decklab::capture::Result& result)> load;
@@ -221,4 +235,35 @@ class DeckLabLoopCapture final : public QObject {
     // The saved sample waiting for a pad while the sheet asks.
     int m_pendingDeck = 0;
     decklab::capture::Result m_pending;
+};
+
+// r7: TO PAD's samples join the library once it is quiet
+// (decklab/decklabquiet.h). Adding one reads its tags and writes the
+// database on the GUI thread, which must never happen while anything plays
+// or beside a library scan; meanwhile the pad plays it from a temporary
+// track. The library row gets the loop's grid. A sample still waiting when
+// Mixxx quits is found by the next library scan (its folder is a library
+// folder).
+class DeckLabCaptureLibrary final : public QObject {
+    Q_OBJECT
+  public:
+    struct Hooks {
+        std::function<bool()> quiet;
+        // The file's library track, added if it is new; null when it can't be.
+        std::function<TrackPointer(const QString& path)> add;
+    };
+    static constexpr int kRetryMs = 2000;
+    explicit DeckLabCaptureLibrary(Hooks hooks, QObject* parent = nullptr);
+    // Adds the sample now if it is quiet, else once it is.
+    void add(const decklab::capture::Result& result);
+    // Adds what waits, if it is quiet now.
+    void flush();
+    int pending() const {
+        return static_cast<int>(m_pending.size());
+    }
+
+  private:
+    Hooks m_hooks;
+    QList<decklab::capture::Result> m_pending;
+    QTimer m_retry;
 };

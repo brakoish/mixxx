@@ -8,7 +8,6 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QRegularExpression>
-#include <QStandardPaths>
 #include <QThread>
 #include <QTimer>
 #include <QWidget>
@@ -29,6 +28,7 @@
 #include "controllers/hid/hidcontroller.h"
 #endif
 #include "decklab/decklabdclient.h"
+#include "decklab/decklabdownloads.h"
 #include "decklab/decklabusbname.h"
 #include "engine/engine.h"
 #include "library/dao/directorydao.h"
@@ -57,9 +57,10 @@ const QString kRecording = QString::fromLatin1(RECORDING_PREF_KEY);
 const QString kRecordingFolder = QStringLiteral("Deck Lab Recordings");
 // Folders the utilities write to (apps/get-music, apps/sample-maker in the appliance repo).
 const QString kDownloadFolder = QStringLiteral("Deck Lab Downloads");
-const QStringList kMusicSubfolders{QStringLiteral("New Music"), QStringLiteral("Deck Lab Samples")};
-const QString kSamplesFolder = QStringLiteral("Deck Lab Samples");
 const QString kPreviewDeck = QStringLiteral("[PreviewDeck1]");
+// decklabd went away while a utility was open: after this long without it
+// the utility counts as closed, so background jobs are not held forever.
+constexpr int kUtilityLostMs = 15000;
 // Deck Lab shows sixteen pads; PUT ON PAD fills the first empty one of those.
 constexpr int kPads = 16;
 constexpr qint64 kLoadingStaleMs = 20000;
@@ -448,21 +449,8 @@ DeckLabPreview::Hooks DeckLabSystem::previewHooks() {
             player->slotEjectTrack(1.0);
         }
     };
-    hooks.samplesFolder = [] {
-        const QString music = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
-        return music.isEmpty() ? QString() : QDir(music).filePath(kSamplesFolder);
-    };
-    hooks.emptyPad = [this] {
-        auto* players = m_services.players;
-        const int pads = players ? std::min(kPads, players->numberOfSamplers()) : 0;
-        for (int index = 0; index < pads; ++index) {
-            auto* sampler = players->getSampler(index);
-            if (sampler && !sampler->getLoadedTrack() && !m_loadingSince.contains(sampler)) {
-                return index + 1;
-            }
-        }
-        return 0;
-    };
+    hooks.samplesFolder = [] { return decklab::samplesFolder(); };
+    hooks.emptyPad = [this] { return emptyPad(); };
     hooks.loadPad = [this](int pad, const QString& path, QString* error) {
         auto* players = m_services.players;
         auto* library = m_services.library.get();
@@ -503,10 +491,10 @@ QStringList DeckLabSystem::utilityFolders() const {
             add(QDir(mount).filePath(kDownloadFolder));
         }
     }
-    const QString music = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
-    if (!music.isEmpty()) {
-        for (const QString& folder : kMusicSubfolders) {
-            add(QDir(music).filePath(folder));
+    // ~/Music/New Music and ~/Music/Deck Lab Samples, where the utilities save.
+    for (const QString& folder : {decklab::cardDownloadsFolder(), decklab::samplesFolder()}) {
+        if (!folder.isEmpty()) {
+            add(folder);
         }
     }
     return folders;

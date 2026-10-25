@@ -3,7 +3,6 @@
 
 #include <QDir>
 #include <QRegularExpression>
-#include <QStandardPaths>
 #include <algorithm>
 
 namespace decklab {
@@ -72,7 +71,9 @@ QString musicFolder() {
     if (!musicFolderOverride().isEmpty()) {
         return musicFolderOverride();
     }
-    return QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
+    // The utilities hard-code HOME/Music (apps/sample-maker, apps/get-music);
+    // QStandardPaths' MusicLocation can be another folder.
+    return QDir::home().filePath(QStringLiteral("Music"));
 }
 
 void setMusicFolderForTesting(const QString& folder) {

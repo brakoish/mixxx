@@ -33,6 +33,7 @@ class DeckLabBackgroundAnalysis; // r7-browse: new downloads analyzed while noth
 class DeckLabDeckTools; // r5-decks: key sheet and GRID mode (widget/decklabdecktools.h)
 class DeckLabSync; // r6-sync: SYNC, MASTER and INST DOUBLES (widget/decklabsync.h)
 class DeckLabLoopCapture; // r7-sampler: TO PAD (widget/decklabcapture.h)
+class DeckLabCaptureLibrary; // r7: TO PAD's samples join the library once it is quiet
 class DeckLabStemPads;
 class DeckLabRail;
 class DeckLabSettingsPage;
@@ -453,6 +454,7 @@ class WDeckLab : public QWidget, public WBaseWidget {
     DeckLabDeckTools* m_deckTools = nullptr; // r5-decks
     std::unique_ptr<DeckLabSync> m_sync; // r6-sync
     DeckLabLoopCapture* m_capture = nullptr; // r7-sampler: TO PAD
+    DeckLabCaptureLibrary* m_captureLibrary = nullptr; // r7: null without a library
     bool m_sideBySideWaveforms = false;
     double m_linkedZoom = 0;
     bool m_zoomPending = false;
