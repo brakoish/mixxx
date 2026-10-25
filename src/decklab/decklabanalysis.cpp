@@ -4,6 +4,7 @@
 #include <QHash>
 #include <QSqlQuery>
 #include <algorithm>
+#include <utility>
 
 #include "analyzer/analyzerprogress.h"
 #include "analyzer/analyzerscheduledtrack.h"
@@ -228,6 +229,7 @@ void DeckLabBackgroundAnalysis::check() {
         // decoders on one file help nobody. Let go of it, without waiting.
         m_current = TrackId();
         m_paused = false;
+        m_analyzerUp = false;
         if (m_hooks.stop) {
             m_hooks.stop();
         }
@@ -261,7 +263,7 @@ void DeckLabBackgroundAnalysis::check() {
     if (!id.isValid()) {
         // Nothing left: the analyzer's thread may exit.
         m_timer.stop();
-        if (m_hooks.stop) {
+        if (std::exchange(m_analyzerUp, false) && m_hooks.stop) {
             m_hooks.stop();
         }
         if (m_total || m_done) {
@@ -278,6 +280,7 @@ void DeckLabBackgroundAnalysis::check() {
         }
         return;
     }
+    m_analyzerUp = true;
     m_current = id;
     m_total = m_done + 1 + static_cast<int>(m_queue.size());
     if (!m_timer.isActive()) {

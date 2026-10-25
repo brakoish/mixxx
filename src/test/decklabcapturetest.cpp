@@ -472,7 +472,12 @@ TEST_F(DeckLabCaptureTest, CapturedSamplesJoinTheLibraryOnlyOnceItIsQuiet) {
     hooks.quiet = [&quiet] { return quiet; };
     hooks.add = [&](const QString& path) {
         added.append(path);
+        // The library reads the file's header as it adds it.
         row = Track::newTemporary(path);
+        row->setAudioProperties(mixxx::audio::ChannelCount::stereo(),
+                mixxx::audio::SampleRate(kRate),
+                mixxx::audio::Bitrate(),
+                mixxx::Duration::fromSeconds(2));
         return row;
     };
     DeckLabCaptureLibrary library(hooks);

@@ -1298,7 +1298,8 @@ TEST_F(DeckLabMediaDbTest, MidSetOnlyTheListOnScreenReadsAgain) {
     decklab::UsbRelinker relinker(std::shared_ptr<TrackCollectionManager>(
             trackCollectionManager(), [](TrackCollectionManager*) {}));
     relinker.setQuiet([&quiet] { return quiet; });
-    QSignalSpy counts(internalCollection(), &TrackCollection::crateSummaryChanged);
+    int counts = 0;
+    QObject::connect(internalCollection(), &TrackCollection::crateSummaryChanged, &relinker, [&counts] { ++counts; });
 
     // Plugged in while a deck plays.
     in.insert(away.chopped(1));
@@ -1306,7 +1307,7 @@ TEST_F(DeckLabMediaDbTest, MidSetOnlyTheListOnScreenReadsAgain) {
     EXPECT_EQ(2, tracks.rowCount()) << "the list on screen reads at once";
     EXPECT_EQ(0, crateList.rowCount()) << "the others wait";
     EXPECT_TRUE(crateList.mediaStale());
-    EXPECT_EQ(0, counts.size()) << "the counts wait";
+    EXPECT_EQ(0, counts) << "the counts wait";
     QTest::qWait(50);
     EXPECT_EQ(0, store.sessions().at(0).count) << "the history waits";
     EXPECT_TRUE(store.stale());
@@ -1326,7 +1327,7 @@ TEST_F(DeckLabMediaDbTest, MidSetOnlyTheListOnScreenReadsAgain) {
     EXPECT_TRUE(tracks.mediaStale());
     EXPECT_TRUE(store.stale());
     quiet = true;
-    ASSERT_TRUE(QTest::qWaitFor([&] { return counts.size() > 0; }, decklab::MediaPresence::kSettleCheckMs + 2000));
+    ASSERT_TRUE(QTest::qWaitFor([&] { return counts > 0; }, decklab::MediaPresence::kSettleCheckMs + 2000));
     EXPECT_EQ(1, tracks.rowCount());
     EXPECT_FALSE(tracks.mediaStale());
     QTest::qWait(50);

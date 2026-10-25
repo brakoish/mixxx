@@ -126,6 +126,7 @@ class DeckLabBackgroundAnalysis : public QObject {
     bool m_pending = false; // there may be tracks to analyze that are not queued yet
     TrackId m_current;      // being analyzed
     bool m_paused = false;  // ... and paused because it is not quiet
+    bool m_analyzerUp = false; // started and not let go of since (stop)
     int m_done = 0;
     int m_total = 0;
     QSet<TrackId> m_tried;  // finished, failed or skipped this session: never queued again
