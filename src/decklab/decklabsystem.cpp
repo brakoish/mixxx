@@ -390,7 +390,7 @@ DeckLabPreview::Hooks DeckLabSystem::previewHooks() {
         auto* player = previewDeck();
         auto* library = m_services.library.get();
         const TrackPointer track = library && player
-                ? library->internalCollection()->getTrackById(TrackId(QVariant(id)))
+                ? library->getTrackById(TrackId(QVariant(id)))
                 : TrackPointer();
         if (!track) {
             *error = tr("That track is not in the library.");
