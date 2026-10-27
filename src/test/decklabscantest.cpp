@@ -1024,6 +1024,68 @@ TEST_F(DeckLabImportTest, AMovedFileInUseDuringTheScanKeepsItsNewRow) {
     QCoreApplication::processEvents();
 }
 
+// The scan's tracks reach the GUI thread queued (Browse, external
+// collections), which holds them until it gets to them: a busy GUI still
+// holds the moved file's new track when the scan ends. The relink waits for
+// the GUI to catch up instead of taking that row for one in use.
+TEST_F(DeckLabImportTest, AMovedFileIsRelinkedOnceABusyGuiLetsGoOfIt) {
+    QTemporaryDir dir;
+    const QDir root(dir.path());
+    ASSERT_TRUE(root.mkpath(QStringLiteral("A")));
+    ASSERT_TRUE(root.mkpath(QStringLiteral("B")));
+    const QString before = copyFixture(dir, QStringLiteral("A/Generated Moved.mp3"));
+    const QString after = root.filePath(QStringLiteral("B/Generated Moved.mp3"));
+    ASSERT_EQ(DirectoryDAO::AddResult::Ok, trackCollectionManager()->addDirectory(mixxx::FileInfo(dir.path())));
+    LibraryScanner scanner(dbConnectionPooler(), config());
+    std::atomic<bool> canceled{true};
+    std::atomic<int> scans{0};
+    QObject::connect(&scanner, &LibraryScanner::scanSummary, &scanner, [&](const LibraryScanResultSummary& result) {
+        canceled = result.canceled;
+        ++scans;
+    }, Qt::DirectConnection);
+    QObject gui;
+    std::atomic<int> received{0};
+    QObject::connect(&scanner, &LibraryScanner::trackAdded, &gui, [&received](const TrackPointer&) {
+        ++received;
+    });
+    scanner.start();
+    ASSERT_TRUE(scanner.scanQuietly());
+    ASSERT_TRUE(QTest::qWaitFor([&scans] { return scans.load() == 1; }, 30000));
+    ASSERT_FALSE(canceled.load());
+    const auto idAt = [this](const QString& path) {
+        return value(QStringLiteral("SELECT library.id FROM library INNER JOIN track_locations "
+                                    "ON library.location=track_locations.id WHERE track_locations.location='%1'")
+                             .arg(mixxx::FileInfo(path).location()))
+                .toInt();
+    };
+    const int id = idAt(before);
+    ASSERT_GT(id, 0);
+    ASSERT_TRUE(QFile::rename(before, after));
+    std::atomic<bool> added{false};
+    QObject::connect(&scannerDao(scanner), &TrackDAO::tracksAdded, &scannerDao(scanner), [&](const QSet<TrackId>& ids) {
+        if (!ids.isEmpty()) {
+            added = true;
+        }
+    }, Qt::DirectConnection);
+    ASSERT_TRUE(QTest::qWaitFor([&scanner] { return !scanner.isScanning(); }, 5000));
+    const int receivedBefore = received.load();
+
+    // The GUI thread is busy (no events) until the scan has committed the
+    // new row, and a little longer.
+    ASSERT_TRUE(scanner.scanQuietly());
+    for (int ms = 0; ms < 10000 && !added.load(); ms += 10) {
+        QThread::msleep(10);
+    }
+    ASSERT_TRUE(added.load());
+    QThread::msleep(500);
+    EXPECT_EQ(receivedBefore, received.load());
+    ASSERT_TRUE(QTest::qWaitFor([&scans] { return scans.load() == 2; }, 30000));
+    ASSERT_FALSE(canceled.load());
+    EXPECT_GT(received.load(), receivedBefore);
+    EXPECT_EQ(id, idAt(after)) << "the old row moved with its file";
+    EXPECT_EQ(1, value(QStringLiteral("SELECT COUNT(*) FROM library")).toInt());
+}
+
 // A batch whose commit fails stays pending: it is committed before the next
 // file is read, so no read ever holds the library's write lock, and the scan
 // goes on and adds everything. A write from another connection at the start
