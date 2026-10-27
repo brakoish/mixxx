@@ -593,6 +593,8 @@ TEST_F(DeckLabDownloadsDbTest, SamplesStayOutOfSongListsButLoadFromSamples) {
     QSqlQuery count(internalCollection()->database());
     ASSERT_TRUE(count.exec(QStringLiteral("SELECT COUNT(*) FROM library WHERE mixxx_deleted = 0")) && count.next());
     EXPECT_EQ(3, count.value(0).toInt()) << "samples stay in the library";
+    // r7 fix: the home's Library tile counts what Tracks lists: no samples.
+    EXPECT_EQ(1, decklab::shownSongCount(internalCollection()->database()));
 }
 
 // r7: DOWNLOADS and SAMPLES never show a hidden row, and after a USB merge
@@ -630,6 +632,44 @@ TEST_F(DeckLabDownloadsDbTest, FolderListsFollowARenameTakeover) {
     decklab::MediaPresence::instance().refresh(internalCollection()->database(), true);
     ASSERT_EQ(1, list.rowCount());
     EXPECT_EQ(mine, list.getTrackId(list.index(0, 0)));
+}
+
+// r7 fix: DOWNLOADS hides a stick's rows the moment it is ejected or pulled
+// (the same media rule as every other list), and rows found missing.
+TEST_F(DeckLabDownloadsDbTest, FolderListsLeaveOutAStickThatIsOut) {
+    const QString stick = QStringLiteral("/media/decklab/1234-ABCD/Deck Lab Downloads/");
+    const QString card = QStringLiteral("/home/user/Music/New Music/");
+    const QString onStick = stick + QStringLiteral("Generated Stick.m4a");
+    const QString onCard = card + QStringLiteral("Generated Card.m4a");
+    const QString gone = card + QStringLiteral("Generated Gone.m4a");
+    addTrack(onStick, QStringLiteral("Generated Stick"), 124, QStringLiteral("8A"), true);
+    addTrack(onCard, QStringLiteral("Generated Card"), 124, QStringLiteral("8A"), true);
+    addTrack(gone, QStringLiteral("Generated Gone"), 124, QStringLiteral("8A"), true);
+    QSqlQuery query(internalCollection()->database());
+    ASSERT_TRUE(query.exec(QStringLiteral("UPDATE track_locations SET fs_deleted=1 WHERE location='%1'").arg(gone)));
+    connectLibraryCache();
+    struct Reset {
+        ~Reset() {
+            decklab::MediaPresence::instance().setRootProbeForTesting({});
+        }
+    } reset;
+    bool in = true;
+    auto& presence = decklab::MediaPresence::instance();
+    presence.setRootProbeForTesting([&in](const QString&) { return in; });
+    presence.refresh(internalCollection()->database(), true);
+    DeckLabFolderTableModel list(nullptr, trackCollectionManager());
+    EXPECT_EQ(2, list.setLocations({onStick, onCard, gone}, QStringLiteral("downloads:tracks")));
+    EXPECT_EQ((QStringList{onStick, onCard}), locations(list)) << "a row found missing never shows";
+    EXPECT_EQ(2, decklab::shownSongCount(internalCollection()->database()));
+    // The stick is pulled: its row leaves the list on screen at once.
+    in = false;
+    presence.refresh(internalCollection()->database());
+    EXPECT_EQ((QStringList{onCard}), locations(list));
+    EXPECT_EQ(1, decklab::shownSongCount(internalCollection()->database())) << "the Library tile too";
+    // ... and comes back with the stick.
+    in = true;
+    presence.refresh(internalCollection()->database());
+    EXPECT_EQ((QStringList{onStick, onCard}), locations(list));
 }
 
 // The analysis takes the downloads the library knows that still lack a BPM,

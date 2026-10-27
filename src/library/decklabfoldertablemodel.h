@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
+#include <QSqlDatabase>
 #include <QStringList>
 
 #include "library/basesqltablemodel.h"
@@ -14,6 +15,11 @@ namespace decklab {
 /// there is no music folder), for the library view's WHERE clause.
 QString songListSqlFilter();
 
+/// r7 fix: how many tracks the Library's track list shows (the home's
+/// Library tile): not hidden, not missing, not on a USB stick that is out,
+/// and no samples. -1 when the database can't say.
+int shownSongCount(const QSqlDatabase& database);
+
 } // namespace decklab
 
 /// r7-browse: library tracks in an order Deck Lab gives: the DOWNLOADS lists
@@ -24,6 +30,9 @@ QString songListSqlFilter();
 /// order is fixed (no header sorting); the position column numbers the files
 /// as given. r7: hidden rows (mixxx_deleted) never show, and after a USB
 /// merge or rename pass each file's row is found again by its location.
+/// r7 fix: like every other list, rows marked missing (fs_deleted) and rows
+/// on a USB stick that is out (decklab/decklabmedia.h) never show either:
+/// an eject or a pull takes them off the list at once.
 class DeckLabFolderTableModel final : public BaseSqlTableModel {
     Q_OBJECT
   public:

@@ -7,7 +7,9 @@
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHideEvent>
+#include <QKeyEvent>
 #include <QLabel>
+#include <QStyle>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QStorageInfo>
@@ -23,6 +25,7 @@
 
 #include "decklab/decklabdownloads.h"
 #include "decklab/decklaboverlay.h"
+#include "library/decklabknob.h"
 #include "sources/audiosourcestereoproxy.h"
 #include "sources/soundsourceproxy.h"
 #include "track/beats.h"
@@ -461,6 +464,7 @@ const QString kChooserStyle = QStringLiteral(R"(
  QWidget#decklab-pad-chooser QPushButton:pressed {background:#20242B;}
  QWidget#decklab-pad-chooser QPushButton:disabled {background:#111418;color:#4B525C;border-color:#1E2228;}
  QWidget#decklab-pad-chooser QPushButton#decklab-pad-chooser-cancel {text-align:center;}
+ QWidget#decklab-pad-chooser QPushButton[knobCursor="true"] {border:2px solid #F2F4F7;}
  )");
 } // namespace
 
@@ -517,6 +521,10 @@ DeckLabPadChooser::DeckLabPadChooser(QWidget* parent)
     decklab::overlay::keepAboveWaveforms(this);
 }
 
+DeckLabPadChooser::~DeckLabPadChooser() {
+    decklab::releaseKnob(this);
+}
+
 void DeckLabPadChooser::ask(const QString& sample, const QList<Pad>& pads) {
     m_sample->setText(QFontMetrics(m_sample->font()).elidedText(sample, Qt::ElideMiddle, 520));
     for (int index = 0; index < kPads; ++index) {
@@ -539,9 +547,87 @@ void DeckLabPadChooser::ask(const QString& sample, const QList<Pad>& pads) {
                                          : tr("Replace pad %1, %2").arg(pad.sampler).arg(title));
     }
     m_asking = true;
+    showCursor(nullptr);
     place();
     show();
     decklab::overlay::raiseAboveWaveforms(this);
+    decklab::claimKnob(this);
+}
+
+QList<QPushButton*> DeckLabPadChooser::cursorTargets() const {
+    QList<QPushButton*> targets;
+    for (auto* b : m_pads) {
+        if (b->isVisible() && b->isEnabled()) {
+            targets.append(b);
+        }
+    }
+    targets.append(m_cancel);
+    return targets;
+}
+
+QPushButton* DeckLabPadChooser::cursorButton() const {
+    return m_cursor;
+}
+
+void DeckLabPadChooser::showCursor(QPushButton* button) {
+    if (m_cursor == button) {
+        return;
+    }
+    for (auto* b : {m_cursor, button}) {
+        if (!b) {
+            continue;
+        }
+        b->setProperty("knobCursor", b == button);
+        b->style()->unpolish(b);
+        b->style()->polish(b);
+    }
+    m_cursor = button;
+}
+
+void DeckLabPadChooser::keyPressEvent(QKeyEvent* event) {
+    // The knob claim sends Tab/Backtab (or Up/Down) for a turn, Space or
+    // Return for a press and Escape for back (decklab::forwardKnob).
+    switch (event->key()) {
+    case Qt::Key_Up:
+    case Qt::Key_Left:
+    case Qt::Key_Backtab:
+    case Qt::Key_Down:
+    case Qt::Key_Right:
+    case Qt::Key_Tab: {
+        const QList<QPushButton*> targets = cursorTargets();
+        if (!m_cursor || !targets.contains(m_cursor)) {
+            // The first turn only shows the cursor, on CANCEL.
+            showCursor(m_cancel);
+        } else {
+            const bool back = event->key() == Qt::Key_Up || event->key() == Qt::Key_Left ||
+                    event->key() == Qt::Key_Backtab;
+            const auto count = targets.size();
+            const auto index = (targets.indexOf(m_cursor) + (back ? count - 1 : 1)) % count;
+            showCursor(targets.at(index));
+        }
+        event->accept();
+        return;
+    }
+    case Qt::Key_Return:
+    case Qt::Key_Enter:
+    case Qt::Key_Space:
+        if (m_cursor && m_cursor->isVisible() && m_cursor->isEnabled()) {
+            m_cursor->click();
+        } else if (!m_cursor) {
+            showCursor(m_cancel); // a press before any turn shows where it is
+        }
+        event->accept();
+        return;
+    case Qt::Key_Escape:
+        cancel();
+        event->accept();
+        return;
+    case Qt::Key_Select:
+        event->accept(); // the knob held down: nothing until it turns or is let go
+        return;
+    default:
+        QWidget::keyPressEvent(event);
+    }
 }
 
 void DeckLabPadChooser::place() {
@@ -578,6 +664,8 @@ QPushButton* DeckLabPadChooser::padButton(int sampler) const {
 void DeckLabPadChooser::hideEvent(QHideEvent* event) {
     // A page change hides it under a finger: no choice is made then.
     QWidget::hideEvent(event);
+    decklab::releaseKnob(this);
+    showCursor(nullptr);
     if (m_asking) {
         cancel();
     }
@@ -761,10 +849,22 @@ void DeckLabCaptureLibrary::flush() {
         m_retry.start();
         return;
     }
+    addPending();
+}
+
+void DeckLabCaptureLibrary::flushNow() {
+    if (m_pending.isEmpty() || !m_hooks.add || (m_hooks.scanning && m_hooks.scanning())) {
+        return;
+    }
+    m_retry.stop();
+    addPending();
+}
+
+void DeckLabCaptureLibrary::addPending() {
     const QList<decklab::capture::Result> pending = std::exchange(m_pending, {});
     for (const auto& result : pending) {
         // Its tags are read and its row written now; the grid is saved with
-        // the row when the last reference goes (a moment later, still quiet).
+        // the row when the last reference goes (a moment later).
         const TrackPointer track = m_hooks.add(result.path);
         if (track) {
             decklab::capture::applyGrid(track, result);

@@ -7892,6 +7892,60 @@ TEST_F(NativeDeckLabTest, DownloadsAndSamplesTilesOpenTheirLists) {
     analysis->setHooks({});
 }
 
+// r7 fix: Browse left on the home shows the DOWNLOADS and SAMPLES tiles the
+// moment their folders appear (Get Music's first download, the first
+// sample), and counts them again when a utility closes, without opening a
+// list and coming back.
+TEST_F(NativeDeckLabTest, HomeTilesFollowUtilitiesWithoutLeavingTheHome) {
+    QTemporaryDir home;
+    const QString music = home.filePath(QStringLiteral("Music"));
+    struct Reset {
+        ~Reset() { decklab::setMusicFolderForTesting(QString()); }
+    } reset;
+    decklab::setMusicFolderForTesting(music);
+    const auto file = [](const QString& path) {
+        QDir().mkpath(QFileInfo(path).path());
+        QFile out(path);
+        if (out.open(QIODevice::WriteOnly)) {
+            out.write("generated");
+        }
+    };
+    panel->selectPage(1); settle();
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_sources"), 1);
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_sources"), 0);
+    settle();
+    EXPECT_FALSE(listTexts().contains(QStringLiteral("Downloads")));
+    EXPECT_FALSE(listTexts().contains(QStringLiteral("Samples")));
+
+    // Get Music and Sample Maker wrote their first files; back on Browse.
+    file(music + QStringLiteral("/New Music/Generated Single [ccccccccccc].m4a"));
+    file(music + QStringLiteral("/Deck Lab Samples/Generated Hit.wav"));
+    panel->selectPage(0); settle();
+    panel->selectPage(1); settle();
+    EXPECT_EQ(QStringList{QStringLiteral("Sources")}, crumbs());
+    const int downloads = static_cast<int>(listTexts().indexOf(QStringLiteral("Downloads")));
+    const int samples = static_cast<int>(listTexts().indexOf(QStringLiteral("Samples")));
+    ASSERT_GE(downloads, 0);
+    ASSERT_GE(samples, 0);
+    EXPECT_EQ(QStringLiteral("1 track"), browseList()->item(downloads)->data(DeckLabListDelegate::SubtitleRole).toString());
+    EXPECT_EQ(QStringLiteral("1 sample"), browseList()->item(samples)->data(DeckLabListDelegate::SubtitleRole).toString());
+
+    // More of each, then the utility closes while the home is shown.
+    file(music + QStringLiteral("/New Music/Generated Second [ddddddddddd].m4a"));
+    file(music + QStringLiteral("/Deck Lab Samples/Generated Second Hit.wav"));
+    QTemporaryDir run;
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, run.filePath(QStringLiteral("decklabd.sock")));
+    panel->attachSystem(&system);
+    system.utilities()->onAppsChanged(QJsonObject{{QStringLiteral("app"), QJsonValue::Null}});
+    settle();
+    ASSERT_EQ(downloads, listTexts().indexOf(QStringLiteral("Downloads")));
+    EXPECT_EQ(QStringLiteral("2 tracks"), browseList()->item(downloads)->data(DeckLabListDelegate::SubtitleRole).toString());
+    EXPECT_EQ(QStringLiteral("2 samples"), browseList()->item(samples)->data(DeckLabListDelegate::SubtitleRole).toString());
+    panel->attachSystem(nullptr);
+}
+
 // r7-browse: a pad's Load opens Browse on SAMPLES, with ALL MUSIC where
 // MATCH sits for the rest of Browse. Leaving it (Cancel, or the load),
 // Browse comes back on the home, never on samples.
@@ -7947,6 +8001,59 @@ TEST_F(NativeDeckLabTest, LoadPadOpensOnSamples) {
     panel->browseBack(); settle();
     EXPECT_EQ(QStringList{QStringLiteral("Sources")}, crumbs());
     EXPECT_EQ(QStringLiteral("Samples"), browseList()->currentItem()->text());
+}
+
+// r7 fix: REPLACE sends a loaded pad to Browse, and the controller can fire
+// it meanwhile: LOAD PAD follows the pad playing (not loadable, "Playing")
+// and is ready again once it stops.
+TEST_F(NativeDeckLabTest, LoadPadFollowsThePadPlaying) {
+    auto controls = makeSamplerControls(1, 2);
+    WDeckLab surface(config(), nullptr, players.get(), m_pEffectsManager.get());
+    surface.resize(800, 480); surface.show(); QCoreApplication::processEvents();
+    auto* sampler = surface.findChild<DeckLabSampler*>(QStringLiteral("decklab-sampler"));
+    ASSERT_NE(nullptr, sampler);
+    surface.selectPage(2); settle();
+    emit sampler->loadRequested(2);
+    settle();
+    auto* load = static_cast<DeckLabDockTile*>(surface.findChild<QPushButton*>(QStringLiteral("decklab-load-1")));
+    ASSERT_NE(nullptr, load);
+    EXPECT_EQ(QStringLiteral("Load pad 2"), load->text());
+    EXPECT_EQ(QStringLiteral("Sampler"), load->detail());
+    ControlObject::set(ConfigKey(QStringLiteral("[Sampler2]"), QStringLiteral("play")), 1);
+    settle();
+    EXPECT_EQ(QStringLiteral("Playing"), load->detail()) << "without a selection change";
+    EXPECT_FALSE(load->isEnabled());
+    EXPECT_NE(DeckLabActionButton::Tone::Ready, load->tone());
+    ControlObject::set(ConfigKey(QStringLiteral("[Sampler2]"), QStringLiteral("play")), 0);
+    settle();
+    EXPECT_EQ(QStringLiteral("Sampler"), load->detail());
+    surface.hide();
+}
+
+// r7 fix: a track that cannot load (its stick was pulled after the list was
+// read) is said on the touch screen; Mixxx's modal "Couldn't load track."
+// box never opens over the set while a Deck Lab surface is up.
+TEST_F(NativeDeckLabTest, AFailedLoadIsAMessageNotAModalBox) {
+    EXPECT_FALSE(BaseTrackPlayer::isLoadFailedDialogShown());
+    bool modal = false;
+    QTimer::singleShot(800, panel.get(), [&modal] {
+        if (auto* box = QApplication::activeModalWidget()) {
+            modal = true;
+            box->close();
+        }
+    });
+    // A track on a stick that is out (generated; never read).
+    const TrackPointer gone = Track::newTemporary(QStringLiteral("/media/decklab/1234-ABCD/Generated Gone.mp3"));
+    deckPlayer(1)->slotLoadFailed(gone, QStringLiteral("Generated reason"));
+    settle();
+    QTest::qWait(900);
+    EXPECT_FALSE(modal);
+    auto* toast = panel->findChild<DeckLabToast*>();
+    ASSERT_NE(nullptr, toast);
+    EXPECT_EQ(QStringLiteral("Couldn't load that track. Is its USB stick in?"), toast->text());
+    // Mixxx's own box is back once no Deck Lab surface is left.
+    panel.reset();
+    EXPECT_TRUE(BaseTrackPlayer::isLoadFailedDialogShown());
 }
 
 // r7-browse: the background analysis pauses the moment a deck plays (or a
