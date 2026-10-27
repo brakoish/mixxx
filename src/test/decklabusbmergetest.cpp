@@ -1719,3 +1719,35 @@ TEST_F(DeckLabMediaDbTest, TheLastListWaitsWhileBrowseIsNotShown) {
     relinker.refreshMedia();
     EXPECT_EQ(1, tracks.rowCount());
 }
+
+// r7 fix: a plug or a pull comes twice (decklabd's usb.changed, then the
+// media folder watcher a moment later): the media table is read once at
+// once and at most once more after, not twice in a row on the GUI thread.
+TEST_F(DeckLabMediaDbTest, APlugRefreshesTheMediaOnceAndOnceMoreLater) {
+    addTrack(kNow + QStringLiteral("a.mp3"), 1000);
+    addTrack(QStringLiteral("/media/user/5678-EF01/b.mp3"), 2000);
+    int probes = 0;
+    auto& presence = decklab::MediaPresence::instance();
+    presence.setRootProbeForTesting([&probes](const QString& root) {
+        ++probes;
+        return root == kMount;
+    });
+    FakeDisk disk;
+    disk.in.insert(kMount);
+    decklab::UsbRelinker relinker(std::shared_ptr<TrackCollectionManager>(
+            trackCollectionManager(), [](TrackCollectionManager*) {}));
+    relinker.setProbe(disk.probe());
+    relinker.setQuiet([] { return false; }); // no merge pass here
+    QJsonArray drives;
+    drives.append(QJsonObject{{"id", kStick.uuid}, {"label", kStick.label}, {"mount", kMount}});
+    relinker.relinkDrives(drives);
+    const int once = probes;
+    EXPECT_GT(once, 0) << "the first one reads at once";
+    relinker.relinkDrives(drives);
+    relinker.relinkDrives(drives);
+    EXPECT_EQ(once, probes) << "the ones right after wait";
+    ASSERT_TRUE(QTest::qWaitFor([&] { return probes > once; }, 3000));
+    const int twice = probes;
+    QTest::qWait(1700);
+    EXPECT_EQ(twice, probes) << "one more, not one per trigger";
+}
