@@ -43,6 +43,8 @@
 #include "decklab/decklabkeys.h" // r6-keys
 #include "decklab/decklabanalysis.h"  // r7-browse
 #include "decklab/decklabdownloads.h" // r7-browse
+#include "decklab/decklabmedia.h"     // r7 fix
+#include "decklab/decklabutilities.h" // r7 fix
 #include "decklab/decklaboverlay.h"
 #include "decklab/decklabsetupwizard.h"
 #include "decklab/decklabsystem.h"
@@ -8054,6 +8056,115 @@ TEST_F(NativeDeckLabTest, AFailedLoadIsAMessageNotAModalBox) {
     // Mixxx's own box is back once no Deck Lab surface is left.
     panel.reset();
     EXPECT_TRUE(BaseTrackPlayer::isLoadFailedDialogShown());
+}
+
+// r7 fix: a stick pulled while DOWNLOADS is open takes its playlist folder
+// off the list at once; a folder row whose stick went before the list
+// heard of it says so when opened, and the list loses it.
+TEST_F(NativeDeckLabTest, DownloadsLosesAStickThatIsPulled) {
+    QTemporaryDir home;
+    const QString music = home.filePath(QStringLiteral("Music"));
+    struct Reset {
+        ~Reset() { decklab::setMusicFolderForTesting(QString()); }
+    } reset;
+    decklab::setMusicFolderForTesting(music);
+    const auto file = [](const QString& path) {
+        QDir().mkpath(QFileInfo(path).path());
+        QFile out(path);
+        if (out.open(QIODevice::WriteOnly)) {
+            out.write("generated");
+        }
+    };
+    const auto plug = [&] {
+        const QString stick = makeStick(QStringLiteral("55AA-1234"), false);
+        file(stick + QStringLiteral("/Deck Lab Downloads/Generated Playlist/01 - Fixture - One.m4a"));
+        file(stick + QStringLiteral("/Deck Lab Downloads/Generated Playlist/02 - Fixture - Two.m4a"));
+        return stick;
+    };
+    file(music + QStringLiteral("/New Music/Generated Card Single [bbbbbbbbbbb].m4a"));
+    QString stick = plug();
+    panel->selectPage(1); settle();
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_sources"), 1);
+    ControlObject::set(ConfigKey("[DeckLabNative]", "browse_sources"), 0);
+    settle();
+    ASSERT_TRUE(selectRow(QStringLiteral("Downloads")));
+    panel->browsePress(); settle();
+    ASSERT_EQ(QStringList{QStringLiteral("Downloads")}, crumbs());
+    EXPECT_EQ((QStringList{"Tracks", "Generated Playlist"}), listTexts());
+
+    // Pulled: the media presence changes and the list follows on screen.
+    ASSERT_TRUE(QDir(stick).removeRecursively());
+    emit decklab::MediaPresence::instance().changed();
+    settle();
+    EXPECT_EQ(QStringList{QStringLiteral("Downloads")}, crumbs());
+    EXPECT_EQ(QStringList{QStringLiteral("Tracks")}, listTexts());
+
+    // Back, then pulled again before the list heard of it: opening the
+    // folder says the stick is out.
+    stick = plug();
+    emit decklab::MediaPresence::instance().changed();
+    settle();
+    ASSERT_EQ((QStringList{"Tracks", "Generated Playlist"}), listTexts());
+    ASSERT_TRUE(QDir(stick).removeRecursively());
+    ASSERT_TRUE(selectRow(QStringLiteral("Generated Playlist")));
+    panel->browsePress(); settle();
+    auto* toast = panel->findChild<DeckLabToast*>();
+    ASSERT_NE(nullptr, toast);
+    EXPECT_EQ(QStringLiteral("That USB stick is out."), toast->text());
+    EXPECT_EQ(QStringList{QStringLiteral("Downloads")}, crumbs());
+    EXPECT_EQ(QStringList{QStringLiteral("Tracks")}, listTexts());
+}
+
+// r7 fix: a row whose file went with its stick (the list was read before the
+// pull) is said on LOAD and on PREVIEW; nothing is loaded and no box opens.
+TEST_F(NativeDeckLabTest, AStaleRowSaysItsStickIsOutOnLoadAndPreview) {
+    std::unique_ptr<ControlObject> previewLoad;
+    const ConfigKey previewKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("LoadSelectedTrackAndPlay"));
+    if (!ControlObject::exists(previewKey)) {
+        previewLoad = std::make_unique<ControlObject>(previewKey);
+    }
+    // Generated rows at /media/decklab/GENERATED/...: never there.
+    WTrackTableView* table = installGeneratedTable({QStringLiteral("Am"), QStringLiteral("8A")});
+    openTrackLevel();
+    ASSERT_EQ(1, panel->currentPage());
+    ASSERT_TRUE(table->isVisible());
+    table->selectRow(0); settle();
+    auto* toast = panel->findChild<DeckLabToast*>();
+    ASSERT_NE(nullptr, toast);
+    toast->showMessage(QStringLiteral("Generated"), 100);
+    panel->loadDeck(1); settle();
+    EXPECT_EQ(QStringLiteral("That track's USB stick is out."), toast->text());
+    EXPECT_FALSE(deckPlayer(1)->getLoadedTrack());
+    toast->showMessage(QStringLiteral("Generated"), 100);
+    panel->togglePreview(); settle();
+    EXPECT_EQ(QStringLiteral("That track's USB stick is out."), toast->text());
+    EXPECT_EQ(nullptr, QApplication::activeModalWidget());
+}
+
+// r7 fix: a deck that starts while a library scan runs stops the scan: the
+// system watches each player's play control and tells the utilities.
+TEST_F(NativeDeckLabTest, PlayStartingStopsALibraryScan) {
+    QTemporaryDir run;
+    DeckLabSystem::Services services;
+    services.config = config();
+    services.players = players.get();
+    DeckLabSystem system(services, nullptr, run.filePath(QStringLiteral("decklabd.sock")));
+    int interrupted = 0;
+    DeckLabUtilities::Hooks hooks;
+    hooks.playing = [] { return ControlObject::get(ConfigKey(QStringLiteral("[Channel1]"), QStringLiteral("play"))) > 0; };
+    hooks.recording = [] { return false; };
+    hooks.scanning = [] { return true; };
+    hooks.interruptScan = [&interrupted] { ++interrupted; };
+    system.utilities()->setHooks(hooks);
+    const TrackPointer track = loadGenerated(1, 122);
+    ProcessBuffer(); settle();
+    EXPECT_EQ(0, interrupted);
+    ControlObject::set(ConfigKey(QStringLiteral("[Channel1]"), QStringLiteral("play")), 1);
+    settle();
+    EXPECT_EQ(1, interrupted) << "the scan stops when the deck starts";
+    ControlObject::set(ConfigKey(QStringLiteral("[Channel1]"), QStringLiteral("play")), 0);
+    settle();
+    EXPECT_EQ(1, interrupted);
 }
 
 // r7-browse: the background analysis pauses the moment a deck plays (or a
