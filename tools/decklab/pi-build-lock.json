@@ -26,6 +26,7 @@
     "DeckLabThreadPolicyTest.*",
     "DeckLabLv2SafetyTest.*",
     "DeckLabSystemTest.*",
+    "DeckLabPreviewDeckTest.*",
     "DeckLabBrowseMatchTest.*",
     "DeckLabBrowseTest.*",
     "DeckLabPhraseTest.*",

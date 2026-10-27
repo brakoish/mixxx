@@ -39,10 +39,13 @@ class DeckLabPreview : public QObject {
         /// Starts loading library track `id` into [PreviewDeck1]; false and a reason when it can't.
         std::function<bool(int id, QString* error)> load;
         std::function<double()> duration;     // seconds of the loaded track, 0 while none
-        std::function<double()> position;     // seconds, at audio callback precision
+        /// Seconds, where the engine's last audio callback played to. A seek
+        /// shows only once the engine has taken it, on a later callback.
+        std::function<double()> position;
         std::function<bool()> playing;        // [PreviewDeck1] plays
         /// Loops start..end (the loop on only for `loop`), seeks to `from`
-        /// unless it is negative, then plays.
+        /// unless it is negative, then plays. pause, eject and load give the
+        /// track its own loop back, so Mixxx never saves the cut with it.
         std::function<void(double start, double end, bool loop, double from)> play;
         std::function<void()> pause;          // pauses and turns the loop off
         std::function<void()> eject;
@@ -107,6 +110,8 @@ class DeckLabPreview : public QObject {
     void stop(qint64 serial);
     void loadSample(qint64 serial, const QJsonObject& data);
     bool begin(const Request& request, QString* error);
+    double playhead() const;
+    bool seekTaken(double position);
     void halt(State state, const QString& reason);
     void setState(State state);
     void watch();
@@ -120,6 +125,11 @@ class DeckLabPreview : public QObject {
     State m_state = State::Idle;
     Request m_current;
     double m_stoppedAt = 0;
+    // Our seek the engine has not shown yet: where it goes, -1 when none,
+    // and the engine positions seen since it was asked for.
+    double m_seekTo = -1;
+    double m_seen = 0;
+    int m_changesToSee = 0;
     bool m_unloadWhenLoaded = false; // Sample Maker closed while our track loaded
     bool m_ownLoad = false;          // inside hooks.load: the load that starts is ours
     QString m_reason;

@@ -46,6 +46,9 @@ bool seconds(const QJsonValue& value, double* out) {
     return true;
 }
 
+// Positions closer than half a millisecond are the same place.
+constexpr double kSamePlace = 0.0005;
+
 // decklabd accepts 0..7200 s only; a missing or odd engine value reads as 0.
 double bounded(double value) {
     return std::isfinite(value) ? std::clamp(value, 0.0, DeckLabPreview::kMaxSeconds) : 0.0;
@@ -194,7 +197,7 @@ void DeckLabPreview::play(qint64 serial, const QJsonObject& data) {
         if (m_hooks.playing()) {
             m_hooks.pause();
             if (m_state == State::Playing) {
-                m_stoppedAt = bounded(m_hooks.position());
+                m_stoppedAt = bounded(playhead());
                 setState(State::Stopped);
             }
         }
@@ -230,14 +233,20 @@ bool DeckLabPreview::begin(const Request& wanted, QString* error) {
     if (request.from >= request.end) {
         request.from = -1;
     }
-    const double now = m_hooks.position();
+    const double now = playhead();
     const bool carryOn = m_state == State::Playing && m_current.track == request.track &&
             m_hooks.playing() && request.from >= 0 && std::abs(now - request.from) < kSeamlessSeconds &&
             now >= request.start && now < request.end;
-    m_hooks.play(request.start,
-            request.end,
-            request.loop,
-            carryOn ? -1.0 : (request.from >= 0 ? request.from : request.start));
+    const double from = carryOn ? -1.0 : (request.from >= 0 ? request.from : request.start);
+    m_hooks.play(request.start, request.end, request.loop, from);
+    if (from >= 0) {
+        // The engine seeks on its next audio callback. Until then it reports
+        // where it was, which can be at or past OUT (PLAY again after OUT, OUT
+        // moved before the playhead), and watch() must not stop on that.
+        m_seen = m_hooks.position();
+        m_seekTo = std::abs(m_seen - from) < kSamePlace ? -1.0 : from;
+        m_changesToSee = 2;
+    }
     m_current = request;
     setState(State::Playing);
     return true;
@@ -380,7 +389,7 @@ void DeckLabPreview::onUtilityChanged(const QString& app) {
 }
 
 void DeckLabPreview::halt(State state, const QString& reason) {
-    m_stoppedAt = m_state == State::Playing ? bounded(m_hooks.position()) : m_current.start;
+    m_stoppedAt = m_state == State::Playing ? bounded(playhead()) : m_current.start;
     if (m_hooks.playing() && m_hooks.loadedTrack() == m_current.track) {
         m_hooks.pause();
     }
@@ -391,7 +400,12 @@ void DeckLabPreview::halt(State state, const QString& reason) {
 
 void DeckLabPreview::setState(State state) {
     m_state = state;
-    if (state == State::Playing && !m_current.loop) {
+    if (state != State::Playing) {
+        m_seekTo = -1;
+    }
+    // A cut without loop is watched for OUT, a looped one until the engine
+    // has taken its seek.
+    if (state == State::Playing && (!m_current.loop || m_seekTo >= 0)) {
         m_watch.start();
     } else {
         m_watch.stop();
@@ -413,16 +427,42 @@ void DeckLabPreview::watch() {
         return;
     }
     if (!m_hooks.playing()) {
-        m_stoppedAt = bounded(m_hooks.position());
+        m_stoppedAt = bounded(playhead());
         setState(State::Stopped);
         sendReport();
-    } else if (m_hooks.position() >= m_current.end - 0.0005) {
+        return;
+    }
+    const double position = m_hooks.position();
+    if (!seekTaken(position)) {
+        return; // still where it was before our seek
+    }
+    if (m_current.loop) {
+        m_watch.stop();
+    } else if (position >= m_current.end - kSamePlace) {
         m_hooks.pause();
         m_stoppedAt = m_current.end;
         m_reason.clear();
         setState(State::Stopped);
         sendReport();
     }
+}
+
+bool DeckLabPreview::seekTaken(double position) {
+    // The first new position can still come from the audio callback that was
+    // running when the seek was asked for; every later one is from after it.
+    // A first one inside the cut is not past OUT either, so it counts too.
+    if (m_seekTo >= 0 && position != m_seen) {
+        m_seen = position;
+        if (--m_changesToSee <= 0 || (position >= m_current.start && position < m_current.end)) {
+            m_seekTo = -1;
+        }
+    }
+    return m_seekTo < 0;
+}
+
+double DeckLabPreview::playhead() const {
+    // Our seek's target until the engine shows it.
+    return m_seekTo >= 0 ? m_seekTo : m_hooks.position();
 }
 
 void DeckLabPreview::tick() {
@@ -437,7 +477,7 @@ void DeckLabPreview::tick() {
         return;
     }
     if (m_state == State::Playing && !m_hooks.playing()) {
-        m_stoppedAt = bounded(m_hooks.position());
+        m_stoppedAt = bounded(playhead());
         setState(State::Stopped);
     }
     sendReport();
@@ -447,7 +487,7 @@ QJsonObject DeckLabPreview::report() const {
     double position = 0;
     switch (m_state) {
     case State::Playing:
-        position = m_hooks.position();
+        position = playhead();
         break;
     case State::Stopped:
         position = m_stoppedAt;
