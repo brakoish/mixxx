@@ -245,10 +245,17 @@ class GlobalTrackCache : public QObject {
     /// no write (a scan of unchanged folders commits nothing). A power cut
     /// mid-scan loses at most the edits of those last seconds. Any thread.
     static void saveDeferredTracksSoon();
-    /// Deck Lab: the library scanner holds uncommitted writes. Kept tracks
+    /// Deck Lab: the library scanner writes or holds uncommitted writes
+    /// (from right before its first write until its commit). Kept tracks
     /// are not saved meanwhile (the save would wait for SQLite's busy
     /// timeout on the GUI thread); its commit saves them. Any thread.
     static void setLibraryWritesHeld(bool held);
+    static bool areLibraryWritesHeld();
+    /// Deck Lab: waits (at most this long) until the cache's thread has
+    /// handled what was sent to it before, so the tracks let go of by then
+    /// have left the cache. False if it did not in time. Never call it on
+    /// the cache's thread (returns at once) or with a write or lock held.
+    static bool waitForTheCachesThread(int timeoutMs);
     /// Deck Lab: a new track is being filled in (every other new track
     /// waits for it). Any thread, without the lock: a hint only.
     static bool isFillingInATrack();

@@ -1,7 +1,11 @@
 #include "track/globaltrackcache.h"
 
 #include <QCoreApplication>
+#include <QThread>
 #include <atomic>
+#include <chrono>
+#include <future>
+#include <memory>
 #include <utility>
 
 #include "moc_globaltrackcache.cpp"
@@ -364,6 +368,30 @@ void GlobalTrackCache::saveDeferredTracksSoon() {
 //static
 void GlobalTrackCache::setLibraryWritesHeld(bool held) {
     s_libraryWritesHeld.store(held);
+}
+
+//static
+bool GlobalTrackCache::areLibraryWritesHeld() {
+    return s_libraryWritesHeld.load();
+}
+
+//static
+bool GlobalTrackCache::waitForTheCachesThread(int timeoutMs) {
+    GlobalTrackCache* const pInstance = s_pInstance;
+    if (!pInstance || QThread::currentThread() == pInstance->thread()) {
+        return true;
+    }
+    // Handled after everything sent before it (evictions, signals that
+    // still hold tracks).
+    auto handled = std::make_shared<std::promise<void>>();
+    auto done = handled->get_future();
+    QMetaObject::invokeMethod(
+            pInstance,
+            [handled] {
+                handled->set_value();
+            },
+            Qt::QueuedConnection);
+    return done.wait_for(std::chrono::milliseconds(timeoutMs)) == std::future_status::ready;
 }
 
 void GlobalTrackCache::saveDeferredTracks() {
