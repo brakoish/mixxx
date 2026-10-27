@@ -19,9 +19,16 @@
 /// * when the utility closes it makes sure the folders the utilities write to
 ///   are library folders, then starts a quiet in-process library rescan once
 ///   it is quiet (decklab/decklabquiet.h: nothing plays or records, no other
-///   scan, no utility open; as soon as it is) and never while a deck is
-///   loading a track (that wait is bounded). This replaces the old
-///   Ctrl+Shift+L keystroke injection.
+///   scan, no utility open, and none of that for a quiet spell) and never
+///   while a deck is loading a track (that wait is bounded). This replaces
+///   the old Ctrl+Shift+L keystroke injection.
+/// * r7 fix: Mixxx's start-up scan (RescanOnStartup) starts the same way,
+///   without a notice, instead of with the application.
+/// * r7 fix: a library scan that runs when a deck, sampler or the preview
+///   starts playing, or a recording starts, is canceled without waiting
+///   (what it added stays; nothing is marked missing) and runs again after
+///   the next quiet spell, so it never reads a stick and writes the library
+///   through a set.
 ///
 /// Every system effect goes through Hooks, so the policy is testable without a
 /// library, players or decklabd.
@@ -39,8 +46,13 @@ class DeckLabUtilities : public QObject {
         std::function<QStringList()> utilityFolders;
         /// Starts a rescan without dialogs; false if none could start.
         std::function<bool()> startQuietScan;
-        /// r7: background jobs may run (DeckLabSystem::quiet); unset counts as quiet.
+        /// r7: background jobs may start (DeckLabSystem::settled: quiet for a
+        /// quiet spell); unset counts as quiet.
         std::function<bool()> quiet;
+        /// r7 fix: a library scan runs (any: start-up, after a utility, from
+        /// Preferences), and cancels it without waiting.
+        std::function<bool()> scanning;
+        std::function<void()> interruptScan;
     };
 
     static constexpr int kPublishIntervalMs = 1000;
@@ -63,7 +75,14 @@ class DeckLabUtilities : public QObject {
     /// decklabd event `apps.changed`.
     void onAppsChanged(const QJsonObject& data);
     /// TrackCollectionManager::libraryScanSummary for a scan we may own.
-    void onScanSummary(int newTracks, bool quiet);
+    void onScanSummary(int newTracks, bool quiet, bool canceled = false);
+    /// r7 fix: the scan Mixxx would start with (deferred by CoreServices):
+    /// once it is quiet, without adding folders and without notices.
+    void requestStartupScan();
+    /// r7 fix: playing or recording changed. A scan that runs while a deck,
+    /// sampler or the preview plays, or a recording runs, is canceled and
+    /// asked for again (after the next quiet spell).
+    void onActivity();
 
     QString openApp() const {
         return m_app;
@@ -83,9 +102,13 @@ class DeckLabUtilities : public QObject {
   signals:
     void notice(const QString& text);
     void refreshStarted();
+    /// r7 fix: the utility window has gone (Get Music or Sample Maker may
+    /// have written new files).
+    void closed();
 
   private:
     void requestRefresh();
+    void request(bool addRoots, bool announce);
     void tryRefresh();
     void removeStateFile();
 
@@ -97,4 +120,7 @@ class DeckLabUtilities : public QObject {
     QElapsedTimer m_waiting;
     bool m_pending = false;
     bool m_scanOwned = false;
+    bool m_addRoots = false;      // the pending scan adds missing utility folders first
+    bool m_announce = false;      // the pending scan says what it does
+    bool m_scanAnnounced = false; // the scan we own says what it found
 };

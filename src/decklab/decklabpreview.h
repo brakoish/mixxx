@@ -50,6 +50,10 @@ class DeckLabPreview : public QObject {
         /// First empty pad (1-based), 0 when every pad holds a track.
         std::function<int()> emptyPad;
         std::function<bool(int pad, const QString& path, QString* error)> loadPad;
+        /// r7 fix: Mixxx's library scan runs. A pad load adds the sample to
+        /// the library on the GUI thread; beside the scan it would wait for
+        /// the scan's lock (and could fail), so it waits for the scan.
+        std::function<bool()> scanning;
     };
     /// Sends a request to decklabd without waiting for its answer.
     using Send = std::function<void(const QString& method, const QJsonObject& params)>;

@@ -80,6 +80,27 @@ void DeckLabUtilities::onAppsChanged(const QJsonObject& data) {
     }
     m_app.clear();
     requestRefresh();
+    emit closed();
+}
+
+void DeckLabUtilities::requestStartupScan() {
+    request(false, false);
+}
+
+void DeckLabUtilities::onActivity() {
+    const bool busy = (m_hooks.playing && m_hooks.playing()) || (m_hooks.recording && m_hooks.recording());
+    if (!busy || !m_hooks.scanning || !m_hooks.scanning() || !m_hooks.interruptScan) {
+        return;
+    }
+    // It would read the stick and write the library all set long. It runs
+    // again after the next quiet spell; folders it finished are not read
+    // again.
+    qInfo() << "Deck Lab: playback started; the library scan stops and runs again once it is quiet";
+    m_hooks.interruptScan();
+    const bool announced = m_scanOwned && m_scanAnnounced;
+    m_scanOwned = false;
+    m_scanAnnounced = false;
+    request(false, announced);
 }
 
 bool DeckLabUtilities::publishNow() {
@@ -145,6 +166,12 @@ QStringList DeckLabUtilities::missingRoots(const QStringList& folders, const QSt
 }
 
 void DeckLabUtilities::requestRefresh() {
+    request(true, true);
+}
+
+void DeckLabUtilities::request(bool addRoots, bool announce) {
+    m_addRoots = m_addRoots || addRoots;
+    m_announce = m_announce || announce;
     if (m_pending) {
         return; // one refresh at a time; it reads every folder anyway
     }
@@ -157,9 +184,10 @@ void DeckLabUtilities::tryRefresh() {
     if (!m_pending) {
         return;
     }
-    // r7: a scan holds the library's write lock for as long as it reads every
-    // folder: never while anything plays or records, another scan runs or a
-    // utility is open. New tracks may show up a little later.
+    // r7: a scan writes the library for as long as it reads every folder:
+    // never while anything plays or records, another scan runs or a utility
+    // is open, nor right after (a quiet spell). New tracks may show up a
+    // little later.
     if (m_hooks.quiet && !m_hooks.quiet()) {
         m_waiting.restart(); // the bounded wait for a loading deck starts when it is quiet
         m_retry.start(kQuietRetryMs);
@@ -172,7 +200,9 @@ void DeckLabUtilities::tryRefresh() {
         return;
     }
     m_pending = false;
-    if (m_hooks.utilityFolders && m_hooks.libraryRoots && m_hooks.addLibraryRoot) {
+    const bool announce = std::exchange(m_announce, false);
+    if (std::exchange(m_addRoots, false) && m_hooks.utilityFolders && m_hooks.libraryRoots &&
+            m_hooks.addLibraryRoot) {
         const QStringList missing = missingRoots(m_hooks.utilityFolders(), m_hooks.libraryRoots());
         for (const QString& folder : missing) {
             if (m_hooks.addLibraryRoot(folder)) {
@@ -184,16 +214,22 @@ void DeckLabUtilities::tryRefresh() {
     }
     if (m_hooks.startQuietScan && m_hooks.startQuietScan()) {
         m_scanOwned = true;
+        m_scanAnnounced = announce;
         emit refreshStarted();
-        emit notice(tr("Looking for new tracks…"));
+        if (announce) {
+            emit notice(tr("Looking for new tracks…"));
+        }
     }
 }
 
-void DeckLabUtilities::onScanSummary(int newTracks, bool quiet) {
+void DeckLabUtilities::onScanSummary(int newTracks, bool quiet, bool canceled) {
     if (!quiet || !m_scanOwned) {
         return;
     }
     m_scanOwned = false;
+    if (canceled || !std::exchange(m_scanAnnounced, false)) {
+        return; // canceled: it runs again; the start-up scan says nothing
+    }
     if (newTracks == 1) {
         emit notice(tr("1 new track is in your library."));
     } else if (newTracks > 1) {

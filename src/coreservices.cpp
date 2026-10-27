@@ -731,7 +731,14 @@ void CoreServices::initialize(QApplication* pApp) {
     // Scan the library directory. Do this after the skinloader has
     // loaded a skin, see issue #6625
     if (rescan || musicDirAdded || m_pSettingsManager->shouldRescanLibrary()) {
-        m_pTrackCollectionManager->startLibraryAutoScan();
+        if (pConfig->getValueString(ConfigKey("[Config]", "ResizableSkin")) == QStringLiteral("DeckLab")) {
+            // Deck Lab: the scan reads every library folder (USB sticks) and
+            // writes the library; it starts quietly once nothing plays
+            // (DeckLabSystem, decklab/decklabquiet.h), not with the app.
+            m_pTrackCollectionManager->deferLibraryScan();
+        } else {
+            m_pTrackCollectionManager->startLibraryAutoScan();
+        }
     }
 
     // This has to be done before m_pSoundManager->setupDevices()

@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "control/controlobject.h"
+#include "control/controlproxy.h"
 #include "controllers/controller.h"
 #include "controllers/controllermanager.h"
 #include "controllers/controllermappinginfoenumerator.h"
@@ -211,6 +212,7 @@ DeckLabSystem::DeckLabSystem(Services services, QObject* parent, const QString& 
                       m_client->call(method, params);
                   },
                   this)) {
+    m_clock.start();
     m_utilities->setHooks(utilityHooks());
     m_preview->setHooks(previewHooks());
     connect(m_client, &DeckLabdClient::readyChanged, this, &DeckLabSystem::onReady);
@@ -224,15 +226,29 @@ DeckLabSystem::DeckLabSystem(Services services, QObject* parent, const QString& 
                 &TrackCollectionManager::libraryScanSummary,
                 this,
                 [this](const LibraryScanResultSummary& result) {
-                    m_utilities->onScanSummary(result.numNewTracks, result.quiet);
+                    m_utilities->onScanSummary(result.numNewTracks, result.quiet, result.canceled);
                 });
-        // r7: a scan holds one long write transaction; background jobs wait.
-        // The start-up scan began before Deck Lab existed: its scanStarted
-        // never reaches this, so the scanner's own state counts too.
-        connect(library, &TrackCollectionManager::libraryScanStarted, this, [this] { m_scanning = true; });
-        connect(library, &TrackCollectionManager::libraryScanFinished, this, [this] { m_scanning = false; });
+        // r7: a scan writes the library; background jobs wait. The scanner's
+        // own state counts too (a scan started before this existed).
+        connect(library, &TrackCollectionManager::libraryScanStarted, this, [this] {
+            m_scanning = true;
+            activityChanged();
+        });
+        connect(library, &TrackCollectionManager::libraryScanFinished, this, [this] {
+            m_scanning = false;
+            activityChanged();
+        });
         m_scanning = library->isLibraryScanRunning();
+        // r7 fix: the scan Mixxx starts with (RescanOnStartup) waits for the
+        // quiet rule like every other background job.
+        if (library->takeDeferredLibraryScan()) {
+            m_utilities->requestStartupScan();
+        }
     }
+    // r7 fix: a recording that starts restarts the quiet spell (and stops a
+    // library scan), like a deck that starts.
+    auto* recording = new ControlProxy(kRecording, QStringLiteral("status"), this, ControlFlag::AllowMissingOrInvalid);
+    recording->connectValueChanged(this, [this](double) { activityChanged(); }, Qt::QueuedConnection);
     if (auto* players = m_services.players) {
         watchPlayers();
         connect(players, &PlayerManagerInterface::numberOfDecksChanged, this, [this](int) { watchPlayers(); });
@@ -407,6 +423,7 @@ void DeckLabSystem::onEvent(const QString& topic, const QJsonObject& data) {
     } else if (topic == QStringLiteral("apps.changed")) {
         m_utilities->onAppsChanged(data);
         m_preview->onUtilityChanged(m_utilities->openApp());
+        activityChanged();
     } else {
         m_preview->onEvent(topic, data);
     }
@@ -430,11 +447,18 @@ DeckLabUtilities::Hooks DeckLabSystem::utilityHooks() {
         return result == DirectoryDAO::AddResult::Ok || result == DirectoryDAO::AddResult::AlreadyWatching;
     };
     hooks.utilityFolders = [this] { return utilityFolders(); };
-    // r7: the rescan waits until it is quiet (decklab/decklabquiet.h).
-    hooks.quiet = [this] { return quiet(); };
+    // r7: the rescan waits until it is quiet and has been for a quiet spell
+    // (decklab/decklabquiet.h).
+    hooks.quiet = [this] { return settled(); };
     hooks.startQuietScan = [this] {
         auto* library = m_services.library.get();
         return library && library->startLibraryScanQuietly();
+    };
+    hooks.scanning = [this] { return activity().scanning; };
+    hooks.interruptScan = [this] {
+        if (auto* library = m_services.library.get()) {
+            library->interruptLibraryScan();
+        }
     };
     return hooks;
 }
@@ -510,6 +534,7 @@ DeckLabPreview::Hooks DeckLabSystem::previewHooks() {
     };
     hooks.samplesFolder = [] { return decklab::samplesFolder(); };
     hooks.emptyPad = [this] { return emptyPad(); };
+    hooks.scanning = [this] { return activity().scanning; };
     hooks.loadPad = [this](int pad, const QString& path, QString* error) {
         auto* players = m_services.players;
         auto* library = m_services.library.get();
@@ -580,6 +605,10 @@ void DeckLabSystem::watchPlayer(BaseTrackPlayer* player) {
         return;
     }
     m_watchedPlayers.insert(player);
+    // r7 fix: a player that starts or stops starts the quiet spell again,
+    // and one that starts stops a library scan.
+    auto* play = new ControlProxy(player->getGroup(), QStringLiteral("play"), this, ControlFlag::AllowMissingOrInvalid);
+    play->connectValueChanged(this, [this](double) { activityChanged(); }, Qt::QueuedConnection);
     // Loading starts with loadingTrack(new, old) and ends with newTrackLoaded,
     // or playerEmpty when it failed or the deck was ejected.
     connect(player,
@@ -641,6 +670,15 @@ QString DeckLabSystem::thermalWarning() const {
 
 bool DeckLabSystem::anyPlaying() const {
     return decksOrSamplersPlaying() || controlValue(kPreviewDeck, QStringLiteral("play")) > 0;
+}
+
+bool DeckLabSystem::settled() const {
+    return m_quietSpell.quietFor(quiet(), m_clock.elapsed(), m_quietSpellMs);
+}
+
+void DeckLabSystem::activityChanged() {
+    m_quietSpell.busy(m_clock.elapsed());
+    m_utilities->onActivity();
 }
 
 decklab::Activity DeckLabSystem::activity() const {
