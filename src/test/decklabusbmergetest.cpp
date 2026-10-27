@@ -846,7 +846,7 @@ TEST(DeckLabUsbMergeTest, APassThatOnlyFindsFilesAgainLeavesNoCopy) {
         EXPECT_EQ(1, revived.revived);
         EXPECT_TRUE(copiesNow().isEmpty()) << "finding a file again makes no copy";
 
-        const auto earlier = add(QStringLiteral("/media/dj/MY STICK/Generated Moved.mp3"), true);
+        const auto earlier = add(QStringLiteral("/media/user/MY STICK/Generated Moved.mp3"), true);
         decklab::RelinkPlan move;
         decklab::RelinkGroup group;
         group.target = QStringLiteral("/media/decklab/1234-ABCD/Generated Moved.mp3");
