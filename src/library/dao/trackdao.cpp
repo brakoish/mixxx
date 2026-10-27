@@ -561,17 +561,25 @@ void TrackDAO::addTracksFinish(bool rollback) {
     m_tracksAddedSet.clear();
 }
 
-void TrackDAO::addTracksCommit() {
+bool TrackDAO::addTracksCommit() {
     // Deck Lab: the tracks added so far are committed and the next ones go
     // into a new transaction (BEGIN is deferred: no lock until the next
     // write). The prepared queries stay. When the commit fails the
-    // transaction stays open for the next commit or addTracksFinish().
-    if (!m_pTransaction || !*m_pTransaction || !m_pTransaction->commit()) {
-        return;
+    // transaction stays open, with its writes, for the next commit or
+    // addTracksFinish().
+    if (!m_pTransaction || !*m_pTransaction) {
+        return false;
+    }
+    if (m_failCommitForTesting && m_failCommitForTesting()) {
+        return false;
+    }
+    if (!m_pTransaction->commit()) {
+        return false;
     }
     m_pTransaction = std::make_unique<SqlTransaction>(m_database);
     emit tracksAdded(m_tracksAddedSet);
     m_tracksAddedSet.clear();
+    return true;
 }
 
 namespace {

@@ -6,6 +6,7 @@
 #include <QList>
 #include <QMutex>
 #include <QScopedPointer>
+#include <QSet>
 #include <QSemaphore>
 #include <QThread>
 #include <QThreadPool>
@@ -135,14 +136,20 @@ class LibraryScanner : public QThread {
     // batches, and files are read only while it holds no write.
     void queueAdd(PendingAdd add);
     void flushAdds();
-    void commitAdds();
+    // False if the commit failed: the writes stay pending.
+    bool commitAdds();
+    // Commits (tried a few times) before a file is read; false if it still
+    // failed: the scan is canceled and the file is not read.
+    bool commitAddsBeforeRead();
+    void setAddWrites(bool writes);
     void addReadTrack(const QString& trackPath, const TrackPointer& pImportedTrack);
     void saveDirectoryHash(const QString& directoryPath,
             bool newDirectory,
             mixxx::cache_key_t hash);
-    // Deck Lab: rows a scan that did not finish added count as added for
-    // the moved-file relink of the next scan that does.
-    void markUnfinishedScan();
+    // Deck Lab: rows a scan that did not finish inserted count as added
+    // for the moved-file relink of the next scan that does, unless they
+    // are in use or hold anything of their own since.
+    void recordAddedRows();
     QStringList addedTracksSinceUnfinishedScan() const;
     // Deck Lab: GlobalTrackCache keeps modified tracks instead of saving
     // them while this scan writes (no lock-order inversion with the GUI).
@@ -192,5 +199,6 @@ class LibraryScanner : public QThread {
     QElapsedTimer m_pendingSince;  // since the first one waits
     QTimer m_addCommitTimer{this}; // writes a batch that waits for more
     bool m_addWrites = false;      // the transaction holds writes
+    QSet<TrackId> m_recordedAdds;  // inserted rows recorded but not committed
     bool m_savingDeferred = false;
 };

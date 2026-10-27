@@ -182,7 +182,8 @@ class TrackDAO : public QObject, public virtual DAO, public virtual GlobalTrackC
             bool unremove);
     // Deck Lab: commits the tracks added so far and goes on in a new
     // transaction, so a long import never holds the write lock for long.
-    void addTracksCommit();
+    // False if the commit failed: the writes stay pending.
+    bool addTracksCommit();
     void addTracksFinish(bool rollback = false);
 
     bool updateTrack(const Track& track) const;
@@ -245,6 +246,8 @@ class TrackDAO : public QObject, public virtual DAO, public virtual GlobalTrackC
     // before the track is looked up in the global track cache (the library
     // scanner commits its batch there if it would wait for another track).
     std::function<void()> m_beforeCacheLookup;
+    // Deck Lab tests: addTracksCommit() fails (commits nothing) while true.
+    std::function<bool()> m_failCommitForTesting;
 
     DISALLOW_COPY_AND_ASSIGN(TrackDAO);
     mutable QSqlQuery m_lastAddedToHistoryQuery;
