@@ -20,6 +20,10 @@
 // they are shown or until it is quiet (settled()). The list Library last
 // showed counts as on screen only while Deck Lab's Browse page shows it
 // (setOnScreen): mid-set the DJ is mostly on Decks.
+//
+// r7 fix: a refresh that finds the same tracks away as before writes
+// nothing and tells nobody; each media root is worked out once per folder,
+// and a whole stick goes into the table with one statement.
 
 #include <QObject>
 #include <QPointer>
@@ -75,6 +79,7 @@ class MediaPresence final : public QObject {
         m_probe = std::move(probe);
         m_away.clear();
         m_awayRoots.clear();
+        m_written.clear();
     }
 
     // r7: whether background work may run now (DeckLabSystem::quiet); null
@@ -130,6 +135,8 @@ class MediaPresence final : public QObject {
     RootProbe m_probe;
     QSet<qint64> m_away;
     QStringList m_awayRoots;
+    // The connection whose temporary table holds m_away (empty: unknown).
+    QString m_written;
     std::function<bool()> m_quiet;
     std::function<bool()> m_onScreen;
     QPointer<QObject> m_shown;

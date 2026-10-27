@@ -361,11 +361,12 @@ int mergeInto(QSqlDatabase& database,
         return -1;
     }
     result->entries += entries.numRowsAffected();
-    // Play count: the higher; last played: the later; added: the earlier;
-    // rating and colour: the survivor's unless it has none; grid and key:
-    // from the row the DJ edited, else the one that was analysed.
+    // Play count: both added up (each row counted its own plays); last
+    // played: the later; added: the earlier; rating and colour: the
+    // survivor's unless it has none; grid and key: from the row the DJ
+    // edited, else the one that was analysed.
     LibraryValues values = *keep;
-    values.timesPlayed = std::max(keep->timesPlayed.toInt(), other->timesPlayed.toInt());
+    values.timesPlayed = keep->timesPlayed.toInt() + other->timesPlayed.toInt();
     values.played = std::max(keep->played.toInt(), other->played.toInt());
     const QDateTime keepPlayed = storedTime(keep->lastPlayedAt);
     const QDateTime otherPlayed = storedTime(other->lastPlayedAt);
@@ -529,6 +530,11 @@ bool isEarlierMountName(const UsbVolume& volume, const QString& name) {
     return matches(volume.label, Qt::CaseSensitive) || matches(volume.uuid, Qt::CaseInsensitive);
 }
 
+bool isNumberedMountName(const UsbVolume& volume, const QString& name) {
+    return isEarlierMountName(volume, name) && name != volume.label &&
+            name.compare(volume.uuid, Qt::CaseInsensitive) != 0;
+}
+
 QStringList legacyRelativePaths(const UsbVolume& volume, const QString& location) {
     const QString mount = cleanMount(volume.mount);
     QStringList result;
@@ -564,10 +570,63 @@ RelinkPlan planRelink(const UsbVolume& volume,
         const QList<RelinkRow>& rows,
         const QStringList& folders,
         const RelinkProbe& probe,
-        const QSet<qint64>& busyTrackIds) {
+        const QSet<qint64>& busyTrackIds,
+        const QStringList& otherSticks) {
     RelinkPlan plan;
     const QString mount = cleanMount(volume.mount);
     const QString prefix = mount + QLatin1Char('/');
+    // File sizes on the stick, each looked up once.
+    QHash<QString, qint64> sizes;
+    const auto sizeOnStick = [&](const QString& path) {
+        const auto known = sizes.constFind(path);
+        if (known != sizes.constEnd()) {
+            return known.value();
+        }
+        const qint64 size = probe.fileSize ? probe.fileSize(path) : -1;
+        sizes.insert(path, size);
+        return size;
+    };
+    QSet<QString> others;
+    for (const QString& name : otherSticks) {
+        if (!name.isEmpty()) {
+            others.insert(name.toLower());
+        }
+    }
+    // r7 fix: a numbered folder ("DJ2" for a stick labelled DJ) is this
+    // stick's only when its rows show it. Another stick of that name (one
+    // the unit has seen, or one with the same exports) would otherwise give
+    // its rows to this one while it is out.
+    const auto numberedFolderIsThisStick = [&](const QString& root, const QString& name) {
+        if (others.contains(name.toLower())) {
+            return false;
+        }
+        const QString rootPrefix = root + QLatin1Char('/');
+        int listed = 0;
+        int onStick = 0;
+        int same = 0;
+        for (const auto& row : rows) {
+            if (row.hidden || !row.location.startsWith(rootPrefix)) {
+                continue;
+            }
+            const QString relative = row.location.mid(rootPrefix.size());
+            if (relative.isEmpty() || hasParentStep(relative)) {
+                continue;
+            }
+            ++listed;
+            const qint64 size = sizeOnStick(prefix + relative);
+            if (size < 0) {
+                continue; // not on this stick: no evidence either way
+            }
+            ++onStick;
+            if (row.fileSize == size) {
+                ++same;
+            }
+        }
+        // Most of the folder's rows, too: a few songs that both sticks carry
+        // say nothing about whose folder it is.
+        return onStick > 0 && same * 100 >= onStick * kNumberedFolderEvidencePercent &&
+                same * 2 > listed;
+    };
     // Is this folder an earlier address of the volume? Asked once per folder.
     QHash<QString, bool> earlierRoots;
     const auto isEarlierRoot = [&](const QString& root) {
@@ -585,7 +644,12 @@ RelinkPlan planRelink(const UsbVolume& volume,
             } else if (isEarlierMountName(volume, root.section(QLatin1Char('/'), -1))) {
                 // An automounter's folder for this stick, unless another
                 // filesystem is in it now (another stick with that label).
+                const QString name = root.section(QLatin1Char('/'), -1);
                 earlier = !(probe.isIn && probe.isIn(root));
+                if (earlier && isNumberedMountName(volume, name) && !numberedFolderIsThisStick(root, name)) {
+                    earlier = false;
+                    plan.otherFolders.append(root);
+                }
             }
         }
         earlierRoots.insert(root, earlier);
@@ -629,7 +693,7 @@ RelinkPlan planRelink(const UsbVolume& volume,
             continue; // nothing to do: no file check
         }
         const QString target = prefix + it.key();
-        const qint64 size = probe.fileSize ? probe.fileSize(target) : -1;
+        const qint64 size = sizeOnStick(target);
         if (size < 0) {
             // Not on the stick (any more): every row stays as it is.
             plan.missing += static_cast<int>(song.earlier.size());
@@ -1051,7 +1115,7 @@ RelinkResult applyRelink(QSqlDatabase& database, const RelinkPlan& plan) {
     return result;
 }
 
-std::optional<QString> backupLibraryDatabase(const QSqlDatabase& database, int keep) {
+std::optional<QString> backupLibraryDatabase(const QSqlDatabase& database) {
     // The file SQLite has open (Mixxx opens it through a "file:" URI).
     QSqlQuery list(database);
     if (!list.exec(QStringLiteral("PRAGMA database_list"))) {
@@ -1073,8 +1137,16 @@ std::optional<QString> backupLibraryDatabase(const QSqlDatabase& database, int k
     // Names sort by time.
     const QString base = folder.filePath(stem + QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMdd-HHmmss")));
     QString copy = base;
-    for (int n = 2; QFileInfo::exists(copy); ++n) {
-        copy = base + QLatin1Char('-') + QString::number(n);
+    // Another copy this second: the next number after the highest one used,
+    // never a number freed by pruning (names must keep sorting by time).
+    const QString baseName = QFileInfo(base).fileName();
+    const QStringList taken = folder.entryList(QStringList{baseName + QStringLiteral("-*")}, QDir::Files);
+    if (QFileInfo::exists(base) || !taken.isEmpty()) {
+        int next = 2;
+        for (const QString& name : taken) {
+            next = std::max(next, name.mid(baseName.size() + 1).toInt() + 1);
+        }
+        copy = base + QLatin1Char('-') + QString::number(next);
     }
     QString literal = copy;
     literal.replace(QLatin1Char('\''), QStringLiteral("''"));
@@ -1084,11 +1156,30 @@ std::optional<QString> backupLibraryDatabase(const QSqlDatabase& database, int k
         QFile::remove(copy);
         return std::nullopt;
     }
+    return copy;
+}
+
+void pruneLibraryBackups(const QString& copy, int keep) {
+    if (copy.isEmpty()) {
+        return;
+    }
+    const QFileInfo file(copy);
+    const QString name = file.fileName();
+    const qsizetype stemEnd = name.indexOf(QStringLiteral(".decklab-merge-"));
+    if (stemEnd < 0) {
+        return;
+    }
+    const QString stem = name.left(stemEnd) + QStringLiteral(".decklab-merge-");
+    const QDir folder = file.dir();
+    // Names sort by time: the first is the library before the first merge.
     QStringList copies = folder.entryList(QStringList{stem + QLatin1Char('*')}, QDir::Files, QDir::Name);
+    if (copies.isEmpty()) {
+        return;
+    }
+    copies.removeFirst();
     while (copies.size() > std::max(1, keep)) {
         QFile::remove(folder.filePath(copies.takeFirst()));
     }
-    return copy;
 }
 
 UsbRelinker::UsbRelinker(std::shared_ptr<TrackCollectionManager> library, QObject* parent)
@@ -1122,7 +1213,8 @@ UsbRelinker::UsbRelinker(std::shared_ptr<TrackCollectionManager> library, QObjec
         m_scanning = m_library->isLibraryScanRunning();
     }
     m_retry.setSingleShot(true);
-    m_retry.setInterval(10000);
+    // r7 fix: shorter than the quiet spell, so a pass starts soon after it.
+    m_retry.setInterval(2000);
     connect(&m_retry, &QTimer::timeout, this, &UsbRelinker::startNext);
     m_busyRetry.setSingleShot(true);
     m_busyRetry.setInterval(5000);
@@ -1133,6 +1225,8 @@ UsbRelinker::UsbRelinker(std::shared_ptr<TrackCollectionManager> library, QObjec
             emitCounts();
         }
     });
+    m_mediaRefresh.setSingleShot(true);
+    connect(&m_mediaRefresh, &QTimer::timeout, this, [this] { refreshMedia(); });
     m_settle.setSingleShot(true);
     m_settle.setInterval(700);
     connect(&m_settle, &QTimer::timeout, this, [this] {
@@ -1146,7 +1240,7 @@ UsbRelinker::~UsbRelinker() {
 }
 
 void UsbRelinker::relinkDrives(const QJsonArray& drives) {
-    refreshMedia();
+    refreshMediaSoon();
     const QList<UsbVolume> volumes = usbVolumesFromDrives(drives);
     // A stick that went (or moved) is looked at again when it is back.
     QSet<QString> present;
@@ -1160,7 +1254,7 @@ void UsbRelinker::relinkDrives(const QJsonArray& drives) {
 }
 
 void UsbRelinker::relinkMounted() {
-    refreshMedia();
+    refreshMediaSoon();
     QList<UsbVolume> volumes;
     const bool testing = usbMediaRootsAreForTesting();
     for (const QString& root : usbMediaRoots()) {
@@ -1190,11 +1284,25 @@ void UsbRelinker::relinkRenames() {
     startNext();
 }
 
+void UsbRelinker::refreshMediaSoon() {
+    constexpr qint64 kBurstMs = 1500;
+    if (m_mediaRefresh.isActive()) {
+        return; // the second one is due anyway
+    }
+    if (!m_mediaRefreshed.isValid() || m_mediaRefreshed.elapsed() >= kBurstMs) {
+        refreshMedia();
+        return;
+    }
+    m_mediaRefresh.start(static_cast<int>(kBurstMs - m_mediaRefreshed.elapsed()));
+}
+
 void UsbRelinker::refreshMedia(bool force) {
     TrackCollection* collection = m_library ? m_library->internalCollection() : nullptr;
     if (!collection) {
         return;
     }
+    m_mediaRefresh.stop();
+    m_mediaRefreshed.start();
     if (!MediaPresence::instance().refresh(collection->database(), force)) {
         return;
     }
@@ -1275,7 +1383,79 @@ void UsbRelinker::rewatch() {
     }
 }
 
+namespace {
+const ConfigKey kSticksSeen(QStringLiteral("[DeckLab]"), QStringLiteral("UsbSticksSeen"));
+} // namespace
+
+QHash<QString, QStringList> UsbRelinker::sticksSeen() const {
+    QHash<QString, QStringList> seen;
+    if (!m_config) {
+        return seen;
+    }
+    // {"<uuid>": ["<label>", ...]}
+    const QJsonObject object =
+            QJsonDocument::fromJson(m_config->getValueString(kSticksSeen).toUtf8()).object();
+    for (auto it = object.constBegin(); it != object.constEnd(); ++it) {
+        QStringList labels;
+        for (const auto& label : it.value().toArray()) {
+            if (label.isString() && !label.toString().isEmpty()) {
+                labels.append(label.toString());
+            }
+        }
+        seen.insert(it.key().toLower(), labels);
+    }
+    return seen;
+}
+
+void UsbRelinker::rememberSticks(const QList<UsbVolume>& volumes) {
+    if (!m_config) {
+        return;
+    }
+    QHash<QString, QStringList> seen = sticksSeen();
+    bool changed = false;
+    for (const auto& volume : volumes) {
+        const QString uuid = volume.uuid.toLower();
+        if (uuid.isEmpty()) {
+            continue;
+        }
+        if (!seen.contains(uuid)) {
+            seen.insert(uuid, {});
+            changed = true;
+        }
+        QStringList& labels = seen[uuid];
+        if (!volume.label.isEmpty() && !labels.contains(volume.label)) {
+            labels.append(volume.label);
+            changed = true;
+        }
+    }
+    if (!changed) {
+        return;
+    }
+    QJsonObject object;
+    for (auto it = seen.constBegin(); it != seen.constEnd(); ++it) {
+        object.insert(it.key(), QJsonArray::fromStringList(it.value()));
+    }
+    m_config->setValue(kSticksSeen, QString::fromUtf8(QJsonDocument(object).toJson(QJsonDocument::Compact)));
+    m_config->save();
+}
+
+QStringList UsbRelinker::otherSticks(const UsbVolume& volume) const {
+    QStringList names;
+    const QHash<QString, QStringList> seen = sticksSeen();
+    for (auto it = seen.constBegin(); it != seen.constEnd(); ++it) {
+        if (it.key() == volume.uuid.toLower()) {
+            continue;
+        }
+        names.append(it.key());
+        names.append(it.value());
+    }
+    return names;
+}
+
 bool UsbRelinker::queue(const QList<UsbVolume>& volumes) {
+    // r7 fix: every stick that comes in is remembered (UUID and label), so a
+    // numbered folder of another stick's name is never taken for it later.
+    rememberSticks(volumes);
     bool added = false;
     for (const auto& volume : volumes) {
         const QString key = volumeKey(volume);
@@ -1321,9 +1501,10 @@ void UsbRelinker::startNext() {
     const std::optional<UsbVolume> volume = m_running;
     const bool renames = m_runningRenames;
     const RelinkProbe probe = m_probe;
+    const QStringList others = volume ? otherSticks(*volume) : QStringList();
     // Only stat() calls, directory and rename map reads on the worker: the
     // stick is read, never written.
-    m_watcher.setFuture(QtConcurrent::run([volume, renames, rows, folders, probe, busy] {
+    m_watcher.setFuture(QtConcurrent::run([volume, renames, rows, folders, probe, busy, others] {
         RelinkPlan plan;
         if (volume) {
             QList<RelinkRow> media;
@@ -1332,7 +1513,7 @@ void UsbRelinker::startNext() {
                     media.append(row);
                 }
             }
-            plan = planRelink(*volume, media, folders, probe, busy);
+            plan = planRelink(*volume, media, folders, probe, busy, others);
         }
         if (renames) {
             // After the stick's own moves: a renamed file's row follows it.
@@ -1392,7 +1573,15 @@ void UsbRelinker::finish() {
     TrackCollection* collection = m_library ? m_library->internalCollection() : nullptr;
     if (collection && !plan.isEmpty()) {
         QSqlDatabase database = collection->database();
-        if (!backupLibraryDatabase(database)) {
+        // r7 fix: a copy first only when rows move or merge. Finding files
+        // again and moving library folders are safe without one, and such a
+        // pass (a stick back after a scan marked its tracks missing) must
+        // not push the copy from before a merge out.
+        std::optional<QString> copy = QString();
+        if (!plan.groups.isEmpty()) {
+            copy = backupLibraryDatabase(database);
+        }
+        if (!copy) {
             qWarning() << "Deck Lab USB merge: the library could not be copied first; nothing changed";
             result.ok = false;
         } else {
@@ -1401,6 +1590,11 @@ void UsbRelinker::finish() {
                 notify(result);
             } else {
                 qWarning() << "Deck Lab USB merge: the changes were rolled back";
+            }
+            if (result.ok && !(result.relocated.isEmpty() && result.merged.isEmpty())) {
+                pruneLibraryBackups(*copy);
+            } else if (!copy->isEmpty()) {
+                QFile::remove(*copy); // nothing moved or merged: the copy says nothing new
             }
         }
     }
@@ -1416,6 +1610,9 @@ void UsbRelinker::finish() {
                 << "library folders moved," << plan.sizeMismatch << "same path but another size,"
                 << plan.missing << "file not there," << plan.blocked
                 << "address held by a hidden track," << plan.busy << "in use";
+    }
+    if (!plan.otherFolders.isEmpty()) {
+        qInfo() << "Deck Lab USB merge: left alone, not shown to be this stick:" << plan.otherFolders;
     }
     if (volume && plan.busy == 0 && result.ok) {
         m_done.insert(volumeKey(*volume));

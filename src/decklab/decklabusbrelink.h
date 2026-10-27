@@ -14,13 +14,20 @@
 // When a stick is in and nothing plays (start-up, a stick mounted), rows at
 // an earlier address of that stick follow it: a row without a twin moves to
 // the current address; twins merge onto the row at the current address,
-// keeping every cue, loop, crate, history entry, play count, rating, grid and
-// key. "The same song" is strict: an earlier address of the same filesystem
-// (a link to its mount, its label with udisks' number, or its FS UUID), the
-// same relative path and the same file size. Never title or artist.
+// keeping every cue, loop, crate, history entry and rating, grid and key, and
+// adding up the play counts. "The same song" is strict: an earlier address
+// of the same filesystem (a link to its mount, its label with udisks'
+// number, or its FS UUID), the same relative path and the same file size.
+// Never title or artist. r7 fix: a folder named after the label with udisks'
+// number ("DJ2" for a stick labelled DJ) counts only when the rows there
+// show it is this stick: no stick the unit has seen is called that, and
+// most of its rows whose file is on this stick have that file's size. Else
+// it is another stick's folder (a stick labelled DJ2 that is out), and its
+// rows and library folders are left alone.
 // Nothing is deleted: a merged row is hidden (Mixxx's mixxx_deleted) with
 // whatever the survivor already had; the database is copied beside itself
-// first; the stick is only read. Tracks loaded or cached are left for later.
+// first (when rows move or merge); the stick is only read. Tracks loaded or
+// cached are left for later.
 //
 // r7-library: Get Music's rename maps. When Get Music renames downloaded
 // files (its ORGANIZE step), it lists {old, new, size} in a hidden
@@ -28,6 +35,7 @@
 // follows it to the new name in the same pass, so its cues, crates, history
 // and analysis stay with it.
 
+#include <QElapsedTimer>
 #include <QFileSystemWatcher>
 #include <QFutureWatcher>
 #include <QHash>
@@ -43,6 +51,8 @@
 #include <functional>
 #include <memory>
 #include <optional>
+
+#include "preferences/usersettings.h"
 
 class TrackCollectionManager;
 
@@ -63,6 +73,15 @@ QList<UsbVolume> usbVolumesFromDrives(const QJsonArray& drives);
 // (case-insensitive), alone or with the number udisks adds when the name is
 // taken ("MY STICK1").
 bool isEarlierMountName(const UsbVolume& volume, const QString& name);
+
+// r7 fix: a name of this volume with udisks' number ("MY STICK1"), not its
+// label or UUID itself (isEarlierMountName).
+bool isNumberedMountName(const UsbVolume& volume, const QString& name);
+
+// r7 fix: a numbered folder is an earlier address of the volume only when at
+// least this share of its rows whose relative path is on the volume have
+// that file's size.
+constexpr int kNumberedFolderEvidencePercent = 80;
 
 // Relative paths `location` would have on this volume if it lies under a
 // folder named after it (isEarlierMountName): /media/<user>/<name>,
@@ -112,6 +131,9 @@ struct RelinkPlan {
     int sizeMismatch = 0; // same path, another size: another file, left alone
     int missing = 0;      // earlier rows whose file is not on the stick: left missing
     int blocked = 0;      // the current address is held by a hidden row
+    // r7 fix: numbered folders (udisks' "MY STICK1") the rows do not show
+    // to be this stick: another stick's, left alone.
+    QStringList otherFolders;
     // Songs left because a track is loaded or cached right now; they are
     // tried again once none of busyIds is in use (or the stick is seen).
     int busy = 0;
@@ -128,12 +150,15 @@ qint64 regularFileSize(const QString& path);
 // Pure planning: which rows of `volume` move or merge onto its current
 // mount. Reads the filesystem through probe only; never writes anything.
 // rows: every library row under /media or /run/media (relinkCandidates);
-// folders: the library folders (libraryFolders).
+// folders: the library folders (libraryFolders); otherSticks: the labels and
+// UUIDs of every other stick the unit has seen (any case): a numbered folder
+// called like one of them is never this volume's.
 RelinkPlan planRelink(const UsbVolume& volume,
         const QList<RelinkRow>& rows,
         const QStringList& folders,
         const RelinkProbe& probe,
-        const QSet<qint64>& busyTrackIds = {});
+        const QSet<qint64>& busyTrackIds = {},
+        const QStringList& otherSticks = {});
 
 // Library rows that live under /media or /run/media.
 QList<RelinkRow> relinkCandidates(const QSqlDatabase& database);
@@ -206,11 +231,15 @@ struct RelinkResult {
 RelinkResult applyRelink(QSqlDatabase& database, const RelinkPlan& plan);
 
 // Copies the library database beside itself (SQLite's VACUUM INTO, a
-// consistent snapshot) as "<file>.decklab-merge-<time>" and keeps the newest
-// `keep` copies. Returns the copy's path; an empty path for a database in
-// memory (tests: nothing to copy); nullopt when no copy could be made.
-// Never inside a transaction.
-std::optional<QString> backupLibraryDatabase(const QSqlDatabase& database, int keep = 2);
+// consistent snapshot) as "<file>.decklab-merge-<time>". Returns the copy's
+// path; an empty path for a database in memory (tests: nothing to copy);
+// nullopt when no copy could be made. Never inside a transaction.
+std::optional<QString> backupLibraryDatabase(const QSqlDatabase& database);
+// r7 fix: after a pass that changed rows, the copies beside `copy` are cut
+// down to the newest `keep` and the oldest one (the library before the
+// first merge, never deleted automatically).
+constexpr int kMergeBackupsKept = 2;
+void pruneLibraryBackups(const QString& copy, int keep = kMergeBackupsKept);
 
 // Session glue: when a stick is in (start-up, decklabd's drive list, a mount
 // seen in the media folders), rows at its earlier addresses follow it and
@@ -238,6 +267,13 @@ class UsbRelinker final : public QObject {
     void setProbe(RelinkProbe probe) {
         m_probe = std::move(probe);
     }
+    // r7 fix: where the unit remembers every stick it has seen (its UUID and
+    // labels, [DeckLab] UsbSticksSeen). Without it nothing is remembered.
+    void setConfig(UserSettingsPointer config) {
+        m_config = std::move(config);
+    }
+    // UUID (lower case) -> every label seen with it.
+    QHash<QString, QStringList> sticksSeen() const;
     bool isRunning() const {
         return m_watcher.isRunning();
     }
@@ -275,9 +311,16 @@ class UsbRelinker final : public QObject {
     void finish();
     void notify(const RelinkResult& result);
     void rewatch();
+    // r7 fix: a plug or pull comes twice (decklabd's usb.changed, then the
+    // media folder watcher): one refresh at once, at most one more after.
+    void refreshMediaSoon();
     void emitCounts();
     void retryBusy();
+    void rememberSticks(const QList<UsbVolume>& volumes);
+    // The labels and UUIDs of the other sticks the unit has seen.
+    QStringList otherSticks(const UsbVolume& volume) const;
     std::shared_ptr<TrackCollectionManager> m_library;
+    UserSettingsPointer m_config;
     BusyTracks m_busy;
     Quiet m_quiet;
     RelinkProbe m_probe;
@@ -291,6 +334,8 @@ class UsbRelinker final : public QObject {
     bool m_scanning = false; // Mixxx's library scan is running
     QFileSystemWatcher* m_folders = nullptr;
     QTimer m_settle; // media folder changes come in bursts
+    QTimer m_mediaRefresh;         // refreshMediaSoon's second refresh
+    QElapsedTimer m_mediaRefreshed; // since the last refreshMedia()
     bool m_countsPending = false; // r7: crate and playlist counts wait until it is quiet
     // r7: songs a pass left because a track was in use (rename takeovers and
     // a stick's moves), tried again once none of these tracks is in use.
