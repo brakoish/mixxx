@@ -245,7 +245,8 @@ class TrackDAO : public QObject, public virtual DAO, public virtual GlobalTrackC
     // Deck Lab: called in addTracksAddFile() once the file is read, right
     // before the track is looked up in the global track cache (the library
     // scanner commits its batch there if it would wait for another track).
-    std::function<void()> m_beforeCacheLookup;
+    // False: the track is not added.
+    std::function<bool()> m_beforeCacheLookup;
     // Deck Lab tests: addTracksCommit() fails (commits nothing) while true.
     std::function<bool()> m_failCommitForTesting;
 

@@ -146,11 +146,12 @@ class LibraryScanner : public QThread {
     void saveDirectoryHash(const QString& directoryPath,
             bool newDirectory,
             mixxx::cache_key_t hash);
-    // Deck Lab: rows a scan that did not finish inserted count as added
-    // for the moved-file relink of the next scan that does, unless they
+    // Deck Lab: rows a scan inserted, recorded with each commit until a
+    // scan finishes. They (this scan's and those of scans that did not
+    // finish) are the added tracks of the moved-file relink, unless they
     // are in use or hold anything of their own since.
     void recordAddedRows();
-    QStringList addedTracksSinceUnfinishedScan() const;
+    QStringList addedTracksForRelink() const;
     // Deck Lab: GlobalTrackCache keeps modified tracks instead of saving
     // them while this scan writes (no lock-order inversion with the GUI).
     void deferSavingModifiedTracks(bool defer);
@@ -200,5 +201,6 @@ class LibraryScanner : public QThread {
     QTimer m_addCommitTimer{this}; // writes a batch that waits for more
     bool m_addWrites = false;      // the transaction holds writes
     QSet<TrackId> m_recordedAdds;  // inserted rows recorded but not committed
+    QSet<TrackId> m_scanInserted;  // rows this scan inserted
     bool m_savingDeferred = false;
 };

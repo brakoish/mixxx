@@ -50,13 +50,17 @@ constexpr int kAddBatchMs = 200;
 constexpr int kCommitTries = 3;
 constexpr int kCommitRetryMs = 200;
 
+// Deck Lab: how long the moved-file relink waits for the GUI thread to let
+// go of the tracks the scan added.
+constexpr int kCacheCatchUpMs = 3000;
+
 // Deck Lab: the ids of the rows a scan inserted, one setting per committed
 // batch (named after its first id), until a scan finishes. A scan that does
 // not finish (canceled for playback, cut by a crash or a power cut) leaves
 // them: those rows count as added for the moved-file relink of the next
-// scan that finishes, which finds them present, so its own list of added
-// tracks lacks them. Rows added any other way (TO PAD, a Browse load) are
-// never in it.
+// scan that finishes, as its own do. Rows added any other way (TO PAD, a
+// Browse load) are never in it, not even when a scan comes across their
+// files.
 const QString kAddedByScanKeyPrefix = QStringLiteral("decklab.scan.added.");
 // An earlier build's mark (the newest row before an unfinished scan).
 const QString kUnfinishedScanAfterIdKey = QStringLiteral("decklab.scan.unfinished_after_id");
@@ -161,11 +165,18 @@ LibraryScanner::LibraryScanner(
     // Deck Lab: another thread filling in a new track (the GUI adding a
     // file it loads) may be about to write: the batch is committed before
     // the scanner waits for that track, or both would wait for each other
-    // until SQLite's busy timeout.
+    // until SQLite's busy timeout. A batch that cannot be committed stops
+    // the scan and its track is not added: it never waits with a write held.
     m_trackDao.m_beforeCacheLookup = [this] {
-        if (GlobalTrackCache::isFillingInATrack()) {
-            commitAdds();
+        if (!GlobalTrackCache::isFillingInATrack()) {
+            return true;
         }
+        if (!commitAddsBeforeRead()) {
+            return false;
+        }
+        // The track is written next.
+        GlobalTrackCache::setLibraryWritesHeld(true);
+        return true;
     };
 
     // Listen to signals from our public methods (invoked by other threads) and
@@ -248,7 +259,12 @@ void LibraryScanner::slotStartScan() {
     // Deck Lab: from the first write until the scan ends.
     deferSavingModifiedTracks(true);
     m_recordedAdds.clear();
+    m_scanInserted.clear();
+    // Deck Lab: kept tracks are not saved while the scanner writes (here and
+    // below, with no batch open): the GUI would wait for it.
+    GlobalTrackCache::setLibraryWritesHeld(true);
     cleanUpDatabase(m_libraryHashDao.database());
+    GlobalTrackCache::setLibraryWritesHeld(false);
 
     // Recursively scan each directory in the directories table.
     m_libraryRootDirs = m_directoryDao.loadAllDirectories();
@@ -298,6 +314,10 @@ void LibraryScanner::slotStartScan() {
     // Deck Lab: a scan canceled while it was starting writes nothing; the
     // marks below only matter for the clean-up a canceled scan skips.
     if (!m_scannerGlobal->shouldCancel()) {
+        GlobalTrackCache::setLibraryWritesHeld(true);
+        const auto marked = qScopeGuard([] {
+            GlobalTrackCache::setLibraryWritesHeld(false);
+        });
         // First, we're going to mark all the directories that we've previously
         // hashed as needing verification. As we search through the directory tree
         // when we rescan, we'll mark any directory that does still exist as
@@ -402,7 +422,7 @@ void LibraryScanner::cleanUpScan() {
 
     // Deck Lab: worked out before this scan writes anything here: it
     // looks at the track cache, which nobody may do with a write held.
-    const QStringList addedTracks = addedTracksSinceUnfinishedScan();
+    const QStringList addedTracks = addedTracksForRelink();
 
     // Start a transaction for all the library hashing (moved file
     // detection) stuff.
@@ -547,7 +567,10 @@ void LibraryScanner::slotFinishUnhashedScan() {
 
     if (!m_scannerGlobal->shouldCancel() && bScanFinishedCleanly) {
         const auto dbConnection = mixxx::DbConnectionPooled(m_pDbConnectionPool);
+        // Deck Lab: ANALYZE writes too (for seconds on a large library).
+        GlobalTrackCache::setLibraryWritesHeld(true);
         updateQueryPlannerStatisticsForDatabase(dbConnection);
+        GlobalTrackCache::setLibraryWritesHeld(false);
     }
 
     if (!m_scannerGlobal->shouldCancel() && bScanFinishedCleanly) {
@@ -771,6 +794,7 @@ void LibraryScanner::slotDirectoryHashedAndScanned(const QString& directoryPath,
         kLogger.warning() << "--> should cancel --> clear hash for" << directoryPath;
         // Clearing the hash is not strictly required but let's keep it as
         // safety net in case signals get mixed up?
+        GlobalTrackCache::setLibraryWritesHeld(true);
         m_libraryHashDao.clearDirectoryHash(directoryPath);
         setAddWrites(true);
         commitAdds();
@@ -862,6 +886,9 @@ void LibraryScanner::slotAddNewTrack(const QString& trackPath) {
 }
 
 void LibraryScanner::addReadTrack(const QString& trackPath, const TrackPointer& pImportedTrack) {
+    // Deck Lab: kept tracks wait from before the first write (and the
+    // commit before a wait for the GUI holds it again for this one).
+    GlobalTrackCache::setLibraryWritesHeld(true);
     // For statistics tracking and to detect moved tracks
     TrackPointer pTrack = m_trackDao.addTracksAddReadFile(
             trackPath,
@@ -913,6 +940,7 @@ void LibraryScanner::flushAdds() {
         if (add.track) {
             addReadTrack(add.path, add.track);
         } else {
+            GlobalTrackCache::setLibraryWritesHeld(true);
             saveDirectoryHash(add.path, add.newDirectory, add.hash);
             setAddWrites(true);
         }
@@ -964,6 +992,7 @@ void LibraryScanner::recordAddedRows() {
     for (const TrackId& id : std::as_const(m_trackDao.m_tracksAddedSet)) {
         if (!m_recordedAdds.contains(id)) {
             m_recordedAdds.insert(id);
+            m_scanInserted.insert(id);
             ids.append(id.toVariant().toLongLong());
         }
     }
@@ -981,8 +1010,10 @@ void LibraryScanner::recordAddedRows() {
                     values.join(QLatin1Char(',')));
 }
 
-QStringList LibraryScanner::addedTracksSinceUnfinishedScan() const {
-    QStringList added = m_scannerGlobal->addedTracks();
+QStringList LibraryScanner::addedTracksForRelink() const {
+    // Only rows a scan inserted: this one's and those of scans that did not
+    // finish, all recorded with their commits. A row the GUI added (TO PAD,
+    // a Browse load), even one whose file this scan came across, never is.
     const QSqlDatabase database = m_libraryHashDao.database();
     QStringList ids;
     {
@@ -991,7 +1022,7 @@ QStringList LibraryScanner::addedTracksSinceUnfinishedScan() const {
         query.bindValue(QStringLiteral(":prefix"), QString(kAddedByScanKeyPrefix + QLatin1Char('%')));
         if (!query.exec()) {
             LOG_FAILED_QUERY(query);
-            return added;
+            return {};
         }
         while (query.next()) {
             const QStringList values = query.value(0).toString().split(QLatin1Char(','));
@@ -1005,29 +1036,38 @@ QStringList LibraryScanner::addedTracksSinceUnfinishedScan() const {
         }
     }
     if (ids.isEmpty()) {
-        return added;
+        return {};
     }
     // A row in use is never deleted for a moved file: one that is loaded or
-    // otherwise cached (its edits would go nowhere) ...
+    // otherwise cached (its edits would go nowhere; a row this scan
+    // committed can be loaded while it runs) ... The tracks this scan let
+    // go of (and those its signals still hold for the GUI) leave the cache
+    // on the GUI thread first, or a moved file of its last batch would look
+    // loaded and stay unlinked. If the GUI is too busy, such rows stay new.
+    if (!GlobalTrackCache::waitForTheCachesThread(kCacheCatchUpMs)) {
+        kLogger.info() << "The track cache is busy: tracks it still holds are not relinked";
+    }
     QSet<TrackId> cached;
     {
         const GlobalTrackCacheLocker cacheLocker;
         cached = cacheLocker.getCachedTrackIds();
     }
     // ... or that holds anything of its own since: plays, a playlist or a
-    // crate, cues, a rating, a locked grid, analysis (a waveform, an
-    // analysed grid or key). Cues or a grid the scan read from the file's
-    // tags also keep a row: such a moved file stays a new row.
+    // crate, a rating, a locked grid, analysis (a waveform, an analysed grid
+    // or key), or cues on a row an earlier scan inserted. Cues on this
+    // scan's rows came from the file's tags; on an earlier scan's row, cues
+    // read from the tags also keep it: such a moved file stays a new row.
     QSqlQuery query(database);
     query.prepare(QStringLiteral(
-            "SELECT library.id, track_locations.location FROM library "
+            "SELECT library.id, track_locations.location, "
+            "EXISTS (SELECT 1 FROM cues WHERE cues.track_id=library.id) "
+            "FROM library "
             "INNER JOIN track_locations ON library.location=track_locations.id "
             "WHERE library.id IN (%1) AND track_locations.fs_deleted=0 "
             "AND library.mixxx_deleted=0 AND COALESCE(library.timesplayed, 0)=0 "
             "AND COALESCE(library.rating, 0)=0 AND COALESCE(library.bpm_lock, 0)=0 "
             "AND COALESCE(library.beats_sub_version, '')='' "
             "AND COALESCE(library.keys_sub_version, '')='' "
-            "AND NOT EXISTS (SELECT 1 FROM cues WHERE cues.track_id=library.id) "
             "AND NOT EXISTS (SELECT 1 FROM track_analysis "
             "WHERE track_analysis.track_id=library.id) "
             "AND library.id NOT IN (SELECT track_id FROM PlaylistTracks) "
@@ -1035,11 +1075,16 @@ QStringList LibraryScanner::addedTracksSinceUnfinishedScan() const {
                     .arg(ids.join(QLatin1Char(','))));
     if (!query.exec()) {
         LOG_FAILED_QUERY(query);
-        return added;
+        return {};
     }
-    QSet<QString> known(added.cbegin(), added.cend());
+    QStringList added;
+    QSet<QString> known;
     while (query.next()) {
-        if (cached.contains(TrackId(query.value(0)))) {
+        const TrackId id(query.value(0));
+        if (cached.contains(id)) {
+            continue;
+        }
+        if (query.value(2).toBool() && !m_scanInserted.contains(id)) {
             continue;
         }
         const QString location = query.value(1).toString();

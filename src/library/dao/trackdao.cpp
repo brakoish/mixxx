@@ -932,8 +932,8 @@ TrackPointer TrackDAO::addTracksAddReadFile(
         const TrackPointer& pImportedTrack,
         bool unremove) {
     const auto fileAccess = mixxx::FileAccess(mixxx::FileInfo(filePath));
-    if (m_beforeCacheLookup) {
-        m_beforeCacheLookup();
+    if (m_beforeCacheLookup && !m_beforeCacheLookup()) {
+        return {}; // Deck Lab: not added now (logged)
     }
 
     auto cacheResolver = GlobalTrackCacheResolver(fileAccess);
