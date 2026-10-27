@@ -625,6 +625,9 @@ struct FakePreviewDeck {
     double position = 0;
     bool playing = false;
     bool loop = false;
+    // As the engine does: a seek shows on a later audio callback, when the
+    // test moves `position`.
+    bool seeksLater = false;
     QList<int> loads;
     QList<QList<double>> plays; // start, end, loop, from
     int ejects = 0;
@@ -651,7 +654,7 @@ struct FakePreviewDeck {
             plays.append({start, end, on ? 1.0 : 0.0, from});
             loop = on;
             playing = true;
-            if (from >= 0) {
+            if (from >= 0 && !seeksLater) {
                 position = from;
             }
         };
@@ -833,6 +836,76 @@ TEST_F(DeckLabSystemTest, SampleMakerPreviewPlaysTheCutOnThePreviewDeckOnly) {
     EXPECT_FALSE(deck.playing);
     EXPECT_EQ(1, deck.ejects);
     EXPECT_EQ(QStringLiteral("denied"), refusal(ask(QStringLiteral("preview.play"), cut)));
+}
+
+// The engine takes a seek on its next audio callback (every 23 ms on the Pi)
+// and reports where it was until then, while the preview checks for OUT
+// every 10 ms. The callback running when the seek is asked for can even move
+// that on. Only a position from after the seek stops a cut at OUT.
+TEST_F(DeckLabSystemTest, SampleMakerPreviewStopsAtOutOnlyOnceTheEngineSeeked) {
+    FakePreviewDeck deck;
+    deck.seeksLater = true;
+    deck.loaded = 7;
+    deck.duration = 180;
+    deck.position = 4.5; // stopped at OUT
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, socketPath());
+    system.preview()->setHooks(deck.hooks(system, m_dir.filePath(QStringLiteral("Samples"))));
+    system.utilities()->setHooks(DeckLabUtilities::Hooks());
+    system.utilities()->setStateDirectory(m_dir.filePath(QStringLiteral("run/decklab")));
+    system.utilityLaunched(DeckLabPreview::kSampleMaker);
+    int serial = 0;
+    const auto play = [&](const QJsonObject& cut) {
+        QJsonObject request = cut;
+        request.insert(QStringLiteral("serial"), ++serial);
+        EXPECT_TRUE(system.preview()->onEvent(QStringLiteral("preview.play"), request));
+    };
+    const auto state = [&] { return system.preview()->state(); };
+    const auto position = [&] { return system.preview()->report().value("position").toDouble(); };
+
+    // PLAY again on the cut: the page's playhead goes to IN at once.
+    play(QJsonObject{{"track_id", 7}, {"start", 2.0}, {"end", 4.5}});
+    EXPECT_EQ((QList<double>{2, 4.5, 0, 2}), deck.plays.last());
+    EXPECT_DOUBLE_EQ(2.0, position());
+    QTest::qWait(60);
+    EXPECT_EQ(DeckLabPreview::State::Playing, state()) << "where the engine was is not OUT";
+    // The callback that was running plays on past OUT; the next one seeks.
+    deck.position = 4.52;
+    QTest::qWait(60);
+    EXPECT_EQ(DeckLabPreview::State::Playing, state());
+    EXPECT_TRUE(deck.playing);
+    deck.position = 2.02;
+    QTest::qWait(60);
+    EXPECT_DOUBLE_EQ(2.02, position());
+    deck.position = 4.5;
+    ASSERT_TRUE(QTest::qWaitFor([&] { return state() == DeckLabPreview::State::Stopped; }, 1000));
+    EXPECT_FALSE(deck.playing);
+    EXPECT_DOUBLE_EQ(4.5, position());
+
+    // OUT moved before the playhead: it plays from IN. A first new position
+    // inside the cut is from after the seek, or at least not past OUT.
+    play(QJsonObject{{"track_id", 7}, {"start", 2.0}, {"end", 8.0}});
+    deck.position = 2.5;
+    QTest::qWait(30);
+    deck.position = 6.0;
+    QTest::qWait(30);
+    ASSERT_EQ(DeckLabPreview::State::Playing, state());
+    play(QJsonObject{{"track_id", 7}, {"start", 2.0}, {"end", 3.0}});
+    EXPECT_EQ((QList<double>{2, 3, 0, 2}), deck.plays.last());
+    QTest::qWait(60);
+    EXPECT_EQ(DeckLabPreview::State::Playing, state());
+    deck.position = 2.02;
+    QTest::qWait(30);
+    EXPECT_EQ(DeckLabPreview::State::Playing, state());
+    deck.position = 3.0;
+    ASSERT_TRUE(QTest::qWaitFor([&] { return state() == DeckLabPreview::State::Stopped; }, 1000));
+
+    // STOP before the engine seeked: the page is told IN, not OUT.
+    play(QJsonObject{{"track_id", 7}, {"start", 2.0}, {"end", 3.0}});
+    EXPECT_TRUE(system.preview()->onEvent(QStringLiteral("preview.stop"), QJsonObject{{"serial", ++serial}}));
+    EXPECT_EQ(DeckLabPreview::State::Stopped, state());
+    EXPECT_DOUBLE_EQ(2.0, position());
 }
 
 // r7: closing Sample Maker while its track loads unloads that track once it
@@ -1133,6 +1206,9 @@ class PreviewPlayers final : public PlayerManagerInterface {
 class DeckLabPreviewDeckTest : public BaseSignalPathTest {
   protected:
     static constexpr double kRate = 44100; // sine-30.wav: 30 s, generated
+    // One audio callback on the Pi: 1024 frames at 44.1 kHz. The preview
+    // checks for OUT every 10 ms, so the GUI runs between two callbacks.
+    static constexpr int kPiCallbackMs = 23;
 
     DeckLabPreviewDeckTest()
             : m_db(config(), true),
@@ -1297,14 +1373,81 @@ TEST_F(DeckLabPreviewDeckTest, ThePreviewPlaysFromInAndLoopsTheCutToTheSample) {
     EXPECT_DOUBLE_EQ(-1, control(QStringLiteral("loop_start_position")));
     EXPECT_DOUBLE_EQ(-1, control(QStringLiteral("loop_end_position")));
 
-    // PLAY again on the same cut starts at IN again.
+    // PLAY again on the same cut starts at IN again, though the engine's
+    // next callback comes after a few checks for OUT, as on the Pi.
     sendPlay(system.get(), QJsonObject{{"track_id", idOf(track)}, {"start", 20.0}, {"end", 22.0}});
+    EXPECT_EQ(DeckLabPreview::State::Playing, system->preview()->state());
+    QTest::qWait(kPiCallbackMs);
     EXPECT_EQ(DeckLabPreview::State::Playing, system->preview()->state());
     ProcessBuffer();
     EXPECT_GE(frames(), 20.0 * kRate);
     EXPECT_LE(frames(), 20.0 * kRate + callbackFrames());
+    QTest::qWait(kPiCallbackMs);
+    EXPECT_EQ(DeckLabPreview::State::Playing, system->preview()->state());
+    EXPECT_DOUBLE_EQ(1, control(QStringLiteral("play")));
     sendStop(system.get());
     EXPECT_DOUBLE_EQ(0, control(QStringLiteral("play")));
+}
+
+// The engine seeks on its next audio callback and reports where it was until
+// then. PLAY again after a cut stopped at OUT, or OUT moved before the
+// playhead, plays from IN and still stops at OUT, at the Pi's callback pace.
+TEST_F(DeckLabPreviewDeckTest, PlayAgainAndAMovedOutWaitForTheEngineToSeek) {
+    const TrackPointer track = addTrack(QStringLiteral("Cut C.wav"));
+    ASSERT_TRUE(track);
+    const auto system = openSampleMaker();
+    const auto state = [&] { return system->preview()->state(); };
+    const QJsonObject cut{{"track_id", idOf(track)}, {"start", 10.0}, {"end", 10.5}};
+    sendPlay(system.get(), cut);
+    ASSERT_TRUE(runUntilPlaying(system.get()));
+    ASSERT_TRUE(runUntil([&] { return state() == DeckLabPreview::State::Stopped; }));
+    EXPECT_GE(frames(), 10.5 * kRate - callbackFrames());
+
+    // PLAY again: the page sees IN at once, and the engine plays from IN.
+    sendPlay(system.get(), cut);
+    EXPECT_DOUBLE_EQ(10.0, system->preview()->report().value("position").toDouble());
+    QTest::qWait(kPiCallbackMs);
+    ASSERT_EQ(DeckLabPreview::State::Playing, state()) << "stopped on where the engine was";
+    ProcessBuffer();
+    EXPECT_GE(frames(), 10.0 * kRate);
+    EXPECT_LE(frames(), 10.0 * kRate + callbackFrames());
+    QTest::qWait(kPiCallbackMs);
+    EXPECT_EQ(DeckLabPreview::State::Playing, state());
+    EXPECT_DOUBLE_EQ(1, control(QStringLiteral("play")));
+    ASSERT_TRUE(runUntil([&] { return state() == DeckLabPreview::State::Stopped; }));
+    EXPECT_GE(frames(), 10.5 * kRate - callbackFrames());
+    EXPECT_DOUBLE_EQ(0, control(QStringLiteral("play")));
+
+    // OUT moves before the playhead during a preview: from IN again.
+    sendPlay(system.get(), QJsonObject{{"track_id", idOf(track)}, {"start", 10.0}, {"end", 14.0}});
+    ASSERT_TRUE(runUntil([&] { return frames() >= 12.0 * kRate; }));
+    ASSERT_EQ(DeckLabPreview::State::Playing, state());
+    sendPlay(system.get(), QJsonObject{{"track_id", idOf(track)}, {"start", 10.0}, {"end", 11.0}});
+    QTest::qWait(kPiCallbackMs);
+    ASSERT_EQ(DeckLabPreview::State::Playing, state()) << "stopped on where the engine was";
+    ProcessBuffer();
+    EXPECT_GE(frames(), 10.0 * kRate);
+    EXPECT_LE(frames(), 10.0 * kRate + callbackFrames());
+    ASSERT_TRUE(runUntil([&] { return state() == DeckLabPreview::State::Stopped; }));
+    EXPECT_GE(frames(), 11.0 * kRate - callbackFrames());
+    EXPECT_LT(frames(), 12.0 * kRate) << "it stopped at the new OUT";
+
+    // A looped cut seeks the same way, and Mixxx's loop takes it from there.
+    sendPlay(system.get(),
+            QJsonObject{{"track_id", idOf(track)}, {"start", 10.0}, {"end", 10.5}, {"loop", true}});
+    QTest::qWait(kPiCallbackMs);
+    ASSERT_EQ(DeckLabPreview::State::Playing, state());
+    ProcessBuffer();
+    EXPECT_GE(frames(), 10.0 * kRate);
+    EXPECT_LE(frames(), 10.0 * kRate + callbackFrames());
+    for (int n = 0; n < 100; ++n) {
+        ProcessBuffer();
+    }
+    QTest::qWait(kPiCallbackMs);
+    EXPECT_EQ(DeckLabPreview::State::Playing, state());
+    EXPECT_GE(frames(), 10.0 * kRate);
+    EXPECT_LT(frames(), 10.5 * kRate);
+    sendStop(system.get());
 }
 
 // Mixxx saves the preview deck's loop controls as the track's loop cue when
