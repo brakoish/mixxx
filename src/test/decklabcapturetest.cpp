@@ -502,23 +502,18 @@ TEST_F(DeckLabCaptureTest, CapturedSamplesJoinTheLibraryOnlyOnceItIsQuiet) {
     EXPECT_FALSE(decklab::capture::applyGrid(row, other));
     EXPECT_NEAR(120.0, row->getBpm(), 0.01);
 
-    // r7 fix: the pad's SAMPLES list asks for what waits at once (flushNow),
-    // while a deck plays; never beside a library scan.
+    // r7 fix: the pad's SAMPLES list asks for what waits (flush) while a
+    // deck plays: nothing is added mid-set; the list says how many wait.
     quiet = false;
-    bool scanning = true;
-    hooks.scanning = [&scanning] { return scanning; };
     DeckLabCaptureLibrary listed(hooks);
     listed.add(result);
-    EXPECT_EQ(2, added.size());
-    listed.flushNow();
-    EXPECT_EQ(2, added.size()) << "never beside a library scan";
+    listed.flush();
+    EXPECT_EQ(2, added.size()) << "no library write mid-set";
     EXPECT_EQ(1, listed.pending());
-    scanning = false;
-    listed.flushNow();
+    quiet = true;
+    listed.flush();
     EXPECT_EQ(3, added.size());
     EXPECT_EQ(0, listed.pending());
-    listed.flushNow();
-    EXPECT_EQ(3, added.size()) << "nothing waits";
 }
 
 TEST_F(DeckLabCaptureTest, WithNoEmptyPadASheetAsksWhichPadToReplace) {

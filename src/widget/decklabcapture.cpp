@@ -852,14 +852,6 @@ void DeckLabCaptureLibrary::flush() {
     addPending();
 }
 
-void DeckLabCaptureLibrary::flushNow() {
-    if (m_pending.isEmpty() || !m_hooks.add || (m_hooks.scanning && m_hooks.scanning())) {
-        return;
-    }
-    m_retry.stop();
-    addPending();
-}
-
 void DeckLabCaptureLibrary::addPending() {
     const QList<decklab::capture::Result> pending = std::exchange(m_pending, {});
     for (const auto& result : pending) {

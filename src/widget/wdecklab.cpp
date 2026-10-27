@@ -1072,7 +1072,6 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
         if (m_library && m_library->trackCollectionManager()) {
             DeckLabCaptureLibrary::Hooks adds;
             adds.quiet = [this] { return backgroundSettled(); }; // r7 fix: a quiet spell
-            adds.scanning = [this] { return backgroundActivity().scanning; };
             adds.add = [this](const QString& path) {
                 return m_library->trackCollectionManager()->getOrAddTrack(TrackRef::fromFilePath(path));
             };
@@ -6783,11 +6782,11 @@ void WDeckLab::openSamples(bool forPad) {
     b.homeKey = QStringLiteral("samples");
     const QStringList files = decklab::audioFilesNewestFirst(decklab::samplesFolder());
     if (forPad && m_library && m_library->trackCollectionManager()) {
-        // r7 fix: TO PAD's samples saved mid-set join the library now, so
-        // the list has them (a few small files on the card; never beside a
-        // library scan). A pad's Load opens SAMPLES only when it lists a
-        // sample; otherwise the home, to pick from the Library.
-        if (m_captureLibrary) m_captureLibrary->flushNow();
+        // r7 fix: TO PAD's samples join the library once it is quiet (never
+        // a library write mid-set); the toasts say how many still wait. A
+        // pad's Load opens SAMPLES only when it lists a sample; otherwise
+        // the home, to pick from the Library.
+        if (m_captureLibrary) m_captureLibrary->flush();
         if (!b.folderModel) b.folderModel = new DeckLabFolderTableModel(this, m_library->trackCollectionManager());
         if (b.folderModel->setLocations(files, QStringLiteral("samples")) == 0) {
             showHome(QStringLiteral("samples"));

@@ -254,16 +254,13 @@ class DeckLabLoopCapture final : public QObject {
 // or beside a library scan; meanwhile the pad plays it from a temporary
 // track. The library row gets the loop's grid. A sample still waiting when
 // Mixxx quits is found by the next library scan (its folder is a library
-// folder). r7 fix: when the DJ opens the pad's SAMPLES list, what waits
-// joins at once (flushNow: a few small files on the card), so a sample saved
-// mid-set is in that list; never beside a library scan.
+// folder). r7 fix: a pad's SAMPLES list says how many wait (pending()); they
+// join it once it is quiet, never at once mid-set.
 class DeckLabCaptureLibrary final : public QObject {
     Q_OBJECT
   public:
     struct Hooks {
         std::function<bool()> quiet;
-        // r7 fix: Mixxx's library scan runs (flushNow waits for it).
-        std::function<bool()> scanning;
         // The file's library track, added if it is new; null when it can't be.
         std::function<TrackPointer(const QString& path)> add;
     };
@@ -273,8 +270,6 @@ class DeckLabCaptureLibrary final : public QObject {
     void add(const decklab::capture::Result& result);
     // Adds what waits, if it is quiet now.
     void flush();
-    // r7 fix: adds what waits now, quiet or not, unless a library scan runs.
-    void flushNow();
     int pending() const {
         return static_cast<int>(m_pending.size());
     }
