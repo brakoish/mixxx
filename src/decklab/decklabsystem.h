@@ -19,6 +19,7 @@
 #include "decklab/decklabsetupmodel.h"
 #include "decklab/decklabutilities.h"
 #include "preferences/usersettings.h"
+#include "track/track_decl.h"
 
 class BaseTrackPlayer;
 class ControllerManager;
@@ -263,6 +264,10 @@ class DeckLabSystem : public QObject {
     bool preferencesOpen() const;
     DeckLabUtilities::Hooks utilityHooks();
     DeckLabPreview::Hooks previewHooks();
+    BaseTrackPlayer* previewPlayer() const;
+    void keepPreviewLoop();
+    void restorePreviewLoop();
+    void onPreviewUnloaded(const TrackPointer& track);
     QStringList utilityFolders() const;
     void watchPlayers();
     void watchPlayer(BaseTrackPlayer* player);
@@ -279,6 +284,15 @@ class DeckLabSystem : public QObject {
     DeckLabdClient* m_client;
     DeckLabUtilities* m_utilities;
     DeckLabPreview* m_preview;
+    // [PreviewDeck1]'s track and its own loop while Sample Maker's cut is in
+    // the deck's loop controls. Mixxx saves those controls as the track's
+    // loop when it unloads the track, so the track's loop goes back first.
+    struct PreviewLoop {
+        TrackWeakPointer track; // empty while nothing is kept
+        double start = -1;
+        double end = -1;
+    };
+    PreviewLoop m_previewLoop;
     QSet<BaseTrackPlayer*> m_watchedPlayers;
     QHash<BaseTrackPlayer*, qint64> m_loadingSince;
     std::function<int()> m_padTarget;

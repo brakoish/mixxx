@@ -42,7 +42,8 @@ class DeckLabPreview : public QObject {
         std::function<double()> position;     // seconds, at audio callback precision
         std::function<bool()> playing;        // [PreviewDeck1] plays
         /// Loops start..end (the loop on only for `loop`), seeks to `from`
-        /// unless it is negative, then plays.
+        /// unless it is negative, then plays. pause, eject and load give the
+        /// track its own loop back, so Mixxx never saves the cut with it.
         std::function<void(double start, double end, bool loop, double from)> play;
         std::function<void()> pause;          // pauses and turns the loop off
         std::function<void()> eject;

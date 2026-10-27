@@ -46,6 +46,7 @@
 #include "soundio/soundmanager.h"
 #include "soundio/soundmanagerconfig.h"
 #include "soundio/soundmanagerutil.h"
+#include "track/cue.h"
 #include "track/track.h"
 #include "track/trackref.h"
 #include "util/fileinfo.h"
@@ -224,6 +225,13 @@ DeckLabSystem::DeckLabSystem(Services services, QObject* parent, const QString& 
     // Sample Maker reads deck-state.json before it decodes audio: a preview
     // that starts or stops is published at once, not on the next second.
     connect(m_preview, &DeckLabPreview::playingChanged, this, [this] { m_utilities->publishNow(); });
+    // A preview that stopped on its own (the end of the track, Browse's
+    // STOP) gives the track its own loop back too.
+    connect(m_preview, &DeckLabPreview::playingChanged, this, [this] {
+        if (m_preview->state() != DeckLabPreview::State::Playing) {
+            restorePreviewLoop();
+        }
+    });
     if (auto* library = m_services.library.get()) {
         connect(library,
                 &TrackCollectionManager::libraryScanSummary,
@@ -272,7 +280,11 @@ DeckLabSystem::DeckLabSystem(Services services, QObject* parent, const QString& 
     migrateFirstRun();
 }
 
-DeckLabSystem::~DeckLabSystem() = default;
+DeckLabSystem::~DeckLabSystem() {
+    // Mixxx quits during a preview: the players go after Deck Lab, and the
+    // preview deck then saves the track's own loop, not the cut.
+    restorePreviewLoop();
+}
 
 void DeckLabSystem::migrateFirstRun() {
     // r5-polish: units set up before first_run_deferred existed have a
@@ -448,16 +460,12 @@ DeckLabPreview::Hooks DeckLabSystem::previewHooks() {
     DeckLabPreview::Hooks hooks;
     hooks.decksPlaying = [this] { return decksOrSamplersPlaying(); };
     hooks.utilityOpen = [this] { return !m_utilities->openApp().isEmpty(); };
-    const auto previewDeck = [this]() -> BaseTrackPlayer* {
-        auto* players = m_services.players;
-        return players && players->numberOfPreviewDecks() > 0 ? players->getPreviewDeck(0) : nullptr;
-    };
-    hooks.loadedTrack = [previewDeck] {
-        auto* player = previewDeck();
+    hooks.loadedTrack = [this] {
+        auto* player = previewPlayer();
         return player ? libraryId(player->getLoadedTrack()) : 0;
     };
-    hooks.load = [this, previewDeck](int id, QString* error) {
-        auto* player = previewDeck();
+    hooks.load = [this](int id, QString* error) {
+        auto* player = previewPlayer();
         auto* library = m_services.library.get();
         const TrackPointer track = library && player
                 ? library->getTrackById(TrackId(QVariant(id)))
@@ -466,6 +474,8 @@ DeckLabPreview::Hooks DeckLabSystem::previewHooks() {
             *error = tr("That track is not in the library.");
             return false;
         }
+        // Unloading saves the loop controls with the track it replaces.
+        restorePreviewLoop();
 #ifdef __STEM__
         player->slotLoadTrack(track, mixxx::StemChannelSelection(), false);
 #else
@@ -484,7 +494,7 @@ DeckLabPreview::Hooks DeckLabSystem::previewHooks() {
         return fraction * previewSeconds();
     };
     hooks.playing = [] { return controlValue(kPreviewDeck, QStringLiteral("play")) > 0; };
-    hooks.play = [](double start, double end, bool loop, double from) {
+    hooks.play = [this](double start, double end, bool loop, double from) {
         // Mixxx's loop controls count engine samples (two per frame), so the loop is sample exact.
         const double rate = controlValue(kPreviewDeck, QStringLiteral("track_samplerate"));
         const double samples = controlValue(kPreviewDeck, QStringLiteral("track_samples"));
@@ -492,6 +502,7 @@ DeckLabPreview::Hooks DeckLabSystem::previewHooks() {
             return;
         }
         const double perSecond = rate * mixxx::kEngineChannelOutputCount;
+        keepPreviewLoop();
         setControl(kPreviewDeck, QStringLiteral("loop_enabled"), 0);
         setControl(kPreviewDeck, QStringLiteral("loop_end_position"), -1);
         setControl(kPreviewDeck, QStringLiteral("loop_start_position"), start * perSecond);
@@ -504,12 +515,14 @@ DeckLabPreview::Hooks DeckLabSystem::previewHooks() {
         }
         setControl(kPreviewDeck, QStringLiteral("play"), 1);
     };
-    hooks.pause = [] {
+    hooks.pause = [this] {
         setControl(kPreviewDeck, QStringLiteral("play"), 0);
         setControl(kPreviewDeck, QStringLiteral("loop_enabled"), 0);
+        restorePreviewLoop();
     };
-    hooks.eject = [previewDeck] {
-        if (auto* player = previewDeck()) {
+    hooks.eject = [this] {
+        if (auto* player = previewPlayer()) {
+            restorePreviewLoop();
             player->slotEjectTrack(1.0);
         }
     };
@@ -536,6 +549,61 @@ DeckLabPreview::Hooks DeckLabSystem::previewHooks() {
         return true;
     };
     return hooks;
+}
+
+BaseTrackPlayer* DeckLabSystem::previewPlayer() const {
+    auto* players = m_services.players;
+    return players && players->numberOfPreviewDecks() > 0 ? players->getPreviewDeck(0) : nullptr;
+}
+
+void DeckLabSystem::keepPreviewLoop() {
+    // The loop controls still hold the track's own loop (or -1): the one
+    // Mixxx restored from its loop cue when it loaded the track.
+    auto* player = previewPlayer();
+    const TrackPointer track = player ? player->getLoadedTrack() : TrackPointer();
+    if (!track || m_previewLoop.track.lock() == track) {
+        return; // kept already: IN or OUT moved during the preview
+    }
+    m_previewLoop.track = track;
+    m_previewLoop.start = controlValue(kPreviewDeck, QStringLiteral("loop_start_position"));
+    m_previewLoop.end = controlValue(kPreviewDeck, QStringLiteral("loop_end_position"));
+}
+
+void DeckLabSystem::restorePreviewLoop() {
+    const TrackPointer kept = m_previewLoop.track.lock();
+    m_previewLoop.track.reset();
+    auto* player = kept ? previewPlayer() : nullptr;
+    if (!player || player->getLoadedTrack() != kept) {
+        return; // another track is in: the loop controls are its own
+    }
+    // End first: LoopingControl refuses an end at or before the start. Never
+    // -1 for a track that has a loop: unloading would delete its loop cue.
+    setControl(kPreviewDeck, QStringLiteral("loop_end_position"), -1);
+    setControl(kPreviewDeck, QStringLiteral("loop_start_position"), m_previewLoop.start);
+    setControl(kPreviewDeck, QStringLiteral("loop_end_position"), m_previewLoop.end);
+}
+
+void DeckLabSystem::onPreviewUnloaded(const TrackPointer& track) {
+    if (!track || m_previewLoop.track.lock() != track) {
+        return;
+    }
+    m_previewLoop.track.reset();
+    // Another track was loaded over a playing preview, so Mixxx has just
+    // saved the cut as the track's loop cue. Mixxx's own rule, with the
+    // track's own loop (BaseTrackPlayerImpl::unloadTrack).
+    const auto start = mixxx::audio::FramePos::fromEngineSamplePosMaybeInvalid(m_previewLoop.start);
+    const auto end = mixxx::audio::FramePos::fromEngineSamplePosMaybeInvalid(m_previewLoop.end);
+    for (const CuePointer& cue : track->getCuePoints()) {
+        if (cue->getType() != mixxx::CueType::Loop || cue->getHotCue() != Cue::kNoHotCue) {
+            continue;
+        }
+        if (start.isValid() && end.isValid() && start <= end) {
+            cue->setStartAndEndPosition(start, end);
+        } else {
+            track->removeCue(cue);
+        }
+        return;
+    }
 }
 
 QStringList DeckLabSystem::utilityFolders() const {
@@ -611,6 +679,9 @@ void DeckLabSystem::watchPlayer(BaseTrackPlayer* player) {
             m_preview->onPreviewLoaded(libraryId(track));
         });
         connect(player, &BaseTrackPlayer::playerEmpty, this, [this] { m_preview->onPreviewLoaded(0); });
+        connect(player, &BaseTrackPlayer::trackUnloaded, this, [this](TrackPointer track) {
+            onPreviewUnloaded(track);
+        });
     }
     connect(player, &QObject::destroyed, this, [this, player] {
         m_watchedPlayers.remove(player);
