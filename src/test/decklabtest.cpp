@@ -8050,7 +8050,7 @@ TEST_F(NativeDeckLabTest, AFailedLoadIsAMessageNotAModalBox) {
     settle();
     QTest::qWait(900);
     EXPECT_FALSE(modal);
-    auto* toast = panel->findChild<DeckLabToast*>();
+    auto* toast = panel->findChild<QLabel*>("decklab-toast");
     ASSERT_NE(nullptr, toast);
     EXPECT_EQ(QStringLiteral("Couldn't load that track. Is its USB stick in?"), toast->text());
     // Mixxx's own box is back once no Deck Lab surface is left.
@@ -8108,7 +8108,7 @@ TEST_F(NativeDeckLabTest, DownloadsLosesAStickThatIsPulled) {
     ASSERT_TRUE(QDir(stick).removeRecursively());
     ASSERT_TRUE(selectRow(QStringLiteral("Generated Playlist")));
     panel->browsePress(); settle();
-    auto* toast = panel->findChild<DeckLabToast*>();
+    auto* toast = panel->findChild<QLabel*>("decklab-toast");
     ASSERT_NE(nullptr, toast);
     EXPECT_EQ(QStringLiteral("That USB stick is out."), toast->text());
     EXPECT_EQ(QStringList{QStringLiteral("Downloads")}, crumbs());
@@ -8129,7 +8129,7 @@ TEST_F(NativeDeckLabTest, AStaleRowSaysItsStickIsOutOnLoadAndPreview) {
     ASSERT_EQ(1, panel->currentPage());
     ASSERT_TRUE(table->isVisible());
     table->selectRow(0); settle();
-    auto* toast = panel->findChild<DeckLabToast*>();
+    auto* toast = panel->findChild<QLabel*>("decklab-toast");
     ASSERT_NE(nullptr, toast);
     auto* load = panel->findChild<QPushButton*>(QStringLiteral("decklab-load-1"));
     auto* preview = panel->findChild<QPushButton*>(QStringLiteral("decklab-preview"));
