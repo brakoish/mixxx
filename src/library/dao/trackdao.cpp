@@ -882,6 +882,14 @@ TrackId TrackDAO::addTracksAddTrack(const TrackPointer& pTrack, bool unremove) {
 TrackPointer TrackDAO::addTracksAddFile(
         const QString& filePath,
         bool unremove) {
+    const TrackPointer pImportedTrack = addTracksReadFile(filePath);
+    if (!pImportedTrack) {
+        return nullptr;
+    }
+    return addTracksAddReadFile(filePath, pImportedTrack, unremove);
+}
+
+TrackPointer TrackDAO::addTracksReadFile(const QString& filePath) const {
     const auto fileAccess = mixxx::FileAccess(mixxx::FileInfo(filePath));
     // Check that track is a supported extension.
     // TODO(uklotzde): The following check can be skipped if
@@ -908,6 +916,14 @@ TrackPointer TrackDAO::addTracksAddFile(
     SoundSourceProxy(pImportedTrack).updateTrackFromSource(
             SoundSourceProxy::UpdateTrackFromSourceMode::Once,
             SyncTrackMetadataParams::readFromUserSettings(*m_pConfig));
+    return pImportedTrack;
+}
+
+TrackPointer TrackDAO::addTracksAddReadFile(
+        const QString& filePath,
+        const TrackPointer& pImportedTrack,
+        bool unremove) {
+    const auto fileAccess = mixxx::FileAccess(mixxx::FileInfo(filePath));
     if (m_beforeCacheLookup) {
         m_beforeCacheLookup();
     }

@@ -1,6 +1,11 @@
 #include "library/scanner/libraryscanner.h"
 
+#include <QSet>
+#include <QSqlQuery>
+#include <utility>
+
 #include "library/coverartutils.h"
+#include "library/dao/settingsdao.h"
 #include "library/library_decl.h"
 #include "library/queryutil.h"
 #include "library/scanner/importfilestask.h"
@@ -25,16 +30,23 @@ namespace {
 // TODO(rryan) make configurable
 constexpr int kScannerThreadPoolSize = 1;
 
-// Deck Lab: the tracks a scan adds are committed in batches of this many
-// writes or after this long, whichever comes first. One transaction for the
-// whole import held the library's write lock while new files were read from
-// a USB stick: every write on the GUI thread waited up to SQLite's 5 s busy
-// timeout and then failed. Now such a write waits for one batch at most.
-// A batch is also committed before the next file is read when the last one
-// was slow to read (a USB stick): the lock is never held through such reads.
+// Deck Lab: the files a scan adds are read first, with no write pending in
+// its add transaction, and then written and committed in batches of this
+// many or once the first has waited this long, whichever comes first. One
+// transaction for the whole import held the library's write lock while new
+// files were read from a USB stick: every write on the GUI thread waited up
+// to SQLite's 5 s busy timeout and then failed. Now the lock is held only
+// while a batch is written (memory and inserts, no file read), never
+// through a read, however long a stick stalls.
 constexpr int kAddBatchWrites = 20;
 constexpr int kAddBatchMs = 200;
-constexpr int kSlowAddMs = 100;
+
+// Deck Lab: the newest library row before the first scan that has not
+// finished yet (canceled for playback, cut by a crash or a power cut).
+// Rows after it that such a scan added count as added for the moved-file
+// relink of the next scan that finishes; the next scan finds them present,
+// so its own list of added tracks lacks them.
+const QString kUnfinishedScanAfterIdKey = QStringLiteral("decklab.scan.unfinished_after_id");
 
 mixxx::Logger kLogger("LibraryScanner");
 
@@ -132,7 +144,7 @@ LibraryScanner::LibraryScanner(
 
     m_addCommitTimer.setSingleShot(true);
     m_addCommitTimer.setInterval(kAddBatchMs);
-    connect(&m_addCommitTimer, &QTimer::timeout, this, &LibraryScanner::commitAdds);
+    connect(&m_addCommitTimer, &QTimer::timeout, this, &LibraryScanner::flushAdds);
     // Deck Lab: another thread filling in a new track (the GUI adding a
     // file it loads) may be about to write: the batch is committed before
     // the scanner waits for that track, or both would wait for each other
@@ -287,6 +299,10 @@ void LibraryScanner::slotStartScan() {
         // existence. (ie. we want to check they're still on your hard drive where
         // we think they are)
         m_trackDao.invalidateTrackLocationsInLibrary();
+
+        // Deck Lab: until it finishes, this scan's rows are remembered for
+        // the moved-file relink (an earlier unfinished scan's mark stays).
+        markUnfinishedScan();
     }
 
     kLogger.debug() << "Recursively scanning library.";
@@ -422,7 +438,7 @@ void LibraryScanner::cleanUpScan() {
         QList<RelocatedTrack> relocatedTracks;
         if (!m_trackDao.detectMovedTracks(
                 &relocatedTracks,
-                m_scannerGlobal->addedTracks(),
+                addedTracksSinceUnfinishedScan(),
                 m_scannerGlobal->shouldCancelPointer())) {
             kLogger.info()
                     << "Detecting moved files has been canceled or aborted";
@@ -443,6 +459,16 @@ void LibraryScanner::cleanUpScan() {
     // songs if you move a set of songs from directory A to B, then back to
     // A.
     m_libraryHashDao.removeDeletedDirectoryHashes();
+
+    // Deck Lab: every scan up to this one has finished now.
+    {
+        QSqlQuery query(dbConnection);
+        query.prepare(QStringLiteral("DELETE FROM settings WHERE name=:name"));
+        query.bindValue(QStringLiteral(":name"), kUnfinishedScanAfterIdKey);
+        if (!query.exec()) {
+            LOG_FAILED_QUERY(query);
+        }
+    }
 
     transaction.commit();
 
@@ -476,11 +502,16 @@ void LibraryScanner::slotFinishUnhashedScan() {
     // Finish adding the tracks -- rollback the transaction if the scan did not
     // finish cleanly and the user did not cancel the transaction.
     // Deck Lab: only the last batch; the ones before are committed (each
-    // holds whole tracks: their rows, cues and analysis).
-    m_addCommitTimer.stop();
-    m_addBatch.invalidate();
-    m_addBatchWrites = 0;
-    m_lastAddSlow = false;
+    // holds whole tracks: their rows, cues and analysis). Files read but
+    // not written yet are written now if the scan finished, else left for
+    // the next scan (their folder's hash, queued after them, is left too).
+    if (!m_scannerGlobal->shouldCancel() && bScanFinishedCleanly) {
+        flushAdds();
+    } else {
+        m_addCommitTimer.stop();
+        m_pendingAdds.clear();
+    }
+    m_addWrites = false;
     m_trackDao.addTracksFinish(!m_scannerGlobal->shouldCancel() &&
                                !bScanFinishedCleanly);
 
@@ -714,7 +745,8 @@ void LibraryScanner::slotDirectoryHashedAndScanned(const QString& directoryPath,
         // Clearing the hash is not strictly required but let's keep it as
         // safety net in case signals get mixed up?
         m_libraryHashDao.clearDirectoryHash(directoryPath);
-        noteAddWrite();
+        m_addWrites = true;
+        commitAdds();
         return;
     }
 
@@ -724,13 +756,24 @@ void LibraryScanner::slotDirectoryHashedAndScanned(const QString& directoryPath,
         m_scannerGlobal->directoryScanned();
     }
 
+    // Deck Lab: saved with the batch that writes the folder's new files
+    // (queued before it), never before them.
+    PendingAdd add;
+    add.path = directoryPath;
+    add.newDirectory = newDirectory;
+    add.hash = hash;
+    queueAdd(std::move(add));
+    emit progressHashing(directoryPath);
+}
+
+void LibraryScanner::saveDirectoryHash(const QString& directoryPath,
+        bool newDirectory,
+        mixxx::cache_key_t hash) {
     if (newDirectory) {
         m_libraryHashDao.saveDirectoryHash(directoryPath, hash);
     } else {
         m_libraryHashDao.updateDirectoryHash(directoryPath, hash, 0);
     }
-    noteAddWrite();
-    emit progressHashing(directoryPath);
 }
 
 void LibraryScanner::slotDirectoryUnchanged(const QString& directoryPath,
@@ -775,19 +818,27 @@ void LibraryScanner::slotAddNewTrack(const QString& trackPath) {
         return;
     }
     ScopedTimer timer(QStringLiteral("LibraryScanner::addNewTrack"));
-    // Deck Lab: what the batch holds is committed before this file is read
-    // when the batch is due or the last file was slow to read.
-    if (m_addBatch.isValid() && (m_lastAddSlow || m_addBatch.elapsed() >= kAddBatchMs)) {
-        commitAdds();
+    // Deck Lab: the file is read now, while the add transaction holds no
+    // write (every batch is committed as it is written), and written with
+    // the next batch.
+    DEBUG_ASSERT(!m_addWrites);
+    commitAdds();
+    PendingAdd add;
+    add.track = m_trackDao.addTracksReadFile(trackPath);
+    if (!add.track) {
+        return; // not a supported file type (logged)
     }
-    QElapsedTimer adding;
-    adding.start();
+    add.path = trackPath;
+    queueAdd(std::move(add));
+}
+
+void LibraryScanner::addReadTrack(const QString& trackPath, const TrackPointer& pImportedTrack) {
     // For statistics tracking and to detect moved tracks
-    TrackPointer pTrack = m_trackDao.addTracksAddFile(
+    TrackPointer pTrack = m_trackDao.addTracksAddReadFile(
             trackPath,
+            pImportedTrack,
             false);
-    m_lastAddSlow = adding.elapsed() >= kSlowAddMs;
-    noteAddWrite();
+    m_addWrites = true;
     if (!pTrack) {
         // This happens only when there is an issue with the database which
         // has been logged already. No need for yet another warning here.
@@ -808,26 +859,105 @@ void LibraryScanner::slotAddNewTrack(const QString& trackPath) {
     emit progressLoading(trackLocation);
 }
 
-void LibraryScanner::noteAddWrite() {
-    if (!m_addBatch.isValid()) {
-        m_addBatch.start();
+void LibraryScanner::queueAdd(PendingAdd add) {
+    if (m_pendingAdds.isEmpty()) {
+        m_pendingSince.start();
         // A batch that waits for more (the next folder is still being
-        // read) is committed anyway.
+        // read) is written anyway.
         m_addCommitTimer.start();
     }
-    if (++m_addBatchWrites >= kAddBatchWrites || m_addBatch.elapsed() >= kAddBatchMs) {
-        commitAdds();
+    m_pendingAdds.append(std::move(add));
+    if (m_pendingAdds.size() >= kAddBatchWrites || m_pendingSince.elapsed() >= kAddBatchMs) {
+        flushAdds();
     }
 }
 
-void LibraryScanner::commitAdds() {
+void LibraryScanner::flushAdds() {
     m_addCommitTimer.stop();
-    if (!m_addBatch.isValid()) {
+    const QList<PendingAdd> adds = std::exchange(m_pendingAdds, {});
+    for (const auto& add : adds) {
+        if (!m_scannerGlobal || m_scannerGlobal->shouldCancel()) {
+            // Canceled: the rest waits for the next scan (in order, so no
+            // folder's hash is saved before all its new files are).
+            break;
+        }
+        if (add.track) {
+            addReadTrack(add.path, add.track);
+        } else {
+            saveDirectoryHash(add.path, add.newDirectory, add.hash);
+            m_addWrites = true;
+        }
+    }
+    commitAdds();
+}
+
+void LibraryScanner::commitAdds() {
+    if (!std::exchange(m_addWrites, false)) {
         return;
     }
-    m_addBatch.invalidate();
-    m_addBatchWrites = 0;
     m_trackDao.addTracksCommit();
+    // The library is free now: modified tracks kept meanwhile are saved.
+    GlobalTrackCache::saveDeferredTracksSoon();
+}
+
+void LibraryScanner::markUnfinishedScan() {
+    SettingsDAO settings(m_libraryHashDao.database());
+    if (!settings.getValue(kUnfinishedScanAfterIdKey).isEmpty()) {
+        return;
+    }
+    QSqlQuery query(m_libraryHashDao.database());
+    if (!query.exec(QStringLiteral("SELECT COALESCE(MAX(id), 0) FROM library")) || !query.next()) {
+        LOG_FAILED_QUERY(query);
+        return;
+    }
+    settings.setValue(kUnfinishedScanAfterIdKey, query.value(0).toLongLong());
+}
+
+QStringList LibraryScanner::addedTracksSinceUnfinishedScan() const {
+    QStringList added = m_scannerGlobal->addedTracks();
+    bool ok = false;
+    const qint64 afterId = SettingsDAO(m_libraryHashDao.database())
+                                   .getValue(kUnfinishedScanAfterIdKey)
+                                   .toLongLong(&ok);
+    if (!ok) {
+        return added;
+    }
+    // Present rows in the library folders, as the scanner adds them, that
+    // nothing uses yet (never played, in no playlist or crate): the relink
+    // deletes the new row and moves the old one, with its cues, crates and
+    // history, to the new location.
+    QSqlQuery query(m_libraryHashDao.database());
+    query.prepare(QStringLiteral(
+            "SELECT track_locations.location FROM library "
+            "INNER JOIN track_locations ON library.location=track_locations.id "
+            "WHERE library.id > :after AND track_locations.fs_deleted=0 "
+            "AND library.mixxx_deleted=0 AND COALESCE(library.timesplayed, 0)=0 "
+            "AND library.id NOT IN (SELECT track_id FROM PlaylistTracks) "
+            "AND library.id NOT IN (SELECT track_id FROM crate_tracks)"));
+    query.bindValue(QStringLiteral(":after"), afterId);
+    if (!query.exec()) {
+        LOG_FAILED_QUERY(query);
+        return added;
+    }
+    QSet<QString> known(added.cbegin(), added.cend());
+    while (query.next()) {
+        const QString location = query.value(0).toString();
+        if (known.contains(location)) {
+            continue;
+        }
+        for (const mixxx::FileInfo& rootDir : std::as_const(m_libraryRootDirs)) {
+            QString root = rootDir.location();
+            if (!root.endsWith(QLatin1Char('/'))) {
+                root += QLatin1Char('/');
+            }
+            if (location.startsWith(root)) {
+                known.insert(location);
+                added.append(location);
+                break;
+            }
+        }
+    }
+    return added;
 }
 
 void LibraryScanner::deferSavingModifiedTracks(bool defer) {

@@ -340,6 +340,59 @@ bool GlobalTrackCache::isFillingInATrack() {
     return s_incompleteTrack.load();
 }
 
+//static
+void GlobalTrackCache::saveDeferredTracksSoon() {
+    if (s_pInstance) {
+        QMetaObject::invokeMethod(
+                s_pInstance,
+                [] {
+                    if (s_pInstance) {
+                        s_pInstance->saveDeferredTracks();
+                    }
+                },
+                Qt::QueuedConnection);
+    }
+}
+
+void GlobalTrackCache::saveDeferredTracks() {
+    DEBUG_ASSERT_QOBJECT_THREAD_AFFINITY(this);
+    QList<TrackPointer> tracks;
+    {
+        const GlobalTrackCacheLocker cacheLocker;
+        tracks = m_deferredTracks;
+    }
+    if (tracks.isEmpty() || !m_pSaver) {
+        return;
+    }
+    // Saved while they stay cached and alive, without the cache's lock:
+    // nobody can read such a track from the database meanwhile, and the
+    // scanner, which may wait for the lock while it writes, is never
+    // waited for while the lock is held.
+    kLogger.info()
+            << "Saving"
+            << tracks.size()
+            << "modified track(s) kept during the library scan";
+    for (const auto& pTrack : std::as_const(tracks)) {
+        m_pSaver->saveEvictedTrack(pTrack.get());
+    }
+    // The saved ones go as before (nothing left to save); one modified
+    // again meanwhile stays kept.
+    QList<TrackPointer> saved;
+    {
+        const GlobalTrackCacheLocker cacheLocker;
+        for (auto it = m_deferredTracks.begin(); it != m_deferredTracks.end();) {
+            if ((*it)->isDirty() || (*it)->isMarkedForMetadataExport()) {
+                ++it;
+            } else {
+                saved.append(*it);
+                it = m_deferredTracks.erase(it);
+            }
+        }
+    }
+    // Their last references go outside the lock above.
+    saved.clear();
+}
+
 void GlobalTrackCache::releaseDeferredTracks() {
     DEBUG_ASSERT_QOBJECT_THREAD_AFFINITY(this);
     QList<TrackPointer> tracks;

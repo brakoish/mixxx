@@ -224,6 +224,11 @@ class GlobalTrackCache : public QObject {
     /// calls count. The kept tracks are saved once the last defer ends.
     static void deferSavingModifiedTracks(bool defer);
     static bool isSavingModifiedTracksDeferred();
+    /// Deck Lab: the kept tracks are saved soon on the cache's thread,
+    /// without the cache's lock, and stay kept until the scan ends (or go
+    /// once saved). The scanner calls it each time it has committed a
+    /// batch, so a power cut mid-scan loses no edit made before. Any thread.
+    static void saveDeferredTracksSoon();
     /// Deck Lab: a new track is being filled in (every other new track
     /// waits for it). Any thread, without the lock: a hint only.
     static bool isFillingInATrack();
@@ -237,6 +242,7 @@ class GlobalTrackCache : public QObject {
 
     // Lets go of the tracks kept while saving was deferred.
     void releaseDeferredTracks();
+    void saveDeferredTracks();
 
     GlobalTrackCache(
             GlobalTrackCacheSaver* pSaver,

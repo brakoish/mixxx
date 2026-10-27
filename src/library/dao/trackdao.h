@@ -171,6 +171,15 @@ class TrackDAO : public QObject, public virtual DAO, public virtual GlobalTrackC
     TrackPointer addTracksAddFile(
             const QString& filePath,
             bool unremove);
+    // Deck Lab: addTracksAddFile() in two steps. The file is read into a
+    // temporary track (no database write, null when its type is not
+    // supported); then that is added. The library scanner reads files
+    // while its add transaction holds no writes.
+    TrackPointer addTracksReadFile(const QString& filePath) const;
+    TrackPointer addTracksAddReadFile(
+            const QString& filePath,
+            const TrackPointer& pImportedTrack,
+            bool unremove);
     // Deck Lab: commits the tracks added so far and goes on in a new
     // transaction, so a long import never holds the write lock for long.
     void addTracksCommit();

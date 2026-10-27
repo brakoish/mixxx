@@ -123,10 +123,27 @@ class LibraryScanner : public QThread {
 
     void cleanUpScan();
 
-    // Deck Lab: the add transaction is committed in small batches. Called
-    // after each write in it; commits when the batch is due.
-    void noteAddWrite();
+    // Deck Lab: what a scan adds, read and waiting to be written: a file
+    // read into a temporary track, or (no track) a folder's new hash.
+    struct PendingAdd {
+        TrackPointer track;
+        QString path;
+        bool newDirectory = false;
+        mixxx::cache_key_t hash = 0;
+    };
+    // Deck Lab: the add transaction is written and committed in small
+    // batches, and files are read only while it holds no write.
+    void queueAdd(PendingAdd add);
+    void flushAdds();
     void commitAdds();
+    void addReadTrack(const QString& trackPath, const TrackPointer& pImportedTrack);
+    void saveDirectoryHash(const QString& directoryPath,
+            bool newDirectory,
+            mixxx::cache_key_t hash);
+    // Deck Lab: rows a scan that did not finish added count as added for
+    // the moved-file relink of the next scan that does.
+    void markUnfinishedScan();
+    QStringList addedTracksSinceUnfinishedScan() const;
     // Deck Lab: GlobalTrackCache keeps modified tracks instead of saving
     // them while this scan writes (no lock-order inversion with the GUI).
     void deferSavingModifiedTracks(bool defer);
@@ -170,10 +187,10 @@ class LibraryScanner : public QThread {
     // Deck Lab: requestCancel() came before the scan had its global state.
     std::atomic<bool> m_cancelRequested{false};
 
-    // Deck Lab: the current batch of the add transaction (scanner thread).
-    QTimer m_addCommitTimer{this}; // commits a batch that waits for more
-    QElapsedTimer m_addBatch;      // since the batch's first write
-    int m_addBatchWrites = 0;
-    bool m_lastAddSlow = false; // the last file took long to read and add
+    // Deck Lab: the next batch of the add transaction (scanner thread).
+    QList<PendingAdd> m_pendingAdds;
+    QElapsedTimer m_pendingSince;  // since the first one waits
+    QTimer m_addCommitTimer{this}; // writes a batch that waits for more
+    bool m_addWrites = false;      // the transaction holds writes
     bool m_savingDeferred = false;
 };

@@ -380,9 +380,211 @@ TEST_F(DeckLabImportTest, AGuiLookupDuringAScanDoesNotWaitForTheStick) {
     QCoreApplication::processEvents(); // the browsed track leaves the cache
 }
 
+// A stick that reads quickly and then stalls in one read (a worn stick, or
+// three readers at once): the scanner holds no write lock through that read
+// either. Each file is read only while the scanner's add transaction holds
+// no write; what was read is written in a short batch after. A write from
+// another connection at the start of every read goes through at once (the
+// test library fails it at once if the scanner holds the lock).
+TEST_F(DeckLabImportTest, AStallAfterFastReadsHoldsNoWriteLock) {
+    QTemporaryDir dir;
+    constexpr int kFiles = 6;
+    for (int n = 1; n <= kFiles; ++n) {
+        copyFixture(dir, QStringLiteral("Generated %1.mp3").arg(n));
+    }
+    ASSERT_EQ(DirectoryDAO::AddResult::Ok, trackCollectionManager()->addDirectory(mixxx::FileInfo(dir.path())));
+    value(QStringLiteral("CREATE TABLE decklab_generated_writes (n INTEGER)"));
+    const QString main = internalCollection()->database().connectionName();
+    LibraryScanner scanner(dbConnectionPooler(), config());
+    std::atomic<int> reads{0};
+    std::atomic<int> refused{0};
+    std::atomic<bool> refusedInStall{false};
+    onScannerReading(scanner, [&](const QString& location) {
+        const bool stall = location.endsWith(QStringLiteral("Generated 4.mp3"));
+        const auto probe = [&main]() {
+            const QString name = QStringLiteral("decklab-writer");
+            bool written = false;
+            {
+                QSqlDatabase other = QSqlDatabase::cloneDatabase(main, name);
+                if (other.open()) {
+                    QSqlQuery write(other);
+                    written = write.exec(QStringLiteral("INSERT INTO decklab_generated_writes (n) VALUES (1)"));
+                    other.close();
+                }
+            }
+            QSqlDatabase::removeDatabase(name);
+            return written;
+        };
+        if (!probe()) {
+            ++refused;
+            refusedInStall = refusedInStall || stall;
+        }
+        ++reads;
+        if (stall) {
+            QThread::msleep(300); // the stick stalls in this read only
+            if (!probe()) {
+                ++refused;
+                refusedInStall = true;
+            }
+        }
+    });
+    QSignalSpy finished(&scanner, &LibraryScanner::scanFinished);
+    scanner.start();
+    ASSERT_TRUE(scanner.scanQuietly());
+    ASSERT_TRUE(finished.wait(30000));
+    EXPECT_EQ(kFiles, reads.load());
+    EXPECT_FALSE(refusedInStall.load()) << "the scanner held the write lock through the stalled read";
+    EXPECT_EQ(0, refused.load()) << "a write had to wait for the scanner reading a file";
+    EXPECT_EQ(kFiles + 1, value(QStringLiteral("SELECT COUNT(*) FROM decklab_generated_writes")).toInt());
+    EXPECT_EQ(kFiles, value(QStringLiteral("SELECT COUNT(*) FROM library")).toInt());
+}
+
+// The scanner turns on the keeping of modified tracks while it writes (the
+// only guard against saving under the cache's lock while the scanner waits
+// for that lock with the library's write lock held). A modified track let
+// go mid-scan is kept, and saved at the next batch's commit, before the
+// scan ends: a power cut later in the scan loses no edit.
+TEST_F(DeckLabImportTest, AModifiedTrackLetGoMidScanIsSavedAtTheNextCommit) {
+    QTemporaryDir dir;
+    constexpr int kFiles = 6;
+    for (int n = 1; n <= kFiles; ++n) {
+        copyFixture(dir, QStringLiteral("Generated %1.mp3").arg(n));
+    }
+    QTemporaryDir elsewhere;
+    TrackPointer edited = getOrAddTrackByLocation(copyFixture(elsewhere, QStringLiteral("Generated Edited.mp3")));
+    ASSERT_TRUE(edited);
+    const QString title = QStringLiteral("SELECT title FROM library WHERE id=%1").arg(edited->getId().toString());
+    edited->setTitle(QStringLiteral("Generated Edit"));
+    ASSERT_TRUE(edited->isDirty());
+    ASSERT_EQ(DirectoryDAO::AddResult::Ok, trackCollectionManager()->addDirectory(mixxx::FileInfo(dir.path())));
+    const QString main = internalCollection()->database().connectionName();
+    LibraryScanner scanner(dbConnectionPooler(), config());
+    std::atomic<int> reads{0};
+    std::atomic<bool> deferred{false};
+    std::atomic<bool> savedMidScan{false};
+    onScannerReading(scanner, [&](const QString&) {
+        const int read = ++reads;
+        if (read == 1) {
+            deferred = GlobalTrackCache::isSavingModifiedTracksDeferred();
+            edited.reset(); // its last reference goes (a deck loads another track)
+        } else if (read == kFiles) {
+            const QString name = QStringLiteral("decklab-reader");
+            {
+                QSqlDatabase other = QSqlDatabase::cloneDatabase(main, name);
+                if (other.open()) {
+                    QSqlQuery query(other);
+                    savedMidScan = query.exec(title) && query.next() &&
+                            query.value(0).toString() == QStringLiteral("Generated Edit");
+                    other.close();
+                }
+            }
+            QSqlDatabase::removeDatabase(name);
+        }
+        QThread::msleep(250); // a slow stick: a batch is committed meanwhile
+    });
+    QSignalSpy finished(&scanner, &LibraryScanner::scanFinished);
+    scanner.start();
+    ASSERT_TRUE(scanner.scanQuietly());
+    ASSERT_TRUE(finished.wait(30000));
+    EXPECT_TRUE(deferred.load()) << "the scan did not keep modified tracks while it wrote";
+    EXPECT_TRUE(savedMidScan.load()) << "the edit waited for the end of the scan";
+    QCoreApplication::processEvents();
+    EXPECT_EQ(QStringLiteral("Generated Edit"), value(title).toString());
+    EXPECT_FALSE(GlobalTrackCache::isSavingModifiedTracksDeferred());
+}
+
+// A file moved inside a library folder, and a scan canceled for playback
+// after it committed the file's new row. The next scan finds that row
+// present (not added by it), yet still relinks the old row (with its cues,
+// crate and play count) to the new place, as an uncanceled scan would.
+TEST_F(DeckLabImportTest, AMovedFileIsRelinkedAfterACanceledScan) {
+    QTemporaryDir dir;
+    const QDir root(dir.path());
+    ASSERT_TRUE(root.mkpath(QStringLiteral("A")));
+    ASSERT_TRUE(root.mkpath(QStringLiteral("B")));
+    const QString before = copyFixture(dir, QStringLiteral("A/Generated 00 Moved.mp3"));
+    ASSERT_EQ(DirectoryDAO::AddResult::Ok, trackCollectionManager()->addDirectory(mixxx::FileInfo(dir.path())));
+    LibraryScanner scanner(dbConnectionPooler(), config());
+    std::atomic<bool> canceled{true};
+    QObject::connect(&scanner, &LibraryScanner::scanSummary, &scanner, [&canceled](const LibraryScanResultSummary& result) {
+        canceled = result.canceled;
+    }, Qt::DirectConnection);
+    QSignalSpy finished(&scanner, &LibraryScanner::scanFinished);
+    scanner.start();
+    ASSERT_TRUE(scanner.scanQuietly());
+    ASSERT_TRUE(finished.wait(30000));
+    ASSERT_FALSE(canceled.load());
+    const int id = value(QStringLiteral("SELECT library.id FROM library INNER JOIN track_locations "
+                                        "ON library.location=track_locations.id WHERE track_locations.location='%1'")
+                                 .arg(mixxx::FileInfo(before).location()))
+                           .toInt();
+    ASSERT_GT(id, 0);
+    value(QStringLiteral("INSERT INTO crates (name) VALUES ('Generated Crate')"));
+    value(QStringLiteral("INSERT INTO crate_tracks (crate_id, track_id) "
+                         "SELECT id, %1 FROM crates WHERE name='Generated Crate'")
+                    .arg(id));
+    value(QStringLiteral("INSERT INTO cues (track_id, type, position, hotcue) VALUES (%1, 1, 1000, 0)").arg(id));
+    value(QStringLiteral("UPDATE library SET timesplayed=3 WHERE id=%1").arg(id));
+
+    // Moved on a laptop, with more new files beside it; the scan is
+    // canceled as soon as the batch with the moved file is committed.
+    const QString after = root.filePath(QStringLiteral("B/Generated 00 Moved.mp3"));
+    ASSERT_TRUE(QFile::rename(before, after));
+    constexpr int kOthers = 5;
+    for (int n = 1; n <= kOthers; ++n) {
+        copyFixture(dir, QStringLiteral("B/Generated %1.mp3").arg(n, 2, 10, QLatin1Char('0')));
+    }
+    std::atomic<bool> movedRead{false};
+    onScannerReading(scanner, [&](const QString& location) {
+        if (location.endsWith(QStringLiteral("B/Generated 00 Moved.mp3"))) {
+            movedRead = true;
+        }
+    });
+    QObject::connect(&scannerDao(scanner), &TrackDAO::tracksAdded, &scannerDao(scanner), [&](const QSet<TrackId>&) {
+        if (movedRead) {
+            scanner.requestCancel(); // a deck started
+        }
+    }, Qt::DirectConnection);
+    ASSERT_TRUE(QTest::qWaitFor([&scanner] { return !scanner.isScanning(); }, 5000));
+    ASSERT_TRUE(scanner.scanQuietly());
+    ASSERT_TRUE(finished.wait(30000));
+    ASSERT_TRUE(canceled.load());
+    const QString newRow = QStringLiteral("SELECT COUNT(*) FROM track_locations WHERE location='%1'")
+                                   .arg(mixxx::FileInfo(after).location());
+    ASSERT_EQ(1, value(newRow).toInt()) << "the moved file's new row was committed before the cancel";
+
+    // Quiet again: the next scan finishes.
+    onScannerReading(scanner, {});
+    movedRead = false;
+    ASSERT_TRUE(QTest::qWaitFor([&scanner] { return !scanner.isScanning(); }, 5000));
+    ASSERT_TRUE(scanner.scanQuietly());
+    ASSERT_TRUE(finished.wait(30000));
+    ASSERT_FALSE(canceled.load());
+    EXPECT_EQ(mixxx::FileInfo(after).location(),
+            value(QStringLiteral("SELECT track_locations.location FROM library INNER JOIN track_locations "
+                                 "ON library.location=track_locations.id WHERE library.id=%1")
+                            .arg(id))
+                    .toString())
+            << "the old row moved with its file";
+    EXPECT_EQ(0, value(QStringLiteral("SELECT fs_deleted FROM track_locations WHERE location='%1'")
+                               .arg(mixxx::FileInfo(after).location()))
+                         .toInt());
+    EXPECT_EQ(1, value(QStringLiteral("SELECT COUNT(*) FROM library WHERE location IN "
+                                      "(SELECT id FROM track_locations WHERE filename='Generated 00 Moved.mp3')"))
+                         .toInt())
+            << "one row for the file, not a bare new one beside a missing old one";
+    EXPECT_EQ(1, value(QStringLiteral("SELECT COUNT(*) FROM crate_tracks WHERE track_id=%1").arg(id)).toInt());
+    EXPECT_EQ(1, value(QStringLiteral("SELECT COUNT(*) FROM cues WHERE track_id=%1").arg(id)).toInt());
+    EXPECT_EQ(3, value(QStringLiteral("SELECT timesplayed FROM library WHERE id=%1").arg(id)).toInt());
+    EXPECT_EQ(kOthers + 1, value(QStringLiteral("SELECT COUNT(*) FROM library")).toInt());
+    EXPECT_EQ(0, value(QStringLiteral("SELECT COUNT(*) FROM settings WHERE name LIKE 'decklab.scan.%'")).toInt())
+            << "every scan has finished";
+}
+
 // Canceled for playback (LibraryScanner::requestCancel, which never waits):
-// what it added stays, each track whole; nothing is marked missing; the next
-// scan goes on where it stopped and adds no row twice.
+// what it committed stays, each track whole; what it had read but not
+// written is left; nothing is marked missing; the next scan goes on where it
+// stopped and adds no row twice.
 TEST_F(DeckLabImportTest, ACanceledScanLeavesWholeRowsAndGoesOnNextTime) {
     QTemporaryDir dir;
     constexpr int kFiles = 45;
@@ -393,8 +595,7 @@ TEST_F(DeckLabImportTest, ACanceledScanLeavesWholeRowsAndGoesOnNextTime) {
     LibraryScanner scanner(dbConnectionPooler(), config());
     std::atomic<int> read{0};
     onScannerReading(scanner, [&](const QString&) {
-        QThread::msleep(10);
-        if (++read == 10) {
+        if (++read == 25) {
             scanner.requestCancel(); // a deck started (any thread)
         }
     });
@@ -407,11 +608,15 @@ TEST_F(DeckLabImportTest, ACanceledScanLeavesWholeRowsAndGoesOnNextTime) {
     ASSERT_TRUE(scanner.scanQuietly());
     ASSERT_TRUE(finished.wait(30000));
     EXPECT_TRUE(canceled.load());
-    EXPECT_EQ(10, value(QStringLiteral("SELECT COUNT(*) FROM library")).toInt());
-    EXPECT_EQ(10, value(QStringLiteral("SELECT COUNT(*) FROM library INNER JOIN track_locations "
-                                       "ON library.location=track_locations.id")).toInt())
+    // The first batch (20 files) was written before the cancel; files read
+    // after it never are.
+    const int rows = value(QStringLiteral("SELECT COUNT(*) FROM library")).toInt();
+    EXPECT_GE(rows, 20);
+    EXPECT_LT(rows, 25);
+    EXPECT_EQ(rows, value(QStringLiteral("SELECT COUNT(*) FROM library INNER JOIN track_locations "
+                                         "ON library.location=track_locations.id")).toInt())
             << "every row whole";
-    EXPECT_EQ(10, value(QStringLiteral("SELECT COUNT(*) FROM track_locations")).toInt());
+    EXPECT_EQ(rows, value(QStringLiteral("SELECT COUNT(*) FROM track_locations")).toInt());
     EXPECT_EQ(0, value(QStringLiteral("SELECT COUNT(*) FROM track_locations WHERE fs_deleted=1")).toInt())
             << "a canceled scan marks nothing missing";
     EXPECT_FALSE(GlobalTrackCache::isSavingModifiedTracksDeferred());
