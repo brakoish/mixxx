@@ -21,6 +21,7 @@
 #include <string>
 
 #include "control/controlobject.h"
+#include "database/mixxxdb.h"
 #include "decklab/decklabmedia.h"
 #include "decklab/decklabsystem.h"
 #include "decklab/decklabusbrelink.h"
@@ -732,7 +733,7 @@ TEST(DeckLabUsbMergeTest, BackupKeepsTheFirstAndTheNewestTwo) {
         database.close();
     }
     QSqlDatabase::removeDatabase(QStringLiteral("decklab-backup"));
-    EXPECT_TRUE(copies.at(0).startsWith(file + QStringLiteral(".decklab-merge-")));
+    EXPECT_EQ(file + QStringLiteral(".decklab-merge-first"), copies.at(0));
     EXPECT_TRUE(QFileInfo::exists(copies.at(0))) << "the library before the first merge stays";
     EXPECT_FALSE(QFileInfo::exists(copies.at(1)));
     EXPECT_FALSE(QFileInfo::exists(copies.at(2)));
@@ -755,6 +756,116 @@ TEST(DeckLabUsbMergeTest, BackupKeepsTheFirstAndTheNewestTwo) {
         copy.close();
     }
     QSqlDatabase::removeDatabase(QStringLiteral("decklab-backup-copy"));
+}
+
+// r7 fix: the Pi has no clock of its own: after a power cut a later copy can
+// carry an earlier time. The first copy stays by its name, and the others
+// go oldest first by their number, never by their time.
+TEST(DeckLabUsbMergeTest, BackupsSurviveAClockThatWentBack) {
+    QTemporaryDir folder;
+    ASSERT_TRUE(folder.isValid());
+    const QString file = folder.filePath(QStringLiteral("library.sqlite"));
+    const QString stem = file + QStringLiteral(".decklab-merge-");
+    QStringList copies;
+    {
+        QSqlDatabase database = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("decklab-backup"));
+        database.setDatabaseName(file);
+        ASSERT_TRUE(database.open());
+        QSqlQuery query(database);
+        ASSERT_TRUE(query.exec(QStringLiteral("CREATE TABLE generated (value INTEGER)")));
+        const auto first = decklab::backupLibraryDatabase(database);
+        ASSERT_TRUE(first.has_value());
+        EXPECT_EQ(stem + QStringLiteral("first"), *first);
+        decklab::pruneLibraryBackups(*first);
+        // The next session's clock is behind: its copy's time sorts first.
+        QFile earlier(stem + QStringLiteral("n000002-19990101-000000"));
+        ASSERT_TRUE(earlier.open(QIODevice::WriteOnly));
+        earlier.close();
+        for (int n = 0; n < 3; ++n) {
+            const auto copy = decklab::backupLibraryDatabase(database);
+            ASSERT_TRUE(copy.has_value());
+            copies << *copy;
+            decklab::pruneLibraryBackups(*copy);
+        }
+        database.close();
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("decklab-backup"));
+    EXPECT_TRUE(copies.at(0).startsWith(stem + QStringLiteral("n000003-")));
+    EXPECT_TRUE(copies.at(2).startsWith(stem + QStringLiteral("n000005-")));
+    EXPECT_TRUE(QFileInfo::exists(stem + QStringLiteral("first"))) << "the library before any merge";
+    EXPECT_FALSE(QFileInfo::exists(stem + QStringLiteral("n000002-19990101-000000")));
+    EXPECT_FALSE(QFileInfo::exists(copies.at(0)));
+    EXPECT_TRUE(QFileInfo::exists(copies.at(1)));
+    EXPECT_TRUE(QFileInfo::exists(copies.at(2)));
+    EXPECT_EQ(3, QDir(folder.path()).entryList(QStringList{QStringLiteral("library.sqlite.decklab-merge-*")}, QDir::Files).size());
+}
+
+// r7 fix: a pass that only finds files again (a stick back after a scan
+// marked its tracks missing) leaves no copy, so it never pushes the copy
+// from before a merge out; a pass that moves rows keeps its copy. A library
+// in a file of its own (the tests' library lives in memory).
+TEST(DeckLabUsbMergeTest, APassThatOnlyFindsFilesAgainLeavesNoCopy) {
+    QTemporaryDir folder;
+    ASSERT_TRUE(folder.isValid());
+    const QString file = folder.filePath(QStringLiteral("library.sqlite"));
+    const auto copiesNow = [&folder] {
+        return QDir(folder.path()).entryList(QStringList{QStringLiteral("library.sqlite.decklab-merge-*")}, QDir::Files);
+    };
+    {
+        QSqlDatabase database = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("decklab-revive"));
+        database.setDatabaseName(file);
+        ASSERT_TRUE(database.open());
+        ASSERT_TRUE(MixxxDb::initDatabaseSchema(database));
+        const auto add = [&database](const QString& location, bool missing) {
+            QSqlQuery query(database);
+            query.prepare(QStringLiteral(
+                    "INSERT INTO track_locations (location, filename, directory, filesize, fs_deleted, "
+                    "needs_verification) VALUES (:location, :filename, :directory, 1000, :missing, 0)"));
+            query.bindValue(QStringLiteral(":location"), location);
+            query.bindValue(QStringLiteral(":filename"), QFileInfo(location).fileName());
+            query.bindValue(QStringLiteral(":directory"), QFileInfo(location).path());
+            query.bindValue(QStringLiteral(":missing"), missing ? 1 : 0);
+            EXPECT_TRUE(query.exec()) << query.lastError().text().toStdString();
+            decklab::RelinkRow row;
+            row.locationId = query.lastInsertId().toLongLong();
+            row.location = location;
+            row.fileSize = 1000;
+            row.missing = missing;
+            query.prepare(QStringLiteral("INSERT INTO library (location, title, artist, mixxx_deleted, timesplayed, rating) "
+                                         "VALUES (:location, 'Generated', 'Generated', 0, 0, 0)"));
+            query.bindValue(QStringLiteral(":location"), row.locationId);
+            EXPECT_TRUE(query.exec()) << query.lastError().text().toStdString();
+            row.trackId = query.lastInsertId().toLongLong();
+            return row;
+        };
+        const auto back = add(QStringLiteral("/media/decklab/1234-ABCD/Generated Back.mp3"), true);
+        decklab::RelinkPlan revive;
+        revive.revived << back;
+        const auto revived = decklab::applyRelinkWithBackup(database, revive);
+        EXPECT_TRUE(revived.ok);
+        EXPECT_EQ(1, revived.revived);
+        EXPECT_TRUE(copiesNow().isEmpty()) << "finding a file again makes no copy";
+
+        const auto earlier = add(QStringLiteral("/media/dj/MY STICK/Generated Moved.mp3"), true);
+        decklab::RelinkPlan move;
+        decklab::RelinkGroup group;
+        group.target = QStringLiteral("/media/decklab/1234-ABCD/Generated Moved.mp3");
+        group.survivor = earlier;
+        group.relocate = true;
+        move.groups << group;
+        const auto moved = decklab::applyRelinkWithBackup(database, move);
+        EXPECT_TRUE(moved.ok);
+        EXPECT_EQ(1, moved.relocated.size());
+        EXPECT_EQ(QStringList{QStringLiteral("library.sqlite.decklab-merge-first")}, copiesNow());
+
+        // Found again once more: the copy from before the move stays alone.
+        QSqlQuery query(database);
+        ASSERT_TRUE(query.exec(QStringLiteral("UPDATE track_locations SET fs_deleted=1 WHERE id=%1").arg(back.locationId)));
+        EXPECT_TRUE(decklab::applyRelinkWithBackup(database, revive).ok);
+        EXPECT_EQ(QStringList{QStringLiteral("library.sqlite.decklab-merge-first")}, copiesNow());
+        database.close();
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("decklab-revive"));
 }
 
 // The session glue: nothing while a deck plays; the stick's turn comes once

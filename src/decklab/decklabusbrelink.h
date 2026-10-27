@@ -232,15 +232,21 @@ struct RelinkResult {
 RelinkResult applyRelink(QSqlDatabase& database, const RelinkPlan& plan);
 
 // Copies the library database beside itself (SQLite's VACUUM INTO, a
-// consistent snapshot) as "<file>.decklab-merge-<time>". Returns the copy's
-// path; an empty path for a database in memory (tests: nothing to copy);
-// nullopt when no copy could be made. Never inside a transaction.
+// consistent snapshot): the first as "<file>.decklab-merge-first", the next
+// ones as "<file>.decklab-merge-n<number>-<time>". Returns the copy's path;
+// an empty path for a database in memory (tests: nothing to copy); nullopt
+// when no copy could be made. Never inside a transaction.
 std::optional<QString> backupLibraryDatabase(const QSqlDatabase& database);
 // r7 fix: after a pass that changed rows, the copies beside `copy` are cut
-// down to the newest `keep` and the oldest one (the library before the
-// first merge, never deleted automatically).
+// down to the newest `keep` by number, and the first one (the library
+// before the first merge, never deleted automatically).
 constexpr int kMergeBackupsKept = 2;
 void pruneLibraryBackups(const QString& copy, int keep = kMergeBackupsKept);
+// A pass on the library with its copy: one is made first only when rows
+// move or merge (plan.groups), kept (and the copies pruned) when the pass
+// moved or merged rows, else removed. Not ok, and nothing changed, when the
+// copy fails.
+RelinkResult applyRelinkWithBackup(QSqlDatabase& database, const RelinkPlan& plan);
 
 // Session glue: when a stick is in (start-up, decklabd's drive list, a mount
 // seen in the media folders), rows at its earlier addresses follow it and

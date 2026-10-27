@@ -1115,6 +1115,24 @@ RelinkResult applyRelink(QSqlDatabase& database, const RelinkPlan& plan) {
     return result;
 }
 
+namespace {
+
+const QString kMergeCopyInfix = QStringLiteral(".decklab-merge-");
+const QString kFirstMergeCopy = QStringLiteral("first");
+
+// A numbered copy's number ("n000012-<time>"); -1 for an earlier build's
+// copy named by its time only.
+qint64 mergeCopyNumber(const QString& suffix) {
+    if (!suffix.startsWith(QLatin1Char('n'))) {
+        return -1;
+    }
+    bool ok = false;
+    const qint64 number = suffix.mid(1, suffix.indexOf(QLatin1Char('-')) - 1).toLongLong(&ok);
+    return ok ? number : -1;
+}
+
+} // namespace
+
 std::optional<QString> backupLibraryDatabase(const QSqlDatabase& database) {
     // The file SQLite has open (Mixxx opens it through a "file:" URI).
     QSqlQuery list(database);
@@ -1133,20 +1151,30 @@ std::optional<QString> backupLibraryDatabase(const QSqlDatabase& database) {
     }
     const QFileInfo file(path);
     const QDir folder = file.dir();
-    const QString stem = file.fileName() + QStringLiteral(".decklab-merge-");
-    // Names sort by time.
-    const QString base = folder.filePath(stem + QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMdd-HHmmss")));
-    QString copy = base;
-    // Another copy this second: the next number after the highest one used,
-    // never a number freed by pruning (names must keep sorting by time).
-    const QString baseName = QFileInfo(base).fileName();
-    const QStringList taken = folder.entryList(QStringList{baseName + QStringLiteral("-*")}, QDir::Files);
-    if (QFileInfo::exists(base) || !taken.isEmpty()) {
-        int next = 2;
-        for (const QString& name : taken) {
-            next = std::max(next, name.mid(baseName.size() + 1).toInt() + 1);
+    const QString stem = file.fileName() + kMergeCopyInfix;
+    // r7 fix: the first copy is marked by its name, never by a time: the
+    // Pi has no clock of its own, so a later copy's time can sort before an
+    // earlier one's. The others are numbered; the time is for people.
+    const QString first = folder.filePath(stem + kFirstMergeCopy);
+    QStringList others = folder.entryList(QStringList{stem + QLatin1Char('*')}, QDir::Files, QDir::Name);
+    others.removeAll(stem + kFirstMergeCopy);
+    QString copy;
+    if (!QFileInfo::exists(first)) {
+        if (others.isEmpty()) {
+            copy = first;
+        } else if (QFile::rename(folder.filePath(others.first()), first)) {
+            others.removeFirst(); // an earlier build's first copy, named by its time
         }
-        copy = base + QLatin1Char('-') + QString::number(next);
+    }
+    if (copy.isEmpty()) {
+        qint64 next = 1;
+        for (const QString& name : std::as_const(others)) {
+            next = std::max(next, mergeCopyNumber(name.mid(stem.size())) + 1);
+        }
+        copy = folder.filePath(stem +
+                QStringLiteral("n%1-%2")
+                        .arg(next, 6, 10, QLatin1Char('0'))
+                        .arg(QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMdd-HHmmss"))));
     }
     QString literal = copy;
     literal.replace(QLatin1Char('\''), QStringLiteral("''"));
@@ -1165,21 +1193,48 @@ void pruneLibraryBackups(const QString& copy, int keep) {
     }
     const QFileInfo file(copy);
     const QString name = file.fileName();
-    const qsizetype stemEnd = name.indexOf(QStringLiteral(".decklab-merge-"));
+    const qsizetype stemEnd = name.indexOf(kMergeCopyInfix);
     if (stemEnd < 0) {
         return;
     }
-    const QString stem = name.left(stemEnd) + QStringLiteral(".decklab-merge-");
+    const QString stem = name.left(stemEnd) + kMergeCopyInfix;
     const QDir folder = file.dir();
-    // Names sort by time: the first is the library before the first merge.
+    // The first copy (the library before the first merge) is never one of
+    // them. The others go oldest first by their number (an earlier build's
+    // copies, named by time only, before every numbered one).
     QStringList copies = folder.entryList(QStringList{stem + QLatin1Char('*')}, QDir::Files, QDir::Name);
-    if (copies.isEmpty()) {
-        return;
-    }
-    copies.removeFirst();
+    copies.removeAll(stem + kFirstMergeCopy);
+    std::stable_sort(copies.begin(), copies.end(), [&stem](const QString& left, const QString& right) {
+        return mergeCopyNumber(left.mid(stem.size())) < mergeCopyNumber(right.mid(stem.size()));
+    });
     while (copies.size() > std::max(1, keep)) {
         QFile::remove(folder.filePath(copies.takeFirst()));
     }
+}
+
+RelinkResult applyRelinkWithBackup(QSqlDatabase& database, const RelinkPlan& plan) {
+    // r7 fix: a copy first only when rows move or merge. Finding files
+    // again and moving library folders are safe without one, and such a
+    // pass (a stick back after a scan marked its tracks missing) must not
+    // push the copy from before a merge out.
+    std::optional<QString> copy = QString();
+    if (!plan.groups.isEmpty()) {
+        copy = backupLibraryDatabase(database);
+    }
+    if (!copy) {
+        qWarning() << "Deck Lab USB merge: the library could not be copied first; nothing changed";
+        return RelinkResult();
+    }
+    const RelinkResult result = applyRelink(database, plan);
+    if (!result.ok) {
+        qWarning() << "Deck Lab USB merge: the changes were rolled back";
+    }
+    if (result.ok && !(result.relocated.isEmpty() && result.merged.isEmpty())) {
+        pruneLibraryBackups(*copy);
+    } else if (!copy->isEmpty()) {
+        QFile::remove(*copy); // nothing moved or merged: the copy says nothing new
+    }
+    return result;
 }
 
 UsbRelinker::UsbRelinker(std::shared_ptr<TrackCollectionManager> library, QObject* parent)
@@ -1573,29 +1628,9 @@ void UsbRelinker::finish() {
     TrackCollection* collection = m_library ? m_library->internalCollection() : nullptr;
     if (collection && !plan.isEmpty()) {
         QSqlDatabase database = collection->database();
-        // r7 fix: a copy first only when rows move or merge. Finding files
-        // again and moving library folders are safe without one, and such a
-        // pass (a stick back after a scan marked its tracks missing) must
-        // not push the copy from before a merge out.
-        std::optional<QString> copy = QString();
-        if (!plan.groups.isEmpty()) {
-            copy = backupLibraryDatabase(database);
-        }
-        if (!copy) {
-            qWarning() << "Deck Lab USB merge: the library could not be copied first; nothing changed";
-            result.ok = false;
-        } else {
-            result = applyRelink(database, plan);
-            if (result.ok) {
-                notify(result);
-            } else {
-                qWarning() << "Deck Lab USB merge: the changes were rolled back";
-            }
-            if (result.ok && !(result.relocated.isEmpty() && result.merged.isEmpty())) {
-                pruneLibraryBackups(*copy);
-            } else if (!copy->isEmpty()) {
-                QFile::remove(*copy); // nothing moved or merged: the copy says nothing new
-            }
+        result = applyRelinkWithBackup(database, plan);
+        if (result.ok) {
+            notify(result);
         }
     }
     const int relocated = static_cast<int>(result.relocated.size());
