@@ -8131,12 +8131,19 @@ TEST_F(NativeDeckLabTest, AStaleRowSaysItsStickIsOutOnLoadAndPreview) {
     table->selectRow(0); settle();
     auto* toast = panel->findChild<DeckLabToast*>();
     ASSERT_NE(nullptr, toast);
+    auto* load = panel->findChild<QPushButton*>(QStringLiteral("decklab-load-1"));
+    auto* preview = panel->findChild<QPushButton*>(QStringLiteral("decklab-preview"));
+    ASSERT_NE(nullptr, load);
+    ASSERT_NE(nullptr, preview);
     toast->showMessage(QStringLiteral("Generated"), 100);
-    panel->loadDeck(1); settle();
+    emit load->pressed();
+    emit load->clicked();
+    settle();
     EXPECT_EQ(QStringLiteral("That track's USB stick is out."), toast->text());
     EXPECT_FALSE(deckPlayer(1)->getLoadedTrack());
     toast->showMessage(QStringLiteral("Generated"), 100);
-    panel->togglePreview(); settle();
+    emit preview->clicked();
+    settle();
     EXPECT_EQ(QStringLiteral("That track's USB stick is out."), toast->text());
     EXPECT_EQ(nullptr, QApplication::activeModalWidget());
 }
@@ -8154,6 +8161,7 @@ TEST_F(NativeDeckLabTest, PlayStartingStopsALibraryScan) {
     hooks.playing = [] { return ControlObject::get(ConfigKey(QStringLiteral("[Channel1]"), QStringLiteral("play"))) > 0; };
     hooks.recording = [] { return false; };
     hooks.scanning = [] { return true; };
+    hooks.quiet = [] { return false; }; // the scan it asks for again waits
     hooks.interruptScan = [&interrupted] { ++interrupted; };
     system.utilities()->setHooks(hooks);
     const TrackPointer track = loadGenerated(1, 122);
