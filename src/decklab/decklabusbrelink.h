@@ -21,7 +21,8 @@
 // Never title or artist. r7 fix: a folder named after the label with udisks'
 // number ("DJ2" for a stick labelled DJ) counts only when the rows there
 // show it is this stick: no stick the unit has seen is called that, and
-// most of its rows whose file is on this stick have that file's size. Else
+// most of its rows have a file of that size at the same place on this
+// stick. Else
 // it is another stick's folder (a stick labelled DJ2 that is out), and its
 // rows and library folders are left alone.
 // Nothing is deleted: a merged row is hidden (Mixxx's mixxx_deleted) with
@@ -80,7 +81,7 @@ bool isNumberedMountName(const UsbVolume& volume, const QString& name);
 
 // r7 fix: a numbered folder is an earlier address of the volume only when at
 // least this share of its rows whose relative path is on the volume have
-// that file's size.
+// that file's size, and those are more than half of the folder's rows.
 constexpr int kNumberedFolderEvidencePercent = 80;
 
 // Relative paths `location` would have on this volume if it lies under a
