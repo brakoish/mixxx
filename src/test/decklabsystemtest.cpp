@@ -22,15 +22,18 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <algorithm>
 #include <csignal>
 #ifdef Q_OS_UNIX
 #include <signal.h>
 #endif
+#include <functional>
 #include <memory>
 
 #include "controllers/controllermappinginfo.h"
 #include "controllers/controllermappinginfoenumerator.h"
 #include "controllers/controllermappingmatcher.h"
+#include "database/mixxxdb.h"
 #include "decklab/decklabdclient.h"
 #include "decklab/decklabfakeservice.h"
 #include "decklab/decklabinstruments.h"
@@ -44,7 +47,18 @@
 #include "decklab/decklabusbname.h"
 #include "decklab/decklabui.h"
 #include "decklab/decklabui.h"
+#include "library/coverartcache.h"
+#include "library/library_prefs.h"
+#include "library/trackcollectionmanager.h"
+#include "mixer/basetrackplayer.h"
+#include "mixer/playermanager.h"
 #include "test/mixxxtest.h"
+#include "test/signalpathtest.h"
+#include "track/cue.h"
+#include "track/track.h"
+#include "track/trackref.h"
+#include "util/db/dbconnectionpooled.h"
+#include "util/db/dbconnectionpooler.h"
 #include "widget/decklabdeckwidgets.h"
 
 namespace {
@@ -1073,6 +1087,304 @@ TEST_F(DeckLabSystemTest, PutOnPadLoadsOnlyASampleFromTheSamplesFolder) {
     deck.playing = true;
     EXPECT_EQ(QStringLiteral("busy"), refusal(ask(QStringLiteral("Hook - Cut.wav"))));
     EXPECT_EQ(1, deck.pads.size());
+}
+
+// ------------------ Sample Maker preview on Mixxx's own preview deck (r7) --
+
+namespace {
+// The signal path's preview deck, as PlayerManager hands it out.
+class PreviewPlayers final : public PlayerManagerInterface {
+  public:
+    explicit PreviewPlayers(PreviewDeck* preview)
+            : m_preview(preview) {
+    }
+    BaseTrackPlayer* getPlayer(const QString& group) const override {
+        return group == m_preview->getGroup() ? m_preview : nullptr;
+    }
+    BaseTrackPlayer* getPlayer(const ChannelHandle&) const override {
+        return nullptr;
+    }
+    BaseTrackPlayer* getDeckBase(int) const override {
+        return nullptr;
+    }
+    int numberOfDecks() const override {
+        return 0;
+    }
+    PreviewDeck* getPreviewDeck(int index) const override {
+        return index == 0 ? m_preview : nullptr;
+    }
+    int numberOfPreviewDecks() const override {
+        return 1;
+    }
+    Sampler* getSampler(int) const override {
+        return nullptr;
+    }
+    int numberOfSamplers() const override {
+        return 0;
+    }
+
+  private:
+    PreviewDeck* m_preview;
+};
+} // namespace
+
+// Deck Lab's own preview hooks on Mixxx's preview deck, engine and library,
+// with no fakes: what the DJ hears, and what Mixxx saves with the track.
+class DeckLabPreviewDeckTest : public BaseSignalPathTest {
+  protected:
+    static constexpr double kRate = 44100; // sine-30.wav: 30 s, generated
+
+    DeckLabPreviewDeckTest()
+            : m_db(config(), true),
+              m_pooler(m_db.connectionPool()) {
+        if (!ControlObject::exists(mixxx::library::prefs::kKeyNotationConfigKey)) {
+            m_keyNotation = std::make_unique<ControlObject>(mixxx::library::prefs::kKeyNotationConfigKey);
+        }
+        CoverArtCache::createInstance();
+        EXPECT_TRUE(MixxxDb::initDatabaseSchema(mixxx::DbConnectionPooled(m_db.connectionPool())));
+        m_library = std::make_shared<TrackCollectionManager>(
+                nullptr, config(), m_db.connectionPool(), [](Track* track) { delete track; });
+        m_players = std::make_unique<PreviewPlayers>(m_pPreview1.get());
+        m_since.start();
+    }
+    ~DeckLabPreviewDeckTest() override {
+        // The preview deck lets go of its track while the library still runs.
+        m_players.reset();
+        m_pPreview1.reset();
+        m_library.reset();
+        CoverArtCache::destroy();
+    }
+
+    // A library track: a copy of the generated sine under its own name.
+    TrackPointer addTrack(const QString& name) {
+        const QString path = m_dir.filePath(name);
+        if (!QFile::exists(path) &&
+                !QFile::copy(getTestDir().filePath(QStringLiteral("sine-30.wav")), path)) {
+            return TrackPointer();
+        }
+        return m_library->getOrAddTrack(TrackRef::fromFilePath(path));
+    }
+    static int idOf(const TrackPointer& track) {
+        return track->getId().toVariant().toInt();
+    }
+    // Deck Lab with Sample Maker open, on this preview deck and library.
+    std::unique_ptr<DeckLabSystem> openSampleMaker() {
+        DeckLabSystem::Services services;
+        services.config = config();
+        services.players = m_players.get();
+        services.library = m_library;
+        auto system = std::make_unique<DeckLabSystem>(
+                services, nullptr, m_dir.filePath(QStringLiteral("decklabd.sock")));
+        system->utilities()->setHooks(DeckLabUtilities::Hooks());
+        system->utilities()->setStateDirectory(m_dir.filePath(QStringLiteral("run/decklab")));
+        system->utilityLaunched(DeckLabPreview::kSampleMaker);
+        return system;
+    }
+    void sendPlay(DeckLabSystem* system, QJsonObject request) {
+        request.insert(QStringLiteral("serial"), ++m_serial);
+        EXPECT_TRUE(system->preview()->onEvent(QStringLiteral("preview.play"), request));
+    }
+    void sendStop(DeckLabSystem* system) {
+        EXPECT_TRUE(system->preview()->onEvent(
+                QStringLiteral("preview.stop"), QJsonObject{{QStringLiteral("serial"), ++m_serial}}));
+    }
+    // Runs the engine and Qt's queued deliveries (a track loads on a worker
+    // thread) until `done`.
+    bool runUntil(const std::function<bool()>& done, int timeoutMs = 5000) {
+        QElapsedTimer timer;
+        timer.start();
+        while (!done()) {
+            if (timer.elapsed() > timeoutMs) {
+                return false;
+            }
+            ProcessBuffer();
+            QTest::qWait(1);
+        }
+        return true;
+    }
+    bool runUntilPlaying(DeckLabSystem* system) {
+        return runUntil([system] { return system->preview()->state() == DeckLabPreview::State::Playing; });
+    }
+    double control(const QString& item) const {
+        return ControlObject::get(ConfigKey(m_sPreviewGroup, item));
+    }
+    // Where the engine plays, in frames of the track.
+    double frames() const {
+        return m_pPreview1->getEngineDeck()->getEngineBuffer()->getExactPlayPos().value();
+    }
+    // Frames one engine callback plays at normal speed.
+    static double callbackFrames() {
+        return kProcessBufferSize / 2.0;
+    }
+    // Two ejects within 500 ms are Mixxx's un-eject, which needs a PlayerManager.
+    void waitUntilEjectable() {
+        QTest::qWait(static_cast<int>(std::max<qint64>(0, kUnreplaceDelay + 50 - m_since.elapsed())));
+    }
+    // The track's Loop cues: hot cue, start and end in seconds.
+    static QList<QList<double>> loopCues(const TrackPointer& track) {
+        QList<QList<double>> loops;
+        for (const CuePointer& cue : track->getCuePoints()) {
+            if (cue->getType() == mixxx::CueType::Loop) {
+                const auto loop = cue->getStartAndEndPosition();
+                loops.append({static_cast<double>(cue->getHotCue()),
+                        loop.startPosition.value() / kRate,
+                        loop.endPosition.value() / kRate});
+            }
+        }
+        return loops;
+    }
+
+    QTemporaryDir m_dir;
+    MixxxDb m_db;
+    mixxx::DbConnectionPooler m_pooler;
+    std::unique_ptr<ControlObject> m_keyNotation;
+    std::shared_ptr<TrackCollectionManager> m_library;
+    std::unique_ptr<PreviewPlayers> m_players;
+    QElapsedTimer m_since;
+    int m_serial = 0;
+};
+
+// The cut plays from IN, Mixxx's own loop wraps it at OUT to the sample, and
+// IN or OUT moved during the preview seeks. The loop controls hold the cut
+// only while it plays.
+TEST_F(DeckLabPreviewDeckTest, ThePreviewPlaysFromInAndLoopsTheCutToTheSample) {
+    const TrackPointer track = addTrack(QStringLiteral("Cut A.wav"));
+    ASSERT_TRUE(track);
+    const auto system = openSampleMaker();
+    sendPlay(system.get(), QJsonObject{{"track_id", idOf(track)}, {"start", 10.0}, {"end", 12.5}, {"loop", true}});
+    EXPECT_EQ(DeckLabPreview::State::Loading, system->preview()->state());
+    ASSERT_TRUE(runUntilPlaying(system.get()));
+    EXPECT_EQ(idOf(track), system->preview()->report().value("track_id").toInt());
+
+    // Engine samples, two per frame: exactly the cut, and LoopingControl took it.
+    EXPECT_DOUBLE_EQ(10.0 * kRate * 2, control(QStringLiteral("loop_start_position")));
+    EXPECT_DOUBLE_EQ(12.5 * kRate * 2, control(QStringLiteral("loop_end_position")));
+    EXPECT_DOUBLE_EQ(1, control(QStringLiteral("loop_enabled"))) << "Mixxx's loop is on the cut";
+    EXPECT_DOUBLE_EQ(1, control(QStringLiteral("play")));
+
+    // The next callback plays from IN, not from where the track loaded.
+    ProcessBuffer();
+    EXPECT_GE(frames(), 10.0 * kRate);
+    EXPECT_LE(frames(), 10.0 * kRate + callbackFrames());
+    EXPECT_NEAR(10.0, system->preview()->report().value("position").toDouble(), 0.05);
+
+    // At OUT it wraps to IN, to the sample.
+    double before = frames();
+    for (int n = 0; n < 400 && frames() >= before; ++n) {
+        before = frames();
+        ProcessBuffer();
+    }
+    ASSERT_LT(frames(), before) << "the loop wrapped";
+    EXPECT_NEAR(10.0 * kRate + (before + callbackFrames() - 12.5 * kRate), frames(), 1.0);
+    QTest::qWait(30);
+    EXPECT_EQ(DeckLabPreview::State::Playing, system->preview()->state()) << "a looped cut plays on";
+
+    // IN and OUT move during the preview: it seeks to the new `from`.
+    sendPlay(system.get(),
+            QJsonObject{{"track_id", idOf(track)}, {"start", 20.0}, {"end", 22.0}, {"loop", false}, {"from", 20.5}});
+    EXPECT_DOUBLE_EQ(20.0 * kRate * 2, control(QStringLiteral("loop_start_position")));
+    EXPECT_DOUBLE_EQ(22.0 * kRate * 2, control(QStringLiteral("loop_end_position")));
+    EXPECT_DOUBLE_EQ(0, control(QStringLiteral("loop_enabled")));
+    ProcessBuffer();
+    EXPECT_GE(frames(), 20.5 * kRate);
+    EXPECT_LE(frames(), 20.5 * kRate + callbackFrames());
+
+    // Without loop it stops at OUT, and the loop controls hold the track's
+    // own loop again: none.
+    ASSERT_TRUE(runUntil([&] { return system->preview()->state() == DeckLabPreview::State::Stopped; }));
+    EXPECT_DOUBLE_EQ(0, control(QStringLiteral("play")));
+    EXPECT_GE(frames(), 22.0 * kRate - callbackFrames());
+    EXPECT_DOUBLE_EQ(-1, control(QStringLiteral("loop_start_position")));
+    EXPECT_DOUBLE_EQ(-1, control(QStringLiteral("loop_end_position")));
+
+    // PLAY again on the same cut starts at IN again.
+    sendPlay(system.get(), QJsonObject{{"track_id", idOf(track)}, {"start", 20.0}, {"end", 22.0}});
+    EXPECT_EQ(DeckLabPreview::State::Playing, system->preview()->state());
+    ProcessBuffer();
+    EXPECT_GE(frames(), 20.0 * kRate);
+    EXPECT_LE(frames(), 20.0 * kRate + callbackFrames());
+    sendStop(system.get());
+    EXPECT_DOUBLE_EQ(0, control(QStringLiteral("play")));
+}
+
+// Mixxx saves the preview deck's loop controls as the track's loop cue when
+// it unloads the track. A preview never changes that cue, however it ends:
+// STOP, Sample Maker going away (eject), Sample Maker's next track, Browse
+// loading over a playing preview, or Mixxx quitting.
+TEST_F(DeckLabPreviewDeckTest, ATrackKeepsItsOwnLoopThroughAPreview) {
+    const TrackPointer looped = addTrack(QStringLiteral("Cut A.wav"));
+    const TrackPointer plain = addTrack(QStringLiteral("Cut B.wav"));
+    ASSERT_TRUE(looped && plain);
+    // The DJ's loop on the first track, 5 s to 6 s (Mixxx's "most recent loop").
+    looped->createAndAddCue(mixxx::CueType::Loop,
+            Cue::kNoHotCue,
+            mixxx::audio::FramePos(5 * kRate),
+            mixxx::audio::FramePos(6 * kRate));
+    const QList<QList<double>> ownLoop{{-1, 5, 6}};
+    const QJsonObject cut{{"track_id", idOf(looped)}, {"start", 10.0}, {"end", 12.5}, {"loop", true}};
+    auto system = openSampleMaker();
+
+    // Previewed as a loop, then STOP: the controls hold its own loop again.
+    sendPlay(system.get(), cut);
+    ASSERT_TRUE(runUntilPlaying(system.get()));
+    EXPECT_DOUBLE_EQ(10.0 * kRate * 2, control(QStringLiteral("loop_start_position")));
+    EXPECT_DOUBLE_EQ(1, control(QStringLiteral("loop_enabled")));
+    ProcessBuffer();
+    sendStop(system.get());
+    EXPECT_DOUBLE_EQ(0, control(QStringLiteral("play")));
+    EXPECT_DOUBLE_EQ(0, control(QStringLiteral("loop_enabled")));
+    EXPECT_DOUBLE_EQ(5 * kRate * 2, control(QStringLiteral("loop_start_position")));
+    EXPECT_DOUBLE_EQ(6 * kRate * 2, control(QStringLiteral("loop_end_position")));
+
+    // Sample Maker goes away while it plays: paused and ejected, and the
+    // library's track keeps its loop.
+    sendPlay(system.get(), cut);
+    ASSERT_EQ(DeckLabPreview::State::Playing, system->preview()->state());
+    ProcessBuffer();
+    waitUntilEjectable();
+    system->utilityLaunched(QStringLiteral("get-music"));
+    EXPECT_FALSE(m_pPreview1->getLoadedTrack());
+    EXPECT_EQ(DeckLabPreview::State::Idle, system->preview()->state());
+    EXPECT_EQ(ownLoop, loopCues(looped));
+
+    // Sample Maker's next track replaces it while it plays.
+    system->utilityLaunched(DeckLabPreview::kSampleMaker);
+    sendPlay(system.get(), cut);
+    ASSERT_TRUE(runUntilPlaying(system.get()));
+    EXPECT_DOUBLE_EQ(1, control(QStringLiteral("loop_enabled")));
+    sendPlay(system.get(), QJsonObject{{"track_id", idOf(plain)}, {"start", 1.0}, {"end", 2.0}, {"loop", true}});
+    EXPECT_EQ(ownLoop, loopCues(looped));
+    ASSERT_TRUE(runUntil([&] {
+        return m_pPreview1->getLoadedTrack() == plain &&
+                system->preview()->state() == DeckLabPreview::State::Playing;
+    }));
+    EXPECT_DOUBLE_EQ(1 * kRate * 2, control(QStringLiteral("loop_start_position")));
+
+    // Browse loads another track over the playing preview: the track Mixxx
+    // unloads still has no loop.
+    m_pPreview1->slotLoadTrack(looped,
+#ifdef __STEM__
+            mixxx::StemChannelSelection(),
+#endif
+            false);
+    EXPECT_TRUE(loopCues(plain).isEmpty()) << "the cut is not saved as its loop";
+    ASSERT_TRUE(runUntil([&] { return system->preview()->state() == DeckLabPreview::State::Idle; }));
+    EXPECT_EQ(looped, m_pPreview1->getLoadedTrack());
+    EXPECT_DOUBLE_EQ(5 * kRate * 2, control(QStringLiteral("loop_start_position"))) << "Mixxx restored its own loop";
+    EXPECT_DOUBLE_EQ(6 * kRate * 2, control(QStringLiteral("loop_end_position")));
+
+    // Sample Maker previews the track Browse loaded, and Mixxx quits during
+    // it: Deck Lab goes first and leaves the track's own loop to be saved.
+    sendPlay(system.get(), cut);
+    ASSERT_EQ(DeckLabPreview::State::Playing, system->preview()->state());
+    EXPECT_DOUBLE_EQ(10.0 * kRate * 2, control(QStringLiteral("loop_start_position")));
+    system.reset();
+    EXPECT_DOUBLE_EQ(5 * kRate * 2, control(QStringLiteral("loop_start_position")));
+    EXPECT_DOUBLE_EQ(6 * kRate * 2, control(QStringLiteral("loop_end_position")));
+    ControlObject::set(ConfigKey(m_sPreviewGroup, QStringLiteral("play")), 0);
+    ProcessBuffer();
+    m_pPreview1.reset(); // as when Mixxx's players go
+    EXPECT_EQ(ownLoop, loopCues(looped));
 }
 
 // ------------------------------------------------------------ persistence --
