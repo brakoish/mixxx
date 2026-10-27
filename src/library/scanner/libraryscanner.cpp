@@ -484,7 +484,7 @@ void LibraryScanner::cleanUpScan() {
         QSqlQuery query(dbConnection);
         query.prepare(QStringLiteral(
                 "DELETE FROM settings WHERE name LIKE :prefix OR name=:name"));
-        query.bindValue(QStringLiteral(":prefix"), kAddedByScanKeyPrefix + QLatin1Char('%'));
+        query.bindValue(QStringLiteral(":prefix"), QString(kAddedByScanKeyPrefix + QLatin1Char('%')));
         query.bindValue(QStringLiteral(":name"), kUnfinishedScanAfterIdKey);
         if (!query.exec()) {
             LOG_FAILED_QUERY(query);
@@ -988,7 +988,7 @@ QStringList LibraryScanner::addedTracksSinceUnfinishedScan() const {
     {
         QSqlQuery query(database);
         query.prepare(QStringLiteral("SELECT value FROM settings WHERE name LIKE :prefix"));
-        query.bindValue(QStringLiteral(":prefix"), kAddedByScanKeyPrefix + QLatin1Char('%'));
+        query.bindValue(QStringLiteral(":prefix"), QString(kAddedByScanKeyPrefix + QLatin1Char('%')));
         if (!query.exec()) {
             LOG_FAILED_QUERY(query);
             return added;
