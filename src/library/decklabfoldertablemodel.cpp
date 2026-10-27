@@ -7,6 +7,7 @@
 #include <QSqlQuery>
 
 #include "decklab/decklabdownloads.h"
+#include "decklab/decklabmedia.h"
 #include "library/dao/trackschema.h"
 #include "library/queryutil.h"
 #include "library/trackcollection.h"
@@ -28,6 +29,19 @@ QString songListSqlFilter() {
     return QStringLiteral(" AND substr(track_locations.location, 1, %1) <> '%2'")
             .arg(prefix.size())
             .arg(prefix);
+}
+
+int shownSongCount(const QSqlDatabase& database) {
+    QSqlQuery query(database);
+    if (!query.exec(QStringLiteral("SELECT COUNT(*) FROM library INNER JOIN track_locations "
+                                   "ON library.location=track_locations.id "
+                                   "WHERE mixxx_deleted=0 AND fs_deleted=0 AND ") +
+                mediaShownCondition(database, QStringLiteral("library.location")) +
+                songListSqlFilter()) ||
+            !query.next()) {
+        return -1;
+    }
+    return query.value(0).toInt();
 }
 
 } // namespace decklab
@@ -122,11 +136,13 @@ bool DeckLabFolderTableModel::createView() {
             ? QStringLiteral("0")
             : QStringLiteral("CASE library.id %1 END").arg(cases.join(QLatin1Char(' ')));
     // A row hidden later (mixxx_deleted: merged into another) leaves the
-    // list at the next select, even before the list is built again.
+    // list at the next select, even before the list is built again; so
+    // does a row found missing or on a stick that went (r7 fix).
     const QString create = QStringLiteral(
             "CREATE TEMPORARY VIEW %1 AS SELECT library.%2 AS %2, '' AS %3, "
             "library.%4 AS %5, %6 AS %7 FROM library WHERE library.id IN (%8) "
-            "AND library.mixxx_deleted = 0")
+            "AND library.mixxx_deleted = 0 AND EXISTS (SELECT 1 FROM track_locations "
+            "WHERE track_locations.id = library.location AND track_locations.fs_deleted = 0) AND %9")
                                    .arg(m_viewName,
                                            LIBRARYTABLE_ID,
                                            LIBRARYTABLE_PREVIEW,
@@ -135,7 +151,9 @@ bool DeckLabFolderTableModel::createView() {
                                            position,
                                            PLAYLISTTRACKSTABLE_POSITION,
                                            known.isEmpty() ? QStringLiteral("-1")
-                                                           : known.join(QLatin1Char(',')));
+                                                           : known.join(QLatin1Char(',')),
+                                           decklab::mediaShownCondition(m_database,
+                                                   QStringLiteral("library.location")));
     if (!query.exec(create)) {
         LOG_FAILED_QUERY(query);
         return false;

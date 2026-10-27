@@ -4,6 +4,7 @@
 #include <QList>
 #include <QSet>
 #include <memory>
+#include <utility>
 
 #include "library/dao/directorydao.h"
 #include "preferences/usersettings.h"
@@ -108,6 +109,19 @@ class TrackCollectionManager: public QObject,
     void setLibraryScanRunningForTesting(bool running) {
         m_scanRunningForTesting = running;
     }
+    // Deck Lab: cancels a running scan without waiting for it
+    // (LibraryScanner::requestCancel). Its summary says canceled.
+    void interruptLibraryScan();
+    // Deck Lab: the scan the application would start with (RescanOnStartup,
+    // new file types, a new music folder) waits for Deck Lab's quiet rule:
+    // CoreServices asks for it here and DeckLabSystem starts it quietly.
+    void deferLibraryScan() {
+        m_scanDeferred = true;
+    }
+    // True once if a scan was deferred.
+    bool takeDeferredLibraryScan() {
+        return std::exchange(m_scanDeferred, false);
+    }
 
   signals:
     void libraryScanStarted();
@@ -125,6 +139,8 @@ class TrackCollectionManager: public QObject,
 
     // Callback for GlobalTrackCache
     void saveEvictedTrack(Track* pTrack) noexcept override;
+    // Deck Lab: callback for GlobalTrackCache (a track kept during a scan)
+    void saveKeptTrack(Track* pTrack) noexcept override;
 
     // Might be called from any thread
     enum class TrackMetadataExportMode {
@@ -147,4 +163,5 @@ class TrackCollectionManager: public QObject,
     // TODO: Extract and decouple LibraryScanner from TrackCollectionManager
     std::unique_ptr<LibraryScanner> m_pScanner;
     bool m_scanRunningForTesting = false;
+    bool m_scanDeferred = false;
 };

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
+#include <QElapsedTimer>
 #include <QHash>
 #include <QJsonArray>
 #include <QSet>
@@ -105,10 +106,19 @@ class DeckLabSystem : public QObject {
     /// r7: what keeps Deck Lab's background jobs waiting (decklab/decklabquiet.h):
     /// playing, recording, Mixxx's library scan, an open utility window.
     decklab::Activity activity() const;
-    /// Nothing does: the background analysis, the USB relinker, the rescan
-    /// after a utility and TO PAD's library add may run.
+    /// Nothing does right now: a background job that runs may go on; one
+    /// that would start waits for settled().
     bool quiet() const {
         return decklab::isQuiet(activity());
+    }
+    /// r7 fix: quiet now and the whole quiet spell before
+    /// (decklab::kQuietSpellMs; any play, recording, scan or utility change
+    /// starts it again): the USB relinker, the rescan after a utility, the
+    /// start-up scan, TO PAD's library add and PUT ON PAD may start.
+    bool settled() const;
+    /// Tests: a shorter quiet spell.
+    void setQuietSpellForTesting(qint64 ms) {
+        m_quietSpellMs = ms;
     }
     /// r7: the first pad (1-based) a new sample may take: nothing loaded or
     /// loading on it, and not the pad a Load pad trip is filling. 0 when
@@ -253,6 +263,8 @@ class DeckLabSystem : public QObject {
 
   private:
     void onReady(bool ready);
+    // Something that keeps background jobs waiting started or stopped.
+    void activityChanged();
     void askOpenUtility();
     void ejectWhenReleased(const QJsonObject& drive, const Done& done, int waitedMs);
     void onEvent(const QString& topic, const QJsonObject& data);
@@ -298,6 +310,9 @@ class DeckLabSystem : public QObject {
     std::function<int()> m_padTarget;
     std::function<bool(const QString& mount)> m_driveRelease;
     bool m_scanning = false;   // Mixxx's library scan runs
+    QElapsedTimer m_clock;
+    mutable decklab::QuietSpell m_quietSpell;
+    qint64 m_quietSpellMs = decklab::kQuietSpellMs;
     bool m_wasReady = false;   // decklabd answered before: a ready is a reconnect
     bool m_askAgain = false;   // apps.status got no answer: asked again soon
     std::function<QList<decklab::LoadedTrack>()> m_loadedTracksProvider;

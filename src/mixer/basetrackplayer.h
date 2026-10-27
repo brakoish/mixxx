@@ -48,6 +48,12 @@ class BaseTrackPlayer : public BasePlayer {
         return false;
     };
 
+    /// Deck Lab: a surface that tells the DJ itself (a short message on the
+    /// touch screen, from trackLoadFailed) turns Mixxx's modal "Couldn't
+    /// load track." box off. GUI thread.
+    static void setLoadFailedDialogShown(bool shown);
+    static bool isLoadFailedDialogShown();
+
   public slots:
 #ifdef __STEM__
     virtual void slotLoadTrack(TrackPointer pTrack,
@@ -71,6 +77,8 @@ class BaseTrackPlayer : public BasePlayer {
     void selectedStems(mixxx::StemChannelSelection stemMask);
 #endif
     void playerEmpty();
+    /// Deck Lab: a track could not be loaded; reason as Mixxx's box says it.
+    void trackLoadFailed(TrackPointer pTrack, const QString& reason);
     void noVinylControlInputConfigured();
     void trackRatingChanged(int rating);
     void trackMenuChangeRequest(bool show);

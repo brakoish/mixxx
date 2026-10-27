@@ -632,6 +632,7 @@ struct FakePreviewDeck {
     QList<QList<double>> plays; // start, end, loop, from
     int ejects = 0;
     int emptyPad = 3;
+    bool scanning = false;
     QStringList pads;
 
     DeckLabPreview::Hooks hooks(DeckLabSystem& system, const QString& samples) {
@@ -669,6 +670,7 @@ struct FakePreviewDeck {
         };
         hooks.samplesFolder = [samples] { return samples; };
         hooks.emptyPad = [this] { return emptyPad; };
+        hooks.scanning = [this] { return scanning; };
         hooks.loadPad = [this](int pad, const QString& path, QString*) {
             pads.append(QStringLiteral("%1:%2").arg(pad).arg(path));
             return true;
@@ -1160,6 +1162,19 @@ TEST_F(DeckLabSystemTest, PutOnPadLoadsOnlyASampleFromTheSamplesFolder) {
     deck.playing = true;
     EXPECT_EQ(QStringLiteral("busy"), refusal(ask(QStringLiteral("Hook - Cut.wav"))));
     EXPECT_EQ(1, deck.pads.size());
+    // r7 fix: nor beside a library scan: the pad's library add would wait
+    // for the scan's lock on the GUI thread (and could fail).
+    deck.playing = false;
+    deck.scanning = true;
+    answer = ask(QStringLiteral("Hook - Cut.wav"));
+    EXPECT_EQ(QStringLiteral("busy"), refusal(answer));
+    EXPECT_EQ(QStringLiteral("Deck Lab is looking for new tracks. Try again in a moment."),
+            answer.value("error").toObject().value("message").toString());
+    EXPECT_EQ(1, deck.pads.size());
+    deck.scanning = false;
+    answer = ask(QStringLiteral("Hook - Cut.wav"));
+    EXPECT_EQ(4, answer.value("result").toObject().value("pad").toInt()) << "after the scan it loads";
+    EXPECT_EQ(2, deck.pads.size());
 }
 
 // ------------------ Sample Maker preview on Mixxx's own preview deck (r7) --

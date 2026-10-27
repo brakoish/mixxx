@@ -22,6 +22,13 @@ bool usableSegment(const QString& segment) {
     return !segment.isEmpty() && segment != QStringLiteral(".") && segment != QStringLiteral("..");
 }
 
+// /media/<a>/<b> and /run/media/<user>/<name>: every location under it
+// belongs to it. /media/<a> holds only the files right inside it.
+bool isDeepRoot(const QString& root) {
+    return (root.startsWith(QStringLiteral("/media/")) && root.count(QLatin1Char('/')) == 3) ||
+            root.startsWith(QStringLiteral("/run/media/"));
+}
+
 void ensureAwayTable(const QSqlDatabase& database) {
     // Per connection and never written to disk; IF NOT EXISTS keeps the
     // schema (and prepared statements) as they are once it is there.
@@ -112,8 +119,20 @@ bool MediaPresence::refresh(QSqlDatabase database, bool force) {
             LOG_FAILED_QUERY(query);
             return false;
         }
+        // Rows come in location order: the root of the row before usually
+        // holds this one too, without splitting the path again.
+        QString lastRoot;
+        QString lastPrefix;
         while (query.next()) {
-            const QString root = mediaRootOf(query.value(1).toString());
+            const QString location = query.value(1).toString();
+            QString root;
+            if (!lastPrefix.isEmpty() && location.startsWith(lastPrefix)) {
+                root = lastRoot;
+            } else {
+                root = mediaRootOf(location);
+                lastRoot = root;
+                lastPrefix = isDeepRoot(root) ? root + QLatin1Char('/') : QString();
+            }
             if (!root.isEmpty()) {
                 byRoot[root].append(query.value(0).toLongLong());
             }
@@ -131,27 +150,52 @@ bool MediaPresence::refresh(QSqlDatabase database, bool force) {
         }
     }
     std::sort(awayRoots.begin(), awayRoots.end());
-    // Written every time: the table belongs to this connection, and only
-    // the temporary database is touched (no journal sync, no lock on the
-    // library file).
-    const bool own = database.transaction();
-    QSqlQuery clear(database);
-    if (!clear.exec(QStringLiteral("DELETE FROM temp.%1").arg(kAwayTable))) {
-        LOG_FAILED_QUERY(clear);
-    }
-    QSqlQuery insert(database);
-    insert.prepare(QStringLiteral("INSERT OR IGNORE INTO temp.%1 (location_id) VALUES (:id)").arg(kAwayTable));
-    for (const qint64 id : std::as_const(away)) {
-        insert.bindValue(QStringLiteral(":id"), id);
-        if (!insert.exec()) {
-            LOG_FAILED_QUERY(insert);
-            break;
-        }
-    }
-    if (own) {
-        database.commit();
-    }
     const bool different = away != m_away || awayRoots != m_awayRoots;
+    // r7 fix: written only when other tracks are away than the table holds
+    // (it belongs to this connection; only the temporary database is
+    // touched: no journal sync, no lock on the library file).
+    if (different || m_written != database.connectionName()) {
+        const bool own = database.transaction();
+        QSqlQuery clear(database);
+        bool ok = clear.exec(QStringLiteral("DELETE FROM temp.%1").arg(kAwayTable));
+        if (!ok) {
+            LOG_FAILED_QUERY(clear);
+        }
+        // A whole stick in one statement (a range on the location index);
+        // the files right inside /media/<a> one by one.
+        QSqlQuery range(database);
+        range.prepare(QStringLiteral("INSERT OR IGNORE INTO temp.%1 (location_id) SELECT id FROM "
+                                     "track_locations WHERE location >= :from AND location < :to")
+                              .arg(kAwayTable));
+        QSqlQuery insert(database);
+        insert.prepare(QStringLiteral("INSERT OR IGNORE INTO temp.%1 (location_id) VALUES (:id)").arg(kAwayTable));
+        for (const QString& root : std::as_const(awayRoots)) {
+            if (!ok) {
+                break;
+            }
+            if (isDeepRoot(root)) {
+                range.bindValue(QStringLiteral(":from"), QString(root + QLatin1Char('/')));
+                range.bindValue(QStringLiteral(":to"), QString(root + QLatin1Char('0')));
+                if (!range.exec()) {
+                    LOG_FAILED_QUERY(range);
+                    ok = false;
+                }
+                continue;
+            }
+            for (const qint64 id : byRoot.value(root)) {
+                insert.bindValue(QStringLiteral(":id"), id);
+                if (!insert.exec()) {
+                    LOG_FAILED_QUERY(insert);
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if (own) {
+            ok = database.commit() && ok;
+        }
+        m_written = ok ? database.connectionName() : QString();
+    }
     m_away = away;
     m_awayRoots = awayRoots;
     if (different) {

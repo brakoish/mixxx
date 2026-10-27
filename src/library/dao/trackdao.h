@@ -7,6 +7,7 @@
 #include <QSet>
 #include <QString>
 #include <QtSql/QSqlQuery>
+#include <functional>
 #include <memory>
 
 #include "library/dao/dao.h"
@@ -140,6 +141,7 @@ class TrackDAO : public QObject, public virtual DAO, public virtual GlobalTrackC
     friend class LibraryScanner;
     friend class TrackCollection;
     friend class TrackAnalysisScheduler;
+    friend class DeckLabImportTest;
     FRIEND_TEST(TrackDAOTest, markTrackLocationsAsVerifiedRecoversPresentFilesOnly);
 
     QString findLastTimeAddedToHistory(TrackId trackId) const;
@@ -169,6 +171,19 @@ class TrackDAO : public QObject, public virtual DAO, public virtual GlobalTrackC
     TrackPointer addTracksAddFile(
             const QString& filePath,
             bool unremove);
+    // Deck Lab: addTracksAddFile() in two steps. The file is read into a
+    // temporary track (no database write, null when its type is not
+    // supported); then that is added. The library scanner reads files
+    // while its add transaction holds no writes.
+    TrackPointer addTracksReadFile(const QString& filePath) const;
+    TrackPointer addTracksAddReadFile(
+            const QString& filePath,
+            const TrackPointer& pImportedTrack,
+            bool unremove);
+    // Deck Lab: commits the tracks added so far and goes on in a new
+    // transaction, so a long import never holds the write lock for long.
+    // False if the commit failed: the writes stay pending.
+    bool addTracksCommit();
     void addTracksFinish(bool rollback = false);
 
     bool updateTrack(const Track& track) const;
@@ -224,6 +239,16 @@ class TrackDAO : public QObject, public virtual DAO, public virtual GlobalTrackC
     int m_queryLibraryMixxxDeletedColumn;
 
     QSet<TrackId> m_tracksAddedSet;
+
+    // Deck Lab tests: called as addTracksAddFile() starts reading a file.
+    std::function<void(const QString& location)> m_readingFileForTesting;
+    // Deck Lab: called in addTracksAddFile() once the file is read, right
+    // before the track is looked up in the global track cache (the library
+    // scanner commits its batch there if it would wait for another track).
+    // False: the track is not added.
+    std::function<bool()> m_beforeCacheLookup;
+    // Deck Lab tests: addTracksCommit() fails (commits nothing) while true.
+    std::function<bool()> m_failCommitForTesting;
 
     DISALLOW_COPY_AND_ASSIGN(TrackDAO);
     mutable QSqlQuery m_lastAddedToHistoryQuery;

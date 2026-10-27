@@ -193,6 +193,12 @@ void TrackCollectionManager::startLibraryScan() {
     m_pScanner->scan();
 }
 
+void TrackCollectionManager::interruptLibraryScan() {
+    if (m_pScanner) {
+        m_pScanner->requestCancel();
+    }
+}
+
 void TrackCollectionManager::stopLibraryScan() {
     VERIFY_OR_DEBUG_ASSERT(m_pScanner) {
         return;
@@ -213,6 +219,14 @@ TrackCollectionManager::SaveTrackResult TrackCollectionManager::saveTrack(
 // and external libraries.
 void TrackCollectionManager::saveEvictedTrack(Track* pTrack) noexcept {
     saveTrack(pTrack, TrackMetadataExportMode::Immediate);
+}
+
+// Deck Lab: a track kept in the cache during a library scan may be in use
+// again (a deck, a preview, the stick the scanner reads): its tags are
+// exported later, when its last reference goes, as for a track saved while
+// it is loaded.
+void TrackCollectionManager::saveKeptTrack(Track* pTrack) noexcept {
+    saveTrack(pTrack, TrackMetadataExportMode::Deferred);
 }
 
 TrackCollectionManager::SaveTrackResult TrackCollectionManager::saveTrack(

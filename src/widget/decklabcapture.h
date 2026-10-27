@@ -152,13 +152,19 @@ class DeckLabPadChooser final : public QWidget {
     };
     static constexpr int kPads = 16;
     explicit DeckLabPadChooser(QWidget* parent = nullptr);
-    // Shows the sheet for this sample over its parent.
+    ~DeckLabPadChooser() override;
+    // Shows the sheet for this sample over its parent. r7 fix: the browse
+    // knob drives it while it is shown (a turn moves a cursor over the pads
+    // that can be replaced and CANCEL, the first turn only shows it; a
+    // press picks, back cancels), so a turn never leaves for Browse.
     void ask(const QString& sample, const QList<Pad>& pads);
     void cancel();
     QPushButton* padButton(int sampler) const;
     QPushButton* cancelButton() const {
         return m_cancel;
     }
+    // The button under the knob's cursor; null while the cursor is hidden.
+    QPushButton* cursorButton() const;
 
   signals:
     void chosen(int sampler);
@@ -166,13 +172,18 @@ class DeckLabPadChooser final : public QWidget {
 
   protected:
     void hideEvent(QHideEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
 
   private:
     void place();
+    // The pads that can be replaced, then CANCEL.
+    QList<QPushButton*> cursorTargets() const;
+    void showCursor(QPushButton* button);
     QLabel* m_sample = nullptr;
     std::array<QPushButton*, kPads> m_pads{};
     std::array<int, kPads> m_samplers{};
     QPushButton* m_cancel = nullptr;
+    QPushButton* m_cursor = nullptr; // shown after the first knob turn
     bool m_asking = false;
 };
 
@@ -243,7 +254,8 @@ class DeckLabLoopCapture final : public QObject {
 // or beside a library scan; meanwhile the pad plays it from a temporary
 // track. The library row gets the loop's grid. A sample still waiting when
 // Mixxx quits is found by the next library scan (its folder is a library
-// folder).
+// folder). r7 fix: a pad's SAMPLES list says how many wait (pending()); they
+// join it once it is quiet, never at once mid-set.
 class DeckLabCaptureLibrary final : public QObject {
     Q_OBJECT
   public:
@@ -263,6 +275,7 @@ class DeckLabCaptureLibrary final : public QObject {
     }
 
   private:
+    void addPending();
     Hooks m_hooks;
     QList<decklab::capture::Result> m_pending;
     QTimer m_retry;

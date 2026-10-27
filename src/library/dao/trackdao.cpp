@@ -561,6 +561,27 @@ void TrackDAO::addTracksFinish(bool rollback) {
     m_tracksAddedSet.clear();
 }
 
+bool TrackDAO::addTracksCommit() {
+    // Deck Lab: the tracks added so far are committed and the next ones go
+    // into a new transaction (BEGIN is deferred: no lock until the next
+    // write). The prepared queries stay. When the commit fails the
+    // transaction stays open, with its writes, for the next commit or
+    // addTracksFinish().
+    if (!m_pTransaction || !*m_pTransaction) {
+        return false;
+    }
+    if (m_failCommitForTesting && m_failCommitForTesting()) {
+        return false;
+    }
+    if (!m_pTransaction->commit()) {
+        return false;
+    }
+    m_pTransaction = std::make_unique<SqlTransaction>(m_database);
+    emit tracksAdded(m_tracksAddedSet);
+    m_tracksAddedSet.clear();
+    return true;
+}
+
 namespace {
 
 bool insertTrackLocation(
@@ -869,6 +890,14 @@ TrackId TrackDAO::addTracksAddTrack(const TrackPointer& pTrack, bool unremove) {
 TrackPointer TrackDAO::addTracksAddFile(
         const QString& filePath,
         bool unremove) {
+    const TrackPointer pImportedTrack = addTracksReadFile(filePath);
+    if (!pImportedTrack) {
+        return nullptr;
+    }
+    return addTracksAddReadFile(filePath, pImportedTrack, unremove);
+}
+
+TrackPointer TrackDAO::addTracksReadFile(const QString& filePath) const {
     const auto fileAccess = mixxx::FileAccess(mixxx::FileInfo(filePath));
     // Check that track is a supported extension.
     // TODO(uklotzde): The following check can be skipped if
@@ -879,6 +908,32 @@ TrackPointer TrackDAO::addTracksAddFile(
                           << "Unsupported file type"
                           << fileAccess.info().location();
         return nullptr;
+    }
+
+    // Deck Lab: the tags and the embedded cover (and the beats and cues in
+    // the tags) are read into a temporary track first, outside the global
+    // track cache. While a new track is being filled in every cache miss
+    // waits, so reading the file there made each track lookup on the GUI
+    // thread (a Browse selection, a preview) wait for the library scanner
+    // reading a slow USB stick. The cache now waits only while what was
+    // read is copied and the track is inserted.
+    const TrackPointer pImportedTrack = Track::newTemporary(fileAccess);
+    if (m_readingFileForTesting) {
+        m_readingFileForTesting(fileAccess.info().location());
+    }
+    SoundSourceProxy(pImportedTrack).updateTrackFromSource(
+            SoundSourceProxy::UpdateTrackFromSourceMode::Once,
+            SyncTrackMetadataParams::readFromUserSettings(*m_pConfig));
+    return pImportedTrack;
+}
+
+TrackPointer TrackDAO::addTracksAddReadFile(
+        const QString& filePath,
+        const TrackPointer& pImportedTrack,
+        bool unremove) {
+    const auto fileAccess = mixxx::FileAccess(mixxx::FileInfo(filePath));
+    if (m_beforeCacheLookup && !m_beforeCacheLookup()) {
+        return {}; // Deck Lab: not added now (logged)
     }
 
     auto cacheResolver = GlobalTrackCacheResolver(fileAccess);
@@ -899,13 +954,18 @@ TrackPointer TrackDAO::addTracksAddFile(
             DEBUG_ASSERT(pTrack->getDateAdded().isValid());
             return pTrack;
         }
-        // The track is cached, but not yet in the database
+        // The track is cached, but not yet in the database: someone else
+        // holds it, so it is (re-)imported from the file as before.
+        SoundSourceProxy(pTrack).updateTrackFromSource(
+                SoundSourceProxy::UpdateTrackFromSourceMode::Once,
+                SyncTrackMetadataParams::readFromUserSettings(*m_pConfig));
         break;
     }
     case GlobalTrackCacheLookupResult::Miss:
         // An (almost) empty track object
         DEBUG_ASSERT(pTrack && !pTrack->getId().isValid());
-        // Continue and populate the (almost) empty track object
+        // Populate the (almost) empty track object with what was read
+        pTrack->takeOverImportFromTrackDAO(pImportedTrack.get());
         break;
     case GlobalTrackCacheLookupResult::ConflictCanonicalLocation:
         // Reject requests that would otherwise cause a caching conflict
@@ -931,12 +991,6 @@ TrackPointer TrackDAO::addTracksAddFile(
     }
     // Keep the GlobalTrackCache locked until the id of the Track
     // object is known and has been updated in the cache.
-
-    // Initially (re-)import the metadata for the newly created track
-    // from the file.
-    SoundSourceProxy(pTrack).updateTrackFromSource(
-            SoundSourceProxy::UpdateTrackFromSourceMode::Once,
-            SyncTrackMetadataParams::readFromUserSettings(*m_pConfig));
     if (!pTrack->checkSourceSynchronized()) {
         kLogger.warning() << "addTracksAddFile:"
                           << "Failed to parse track metadata from file"

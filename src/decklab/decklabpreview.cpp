@@ -277,6 +277,11 @@ void DeckLabPreview::loadSample(qint64 serial, const QJsonObject& data) {
         refuse(serial, QStringLiteral("busy"), tr("Stop the decks, samplers and preview to load a pad."));
         return;
     }
+    // r7 fix: nor beside a library scan (the library add would wait for it).
+    if (m_hooks.scanning && m_hooks.scanning()) {
+        refuse(serial, QStringLiteral("busy"), tr("Deck Lab is looking for new tracks. Try again in a moment."));
+        return;
+    }
     const int pad = m_hooks.emptyPad();
     if (pad < 1) {
         refuse(serial,

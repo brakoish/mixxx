@@ -29,6 +29,9 @@ constexpr double kShiftCuesOffsetMillis = 10;
 constexpr double kShiftCuesOffsetSmallMillis = 1;
 const QString kEffectGroupFormat = QStringLiteral("[EqualizerRack1_%1_Effect1]");
 
+// Deck Lab: whether a failed load opens Mixxx's modal box.
+bool s_loadFailedDialogShown = true;
+
 inline double trackColorToDouble(mixxx::RgbColor::optional_t color) {
     return (color ? static_cast<double>(*color) : kNoTrackColor);
 }
@@ -36,6 +39,16 @@ inline double trackColorToDouble(mixxx::RgbColor::optional_t color) {
 
 BaseTrackPlayer::BaseTrackPlayer(PlayerManager* pParent, const QString& group)
         : BasePlayer(pParent, group) {
+}
+
+//static
+void BaseTrackPlayer::setLoadFailedDialogShown(bool shown) {
+    s_loadFailedDialogShown = shown;
+}
+
+//static
+bool BaseTrackPlayer::isLoadFailedDialogShown() {
+    return s_loadFailedDialogShown;
 }
 
 BaseTrackPlayerImpl::BaseTrackPlayerImpl(
@@ -632,6 +645,11 @@ void BaseTrackPlayerImpl::slotLoadFailed(TrackPointer pTrack, const QString& rea
         qDebug() << "Failed to load track (NULL track object)" << reason;
     }
     m_pChannelToCloneFrom = nullptr;
+
+    emit trackLoadFailed(pTrack, reason);
+    if (!isLoadFailedDialogShown()) {
+        return; // Deck Lab says it on the touch screen, without a modal box
+    }
 
     // Alert user.
     // The QMessageBox blocks the event loop (and the GUI since it's modal dialog),

@@ -1,6 +1,12 @@
 #include "track/globaltrackcache.h"
 
 #include <QCoreApplication>
+#include <QThread>
+#include <atomic>
+#include <chrono>
+#include <future>
+#include <memory>
+#include <utility>
 
 #include "moc_globaltrackcache.cpp"
 #include "track/track.h"
@@ -16,6 +22,19 @@ const mixxx::Logger kLogger("GlobalTrackCache");
 
 //static
 GlobalTrackCache* volatile s_pInstance = nullptr;
+
+// Deck Lab: how many defers of saving modified tracks are in force.
+std::atomic<int> s_savingDeferred{0};
+
+// Deck Lab: m_incompleteTrack is set (someone fills in a new track).
+std::atomic<bool> s_incompleteTrack{false};
+
+// Deck Lab: the library scanner holds uncommitted writes.
+std::atomic<bool> s_libraryWritesHeld{false};
+
+// Deck Lab: a kept modified track is saved this soon, and again this often
+// while it stays modified (a scan of unchanged folders commits nothing).
+constexpr int kSaveKeptTracksMs = 2000;
 
 // Enforce logging during tests
 constexpr bool kLogEnabled = false;
@@ -299,6 +318,161 @@ void GlobalTrackCache::evictAndSaveCachedTrack(GlobalTrackCacheEntryPointer cach
     }
 }
 
+//static
+void GlobalTrackCache::deferSavingModifiedTracks(bool defer) {
+    if (defer) {
+        s_savingDeferred.fetch_add(1);
+        return;
+    }
+    const int before = s_savingDeferred.fetch_sub(1);
+    VERIFY_OR_DEBUG_ASSERT(before > 0) {
+        s_savingDeferred.store(0);
+    }
+    if (before <= 1 && s_pInstance) {
+        // On the cache's thread, where the tracks are saved.
+        QMetaObject::invokeMethod(
+                s_pInstance,
+                [] {
+                    if (s_pInstance) {
+                        s_pInstance->releaseDeferredTracks();
+                    }
+                },
+                Qt::QueuedConnection);
+    }
+}
+
+//static
+bool GlobalTrackCache::isSavingModifiedTracksDeferred() {
+    return s_savingDeferred.load() > 0;
+}
+
+//static
+bool GlobalTrackCache::isFillingInATrack() {
+    return s_incompleteTrack.load();
+}
+
+//static
+void GlobalTrackCache::saveDeferredTracksSoon() {
+    if (s_pInstance) {
+        QMetaObject::invokeMethod(
+                s_pInstance,
+                [] {
+                    if (s_pInstance) {
+                        s_pInstance->saveDeferredTracks();
+                    }
+                },
+                Qt::QueuedConnection);
+    }
+}
+
+//static
+void GlobalTrackCache::setLibraryWritesHeld(bool held) {
+    s_libraryWritesHeld.store(held);
+}
+
+//static
+bool GlobalTrackCache::areLibraryWritesHeld() {
+    return s_libraryWritesHeld.load();
+}
+
+//static
+bool GlobalTrackCache::waitForTheCachesThread(int timeoutMs) {
+    GlobalTrackCache* const pInstance = s_pInstance;
+    if (!pInstance || QThread::currentThread() == pInstance->thread()) {
+        return true;
+    }
+    // Handled after everything sent before it (evictions, signals that
+    // still hold tracks).
+    auto handled = std::make_shared<std::promise<void>>();
+    auto done = handled->get_future();
+    QMetaObject::invokeMethod(
+            pInstance,
+            [handled] {
+                handled->set_value();
+            },
+            Qt::QueuedConnection);
+    return done.wait_for(std::chrono::milliseconds(timeoutMs)) == std::future_status::ready;
+}
+
+void GlobalTrackCache::saveDeferredTracks() {
+    DEBUG_ASSERT_QOBJECT_THREAD_AFFINITY(this);
+    QList<TrackPointer> tracks;
+    {
+        const GlobalTrackCacheLocker cacheLocker;
+        for (const auto& pTrack : std::as_const(m_deferredTracks)) {
+            // One kept only for its tag export waits for its eviction.
+            if (pTrack->isDirty()) {
+                tracks.append(pTrack);
+            }
+        }
+    }
+    if (tracks.isEmpty() || !m_pSaver) {
+        return;
+    }
+    if (s_libraryWritesHeld.load()) {
+        // The scanner holds the library: saved after its commit, or in a
+        // few seconds.
+        m_saveKeptTimer.start();
+        return;
+    }
+    // Saved while they stay cached and alive, without the cache's lock:
+    // nobody can read such a track from the database meanwhile, and the
+    // scanner, which may wait for the lock while it writes, is never
+    // waited for while the lock is held. A kept track may be in use again
+    // (a deck, a preview): its file is not written now (saveKeptTrack).
+    kLogger.info()
+            << "Saving"
+            << tracks.size()
+            << "modified track(s) kept during the library scan";
+    for (const auto& pTrack : std::as_const(tracks)) {
+        m_pSaver->saveKeptTrack(pTrack.get());
+    }
+    // The saved ones go as before (nothing left to save); one modified
+    // again meanwhile, or whose save failed, stays kept and is tried again.
+    // One marked for a tag export stays kept until the scan ends.
+    QList<TrackPointer> saved;
+    bool modified = false;
+    {
+        const GlobalTrackCacheLocker cacheLocker;
+        for (auto it = m_deferredTracks.begin(); it != m_deferredTracks.end();) {
+            if ((*it)->isDirty() || (*it)->isMarkedForMetadataExport()) {
+                modified = modified || (*it)->isDirty();
+                ++it;
+            } else {
+                saved.append(*it);
+                it = m_deferredTracks.erase(it);
+            }
+        }
+    }
+    if (modified) {
+        m_saveKeptTimer.start();
+    }
+    // Their last references go outside the lock above.
+    saved.clear();
+}
+
+void GlobalTrackCache::releaseDeferredTracks() {
+    DEBUG_ASSERT_QOBJECT_THREAD_AFFINITY(this);
+    QList<TrackPointer> tracks;
+    {
+        const GlobalTrackCacheLocker cacheLocker;
+        if (isSavingModifiedTracksDeferred()) {
+            return; // another scan began meanwhile
+        }
+        tracks.swap(m_deferredTracks);
+    }
+    m_saveKeptTimer.stop();
+    if (!tracks.isEmpty()) {
+        kLogger.info()
+                << "Saving"
+                << tracks.size()
+                << "modified track(s) kept during the library scan";
+    }
+    // Each one is saved as its last reference goes (slotEvictAndSave),
+    // outside the lock above.
+    tracks.clear();
+}
+
 GlobalTrackCache::GlobalTrackCache(
         GlobalTrackCacheSaver* pSaver,
         deleteTrackFn_t deleteTrackFn)
@@ -307,6 +481,9 @@ GlobalTrackCache::GlobalTrackCache(
           m_tracksById(kUnorderedCollectionMinCapacity, DbId::hash_fun) {
     DEBUG_ASSERT(m_pSaver);
     qRegisterMetaType<GlobalTrackCacheEntryPointer>("GlobalTrackCacheEntryPointer");
+    m_saveKeptTimer.setSingleShot(true);
+    m_saveKeptTimer.setInterval(kSaveKeptTracksMs);
+    connect(&m_saveKeptTimer, &QTimer::timeout, this, &GlobalTrackCache::saveDeferredTracks);
 }
 
 GlobalTrackCache::~GlobalTrackCache() {
@@ -415,6 +592,18 @@ void GlobalTrackCache::deactivate() {
     // Verify that all cached tracks have been evicted
     DEBUG_ASSERT(m_tracksById.empty());
     DEBUG_ASSERT(m_tracksByCanonicalLocation.empty());
+
+    // Deck Lab: tracks kept while saving was deferred have just been saved
+    // with the others. Their last references go later, never while the
+    // cache is locked (that would evict them here, under the same lock).
+    if (!m_deferredTracks.isEmpty() && s_pInstance == this) {
+        QMetaObject::invokeMethod(
+                this,
+                [tracks = std::exchange(m_deferredTracks, {})]() mutable {
+                    tracks.clear();
+                },
+                Qt::QueuedConnection);
+    }
 
     // The singular cache instance is already unavailable and
     // all allocated tracks will simply be deleted when their
@@ -707,6 +896,7 @@ void GlobalTrackCache::resolve(
         // now the track should be empty
     }
     m_incompleteTrack = savingPtr;
+    s_incompleteTrack.store(true);
 
     pCacheResolver->initLookupResult(
             GlobalTrackCacheLookupResult::Miss,
@@ -758,6 +948,7 @@ void GlobalTrackCache::resolveTemporary(
         // now the track should be empty
     }
     m_incompleteTrack = pTrack;
+    s_incompleteTrack.store(true);
     pCacheResolver->initLookupResult(
             GlobalTrackCacheLookupResult::Miss,
             std::move(pTrack),
@@ -795,6 +986,7 @@ TrackRef GlobalTrackCache::initTrackId(
 
 void GlobalTrackCache::discardIncompleteTrack() {
     m_incompleteTrack = nullptr;
+    s_incompleteTrack.store(false);
     m_isTrackCompleted.wakeAll();
 }
 
@@ -828,6 +1020,21 @@ void GlobalTrackCache::slotEvictAndSave(
                     << cacheEntryPtr->getPlainPtr();
         }
         return;
+    }
+
+    // Deck Lab: while saving is deferred (a library scan writes), a
+    // modified track stays cached and alive until it may be saved. One
+    // that is not modified has nothing to save and goes as before.
+    if (m_pSaver && isSavingModifiedTracksDeferred() &&
+            isCached(cacheEntryPtr->getPlainPtr())) {
+        Track* plainPtr = cacheEntryPtr->getPlainPtr();
+        if (plainPtr->isDirty() || plainPtr->isMarkedForMetadataExport()) {
+            m_deferredTracks.append(revive(cacheEntryPtr));
+            if (plainPtr->isDirty() && !m_saveKeptTimer.isActive()) {
+                m_saveKeptTimer.start();
+            }
+            return;
+        }
     }
 
     if (!tryEvict(cacheEntryPtr->getPlainPtr())) {

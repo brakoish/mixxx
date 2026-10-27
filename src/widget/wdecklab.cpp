@@ -70,6 +70,7 @@
 #include "mixer/basetrackplayer.h"
 #include "mixer/playermanager.h"
 #include "mixer/previewdeck.h"
+#include "mixer/sampler.h"
 #include "preferences/colorpalettesettings.h"
 #include "decklab/decklabkeys.h" // r6-keys
 #include "decklab/decklabanalysis.h"          // r7-browse: background analysis
@@ -617,6 +618,8 @@ struct DeckLabBrowseState {
     QHash<QString, int> stickTracks; // tracks read per rekordbox stick
     QSet<QString> failedSticks;      // sticks whose export could not be read
     QString homeSignature;
+    bool homeStale = false;      // r7 fix: a scan, a capture or a utility changed a tile
+    bool downloadsStale = false; // r7 fix: a stick went while the DOWNLOADS list was off screen
     QTimer homeTimer;
     qint64 libraryCountAt = -100000;
     int libraryCount = -1;
@@ -715,6 +718,9 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     // popups, keyboards and painted widgets never fall back to the system face.
     deckLabLoadFonts(m_config->getResourcePath());
     if (s_surfaces++ == 0) s_fontBefore = QApplication::font();
+    // r7 fix: a track that cannot load (a stick pulled, a file gone) is said
+    // on the touch screen; Mixxx's modal box would stop the set.
+    BaseTrackPlayer::setLoadFailedDialogShown(false);
     if (QFontDatabase::families().contains(QStringLiteral("Barlow"))) {
         QFont face(QStringLiteral("Barlow"));
         face.setFamilies({QStringLiteral("Barlow")});
@@ -1065,13 +1071,14 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
         m_capture = new DeckLabLoopCapture(std::move(host), this);
         if (m_library && m_library->trackCollectionManager()) {
             DeckLabCaptureLibrary::Hooks adds;
-            adds.quiet = [this] { return backgroundQuiet(); };
+            adds.quiet = [this] { return backgroundSettled(); }; // r7 fix: a quiet spell
             adds.add = [this](const QString& path) {
                 return m_library->trackCollectionManager()->getOrAddTrack(TrackRef::fromFilePath(path));
             };
             m_captureLibrary = new DeckLabCaptureLibrary(std::move(adds), this);
         }
         watch(kTab, QStringLiteral("current"), [this](double) { m_capture->cancelChoice(); });
+        connect(m_capture, &DeckLabLoopCapture::finished, this, [this] { markHomeStale(); }); // r7 fix
     }
     m_deckControls = buildDecks();
     m_pages->addWidget(buildBrowse());
@@ -1197,6 +1204,15 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
             setDisplayedDeck(side, side + 1 + (v > 0 ? 2 : 0)); updateLayers();
         });
     }
+    if (m_players) {
+        QList<BaseTrackPlayer*> players;
+        for (int deck = 1; deck <= 4; ++deck) players << m_players->getPlayer(channel(deck));
+        for (int sampler = 0; sampler < m_players->numberOfSamplers(); ++sampler) players << m_players->getSampler(sampler);
+        for (int preview = 0; preview < m_players->numberOfPreviewDecks(); ++preview) players << m_players->getPreviewDeck(preview);
+        for (auto* player : std::as_const(players)) {
+            if (player) connect(player, &BaseTrackPlayer::trackLoadFailed, this, [this](TrackPointer, const QString&) { showLoadFailed(); });
+        }
+    }
     connect(WaveformWidgetFactory::instance(), &WaveformWidgetFactory::waveformMeasured,
             this, [this](float fps, int dropped) { m_measuredFps = fps; m_droppedFrames = dropped; updateStatus(); });
     watch("[App]", "audio_latency_overload_count", [this](double) { updateStatus(); });
@@ -1223,6 +1239,9 @@ WDeckLab::~WDeckLab() {
     if (--s_surfaces == 0 && s_fontBefore) {
         QApplication::setFont(*s_fontBefore);
         s_fontBefore.reset();
+    }
+    if (s_surfaces == 0) {
+        BaseTrackPlayer::setLoadFailedDialogShown(true);
     }
     // QWidget closes focus after derived members have been destroyed. Search
     // emits on focus-out, so detach its callback and hide while our controls
@@ -2357,6 +2376,13 @@ QWidget* WDeckLab::buildSampler() {
         openSamples(true); // r7-browse: the samples first, ALL MUSIC for the rest
         refreshLoadButtons();
     });
+    // r7 fix: a REPLACE trip's pad fired from the controller: LOAD PAD shows
+    // it plays (and says so when tapped).
+    for (int sampler = 1; sampler <= std::max(16, m_players ? m_players->numberOfSamplers() : 0); ++sampler) {
+        watch(QStringLiteral("[Sampler%1]").arg(sampler), QStringLiteral("play"), [this, sampler](double) {
+            if (m_sampleTarget == sampler) refreshLoadButtons();
+        });
+    }
     // Any page that sent Browse to load a pad gets it back once it loads.
     connect(samplers, &DeckLabSamplerControls::sampleLoaded, this, [this](int sampler) {
         if (m_sampleTarget == sampler) { m_sampleTarget = 0; selectPage(m_sampleReturnPage); }
@@ -2721,6 +2747,17 @@ void WDeckLab::bindBrowser(WSearchLineEdit* search, WLibrarySidebar* sidebar, WL
     decklab::MediaPresence::instance().setOnScreen([self = QPointer<WDeckLab>(this)] {
         return !self || self->trackListOnScreen();
     });
+    // r7 fix: a stick ejected or pulled while the DOWNLOADS list is open
+    // leaves it at once (one folder read); off screen, when it shows again.
+    connect(&decklab::MediaPresence::instance(), &decklab::MediaPresence::changed, this, [this] {
+        if (!m_browseState || m_browseState->list != DeckLabList::Downloads ||
+                m_browseState->itemsList != DeckLabList::Downloads) return;
+        if (m_page == 1 && m_browseStack && m_browseStack->currentIndex() == 0) {
+            showDownloads(m_browseState->downloadsKey);
+        } else {
+            m_browseState->downloadsStale = true;
+        }
+    });
     search->setMinimumHeight(40); search->setMaximumHeight(40);
     search->setItemDelegate(new DeckLabComboDelegate(search));
     search->setMaxVisibleItems(6);
@@ -2883,6 +2920,11 @@ void WDeckLab::showSources() {
     if (b.list == DeckLabList::Home) {
         if (b.itemsList != DeckLabList::Home) rebuildHome(b.homeKey);
         else if (m_page == 1) refreshHomeIfSticksChanged();
+    }
+    if (b.list == DeckLabList::Downloads && b.itemsList == DeckLabList::Downloads && m_page == 1 &&
+            std::exchange(b.downloadsStale, false)) {
+        showDownloads(b.downloadsKey); // r7 fix: a stick went meanwhile
+        return;
     }
     if (b.list == DeckLabList::Sources) {
         m_sidebar->setFocusProxy(nullptr);
@@ -3209,11 +3251,16 @@ void WDeckLab::loadDeck(int deck) {
     if (m_sampleTarget) {
         if (deck == 2) { m_sampleTarget = 0; selectPage(m_sampleReturnPage); return; }
         const QString group = QStringLiteral("[Sampler%1]").arg(m_sampleTarget);
-        if (!browseTrackLevel() || value(group, "play")) return; // r4-browse: Mixes too
+        if (!browseTrackLevel()) return; // r4-browse: Mixes too
+        if (value(group, "play")) { // r7 fix: say it instead of ignoring the tap
+            if (m_browseState->toast) m_browseState->toast->showMessage(tr("Pad %1 is playing. Stop it first.").arg(m_sampleTarget), 2400, true);
+            return;
+        }
         if (listRowStale() && !browseLoadableNow()) { // r5-fix2-history: exactly the highlighted row, settled now
             if (m_browseState->toast) m_browseState->toast->showMessage(tr("This track can't be loaded right now"), 2000);
             return;
         }
+        if (selectedFileGone()) return; // r7 fix
         if (auto* table = m_libraryWidget->getCurrentTrackTableView()) table->loadSelectedTrackToGroup(group,
 #ifdef __STEM__
                 mixxx::StemChannelSelection(),
@@ -3230,6 +3277,7 @@ void WDeckLab::loadDeck(int deck) {
         if (m_browseState->toast) m_browseState->toast->showMessage(tr("This track can't be loaded right now"), 2000);
         return;
     }
+    if (selectedFileGone()) return; // r7 fix: the deck keeps its track
     set("[Library]", "focused_widget", 3);
     pulse(channel(deck), "LoadSelectedTrack");
     // Return happens on newTrackLoaded, never merely on a button press.
@@ -3251,10 +3299,11 @@ void WDeckLab::refreshLoadButtons() {
         auto* load = static_cast<DeckLabDockTile*>(m_loadButtons[deck - 1]);
         load->setLoadReady(false);
         if (m_sampleTarget) {
-            const bool ready = tracks && selected && !value(QStringLiteral("[Sampler%1]").arg(m_sampleTarget), "play");
+            const bool padPlaying = value(QStringLiteral("[Sampler%1]").arg(m_sampleTarget), "play") > 0;
+            const bool ready = tracks && selected && !padPlaying;
             load->setDeck(0);
             load->setText(deck == 1 ? tr("Load pad %1").arg(m_sampleTarget) : tr("Cancel"));
-            load->setDetail(deck == 1 ? tr("Sampler") : tr("Back to pads"));
+            load->setDetail(deck == 1 ? (padPlaying ? tr("Playing") : tr("Sampler")) : tr("Back to pads"));
             load->setTone(deck == 1 && ready ? Tone::Ready : Tone::Neutral);
             load->setEnabled(deck == 2 || ready);
             load->setAccessibleName(load->text());
@@ -3734,9 +3783,37 @@ void WDeckLab::togglePreview() {
     }
     auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
     const bool selected = table && table->selectionModel() && !table->selectionModel()->selectedRows().isEmpty();
+    // r7 fix: a file whose stick is out is said, never loaded (the same
+    // track playing still pauses).
+    auto* previewDeck = m_players && m_players->numberOfPreviewDecks() > 0 ? m_players->getPreviewDeck(0) : nullptr;
+    const bool same = value(load.group, QStringLiteral("play")) > 0 && previewDeck && m_browseState->selectedTrack &&
+            previewDeck->getLoadedTrack() == m_browseState->selectedTrack;
+    if (tracks && selected && !same && selectedFileGone()) return;
     // Same track: Mixxx toggles play/pause; another track: load and play it.
     if (tracks && selected) pulse(load.group, load.item);
     else stopPreview();
+}
+bool WDeckLab::selectedFileGone() {
+    auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+    auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
+    const QModelIndexList rows = table && table->selectionModel() ? table->selectionModel()->selectedRows() : QModelIndexList();
+    if (!tracks || rows.size() != 1) return false;
+    // One stat: on a stick that is in it answers from the cache, on one
+    // that is out at once.
+    const QString location = tracks->getTrackLocation(rows.first());
+    if (location.isEmpty() || QFileInfo::exists(location)) return false;
+    if (m_browseState && m_browseState->toast) {
+        m_browseState->toast->showMessage(decklab::mediaRootOf(location).isEmpty()
+                        ? tr("That file is gone.")
+                        : tr("That track's USB stick is out."),
+                2600, true);
+    }
+    return true;
+}
+void WDeckLab::showLoadFailed() {
+    if (m_browseState && m_browseState->toast) {
+        m_browseState->toast->showMessage(tr("Couldn't load that track. Is its USB stick in?"), 3200, true);
+    }
 }
 void WDeckLab::stopPreview() {
     const ConfigKey play(QStringLiteral("[PreviewDeck1]"), QStringLiteral("play"));
@@ -4389,6 +4466,9 @@ void WDeckLab::attachSystem(DeckLabSystem* system) {
         system->setDriveRelease([self](const QString& mount) {
             return self && self->m_analysis && self->m_analysis->letGo(mount);
         });
+        // r7 fix: Get Music or Sample Maker closed: the DOWNLOADS and
+        // SAMPLES tiles count their folders again.
+        connect(system->utilities(), &DeckLabUtilities::closed, this, [this] { markHomeStale(); });
     }
 }
 void WDeckLab::updateStatus() {
@@ -4598,6 +4678,7 @@ void WDeckLab::rebuildHome(const QString& highlight) {
     // library's sources in sidebar order, then More sources.
     const auto sticks = decklab::findUsbSticks();
     b.homeSignature = homeStateSignature(sticks);
+    b.homeStale = false;
     QVector<decklab::SourceEntry> stickEntries;
     for (const auto& stick : sticks) {
         decklab::SourceEntry entry;
@@ -4717,9 +4798,18 @@ void WDeckLab::refreshHomeIfSticksChanged() {
             ++it;
         }
     }
-    if (homeStateSignature(decklab::findUsbSticks()) == b.homeSignature) return;
+    if (!b.homeStale && homeStateSignature(decklab::findUsbSticks()) == b.homeSignature) return;
     rebuildHome(QString());
     refreshBrowseCard();
+}
+void WDeckLab::markHomeStale() {
+    if (!m_browseState) return;
+    m_browseState->homeStale = true;
+    m_browseState->libraryCountAt = -100000; // the Library tile counts again
+    if (m_page == 1 && m_browseState->list == DeckLabList::Home && m_browseState->itemsList == DeckLabList::Home &&
+            m_browseStack && m_browseStack->currentIndex() == 0) {
+        refreshHomeIfSticksChanged();
+    }
 }
 QString WDeckLab::homeRootSubtitle(const QModelIndex& root) {
     const QString icon = root.data(SidebarModel::IconNameRole).toString();
@@ -4768,16 +4858,9 @@ int WDeckLab::libraryTrackCount() {
     if (!m_library || !m_library->trackCollectionManager()) return -1;
     if (m_clock.elapsed() - b.libraryCountAt < 10000) return b.libraryCount;
     b.libraryCountAt = m_clock.elapsed();
-    const QSqlDatabase database = m_library->trackCollectionManager()->internalCollection()->database();
-    QSqlQuery query(database);
-    // r7-library: the tracks Tracks lists (not missing, not on a USB stick that is out).
-    b.libraryCount = query.exec(QStringLiteral("SELECT COUNT(*) FROM library INNER JOIN track_locations "
-                                               "ON library.location=track_locations.id "
-                                               "WHERE mixxx_deleted=0 AND fs_deleted=0 AND ") +
-                             decklab::mediaShownCondition(database, QStringLiteral("library.location"))) &&
-                    query.next()
-            ? query.value(0).toInt()
-            : -1;
+    // r7-library: the tracks Tracks lists (not missing, not on a USB stick
+    // that is out). r7 fix: nor samples, which the song lists leave out.
+    b.libraryCount = decklab::shownSongCount(m_library->trackCollectionManager()->internalCollection()->database());
     return b.libraryCount;
 }
 void WDeckLab::openHomeRow(int rowIndex) {
@@ -5419,9 +5502,15 @@ QString WDeckLab::stickDetail(const decklab::UsbStick& stick) {
 }
 QString WDeckLab::homeStateSignature(const QList<decklab::UsbStick>& sticks) {
     QString signature = stickSignature(sticks);
+    QStringList stickPaths;
     for (const auto& stick : sticks) {
+        stickPaths << stick.path;
         if (stick.rekordbox) signature += QLatin1Char('|') + QString::number(static_cast<int>(stickState(stick)));
     }
+    // r7 fix: the DOWNLOADS and SAMPLES tiles appear with their folders
+    // (Get Music's first download, the first sample): a few stats.
+    signature += QLatin1Char('|') + decklab::downloadFolders(stickPaths).join(QLatin1Char(':'));
+    signature += QFileInfo(decklab::samplesFolder()).isDir() ? QStringLiteral("|S") : QStringLiteral("|-");
     return signature;
 }
 void WDeckLab::retryStickFromHome(const QString& path) {
@@ -6576,6 +6665,7 @@ void WDeckLab::showDownloads(const QString& highlight) {
     b.homeKey = QStringLiteral("downloads");
     b.list = DeckLabList::Downloads;
     b.downloadsKey = highlight;
+    b.downloadsStale = false;
     // Single downloads (one row, newest first), then each Spotify playlist
     // as a folder, newest first. A stick that is not plugged in adds nothing.
     const auto entries = decklab::listDownloads(currentDownloadFolders());
@@ -6633,11 +6723,17 @@ void WDeckLab::openDownloadsRow(int rowIndex) {
                 QStringLiteral("downloads:tracks"), tr("Tracks"));
     } else if (key.startsWith(QStringLiteral("folder:"))) {
         const QString folder = key.mid(7);
+        if (!QFileInfo(folder).isDir()) {
+            // r7 fix: its stick went: say so, and the list loses it.
+            if (b.toast) b.toast->showMessage(tr("That USB stick is out."), 2600, true);
+            showDownloads(QString());
+            return;
+        }
         showFolderTracks(decklab::FolderList::Playlist, decklab::playlistOrder(folder),
                 QStringLiteral("downloads:") + folder, QFileInfo(folder).fileName());
     }
 }
-bool WDeckLab::showFolderTracks(decklab::FolderList list,
+int WDeckLab::showFolderTracks(decklab::FolderList list,
         const QStringList& locations,
         const QString& key,
         const QString& title) {
@@ -6655,21 +6751,56 @@ bool WDeckLab::showFolderTracks(decklab::FolderList list,
         m_library->slotShowTrackModel(b.folderModel);
     }
     showTracks();
-    if (rows == 0 && b.toast) {
+    // r7 fix: what the list leaves out, truthfully. Files join the library
+    // with the next library scan (or, a TO PAD sample, once it is quiet).
+    const int files = static_cast<int>(locations.size());
+    if (rows >= 0 && rows < files && b.toast) {
+        const int waiting = files - rows;
+        if (list == decklab::FolderList::Samples) {
+            b.toast->showMessage(waiting == 1 ? tr("1 new sample joins this list when nothing plays.")
+                                              : tr("%1 new samples join this list when nothing plays.").arg(waiting),
+                    2600);
+        } else if (rows == 0 && !QFileInfo::exists(locations.first())) {
+            b.toast->showMessage(tr("That USB stick is out."), 2600, true);
+        } else {
+            b.toast->showMessage(waiting == 1 ? tr("1 track joins this list when nothing plays.")
+                                              : tr("%1 tracks join this list when nothing plays.").arg(waiting),
+                    2600);
+        }
+    } else if (rows == 0 && b.toast) {
         b.toast->showMessage(list == decklab::FolderList::Samples
                         ? tr("No samples yet. Sample Maker and loop capture save them here.")
-                        : tr("These tracks are not in the library yet."),
+                        : tr("Nothing in this list."),
                 2600);
     }
-    return rows >= 0;
+    return rows;
 }
 void WDeckLab::openSamples(bool forPad) {
     if (!m_browseState || !m_sidebar) return;
     auto& b = *m_browseState;
     resetBrowseLevels();
     b.homeKey = QStringLiteral("samples");
-    showFolderTracks(decklab::FolderList::Samples, decklab::audioFilesNewestFirst(decklab::samplesFolder()),
-            QStringLiteral("samples"), tr("Samples"));
+    const QStringList files = decklab::audioFilesNewestFirst(decklab::samplesFolder());
+    if (forPad && m_library && m_library->trackCollectionManager()) {
+        // r7 fix: TO PAD's samples join the library once it is quiet (never
+        // a library write mid-set); the toasts say how many still wait. A
+        // pad's Load opens SAMPLES only when it lists a sample; otherwise
+        // the home, to pick from the Library.
+        if (m_captureLibrary) m_captureLibrary->flush();
+        if (!b.folderModel) b.folderModel = new DeckLabFolderTableModel(this, m_library->trackCollectionManager());
+        if (b.folderModel->setLocations(files, QStringLiteral("samples")) == 0) {
+            showHome(QStringLiteral("samples"));
+            if (b.toast) {
+                b.toast->showMessage(files.isEmpty()
+                                ? tr("No samples yet. Pick any track for pad %1.").arg(m_sampleTarget)
+                                : tr("New samples join the list when nothing plays. Pick any track for pad %1.")
+                                          .arg(m_sampleTarget),
+                        3200);
+            }
+            return;
+        }
+    }
+    showFolderTracks(decklab::FolderList::Samples, files, QStringLiteral("samples"), tr("Samples"));
     b.samplesForPad = forPad;
     applyBrowsePresentation();
 }
@@ -6680,6 +6811,9 @@ bool WDeckLab::folderTableShown() const {
     // Another table swapped in (a stick read finishing) is not the list.
     auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
     return !b.folderModel || !table || table->model() == b.folderModel;
+}
+bool WDeckLab::backgroundSettled() {
+    return m_system ? m_system->settled() : backgroundQuiet();
 }
 decklab::Activity WDeckLab::backgroundActivity() {
     // One rule for every background job (decklab/decklabquiet.h); the
@@ -6769,6 +6903,7 @@ void WDeckLab::initBackgroundAnalysis() {
                 m_analysis->playbackChanged();
                 m_analysis->wake();
             }
+            markHomeStale(); // r7 fix: new downloads and samples, the Library count
         }, Qt::QueuedConnection);
     }
     m_analysis->wake();

@@ -290,7 +290,8 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void refreshDownloadsTile();
     void showDownloads(const QString& highlight);
     void openDownloadsRow(int row);
-    bool showFolderTracks(decklab::FolderList list, const QStringList& locations, const QString& key, const QString& title);
+    // The rows shown, -1 without a library.
+    int showFolderTracks(decklab::FolderList list, const QStringList& locations, const QString& key, const QString& title);
     void openSamples(bool forPad);
     bool folderTableShown() const;
     bool trackListOnScreen() const; // r7: Browse shows the track table now
@@ -300,6 +301,16 @@ class WDeckLab : public QWidget, public WBaseWidget {
     bool backgroundQuiet() {
         return decklab::isQuiet(backgroundActivity());
     }
+    // r7 fix: a background job may start: quiet for the quiet spell
+    // (DeckLabSystem::settled); without a system (tests), quiet now.
+    bool backgroundSettled();
+    // r7 fix: the home's tiles (DOWNLOADS, SAMPLES, Library) read again the
+    // next time the home is shown, at once when it is shown now.
+    void markHomeStale();
+    // r7 fix: the highlighted track row's file is not there (its stick is
+    // out): a short message instead of a load that fails.
+    bool selectedFileGone();
+    void showLoadFailed();
     // A deck, sampler or preview holds (or is loading) this track.
     bool loadedOnAPlayer(TrackId trackId) const;
     void initBackgroundAnalysis();

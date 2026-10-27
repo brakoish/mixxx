@@ -1427,20 +1427,25 @@ bool MixxxMainWindow::loadConfiguredSkin() {
                 // current mount path (FS-UUID + relative path). Read-only.
                 // r7-library: duplicates merge onto it, and tracks on sticks
                 // that are out are hidden until they are back. At start-up
-                // and when a stick is mounted; only while it is quiet
-                // (decklab/decklabquiet.h).
+                // and when a stick is mounted; only once it is quiet and has
+                // been for a quiet spell (decklab/decklabquiet.h).
                 auto* relinker = new decklab::UsbRelinker(services.library, system);
-                relinker->setQuiet([system] { return system->quiet(); });
+                relinker->setQuiet([system] { return system->settled(); });
+                relinker->setConfig(services.config);
                 // r7: a stick plugged in mid-set re-reads only the list on
                 // screen; the rest once it is quiet (decklab/decklabmedia.h).
                 decklab::MediaPresence::instance().setQuiet(
-                        [weak = QPointer<DeckLabSystem>(system)] { return !weak || weak->quiet(); });
+                        [weak = QPointer<DeckLabSystem>(system)] { return !weak || weak->settled(); });
                 connect(system, &DeckLabSystem::usbChanged, relinker, &decklab::UsbRelinker::relinkDrives);
                 relinker->watchMediaFolders();
                 relinker->relinkMounted();
                 system->start();
             }
             native->attachSystem(system);
+        } else if (m_pCoreServices->getTrackCollectionManager()->takeDeferredLibraryScan()) {
+            // The scan was left for Deck Lab's quiet rule, but another skin
+            // loaded: it starts as Mixxx's own start-up scan.
+            m_pCoreServices->getTrackCollectionManager()->startLibraryAutoScan();
         }
     }
     if (centralWidget() == m_pLaunchImage) {

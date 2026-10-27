@@ -21,6 +21,7 @@
 #include <string>
 
 #include "control/controlobject.h"
+#include "database/mixxxdb.h"
 #include "decklab/decklabmedia.h"
 #include "decklab/decklabsystem.h"
 #include "decklab/decklabusbrelink.h"
@@ -184,11 +185,13 @@ TEST(DeckLabUsbMergeTest, SizeMismatchMissingFilesAndTracksInUseAreLeft) {
     disk.files.insert(kNow + QStringLiteral("a.mp3"), 1000);
     disk.files.insert(kNow + QStringLiteral("b.mp3"), 2000);
     disk.files.insert(kNow + QStringLiteral("c.mp3"), 3000);
+    // Through the appliance's link: always this stick, so each row is
+    // judged on its own (a numbered folder needs its rows to show it first).
     const QList<RelinkRow> rows{
             row(1, kNow + QStringLiteral("a.mp3"), 1000),
-            row(2, kSecond + QStringLiteral("a.mp3"), 999, true), // another file: never merged
-            row(3, kUuid + QStringLiteral("a.mp3"), 0, true),     // unknown size: never merged
-            row(4, kSecond + QStringLiteral("gone.mp3"), 10, true), // not on the stick
+            row(2, kLink + QStringLiteral("a.mp3"), 999, true), // another file: never merged
+            row(3, kUuid + QStringLiteral("a.mp3"), 0, true),   // unknown size: never merged
+            row(4, kLink + QStringLiteral("gone.mp3"), 10, true), // not on the stick
             row(5, kNow + QStringLiteral("b.mp3"), 2000),
             row(6, kLink + QStringLiteral("b.mp3"), 2000), // a twin, but 5 is loaded
             row(7, kNow + QStringLiteral("c.mp3"), 2500),  // the file changed since
@@ -210,12 +213,92 @@ TEST(DeckLabUsbMergeTest, LibraryFoldersFollowTheStick) {
             QStringLiteral("/media/user/MY STICK1/Music"),
             kNow + QStringLiteral("Deck Lab Downloads"),
             QStringLiteral("/media/user/5678-EF01")};
-    const RelinkPlan plan = decklab::planRelink(kStick, {}, folders, disk.probe());
+    // MY STICK1 is this stick's folder: its rows show it (r7 fix).
+    const QList<RelinkRow> rows{row(1, kSecond + QStringLiteral("Music/a.mp3"), 1000, true)};
+    const RelinkPlan plan = decklab::planRelink(kStick, rows, folders, disk.probe());
     ASSERT_EQ(2, plan.folders.size());
     EXPECT_EQ(QStringLiteral("/media/user/1234-ABCD"), plan.folders[0].first);
     EXPECT_EQ(kMount, plan.folders[0].second);
     EXPECT_EQ(QStringLiteral("/media/user/MY STICK1/Music"), plan.folders[1].first);
     EXPECT_EQ(kNow + QStringLiteral("Music"), plan.folders[1].second);
+    // Without a row to show it, a numbered folder's library folder stays.
+    const RelinkPlan named = decklab::planRelink(kStick, {}, folders, disk.probe());
+    ASSERT_EQ(1, named.folders.size());
+    EXPECT_EQ(QStringLiteral("/media/user/1234-ABCD"), named.folders[0].first);
+}
+
+// r7 fix: a folder named after the label with udisks' number ("DJ2" for a
+// stick labelled DJ) is this stick's earlier address only when its rows show
+// it: no stick the unit has seen has that name, and at least 80 % of its
+// rows whose file is on this stick have that file's size. A stick labelled
+// DJ2 (out now) with some of the same songs keeps its rows, its history and
+// its library folder.
+TEST(DeckLabUsbMergeTest, ANumberedFolderIsThisStickOnlyWhenItsRowsShowIt) {
+    const decklab::UsbVolume dj{QStringLiteral("1111-AAAA"), QStringLiteral("DJ"), QStringLiteral("/media/decklab/1111-AAAA")};
+    const QString now = QStringLiteral("/media/decklab/1111-AAAA/");
+    const QString numbered = QStringLiteral("/media/user/DJ2/");
+    FakeDisk disk;
+    disk.in.insert(dj.mount);
+    for (const char* name : {"a", "b", "c", "d", "e"}) {
+        disk.files.insert(now + QStringLiteral("Contents/%1.mp3").arg(QLatin1String(name)), 1000);
+    }
+    const QStringList folders{QStringLiteral("/media/user/DJ2/Deck Lab Downloads")};
+    disk.files.insert(now + QStringLiteral("Deck Lab Downloads/x.mp3"), 10);
+
+    // Another stick: two of its songs are on this one with the same size,
+    // three with another (its own exports). Its rows stay where they are.
+    QList<RelinkRow> other{row(1, numbered + QStringLiteral("Contents/a.mp3"), 1000, true),
+            row(2, numbered + QStringLiteral("Contents/b.mp3"), 1000, true),
+            row(3, numbered + QStringLiteral("Contents/c.mp3"), 2000, true),
+            row(4, numbered + QStringLiteral("Contents/d.mp3"), 3000, true),
+            row(5, numbered + QStringLiteral("Contents/e.mp3"), 4000, true),
+            row(6, numbered + QStringLiteral("Contents/only-there.mp3"), 5000, true)};
+    RelinkPlan plan = decklab::planRelink(dj, other, folders, disk.probe());
+    EXPECT_TRUE(plan.isEmpty());
+    EXPECT_EQ(QStringList{QStringLiteral("/media/user/DJ2")}, plan.otherFolders);
+    EXPECT_EQ(0, plan.sizeMismatch + plan.missing) << "not this stick's rows: not even looked at";
+
+    // The same folder with four of five matching: this stick's (udisks named
+    // it DJ2 because DJ was taken); the odd one is another file.
+    QList<RelinkRow> alias = other;
+    alias[2].fileSize = 1000;
+    alias[3].fileSize = 1000;
+    plan = decklab::planRelink(dj, alias, folders, disk.probe());
+    EXPECT_EQ(4, plan.groups.size());
+    EXPECT_EQ(1, plan.sizeMismatch);
+    EXPECT_EQ(1, plan.missing);
+    EXPECT_TRUE(plan.otherFolders.isEmpty());
+    ASSERT_EQ(1, plan.folders.size());
+    EXPECT_EQ(now + QStringLiteral("Deck Lab Downloads"), plan.folders[0].second);
+
+    // Another stick that carries a few of the same files (same size), but
+    // most of its songs are not on this one: a few shared songs are no
+    // evidence; left alone.
+    QList<RelinkRow> sharing{row(1, numbered + QStringLiteral("Contents/a.mp3"), 1000, true),
+            row(2, numbered + QStringLiteral("Contents/b.mp3"), 1000, true)};
+    for (int n = 0; n < 4; ++n) {
+        sharing.append(row(10 + n, numbered + QStringLiteral("Contents/only-there-%1.mp3").arg(n), 5000, true));
+    }
+    plan = decklab::planRelink(dj, sharing, folders, disk.probe());
+    EXPECT_TRUE(plan.isEmpty());
+    EXPECT_EQ(QStringList{QStringLiteral("/media/user/DJ2")}, plan.otherFolders);
+
+    // A stick the unit has seen is called DJ2: never this stick's, whatever
+    // the rows say.
+    plan = decklab::planRelink(dj, alias, folders, disk.probe(), {}, {QStringLiteral("2222-BBBB"), QStringLiteral("DJ2")});
+    EXPECT_TRUE(plan.isEmpty());
+    EXPECT_EQ(QStringList{QStringLiteral("/media/user/DJ2")}, plan.otherFolders);
+    // ... in any case; its own label and other names do not count.
+    EXPECT_TRUE(decklab::planRelink(dj, alias, folders, disk.probe(), {}, {QStringLiteral("dj2")}).groups.isEmpty());
+    EXPECT_EQ(4, decklab::planRelink(dj, alias, folders, disk.probe(), {}, {QStringLiteral("DJ3"), QStringLiteral("OTHER")}).groups.size());
+
+    // Only a numbered name needs this: the label itself, the UUID and a link
+    // to the mount are this stick's as before.
+    EXPECT_FALSE(decklab::isNumberedMountName(dj, QStringLiteral("DJ")));
+    EXPECT_FALSE(decklab::isNumberedMountName(dj, QStringLiteral("1111-aaaa")));
+    EXPECT_TRUE(decklab::isNumberedMountName(dj, QStringLiteral("DJ2")));
+    EXPECT_TRUE(decklab::isNumberedMountName(dj, QStringLiteral("1111-AAAA1")));
+    EXPECT_FALSE(decklab::isNumberedMountName(dj, QStringLiteral("DJS")));
 }
 
 // --- On Mixxx's real schema ---
@@ -446,8 +529,9 @@ TEST_F(DeckLabUsbMergeDbTest, MergeUnitesCuesWithoutTwins) {
     EXPECT_EQ(1, count(QStringLiteral("cues WHERE track_id=%1 AND type=%2 AND hotcue=-1").arg(t.current).arg(static_cast<int>(CueType::Loop))));
     // What it already had stays with the hidden row.
     EXPECT_EQ(2, count(QStringLiteral("cues WHERE track_id=%1").arg(t.linked)));
-    // Play count, dates, rating, colour; the locked grid and the DJ's key.
-    EXPECT_EQ(7, value(QStringLiteral("SELECT timesplayed FROM library WHERE id=%1").arg(t.current)).toInt());
+    // Play counts added up (each row counted its own plays), dates, rating,
+    // colour; the locked grid and the DJ's key.
+    EXPECT_EQ(9, value(QStringLiteral("SELECT timesplayed FROM library WHERE id=%1").arg(t.current)).toInt());
     EXPECT_EQ(QStringLiteral("2026-10-01 21:00:00"),
             value(QStringLiteral("SELECT last_played_at FROM library WHERE id=%1").arg(t.current)).toString());
     EXPECT_EQ(QStringLiteral("2026-01-01 10:00:00"),
@@ -537,17 +621,24 @@ TEST_F(DeckLabUsbMergeDbTest, SecondRunChangesNothing) {
 
 TEST_F(DeckLabUsbMergeDbTest, SizeMismatchIsNotMerged) {
     const qint64 current = addTrack(kNow + QStringLiteral("a.mp3"), 1000);
-    const qint64 other = addTrack(kSecond + QStringLiteral("a.mp3"), 999, true);
+    const qint64 other = addTrack(kLink + QStringLiteral("a.mp3"), 999, true);
     addCue(other, CueType::HotCue, 10, 0, 0);
-    FakeDisk disk;
-    disk.in.insert(kMount);
+    FakeDisk disk = stickWithLink();
     disk.files.insert(kNow + QStringLiteral("a.mp3"), 1000);
     const RelinkPlan merge = plan(disk);
     EXPECT_TRUE(merge.isEmpty());
     EXPECT_EQ(1, merge.sizeMismatch);
     EXPECT_FALSE(hidden(other));
-    EXPECT_EQ(kSecond + QStringLiteral("a.mp3"), locationOf(other));
+    EXPECT_EQ(kLink + QStringLiteral("a.mp3"), locationOf(other));
     EXPECT_EQ(0, count(QStringLiteral("cues WHERE track_id=%1").arg(current)));
+    // r7 fix: in a numbered folder, the one row that is another file shows
+    // the folder is another stick's: it is left alone without a look.
+    exec(QStringLiteral("UPDATE track_locations SET location='%1' WHERE location='%2'")
+                    .arg(kSecond + QStringLiteral("a.mp3"), kLink + QStringLiteral("a.mp3")));
+    const RelinkPlan numbered = plan(disk);
+    EXPECT_TRUE(numbered.isEmpty());
+    EXPECT_EQ(0, numbered.sizeMismatch);
+    EXPECT_EQ(QStringList{kSecondFolder}, numbered.otherFolders);
 }
 
 // udisks named the stick "MY STICK1" (the label was taken); that folder is
@@ -617,8 +708,10 @@ TEST_F(DeckLabUsbMergeDbTest, UuidPathAliasMovesWithItsLibraryFolder) {
 }
 
 // The copy beside the library file (the tests' library lives in memory: a
-// database file of its own here). The newest two are kept.
-TEST(DeckLabUsbMergeTest, BackupKeepsTheNewestTwo) {
+// database file of its own here). r7 fix: after each pass that changed rows
+// the copies are cut to the newest two and the very first one, the library
+// before any merge, which is never deleted automatically.
+TEST(DeckLabUsbMergeTest, BackupKeepsTheFirstAndTheNewestTwo) {
     QTemporaryDir folder;
     ASSERT_TRUE(folder.isValid());
     const QString file = folder.filePath(QStringLiteral("library.sqlite"));
@@ -630,23 +723,31 @@ TEST(DeckLabUsbMergeTest, BackupKeepsTheNewestTwo) {
         QSqlQuery query(database);
         ASSERT_TRUE(query.exec(QStringLiteral("CREATE TABLE generated (value INTEGER)")));
         ASSERT_TRUE(query.exec(QStringLiteral("INSERT INTO generated (value) VALUES (42)")));
-        for (int n = 0; n < 3; ++n) {
+        for (int n = 0; n < 5; ++n) {
             const auto copy = decklab::backupLibraryDatabase(database);
             ASSERT_TRUE(copy.has_value());
             ASSERT_FALSE(copy->isEmpty());
             copies << *copy;
+            decklab::pruneLibraryBackups(*copy);
         }
         database.close();
     }
     QSqlDatabase::removeDatabase(QStringLiteral("decklab-backup"));
-    EXPECT_TRUE(copies.at(0).startsWith(file + QStringLiteral(".decklab-merge-")));
-    EXPECT_FALSE(QFileInfo::exists(copies.at(0)));
-    EXPECT_TRUE(QFileInfo::exists(copies.at(1)));
-    EXPECT_TRUE(QFileInfo::exists(copies.at(2)));
+    EXPECT_EQ(file + QStringLiteral(".decklab-merge-first"), copies.at(0));
+    EXPECT_TRUE(QFileInfo::exists(copies.at(0))) << "the library before the first merge stays";
+    EXPECT_FALSE(QFileInfo::exists(copies.at(1)));
+    EXPECT_FALSE(QFileInfo::exists(copies.at(2)));
+    EXPECT_TRUE(QFileInfo::exists(copies.at(3)));
+    EXPECT_TRUE(QFileInfo::exists(copies.at(4)));
+    // A copy that is not pruned (a pass that changed nothing removes its
+    // own) never pushes one out.
+    EXPECT_EQ(3, QDir(folder.path()).entryList(QStringList{QStringLiteral("library.sqlite.decklab-merge-*")}, QDir::Files).size());
+    copies.removeAt(1);
+    copies.removeAt(1);
     // A real copy of the library.
     {
         QSqlDatabase copy = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("decklab-backup-copy"));
-        copy.setDatabaseName(copies.at(2));
+        copy.setDatabaseName(copies.last());
         ASSERT_TRUE(copy.open());
         QSqlQuery query(copy);
         ASSERT_TRUE(query.exec(QStringLiteral("SELECT value FROM generated")));
@@ -655,6 +756,116 @@ TEST(DeckLabUsbMergeTest, BackupKeepsTheNewestTwo) {
         copy.close();
     }
     QSqlDatabase::removeDatabase(QStringLiteral("decklab-backup-copy"));
+}
+
+// r7 fix: the Pi has no clock of its own: after a power cut a later copy can
+// carry an earlier time. The first copy stays by its name, and the others
+// go oldest first by their number, never by their time.
+TEST(DeckLabUsbMergeTest, BackupsSurviveAClockThatWentBack) {
+    QTemporaryDir folder;
+    ASSERT_TRUE(folder.isValid());
+    const QString file = folder.filePath(QStringLiteral("library.sqlite"));
+    const QString stem = file + QStringLiteral(".decklab-merge-");
+    QStringList copies;
+    {
+        QSqlDatabase database = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("decklab-backup"));
+        database.setDatabaseName(file);
+        ASSERT_TRUE(database.open());
+        QSqlQuery query(database);
+        ASSERT_TRUE(query.exec(QStringLiteral("CREATE TABLE generated (value INTEGER)")));
+        const auto first = decklab::backupLibraryDatabase(database);
+        ASSERT_TRUE(first.has_value());
+        EXPECT_EQ(stem + QStringLiteral("first"), *first);
+        decklab::pruneLibraryBackups(*first);
+        // The next session's clock is behind: its copy's time sorts first.
+        QFile earlier(stem + QStringLiteral("n000002-19990101-000000"));
+        ASSERT_TRUE(earlier.open(QIODevice::WriteOnly));
+        earlier.close();
+        for (int n = 0; n < 3; ++n) {
+            const auto copy = decklab::backupLibraryDatabase(database);
+            ASSERT_TRUE(copy.has_value());
+            copies << *copy;
+            decklab::pruneLibraryBackups(*copy);
+        }
+        database.close();
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("decklab-backup"));
+    EXPECT_TRUE(copies.at(0).startsWith(stem + QStringLiteral("n000003-")));
+    EXPECT_TRUE(copies.at(2).startsWith(stem + QStringLiteral("n000005-")));
+    EXPECT_TRUE(QFileInfo::exists(stem + QStringLiteral("first"))) << "the library before any merge";
+    EXPECT_FALSE(QFileInfo::exists(stem + QStringLiteral("n000002-19990101-000000")));
+    EXPECT_FALSE(QFileInfo::exists(copies.at(0)));
+    EXPECT_TRUE(QFileInfo::exists(copies.at(1)));
+    EXPECT_TRUE(QFileInfo::exists(copies.at(2)));
+    EXPECT_EQ(3, QDir(folder.path()).entryList(QStringList{QStringLiteral("library.sqlite.decklab-merge-*")}, QDir::Files).size());
+}
+
+// r7 fix: a pass that only finds files again (a stick back after a scan
+// marked its tracks missing) leaves no copy, so it never pushes the copy
+// from before a merge out; a pass that moves rows keeps its copy. A library
+// in a file of its own (the tests' library lives in memory).
+TEST(DeckLabUsbMergeTest, APassThatOnlyFindsFilesAgainLeavesNoCopy) {
+    QTemporaryDir folder;
+    ASSERT_TRUE(folder.isValid());
+    const QString file = folder.filePath(QStringLiteral("library.sqlite"));
+    const auto copiesNow = [&folder] {
+        return QDir(folder.path()).entryList(QStringList{QStringLiteral("library.sqlite.decklab-merge-*")}, QDir::Files);
+    };
+    {
+        QSqlDatabase database = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("decklab-revive"));
+        database.setDatabaseName(file);
+        ASSERT_TRUE(database.open());
+        ASSERT_TRUE(MixxxDb::initDatabaseSchema(database));
+        const auto add = [&database](const QString& location, bool missing) {
+            QSqlQuery query(database);
+            query.prepare(QStringLiteral(
+                    "INSERT INTO track_locations (location, filename, directory, filesize, fs_deleted, "
+                    "needs_verification) VALUES (:location, :filename, :directory, 1000, :missing, 0)"));
+            query.bindValue(QStringLiteral(":location"), location);
+            query.bindValue(QStringLiteral(":filename"), QFileInfo(location).fileName());
+            query.bindValue(QStringLiteral(":directory"), QFileInfo(location).path());
+            query.bindValue(QStringLiteral(":missing"), missing ? 1 : 0);
+            EXPECT_TRUE(query.exec()) << query.lastError().text().toStdString();
+            decklab::RelinkRow row;
+            row.locationId = query.lastInsertId().toLongLong();
+            row.location = location;
+            row.fileSize = 1000;
+            row.missing = missing;
+            query.prepare(QStringLiteral("INSERT INTO library (location, title, artist, mixxx_deleted, timesplayed, rating) "
+                                         "VALUES (:location, 'Generated', 'Generated', 0, 0, 0)"));
+            query.bindValue(QStringLiteral(":location"), row.locationId);
+            EXPECT_TRUE(query.exec()) << query.lastError().text().toStdString();
+            row.trackId = query.lastInsertId().toLongLong();
+            return row;
+        };
+        const auto back = add(QStringLiteral("/media/decklab/1234-ABCD/Generated Back.mp3"), true);
+        decklab::RelinkPlan revive;
+        revive.revived << back;
+        const auto revived = decklab::applyRelinkWithBackup(database, revive);
+        EXPECT_TRUE(revived.ok);
+        EXPECT_EQ(1, revived.revived);
+        EXPECT_TRUE(copiesNow().isEmpty()) << "finding a file again makes no copy";
+
+        const auto earlier = add(QStringLiteral("/media/user/MY STICK/Generated Moved.mp3"), true);
+        decklab::RelinkPlan move;
+        decklab::RelinkGroup group;
+        group.target = QStringLiteral("/media/decklab/1234-ABCD/Generated Moved.mp3");
+        group.survivor = earlier;
+        group.relocate = true;
+        move.groups << group;
+        const auto moved = decklab::applyRelinkWithBackup(database, move);
+        EXPECT_TRUE(moved.ok);
+        EXPECT_EQ(1, moved.relocated.size());
+        EXPECT_EQ(QStringList{QStringLiteral("library.sqlite.decklab-merge-first")}, copiesNow());
+
+        // Found again once more: the copy from before the move stays alone.
+        QSqlQuery query(database);
+        ASSERT_TRUE(query.exec(QStringLiteral("UPDATE track_locations SET fs_deleted=1 WHERE id=%1").arg(back.locationId)));
+        EXPECT_TRUE(decklab::applyRelinkWithBackup(database, revive).ok);
+        EXPECT_EQ(QStringList{QStringLiteral("library.sqlite.decklab-merge-first")}, copiesNow());
+        database.close();
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("decklab-revive"));
 }
 
 // The session glue: nothing while a deck plays; the stick's turn comes once
@@ -795,6 +1006,196 @@ TEST_F(DeckLabUsbMergeDbTest, TheStartUpScanCountsThoughItBeganFirst) {
     EXPECT_TRUE(system.quiet());
     ASSERT_TRUE(done.wait(5000));
     EXPECT_EQ(kNow + QStringLiteral("b.mp3"), locationOf(alone));
+}
+
+// r7 fix: a background job starts only after a whole quiet spell. A moment
+// of quiet between two tracks (a stop and start cut, the next deck a second
+// later) is not enough: the spell starts again with every start and stop.
+TEST_F(DeckLabUsbMergeDbTest, BackgroundJobsStartOnlyAfterAQuietSpell) {
+    decklab::QuietSpell spell;
+    EXPECT_FALSE(spell.quietFor(true, 100, 1000)) << "the clock starts busy";
+    EXPECT_TRUE(spell.quietFor(true, 1000, 1000));
+    EXPECT_FALSE(spell.quietFor(false, 1200, 1000));
+    EXPECT_FALSE(spell.quietFor(true, 1500, 1000)) << "300 ms of quiet is a gap, not a spell";
+    EXPECT_TRUE(spell.quietFor(true, 2200, 1000));
+    spell.busy(2300);
+    EXPECT_FALSE(spell.quietFor(true, 2400, 1000));
+
+    ControlObject play(ConfigKey(QStringLiteral("[Channel1]"), QStringLiteral("play")));
+    QTemporaryDir run;
+    DeckLabSystem::Services services;
+    services.config = config();
+    services.library = std::shared_ptr<TrackCollectionManager>(trackCollectionManager(), [](TrackCollectionManager*) {});
+    DeckLabSystem system(services, nullptr, run.filePath(QStringLiteral("decklabd.sock")));
+    system.setQuietSpellForTesting(600);
+    EXPECT_TRUE(system.quiet());
+    EXPECT_FALSE(system.settled()) << "a spell has to pass first, also at start";
+    ASSERT_TRUE(QTest::qWaitFor([&system] { return system.settled(); }, 3000));
+
+    // A stick while it is quiet but not settled: the merge waits for the spell.
+    const qint64 alone = addTrack(kSecond + QStringLiteral("b.mp3"), 2000, true);
+    FakeDisk disk;
+    disk.in.insert(kMount);
+    disk.files.insert(kNow + QStringLiteral("b.mp3"), 2000);
+    decklab::UsbRelinker relinker(services.library);
+    relinker.setProbe(disk.probe());
+    relinker.setQuiet([&system] { return system.settled(); });
+    QSignalSpy done(&relinker, &decklab::UsbRelinker::relinked);
+    play.set(1);
+    EXPECT_FALSE(system.settled());
+    play.set(0); // a stop and start cut: quiet now, but only for a moment
+    EXPECT_TRUE(system.quiet());
+    EXPECT_FALSE(system.settled());
+    QJsonArray drives;
+    drives.append(QJsonObject{{"id", kStick.uuid}, {"label", kStick.label}, {"mount", kMount}});
+    relinker.relinkDrives(drives);
+    EXPECT_FALSE(relinker.isRunning()) << "never on a moment of quiet";
+    QTest::qWait(200);
+    play.set(1);
+    EXPECT_FALSE(system.settled());
+    play.set(0);
+    EXPECT_FALSE(done.wait(300));
+    EXPECT_EQ(kSecond + QStringLiteral("b.mp3"), locationOf(alone));
+    // Then a whole spell of quiet: the merge runs (the relinker looks again
+    // every two seconds).
+    ASSERT_TRUE(done.wait(6000));
+    EXPECT_EQ(kNow + QStringLiteral("b.mp3"), locationOf(alone));
+}
+
+// r7 fix: a library scan that runs when a deck starts (any scan) is canceled
+// at once, without waiting, and runs again after the next quiet spell. The
+// scan after Get Music still says what it found; the canceled one says
+// nothing.
+TEST_F(DeckLabUsbMergeDbTest, AScanStopsWhenPlaybackStartsAndRunsAgainWhenQuiet) {
+    QTemporaryDir run;
+    DeckLabSystem::Services services;
+    services.config = config();
+    services.library = std::shared_ptr<TrackCollectionManager>(trackCollectionManager(), [](TrackCollectionManager*) {});
+    DeckLabSystem system(services, nullptr, run.filePath(QStringLiteral("decklabd.sock")));
+    system.utilities()->setStateDirectory(run.filePath(QStringLiteral("decklab")));
+    bool playing = false;
+    bool scanning = false;
+    int scans = 0;
+    int interrupts = 0;
+    DeckLabUtilities::Hooks hooks;
+    hooks.playing = [&playing] { return playing; };
+    hooks.quiet = [&] { return !playing && !scanning; };
+    hooks.scanning = [&scanning] { return scanning; };
+    hooks.interruptScan = [&interrupts] { ++interrupts; };
+    hooks.startQuietScan = [&] {
+        ++scans;
+        scanning = true;
+        return true;
+    };
+    system.utilities()->setHooks(hooks);
+    QStringList notices;
+    QObject::connect(&system, &DeckLabSystem::notice, &system, [&notices](const QString& text) { notices.append(text); });
+
+    // Get Music closes; its scan starts and says so.
+    system.utilities()->onAppsChanged(QJsonObject{{QStringLiteral("app"), QJsonValue::Null}});
+    ASSERT_EQ(1, scans);
+    EXPECT_EQ(QStringList{QStringLiteral("Looking for new tracks…")}, notices);
+    // Nothing plays: a scan going on is left alone.
+    system.utilities()->onActivity();
+    EXPECT_EQ(0, interrupts);
+    // A deck starts (DeckLabSystem passes on every play, recording and scan
+    // change): canceled, asked for again.
+    playing = true;
+    emit trackCollectionManager()->libraryScanStarted();
+    EXPECT_EQ(1, interrupts);
+    EXPECT_TRUE(system.utilities()->refreshPending());
+    // The scanner ends the canceled scan: no notice for it.
+    scanning = false;
+    system.utilities()->onScanSummary(4, true, true);
+    EXPECT_EQ(1, notices.size());
+    QTest::qWait(DeckLabUtilities::kQuietRetryMs + 200);
+    EXPECT_EQ(1, scans) << "never while the deck plays";
+    // Quiet again: it runs again, and its summary is said.
+    playing = false;
+    ASSERT_TRUE(QTest::qWaitFor([&scans] { return scans == 2; }, DeckLabUtilities::kQuietRetryMs * 3));
+    EXPECT_FALSE(system.utilities()->refreshPending());
+    system.utilities()->onScanSummary(6, true, false);
+    EXPECT_EQ(QStringLiteral("6 new tracks are in your library."), notices.last());
+    // A scan Deck Lab did not start (Preferences) is canceled too.
+    system.utilities()->onScanSummary(0, true);
+    scanning = true;
+    playing = true;
+    system.utilities()->onActivity();
+    EXPECT_EQ(2, interrupts);
+    EXPECT_TRUE(system.utilities()->refreshPending());
+}
+
+// r7 fix: the scan Mixxx starts with (RescanOnStartup) is left to Deck Lab's
+// quiet rule: it runs once a quiet spell has passed, and says nothing.
+TEST_F(DeckLabUsbMergeDbTest, TheStartUpScanWaitsForAQuietSpellAndSaysNothing) {
+    trackCollectionManager()->deferLibraryScan();
+    QTemporaryDir run;
+    DeckLabSystem::Services services;
+    services.config = config();
+    services.library = std::shared_ptr<TrackCollectionManager>(trackCollectionManager(), [](TrackCollectionManager*) {});
+    DeckLabSystem system(services, nullptr, run.filePath(QStringLiteral("decklabd.sock")));
+    system.utilities()->setStateDirectory(run.filePath(QStringLiteral("decklab")));
+    EXPECT_FALSE(trackCollectionManager()->takeDeferredLibraryScan()) << "taken once";
+    EXPECT_TRUE(system.utilities()->refreshPending());
+    system.setQuietSpellForTesting(500);
+    int scans = 0;
+    QStringList added;
+    DeckLabUtilities::Hooks hooks;
+    hooks.quiet = [&system] { return system.settled(); };
+    hooks.libraryRoots = [] { return QStringList(); };
+    hooks.addLibraryRoot = [&added](const QString& folder) {
+        added.append(folder);
+        return true;
+    };
+    hooks.utilityFolders = [] { return QStringList{QStringLiteral("/home/user/Music/New Music")}; };
+    hooks.startQuietScan = [&scans] {
+        ++scans;
+        return true;
+    };
+    system.utilities()->setHooks(hooks);
+    QStringList notices;
+    QObject::connect(&system, &DeckLabSystem::notice, &system, [&notices](const QString& text) { notices.append(text); });
+    ASSERT_TRUE(QTest::qWaitFor([&scans] { return scans == 1; }, DeckLabUtilities::kQuietRetryMs * 4));
+    EXPECT_TRUE(added.isEmpty()) << "the start-up scan adds no folders";
+    EXPECT_TRUE(system.utilities()->ownsScan());
+    system.utilities()->onScanSummary(5, true);
+    EXPECT_TRUE(notices.isEmpty());
+}
+
+// r7 fix: the relinker remembers every stick it sees (UUID and label); a
+// numbered folder called like another stick the unit has seen is never this
+// stick's, even when the rows would match.
+TEST_F(DeckLabUsbMergeDbTest, AFolderNamedLikeAStickSeenBeforeIsLeftAlone) {
+    const decklab::UsbVolume other{QStringLiteral("5678-EF01"), QStringLiteral("MY STICK1"), QStringLiteral("/media/decklab/5678-EF01")};
+    const qint64 theirs = addTrack(kSecond + QStringLiteral("b.mp3"), 2000, true);
+    FakeDisk disk;
+    disk.in.insert(kMount);
+    disk.files.insert(kNow + QStringLiteral("b.mp3"), 2000);
+    decklab::UsbRelinker relinker(std::shared_ptr<TrackCollectionManager>(
+            trackCollectionManager(), [](TrackCollectionManager*) {}));
+    relinker.setProbe(disk.probe());
+    relinker.setConfig(config());
+    QSignalSpy done(&relinker, &decklab::UsbRelinker::relinked);
+    // The other stick was in once (its own pass changes nothing here).
+    QJsonArray drives;
+    drives.append(QJsonObject{{"id", other.uuid}, {"label", other.label}, {"mount", other.mount}});
+    relinker.relinkDrives(drives);
+    ASSERT_TRUE(done.wait(5000));
+    EXPECT_EQ(QStringList{other.label}, relinker.sticksSeen().value(QStringLiteral("5678-ef01")));
+    // Now this stick, while the other one is out.
+    drives = QJsonArray();
+    drives.append(QJsonObject{{"id", kStick.uuid}, {"label", kStick.label}, {"mount", kMount}});
+    relinker.relinkDrives(drives);
+    ASSERT_TRUE(done.wait(5000));
+    EXPECT_EQ(0, done.last().at(0).toInt());
+    EXPECT_EQ(kSecond + QStringLiteral("b.mp3"), locationOf(theirs)) << "the other stick's row stays";
+    EXPECT_EQ(2, relinker.sticksSeen().size());
+    EXPECT_EQ(QStringList{kStick.label}, relinker.sticksSeen().value(QStringLiteral("1234-abcd")));
+    // Remembered in the configuration (it outlives the session).
+    decklab::UsbRelinker later(std::shared_ptr<TrackCollectionManager>(
+            trackCollectionManager(), [](TrackCollectionManager*) {}));
+    later.setConfig(config());
+    EXPECT_EQ(2, later.sticksSeen().size());
 }
 
 // --- Get Music's rename maps ---
@@ -1238,6 +1639,12 @@ TEST_F(DeckLabMediaDbTest, AbsentStickHiddenThenShownWhenMounted) {
     EXPECT_EQ(1, changed.size());
     EXPECT_FALSE(presence.refresh(database())); // nothing new
     EXPECT_EQ(1, changed.size());
+    // r7 fix: a refresh that finds the same tracks away writes nothing: a
+    // row the table should not hold stays out of it until something changes.
+    exec(QStringLiteral("INSERT INTO temp.decklab_media_away (location_id) VALUES (999999)"));
+    EXPECT_FALSE(presence.refresh(database()));
+    EXPECT_EQ(3, value(QStringLiteral("SELECT COUNT(*) FROM temp.decklab_media_away")).toInt());
+    exec(QStringLiteral("DELETE FROM temp.decklab_media_away WHERE location_id=999999"));
 
     connectLibraryCache();
     LibraryTableModel tracks(nullptr, trackCollectionManager(), "mixxx.db.model.decklab.media.tracks");
@@ -1422,4 +1829,36 @@ TEST_F(DeckLabMediaDbTest, TheLastListWaitsWhileBrowseIsNotShown) {
     in.remove(away.chopped(1));
     relinker.refreshMedia();
     EXPECT_EQ(1, tracks.rowCount());
+}
+
+// r7 fix: a plug or a pull comes twice (decklabd's usb.changed, then the
+// media folder watcher a moment later): the media table is read once at
+// once and at most once more after, not twice in a row on the GUI thread.
+TEST_F(DeckLabMediaDbTest, APlugRefreshesTheMediaOnceAndOnceMoreLater) {
+    addTrack(kNow + QStringLiteral("a.mp3"), 1000);
+    addTrack(QStringLiteral("/media/user/5678-EF01/b.mp3"), 2000);
+    int probes = 0;
+    auto& presence = decklab::MediaPresence::instance();
+    presence.setRootProbeForTesting([&probes](const QString& root) {
+        ++probes;
+        return root == kMount;
+    });
+    FakeDisk disk;
+    disk.in.insert(kMount);
+    decklab::UsbRelinker relinker(std::shared_ptr<TrackCollectionManager>(
+            trackCollectionManager(), [](TrackCollectionManager*) {}));
+    relinker.setProbe(disk.probe());
+    relinker.setQuiet([] { return false; }); // no merge pass here
+    QJsonArray drives;
+    drives.append(QJsonObject{{"id", kStick.uuid}, {"label", kStick.label}, {"mount", kMount}});
+    relinker.relinkDrives(drives);
+    const int once = probes;
+    EXPECT_GT(once, 0) << "the first one reads at once";
+    relinker.relinkDrives(drives);
+    relinker.relinkDrives(drives);
+    EXPECT_EQ(once, probes) << "the ones right after wait";
+    ASSERT_TRUE(QTest::qWaitFor([&] { return probes > once; }, 3000));
+    const int twice = probes;
+    QTest::qWait(1700);
+    EXPECT_EQ(twice, probes) << "one more, not one per trigger";
 }

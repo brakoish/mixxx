@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "decklab/decklabdownloads.h"
+#include "library/decklabknob.h"
 #include "sources/soundsourceproxy.h"
 #include "track/beats.h"
 #include "track/track.h"
@@ -500,6 +501,19 @@ TEST_F(DeckLabCaptureTest, CapturedSamplesJoinTheLibraryOnlyOnceItIsQuiet) {
     other.bpm = 90;
     EXPECT_FALSE(decklab::capture::applyGrid(row, other));
     EXPECT_NEAR(120.0, row->getBpm(), 0.01);
+
+    // r7 fix: the pad's SAMPLES list asks for what waits (flush) while a
+    // deck plays: nothing is added mid-set; the list says how many wait.
+    quiet = false;
+    DeckLabCaptureLibrary listed(hooks);
+    listed.add(result);
+    listed.flush();
+    EXPECT_EQ(2, added.size()) << "no library write mid-set";
+    EXPECT_EQ(1, listed.pending());
+    quiet = true;
+    listed.flush();
+    EXPECT_EQ(3, added.size());
+    EXPECT_EQ(0, listed.pending());
 }
 
 TEST_F(DeckLabCaptureTest, WithNoEmptyPadASheetAsksWhichPadToReplace) {
@@ -561,13 +575,43 @@ TEST_F(DeckLabCaptureTest, WithNoEmptyPadASheetAsksWhichPadToReplace) {
     EXPECT_EQ(1, decks.loads.size());
     EXPECT_EQ(QStringLiteral("Saved in Deck Lab Samples, not on a pad"), decks.told.last());
     EXPECT_EQ(2, saved().size());
+    // r7 fix: the browse knob drives the sheet (it never leaves for Browse):
+    // the first turn shows the cursor on CANCEL, turns move it over the pads
+    // that can be replaced, a press picks.
+    doneSampler = -1;
+    ASSERT_EQ(Refusal::None, capture.capture(1));
+    ASSERT_TRUE(QTest::qWaitFor([&] { return chooser->isVisible(); }, 10000));
+    EXPECT_FALSE(decklab::knobOwner().browse()) << "the sheet owns the knob";
+    EXPECT_EQ(chooser, decklab::knobOwner().blocker);
+    EXPECT_EQ(nullptr, chooser->cursorButton());
+    decklab::forwardKnob(decklab::knobOwner(), decklab::KnobAction::Move, 1);
+    EXPECT_EQ(chooser->cancelButton(), chooser->cursorButton());
+    decklab::forwardKnob(decklab::knobOwner(), decklab::KnobAction::Move, 1);
+    EXPECT_EQ(chooser->padButton(1), chooser->cursorButton());
+    decklab::forwardKnob(decklab::knobOwner(), decklab::KnobAction::Move, 4);
+    EXPECT_EQ(chooser->padButton(6), chooser->cursorButton()) << "pad 5 plays: skipped";
+    decklab::forwardKnob(decklab::knobOwner(), decklab::KnobAction::Move, -2);
+    EXPECT_EQ(chooser->padButton(3), chooser->cursorButton());
+    screenshot(&surface, QStringLiteral("capture-choose-pad-knob.png"));
+    decklab::forwardKnob(decklab::knobOwner(), decklab::KnobAction::Press, 0);
+    EXPECT_EQ(3, doneSampler);
+    EXPECT_FALSE(chooser->isVisible());
+    EXPECT_TRUE(decklab::knobOwner().browse()) << "Browse has the knob back";
+    // Back on the knob cancels.
+    doneSampler = -1;
+    ASSERT_EQ(Refusal::None, capture.capture(1));
+    ASSERT_TRUE(QTest::qWaitFor([&] { return chooser->isVisible(); }, 10000));
+    decklab::forwardKnob(decklab::knobOwner(), decklab::KnobAction::Back, 0);
+    EXPECT_EQ(0, doneSampler);
+    EXPECT_FALSE(chooser->isVisible());
     // A page change (the sheet hides with its page) is a cancel too.
     doneSampler = -1;
     ASSERT_EQ(Refusal::None, capture.capture(1));
     ASSERT_TRUE(QTest::qWaitFor([&] { return chooser->isVisible(); }, 10000));
     surface.hide();
     EXPECT_EQ(0, doneSampler);
-    EXPECT_EQ(1, decks.loads.size());
+    EXPECT_EQ(2, decks.loads.size());
+    EXPECT_TRUE(decklab::knobOwner().browse());
 }
 
 } // namespace

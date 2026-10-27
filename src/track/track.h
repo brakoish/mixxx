@@ -644,6 +644,14 @@ class Track : public QObject {
     /// TODO: Remove and populate TrackRecord from the database instead.
     void setGenreFromTrackDAO(
             const QString& genre);
+    /// Deck Lab: takes over what a metadata import from the file
+    /// (SoundSourceProxy::updateTrackFromSource) put into pSource, a
+    /// temporary track of the same file that nobody else holds: the record,
+    /// the beat grid, the cue points (and stems), and imports that still
+    /// wait for the audio stream. TrackDAO reads a new file into such a
+    /// track first, so the global track cache never waits while a slow USB
+    /// stick is read.
+    void takeOverImportFromTrackDAO(Track* pSource);
 
     friend class GlobalTrackCache;
     friend class GlobalTrackCacheResolver;

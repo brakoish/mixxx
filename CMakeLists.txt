@@ -2826,6 +2826,7 @@ if(BUILD_TESTING)
     src/test/decklabsystemtest.cpp
     src/test/decklabusbfirsttest.cpp
     src/test/decklabusbmergetest.cpp
+    src/test/decklabscantest.cpp
     src/test/decklabstemgesturestest.cpp
     src/test/decklabsamplertest.cpp
     src/test/decklabcapturetest.cpp
