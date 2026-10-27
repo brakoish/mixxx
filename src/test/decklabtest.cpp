@@ -8129,7 +8129,8 @@ TEST_F(NativeDeckLabTest, AStaleRowSaysItsStickIsOutOnLoadAndPreview) {
     ASSERT_EQ(1, panel->currentPage());
     ASSERT_TRUE(table->isVisible());
     table->selectRow(0); settle();
-    auto* toast = panel->findChild<QLabel*>("decklab-toast");
+    // DeckLabToast has no Q_OBJECT: found by name, then cast for showMessage.
+    auto* toast = static_cast<DeckLabToast*>(panel->findChild<QLabel*>("decklab-toast"));
     ASSERT_NE(nullptr, toast);
     auto* load = panel->findChild<QPushButton*>(QStringLiteral("decklab-load-1"));
     auto* preview = panel->findChild<QPushButton*>(QStringLiteral("decklab-preview"));
