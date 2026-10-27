@@ -71,9 +71,14 @@ double controlValue(const QString& group, const QString& item) {
     return control ? control->get() : 0.0;
 }
 
+// The shared write path, as a controller writes (WDeckLab::set): the
+// control's owner hears it. A write through the owner's own ControlObject
+// never reaches that owner, so EngineBuffer would not seek and
+// LoopingControl would not take the loop.
 void setControl(const QString& group, const QString& item, double value) {
-    if (auto* control = ControlObject::getControl(ConfigKey(group, item), ControlFlag::NoWarnIfMissing)) {
-        control->set(value);
+    const ConfigKey key(group, item);
+    if (ControlObject::exists(key)) {
+        ControlObject::set(key, value);
     }
 }
 
