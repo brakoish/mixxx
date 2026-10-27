@@ -1957,6 +1957,49 @@ void Track::setGenreFromTrackDAO(
     }
 }
 
+void Track::takeOverImportFromTrackDAO(Track* pSource) {
+    VERIFY_OR_DEBUG_ASSERT(pSource && pSource != this) {
+        return;
+    }
+    mixxx::TrackRecord record;
+    mixxx::BeatsPointer pBeats;
+    QList<CuePointer> cuePoints;
+    mixxx::BeatsImporterPointer pBeatsImporterPending;
+    std::unique_ptr<mixxx::CueInfoImporter> pCueInfoImporterPending;
+#ifdef __STEM__
+    QList<StemInfo> stemInfo;
+#endif
+    {
+        const auto locked = lockMutex(&pSource->m_qMutex);
+        record = pSource->m_record;
+        pBeats = pSource->m_pBeats;
+        cuePoints = pSource->m_cuePoints;
+        for (const auto& pCue : std::as_const(cuePoints)) {
+            disconnect(pCue.get(), nullptr, pSource, nullptr);
+        }
+        pSource->m_cuePoints.clear();
+        pBeatsImporterPending = std::move(pSource->m_pBeatsImporterPending);
+        pCueInfoImporterPending = std::move(pSource->m_pCueInfoImporterPending);
+#ifdef __STEM__
+        stemInfo = pSource->m_stemInfo;
+#endif
+    }
+    // Cue objects live on the thread of the track they belong to.
+    for (const auto& pCue : std::as_const(cuePoints)) {
+        pCue->moveToThread(thread());
+    }
+    auto locked = lockMutex(&m_qMutex);
+    m_record = std::move(record);
+    m_pBeats = std::move(pBeats);
+    m_pBeatsImporterPending = std::move(pBeatsImporterPending);
+    m_pCueInfoImporterPending = std::move(pCueInfoImporterPending);
+#ifdef __STEM__
+    m_stemInfo = std::move(stemInfo);
+#endif
+    setCuePointsWhileLocked(cuePoints);
+    markDirtyAndUnlock(&locked);
+}
+
 bool Track::updateGenre(
         const QString& genre) {
     auto locked = lockMutex(&m_qMutex);

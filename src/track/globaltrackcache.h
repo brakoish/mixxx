@@ -215,12 +215,28 @@ class GlobalTrackCache : public QObject {
     // Deleter callbacks for the smart-pointer
     static void evictAndSaveCachedTrack(GlobalTrackCacheEntryPointer cacheEntryPtr);
 
+    /// Deck Lab: while the library scanner writes to the database from its
+    /// own thread, a modified track whose last reference goes is kept in
+    /// the cache instead of being saved, until the scan ends. Saving waits
+    /// for the database while the cache is locked, and the scanner waits
+    /// for the cache while it holds the database: both stood still until
+    /// SQLite's 5 s busy timeout, and the save failed. Any thread; nested
+    /// calls count. The kept tracks are saved once the last defer ends.
+    static void deferSavingModifiedTracks(bool defer);
+    static bool isSavingModifiedTracksDeferred();
+    /// Deck Lab: a new track is being filled in (every other new track
+    /// waits for it). Any thread, without the lock: a hint only.
+    static bool isFillingInATrack();
+
   private slots:
     void slotEvictAndSave(GlobalTrackCacheEntryPointer cacheEntryPtr);
 
   private:
     friend class GlobalTrackCacheLocker;
     friend class GlobalTrackCacheResolver;
+
+    // Lets go of the tracks kept while saving was deferred.
+    void releaseDeferredTracks();
 
     GlobalTrackCache(
             GlobalTrackCacheSaver* pSaver,
@@ -292,4 +308,7 @@ class GlobalTrackCache : public QObject {
     // This caches the unsaved Tracks by location
     typedef std::map<QString, GlobalTrackCacheEntryPointer> TracksByCanonicalLocation;
     TracksByCanonicalLocation m_tracksByCanonicalLocation;
+
+    // Deck Lab: modified tracks kept while saving is deferred.
+    QList<TrackPointer> m_deferredTracks;
 };

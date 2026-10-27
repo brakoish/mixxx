@@ -2,11 +2,14 @@
 
 #include <gtest/gtest_prod.h>
 
+#include <QElapsedTimer>
 #include <QList>
+#include <QMutex>
 #include <QScopedPointer>
 #include <QSemaphore>
 #include <QThread>
 #include <QThreadPool>
+#include <QTimer>
 #include <atomic>
 
 #include "library/dao/analysisdao.h"
@@ -26,6 +29,7 @@ struct LibraryScanResultSummary;
 
 class LibraryScanner : public QThread {
     FRIEND_TEST(LibraryScannerTest, ScannerRoundtrip);
+    friend class DeckLabImportTest;
     Q_OBJECT
   public:
     LibraryScanner(
@@ -54,6 +58,12 @@ class LibraryScanner : public QThread {
 
     // Call from any thread to cancel the scan.
     void slotCancel();
+
+    // Deck Lab: cancels a running scan without waiting for it (any thread).
+    // It ends as after Cancel: the tracks it added stay, nothing is marked
+    // missing, a folder it had not finished is read again next time, and
+    // its summary says canceled.
+    void requestCancel();
 
   signals:
     void scanStarted();
@@ -113,6 +123,14 @@ class LibraryScanner : public QThread {
 
     void cleanUpScan();
 
+    // Deck Lab: the add transaction is committed in small batches. Called
+    // after each write in it; commits when the batch is due.
+    void noteAddWrite();
+    void commitAdds();
+    // Deck Lab: GlobalTrackCache keeps modified tracks instead of saving
+    // them while this scan writes (no lock-order inversion with the GUI).
+    void deferSavingModifiedTracks(bool defer);
+
     mixxx::DbConnectionPoolPtr m_pDbConnectionPool;
 
     // The pool of threads used for worker tasks.
@@ -128,6 +146,9 @@ class LibraryScanner : public QThread {
 
     // Global scanner state for scan currently in progress.
     ScannerGlobalPointer m_scannerGlobal;
+    // Deck Lab: guards setting and clearing m_scannerGlobal (scanner thread)
+    // against copying it from another thread (cancel, requestCancel).
+    QMutex m_scannerGlobalMutex;
 
     // The Semaphore guards the state transitions queued to the
     // Qt even Queue in the way, that you cannot start a
@@ -146,4 +167,13 @@ class LibraryScanner : public QThread {
     bool m_manualScan;
     // Set by the caller's thread before startScan, read in the scanner thread.
     std::atomic<bool> m_quietScan{false};
+    // Deck Lab: requestCancel() came before the scan had its global state.
+    std::atomic<bool> m_cancelRequested{false};
+
+    // Deck Lab: the current batch of the add transaction (scanner thread).
+    QTimer m_addCommitTimer{this}; // commits a batch that waits for more
+    QElapsedTimer m_addBatch;      // since the batch's first write
+    int m_addBatchWrites = 0;
+    bool m_lastAddSlow = false; // the last file took long to read and add
+    bool m_savingDeferred = false;
 };

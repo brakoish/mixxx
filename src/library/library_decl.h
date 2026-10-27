@@ -32,4 +32,6 @@ struct LibraryScanResultSummary {
     int tracksTotal;
     // Deck Lab: started by LibraryScanner::scanQuietly(); no summary dialog.
     bool quiet = false;
+    // Deck Lab: canceled before it finished (the counts are partial).
+    bool canceled = false;
 };

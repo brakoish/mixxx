@@ -193,6 +193,12 @@ void TrackCollectionManager::startLibraryScan() {
     m_pScanner->scan();
 }
 
+void TrackCollectionManager::interruptLibraryScan() {
+    if (m_pScanner) {
+        m_pScanner->requestCancel();
+    }
+}
+
 void TrackCollectionManager::stopLibraryScan() {
     VERIFY_OR_DEBUG_ASSERT(m_pScanner) {
         return;
