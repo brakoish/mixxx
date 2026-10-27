@@ -139,6 +139,8 @@ class TrackCollectionManager: public QObject,
 
     // Callback for GlobalTrackCache
     void saveEvictedTrack(Track* pTrack) noexcept override;
+    // Deck Lab: callback for GlobalTrackCache (a track kept during a scan)
+    void saveKeptTrack(Track* pTrack) noexcept override;
 
     // Might be called from any thread
     enum class TrackMetadataExportMode {

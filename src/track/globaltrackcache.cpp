@@ -25,6 +25,13 @@ std::atomic<int> s_savingDeferred{0};
 // Deck Lab: m_incompleteTrack is set (someone fills in a new track).
 std::atomic<bool> s_incompleteTrack{false};
 
+// Deck Lab: the library scanner holds uncommitted writes.
+std::atomic<bool> s_libraryWritesHeld{false};
+
+// Deck Lab: a kept modified track is saved this soon, and again this often
+// while it stays modified (a scan of unchanged folders commits nothing).
+constexpr int kSaveKeptTracksMs = 2000;
+
 // Enforce logging during tests
 constexpr bool kLogEnabled = false;
 
@@ -354,40 +361,63 @@ void GlobalTrackCache::saveDeferredTracksSoon() {
     }
 }
 
+//static
+void GlobalTrackCache::setLibraryWritesHeld(bool held) {
+    s_libraryWritesHeld.store(held);
+}
+
 void GlobalTrackCache::saveDeferredTracks() {
     DEBUG_ASSERT_QOBJECT_THREAD_AFFINITY(this);
     QList<TrackPointer> tracks;
     {
         const GlobalTrackCacheLocker cacheLocker;
-        tracks = m_deferredTracks;
+        for (const auto& pTrack : std::as_const(m_deferredTracks)) {
+            // One kept only for its tag export waits for its eviction.
+            if (pTrack->isDirty()) {
+                tracks.append(pTrack);
+            }
+        }
     }
     if (tracks.isEmpty() || !m_pSaver) {
+        return;
+    }
+    if (s_libraryWritesHeld.load()) {
+        // The scanner holds the library: saved after its commit, or in a
+        // few seconds.
+        m_saveKeptTimer.start();
         return;
     }
     // Saved while they stay cached and alive, without the cache's lock:
     // nobody can read such a track from the database meanwhile, and the
     // scanner, which may wait for the lock while it writes, is never
-    // waited for while the lock is held.
+    // waited for while the lock is held. A kept track may be in use again
+    // (a deck, a preview): its file is not written now (saveKeptTrack).
     kLogger.info()
             << "Saving"
             << tracks.size()
             << "modified track(s) kept during the library scan";
     for (const auto& pTrack : std::as_const(tracks)) {
-        m_pSaver->saveEvictedTrack(pTrack.get());
+        m_pSaver->saveKeptTrack(pTrack.get());
     }
     // The saved ones go as before (nothing left to save); one modified
-    // again meanwhile stays kept.
+    // again meanwhile, or whose save failed, stays kept and is tried again.
+    // One marked for a tag export stays kept until the scan ends.
     QList<TrackPointer> saved;
+    bool modified = false;
     {
         const GlobalTrackCacheLocker cacheLocker;
         for (auto it = m_deferredTracks.begin(); it != m_deferredTracks.end();) {
             if ((*it)->isDirty() || (*it)->isMarkedForMetadataExport()) {
+                modified = modified || (*it)->isDirty();
                 ++it;
             } else {
                 saved.append(*it);
                 it = m_deferredTracks.erase(it);
             }
         }
+    }
+    if (modified) {
+        m_saveKeptTimer.start();
     }
     // Their last references go outside the lock above.
     saved.clear();
@@ -403,6 +433,7 @@ void GlobalTrackCache::releaseDeferredTracks() {
         }
         tracks.swap(m_deferredTracks);
     }
+    m_saveKeptTimer.stop();
     if (!tracks.isEmpty()) {
         kLogger.info()
                 << "Saving"
@@ -422,6 +453,9 @@ GlobalTrackCache::GlobalTrackCache(
           m_tracksById(kUnorderedCollectionMinCapacity, DbId::hash_fun) {
     DEBUG_ASSERT(m_pSaver);
     qRegisterMetaType<GlobalTrackCacheEntryPointer>("GlobalTrackCacheEntryPointer");
+    m_saveKeptTimer.setSingleShot(true);
+    m_saveKeptTimer.setInterval(kSaveKeptTracksMs);
+    connect(&m_saveKeptTimer, &QTimer::timeout, this, &GlobalTrackCache::saveDeferredTracks);
 }
 
 GlobalTrackCache::~GlobalTrackCache() {
@@ -968,6 +1002,9 @@ void GlobalTrackCache::slotEvictAndSave(
         Track* plainPtr = cacheEntryPtr->getPlainPtr();
         if (plainPtr->isDirty() || plainPtr->isMarkedForMetadataExport()) {
             m_deferredTracks.append(revive(cacheEntryPtr));
+            if (plainPtr->isDirty() && !m_saveKeptTimer.isActive()) {
+                m_saveKeptTimer.start();
+            }
             return;
         }
     }

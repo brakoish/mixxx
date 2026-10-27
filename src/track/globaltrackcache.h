@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QTimer>
 #include <QWaitCondition>
 #include <map>
 #include <unordered_map>
@@ -192,6 +193,17 @@ private:
     virtual void saveEvictedTrack(
             Track* pEvictedTrack) noexcept = 0;
 
+    /// Deck Lab: saves a modified track that stays cached, kept while the
+    /// library scanner writes (GlobalTrackCache::deferSavingModifiedTracks).
+    /// It may be in use again, so its file is never written here: its tags
+    /// are exported by saveEvictedTrack() when its last reference goes.
+    /// Invoked on the cache's thread without the cache's lock. The default
+    /// saves nothing (the track is saved when it is evicted).
+    virtual void saveKeptTrack(
+            Track* pKeptTrack) noexcept {
+        Q_UNUSED(pKeptTrack);
+    }
+
   protected:
     virtual ~GlobalTrackCacheSaver() = default;
 };
@@ -225,10 +237,18 @@ class GlobalTrackCache : public QObject {
     static void deferSavingModifiedTracks(bool defer);
     static bool isSavingModifiedTracksDeferred();
     /// Deck Lab: the kept tracks are saved soon on the cache's thread,
-    /// without the cache's lock, and stay kept until the scan ends (or go
-    /// once saved). The scanner calls it each time it has committed a
-    /// batch, so a power cut mid-scan loses no edit made before. Any thread.
+    /// without the cache's lock (GlobalTrackCacheSaver::saveKeptTrack: no
+    /// file is written), and stay kept until the scan ends (or go once
+    /// saved). The scanner calls it each time it has committed a batch.
+    /// A kept track is also saved a few seconds after it is kept, and again
+    /// every few seconds while it stays modified, whenever the scanner holds
+    /// no write (a scan of unchanged folders commits nothing). A power cut
+    /// mid-scan loses at most the edits of those last seconds. Any thread.
     static void saveDeferredTracksSoon();
+    /// Deck Lab: the library scanner holds uncommitted writes. Kept tracks
+    /// are not saved meanwhile (the save would wait for SQLite's busy
+    /// timeout on the GUI thread); its commit saves them. Any thread.
+    static void setLibraryWritesHeld(bool held);
     /// Deck Lab: a new track is being filled in (every other new track
     /// waits for it). Any thread, without the lock: a hint only.
     static bool isFillingInATrack();
@@ -317,4 +337,6 @@ class GlobalTrackCache : public QObject {
 
     // Deck Lab: modified tracks kept while saving is deferred.
     QList<TrackPointer> m_deferredTracks;
+    // Deck Lab: saves them a few seconds after one is kept.
+    QTimer m_saveKeptTimer;
 };
