@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <algorithm>
+#include <array> // r7
+#include <tuple> // r7
 #include <QAction>
 #include <QAccessible>
 #include <QAbstractItemDelegate>
@@ -8526,4 +8528,174 @@ TEST_F(NativeDeckLabTest, LibraryAndStickRecentlyAddedRows) {
     panel->browseBack(); QCoreApplication::processEvents();
     panel->setRecentlyAddedForTesting({{QStringLiteral("/home/decklab/Music/Generated Song.wav"), now}});
     EXPECT_EQ((QStringList{"Tracks in this folder", "House"}), listTexts());
+}
+
+namespace {
+// r7: an external library's rows (a rekordbox export) as Mixxx's
+// BaseExternalPlaylistModel hands them over: resolving one to a Track would
+// add it to the library, reading its file on the GUI thread. Here every
+// resolution is counted and none is made. Generated titles, keys, tempos.
+class DeckLabExportRows final : public QStandardItemModel, public TrackModel {
+  public:
+    DeckLabExportRows()
+            : QStandardItemModel(0, 5),
+              TrackModel(QSqlDatabase(), "mixxx.db.model.decklab.export") {
+        setHorizontalHeaderLabels({QStringLiteral("Title"),
+                QStringLiteral("Artist"),
+                QStringLiteral("Key"),
+                QStringLiteral("BPM"),
+                QStringLiteral("Duration")});
+        const QList<std::tuple<QString, QString, double, double>> rows{
+                {QStringLiteral("Generated Tone A"), QStringLiteral("Am"), 124.0, 245.0},
+                {QStringLiteral("Generated Tone B"), QStringLiteral("C"), 126.0, 301.0},
+                {QStringLiteral("Generated Tone C"), QStringLiteral("F#m"), 128.0, 199.0}};
+        for (const auto& [title, key, bpm, seconds] : rows) {
+            auto* tempo = new QStandardItem();
+            tempo->setData(bpm, Qt::DisplayRole);
+            auto* duration = new QStandardItem();
+            duration->setData(seconds, Qt::DisplayRole);
+            appendRow({new QStandardItem(title),
+                    new QStandardItem(QStringLiteral("Deck Lab Fixture")),
+                    new QStandardItem(key),
+                    tempo,
+                    duration});
+        }
+    }
+    mutable int resolved = 0;
+    bool resolvesTracksCheaply() const override {
+        return false;
+    }
+    Capabilities getCapabilities() const override {
+        return Capability::LoadToDeck | Capability::LoadToPreviewDeck;
+    }
+    QString getModelSetting(const QString& name) override {
+        return m_settings.value(name);
+    }
+    bool setModelSetting(const QString& name, const QVariant& value) override {
+        m_settings.insert(name, value.toString());
+        return true;
+    }
+    TrackPointer getTrack(const QModelIndex&) const override {
+        ++resolved;
+        return {};
+    }
+    TrackPointer getTrackByRef(const TrackRef&) const override {
+        ++resolved;
+        return {};
+    }
+    QUrl getTrackUrl(const QModelIndex&) const override {
+        return {};
+    }
+    QString getTrackLocation(const QModelIndex& index) const override {
+        return QStringLiteral("/media/decklab/1234-ABCD/Contents/%1.mp3")
+                .arg(index.sibling(index.row(), 0).data().toString());
+    }
+    TrackId getTrackId(const QModelIndex&) const override {
+        ++resolved;
+        return {};
+    }
+    CoverInfo getCoverInfo(const QModelIndex&) const override {
+        return {};
+    }
+    const QVector<int> getTrackRows(TrackId) const override {
+        return {};
+    }
+    void search(const QString&) override {
+    }
+    const QString currentSearch() const override {
+        return {};
+    }
+    bool isColumnInternal(int) override {
+        return false;
+    }
+    bool isColumnHiddenByDefault(int) override {
+        return false;
+    }
+    SortColumnId sortColumnIdFromColumnIndex(int index) const override {
+        const std::array<SortColumnId, 5> columns{SortColumnId::Title,
+                SortColumnId::Artist,
+                SortColumnId::Key,
+                SortColumnId::Bpm,
+                SortColumnId::Duration};
+        return index >= 0 && index < 5 ? columns[index] : SortColumnId::Invalid;
+    }
+    int columnIndexFromSortColumnId(SortColumnId column) const override {
+        for (int index = 0; index < 5; ++index) {
+            if (sortColumnIdFromColumnIndex(index) == column) return index;
+        }
+        return -1;
+    }
+    QString modelKey(bool) const override {
+        return QStringLiteral("decklab-export-rows");
+    }
+    bool updateTrackGenre(Track*, const QString&) const override {
+        return false;
+    }
+#if defined(__EXTRA_METADATA__)
+    bool updateTrackMood(Track*, const QString&) const override {
+        return false;
+    }
+#endif
+
+  private:
+    QHash<QString, QString> m_settings;
+};
+} // namespace
+
+// r7 freeze: browsing a rekordbox export never resolves its rows to Tracks
+// (each one read the file's tags and analysis from the stick and wrote the
+// library, on the GUI thread, 0.2-1.3 s per highlighted row): not Mixxx's
+// table after the knob pauses, not Browse when the list shows again. The
+// card shows each row from its own columns at once, and Preview is offered.
+TEST_F(NativeDeckLabTest, ExportRowsAreShownWithoutResolvingTheirTracks) {
+    const ConfigKey tickKey(QStringLiteral("[App]"), QStringLiteral("gui_tick_50ms_period_s"));
+    std::unique_ptr<ControlObject> tick;
+    if (!ControlObject::exists(tickKey)) tick = std::make_unique<ControlObject>(tickKey);
+    const ConfigKey previewKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("LoadSelectedTrackAndPlay"));
+    std::unique_ptr<ControlObject> previewLoad;
+    if (!ControlObject::exists(previewKey)) previewLoad = std::make_unique<ControlObject>(previewKey);
+    auto* rows = new DeckLabExportRows();
+    auto* table = new WTrackTableView(library, config(), nullptr, 1.0);
+    rows->setParent(table);
+    library->registerView(QStringLiteral("decklab-export-table"), table);
+    table->loadTrackModel(rows, false);
+    library->switchToView(QStringLiteral("decklab-export-table"));
+    int selections = 0;
+    int tracksSelected = 0;
+    QObject::connect(table, &WTrackTableView::trackSelected, table, [&](TrackPointer track) {
+        ++selections;
+        tracksSelected += track ? 1 : 0;
+    });
+    // Mixxx's table tells about a selection once the knob paused 0.1 s.
+    double ticks = 0;
+    const auto pause = [&] {
+        QTest::qWait(150);
+        ControlObject::set(tickKey, ticks += 0.05);
+        settle();
+    };
+    openTrackLevel();
+    ASSERT_TRUE(table->isVisible());
+    auto* card = static_cast<DeckLabTrackCard*>(panel->findChild<QWidget*>("decklab-track-card"));
+    ASSERT_NE(nullptr, card);
+    table->selectRow(1); settle();
+    EXPECT_EQ(QStringLiteral("Generated Tone B"), card->title());
+    EXPECT_EQ(rows->getTrackLocation(rows->index(1, 0)), card->location());
+    EXPECT_EQ(QStringLiteral("8B"), card->keyText());
+    pause();
+    EXPECT_GE(selections, 1) << "the table still says the selection changed";
+    EXPECT_EQ(0, tracksSelected);
+    EXPECT_EQ(QStringLiteral("Generated Tone B"), card->title());
+    table->selectRow(0); settle(); pause();
+    EXPECT_EQ(QStringLiteral("Generated Tone A"), card->title());
+    EXPECT_EQ(QStringLiteral("8A"), card->keyText());
+    auto* preview = panel->findChild<QPushButton*>(QStringLiteral("decklab-preview"));
+    ASSERT_NE(nullptr, preview);
+    EXPECT_TRUE(preview->isEnabled());
+    // The same list shown again: still the row, still nothing resolved.
+    panel->browseBack(); settle();
+    panel->browsePress(); settle(); pause();
+    ASSERT_TRUE(table->isVisible());
+    table->selectRow(2); settle(); pause();
+    EXPECT_EQ(QStringLiteral("Generated Tone C"), card->title());
+    EXPECT_EQ(0, rows->resolved) << "a highlighted export row was resolved to a Track";
 }
