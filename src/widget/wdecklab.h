@@ -63,6 +63,7 @@ struct MatchReference; // r4-browse
 enum class SourceState; // r4-browse
 struct SourceEntry; // r5-history
 enum class FolderList; // r7-browse
+struct RecentTrack; // r7-recent
 namespace history {
 struct Change; // r5-history
 } // namespace history
@@ -92,6 +93,8 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void openCollection();
     // r5-polish (tests): the Match bar as if the list held `count` matches.
     void setMatchCountForTesting(int count);
+    // r7-recent (tests): Recently Added as if the library read had found these.
+    void setRecentlyAddedForTesting(const QList<decklab::RecentTrack>& tracks);
     // r4-labfx: Lab FX out. Default: CUT (dry now); musical: RELEASE (the
     // tail rings out); mute: ECHO OUT (the track drops for a bar).
     void releaseEffects(bool musical = false, bool mute = false);
@@ -307,6 +310,15 @@ class WDeckLab : public QWidget, public WBaseWidget {
     // r7 fix: the home's tiles (DOWNLOADS, SAMPLES, Library) read again the
     // next time the home is shown, at once when it is shown now.
     void markHomeStale();
+    // r7-recent: Recently Added for the Library and a stick: the library's
+    // rows read off the GUI thread once it is quiet (decklab/decklabquiet.h),
+    // after a scan, a utility, a capture or a stick change, and on a new day.
+    void readRecentlyAdded();
+    void recentlyAddedRead();
+    // The Recently Added tracks under stick (every one for an empty stick)
+    // whose media is in, newest first.
+    QStringList recentLocations(const QString& stick) const;
+    void openRecentlyAdded(const QString& stick);
     // r7 fix: the highlighted track row's file is not there (its stick is
     // out): a short message instead of a load that fails.
     bool selectedFileGone();
