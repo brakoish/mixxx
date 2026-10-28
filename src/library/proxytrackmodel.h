@@ -28,6 +28,7 @@ class ProxyTrackModel : public QSortFilterProxyModel, public TrackModel {
     Capabilities getCapabilities() const final;
     TrackPointer getTrack(const QModelIndex& index) const final;
     TrackPointer getTrackByRef(const TrackRef& trackRef) const final;
+    bool resolvesTracksCheaply() const final; // Deck Lab: the source's
     QUrl getTrackUrl(const QModelIndex& index) const final;
     QString getTrackLocation(const QModelIndex& index) const final;
     TrackId getTrackId(const QModelIndex& index) const final;

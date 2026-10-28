@@ -107,6 +107,16 @@ class TrackModel {
     virtual TrackPointer getTrack(const QModelIndex& index) const = 0;
     virtual TrackPointer getTrackByRef(const TrackRef& trackRef) const = 0;
 
+    /// Deck Lab: whether getTrack() and getTrackId() may run whenever a row
+    /// is highlighted (WTrackTableView's trackSelected) or painted. An
+    /// external library's rows (rekordbox, Serato, ...) are added to the
+    /// internal library when they are resolved, which reads the file (often
+    /// on a USB stick) and writes the database, all on the GUI thread. Such
+    /// rows are resolved only when they are used: load, preview, a menu.
+    virtual bool resolvesTracksCheaply() const {
+        return true;
+    }
+
     /// Get the URL of the track at the given QModelIndex.
     ///
     /// This function should be used in favor of getTrackId() to allow

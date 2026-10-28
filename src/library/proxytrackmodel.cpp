@@ -77,6 +77,10 @@ TrackPointer ProxyTrackModel::getTrack(const QModelIndex& index) const {
     return m_pTrackModel ? m_pTrackModel->getTrack(indexSource) : TrackPointer();
 }
 
+bool ProxyTrackModel::resolvesTracksCheaply() const {
+    return !m_pTrackModel || m_pTrackModel->resolvesTracksCheaply();
+}
+
 TrackPointer ProxyTrackModel::getTrackByRef(const TrackRef& trackRef) const {
     return m_pTrackModel ? m_pTrackModel->getTrackByRef(trackRef) : TrackPointer();
 }

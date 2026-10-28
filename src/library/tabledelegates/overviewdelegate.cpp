@@ -143,7 +143,11 @@ void OverviewDelegate::slotOverviewChanged(const TrackId trackId) {
 void OverviewDelegate::paintItem(QPainter* painter,
         const QStyleOptionViewItem& option,
         const QModelIndex& index) const {
-    const TrackId trackId(m_pTrackModel->getTrackId(index));
+    // Deck Lab: an external library's row has no overview until it is in
+    // the library; looking its id up would add it (TrackModel).
+    const TrackId trackId = m_pTrackModel->resolvesTracksCheaply()
+            ? m_pTrackModel->getTrackId(index)
+            : TrackId();
     const double scaleFactor = m_pTableView->devicePixelRatioF();
     QPixmap pixmap = m_pCache->requestCachedOverview(m_type,
             trackId,
