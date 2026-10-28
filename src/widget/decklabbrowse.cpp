@@ -591,6 +591,20 @@ int countAddedSince(const QAbstractItemModel& model, int column, const QDate& si
     return count;
 }
 
+QString recentDayLabel(const QDate& day, const QDate& today) {
+    if (!day.isValid()) {
+        return QString();
+    }
+    const qint64 ago = day.daysTo(today);
+    if (ago == 0) {
+        return translate("Today");
+    }
+    if (ago == 1) {
+        return translate("Yesterday");
+    }
+    return QLocale().toString(day, day.year() == today.year() ? QStringLiteral("d MMM") : QStringLiteral("d MMM yyyy"));
+}
+
 QVector<CategoryValue> collectCategoryValues(
         const QAbstractItemModel& model, int column, Category category) {
     QVector<CategoryValue> values;

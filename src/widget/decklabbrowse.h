@@ -175,6 +175,13 @@ QString recentlyAddedQuery(const QDate& today);
 // How many rows of an existing track model were added on or after since, from
 // its date added column (the local date). No database access.
 int countAddedSince(const QAbstractItemModel& model, int column, const QDate& since);
+// The day a Recently Added row came in: "Today", "Yesterday", else the
+// day and month as the History's days read them ("25 Oct"; a year back,
+// "25 Oct 2025").
+QString recentDayLabel(const QDate& day, const QDate& today);
+// A track model asks its table for the day column (Recently Added) with this
+// dynamic property set (WTrackTableView's Deck Lab layout).
+inline constexpr const char* kDayColumnProperty = "decklabDayColumn";
 
 enum class Glyph {
     None,

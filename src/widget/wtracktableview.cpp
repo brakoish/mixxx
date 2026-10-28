@@ -221,6 +221,38 @@ class DeckLabBpmDelegate final : public DeckLabCellDelegate {
     }
 };
 
+// r7-recent: Recently Added's day column: "Today", "Yesterday", "25 Oct".
+// A day's first row says it in full ink under a rule, its other rows in
+// muted ink, so a big batch (a night's downloads) reads as one block to
+// scroll past. Plain cells: rows, selection and the knob are as anywhere.
+class DeckLabDayDelegate final : public DeckLabCellDelegate {
+  public:
+    DeckLabDayDelegate(QTableView* table, int keyColumn, int bpmColumn)
+            : DeckLabCellDelegate(table, keyColumn, bpmColumn, true) {
+        setProperty("decklabDay", true);
+    }
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        paintDeckLabRowTint(painter, option, deckLabRowMatch(index, m_keyColumn, m_bpmColumn));
+        QStyleOptionViewItem opt = drawBase(painter, option, index);
+        const QDate day = index.data().toDate();
+        const QDate before = index.row() > 0 ? index.sibling(index.row() - 1, index.column()).data().toDate() : QDate();
+        const bool first = !before.isValid() || before != day;
+        const bool selected = opt.state & QStyle::State_Selected;
+        painter->save();
+        if (first && index.row() > 0) {
+            painter->fillRect(QRect(option.rect.left(), option.rect.top(), option.rect.width(), 1), decklab::colors::edge);
+        }
+        const QFont font = decklab::secondaryFont(option.font);
+        painter->setFont(font);
+        painter->setPen(selected ? textColor(opt) : first ? decklab::colors::ink : decklab::colors::muted);
+        const QString text = decklab::recentDayLabel(day, QDate::currentDate());
+        painter->drawText(option.rect.adjusted(8, 0, -6, 0),
+                Qt::AlignLeft | Qt::AlignVCenter,
+                QFontMetrics(font).elidedText(text, Qt::ElideRight, option.rect.width() - 14));
+        painter->restore();
+    }
+};
+
 class DeckLabKeyDelegate final : public DeckLabCellDelegate {
   public:
     DeckLabKeyDelegate(QTableView* table, int keyColumn, int bpmColumn)
@@ -667,6 +699,8 @@ int deckLabColumnWidth(TrackModel::SortColumnId id) {
         return 44;
     case TrackModel::SortColumnId::Rating:
         return 96;
+    case TrackModel::SortColumnId::DateTimeAdded:
+        return 104; // r7-recent: "Yesterday", "25 Oct"
     default:
         return 150;
     }
@@ -715,6 +749,28 @@ void WTrackTableView::applyDeckLabLayout() {
     }
     if (columns.isEmpty()) {
         for (const auto id : kDeckLabDefaultColumns) addColumn(id);
+    }
+    // r7-recent: Recently Added asks for its day column first, in place of
+    // the list's position numbers; never saved as the list's own columns.
+    const bool days = model()->property(decklab::kDayColumnProperty).toBool();
+    const int dayColumn = tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::DateTimeAdded);
+    if (days && dayColumn >= 0 && !tracks->isColumnInternal(dayColumn)) {
+        columns.removeAll(dayColumn);
+        columns.removeAll(tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Position));
+        columns.prepend(dayColumn);
+    }
+    if (dayColumn >= 0) {
+        auto* old = itemDelegateForColumn(dayColumn);
+        const bool dayDelegate = old && old->property("decklabDay").toBool();
+        if (days && !dayDelegate) {
+            setItemDelegateForColumn(dayColumn, new DeckLabDayDelegate(this,
+                    tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Key),
+                    tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Bpm)));
+            delete old;
+        } else if (!days && dayDelegate) {
+            setItemDelegateForColumn(dayColumn, tracks->delegateForColumn(dayColumn, this)); // the model's own
+            delete old;
+        }
     }
     if (columns.isEmpty()) return;
     m_applyingDeckLabLayout = true;
@@ -809,6 +865,7 @@ void WTrackTableView::saveDeckLabColumns() {
     auto* header = horizontalHeader();
     if (m_applyingDeckLabLayout || !header->property("decklabLayout").toBool()) return;
     auto* tracks = getTrackModel(); if (!tracks || !model()) return;
+    if (model()->property(decklab::kDayColumnProperty).toBool()) return; // r7-recent: Recently Added's own layout
     QStringList ids;
     for (int visual = 0; visual < header->count(); ++visual) {
         const int column = header->logicalIndex(visual);
