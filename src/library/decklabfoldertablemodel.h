@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
+#include <QDate>
+#include <QDateTime>
+#include <QList>
 #include <QSqlDatabase>
 #include <QStringList>
 
@@ -19,6 +22,31 @@ QString songListSqlFilter();
 /// Library tile): not hidden, not missing, not on a USB stick that is out,
 /// and no samples. -1 when the database can't say.
 int shownSongCount(const QSqlDatabase& database);
+
+/// r7-recent: Recently Added, one rule for the Library and a stick: the
+/// tracks new to this unit in the last 30 days (since local midnight
+/// kRecentlyAddedDays days ago), newest first. A root's starting collection
+/// does not count: the tracks added on the local day of the earliest
+/// datetime_added under the same root (a stick's first read, a library
+/// folder's first scan) are left out, except Get Music's downloads
+/// (isDownloadLocation), which always count. A root is a stick's media root
+/// (mediaRootOf), else the longest library folder (Mixxx's directories)
+/// holding the file; a file under neither has no first day. Samples stay
+/// out, as from every song list.
+struct AddedRow {
+    QString location;
+    QDateTime added; // local time
+    bool listed = true; // not hidden, not missing (the baseline counts every row)
+};
+struct RecentTrack {
+    QString location;
+    QDateTime added; // local time
+};
+QString recentRootOf(const QString& location, const QStringList& directories);
+QList<RecentTrack> recentlyAdded(const QList<AddedRow>& rows, const QStringList& directories, const QDate& today);
+/// The library's rows and folders read from database, the rule applied. Any
+/// thread with its own connection (Deck Lab reads it off the GUI thread).
+QList<RecentTrack> readRecentlyAdded(const QSqlDatabase& database, const QDate& today);
 
 } // namespace decklab
 

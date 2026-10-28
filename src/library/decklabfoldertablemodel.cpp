@@ -5,6 +5,7 @@
 #include <QHash>
 #include <QSet>
 #include <QSqlQuery>
+#include <algorithm>
 
 #include "decklab/decklabdownloads.h"
 #include "decklab/decklabmedia.h"
@@ -13,6 +14,8 @@
 #include "library/trackcollection.h"
 #include "library/trackcollectionmanager.h"
 #include "mixer/playerinfo.h"
+#include "util/datetime.h" // r7-recent
+#include "widget/decklabbrowse.h" // r7-recent: kRecentlyAddedDays
 #include "moc_decklabfoldertablemodel.cpp"
 
 namespace decklab {
@@ -42,6 +45,86 @@ int shownSongCount(const QSqlDatabase& database) {
         return -1;
     }
     return query.value(0).toInt();
+}
+
+QString recentRootOf(const QString& location, const QStringList& directories) {
+    const QString media = mediaRootOf(location);
+    if (!media.isEmpty()) {
+        return media;
+    }
+    QString root;
+    for (const QString& directory : directories) {
+        const QString folder = QDir::cleanPath(directory);
+        if (folder.size() > root.size() && location.startsWith(folder + QLatin1Char('/'))) {
+            root = folder;
+        }
+    }
+    return root;
+}
+
+QList<RecentTrack> recentlyAdded(const QList<AddedRow>& rows, const QStringList& directories, const QDate& today) {
+    // Each root's first day, from every row it ever had.
+    QHash<QString, QDateTime> first;
+    QList<QString> roots;
+    roots.reserve(rows.size());
+    for (const AddedRow& row : rows) {
+        roots.append(recentRootOf(row.location, directories));
+        if (roots.last().isEmpty() || !row.added.isValid()) {
+            continue;
+        }
+        auto found = first.find(roots.last());
+        if (found == first.end()) {
+            first.insert(roots.last(), row.added);
+        } else if (row.added < found.value()) {
+            found.value() = row.added;
+        }
+    }
+    const QDate since = recentlyAddedSince(today);
+    QList<RecentTrack> recent;
+    for (int index = 0; index < rows.size(); ++index) {
+        const AddedRow& row = rows.at(index);
+        if (!row.listed || !row.added.isValid() || row.added.date() < since || isSampleLocation(row.location)) {
+            continue;
+        }
+        const auto found = first.constFind(roots.at(index));
+        if (found != first.cend() && found.value().date() == row.added.date() &&
+                !isDownloadLocation(row.location)) {
+            continue; // the starting collection
+        }
+        recent.append({row.location, row.added});
+    }
+    std::stable_sort(recent.begin(), recent.end(), [](const RecentTrack& a, const RecentTrack& b) {
+        return a.added > b.added;
+    });
+    return recent;
+}
+
+QList<RecentTrack> readRecentlyAdded(const QSqlDatabase& database, const QDate& today) {
+    QStringList directories;
+    QSqlQuery folders(database);
+    if (folders.exec(QStringLiteral("SELECT directory FROM directories"))) {
+        while (folders.next()) {
+            directories << folders.value(0).toString();
+        }
+    } else {
+        LOG_FAILED_QUERY(folders);
+    }
+    QList<AddedRow> rows;
+    QSqlQuery query(database);
+    if (!query.exec(QStringLiteral("SELECT track_locations.location, library.datetime_added, "
+                                   "library.mixxx_deleted = 0 AND track_locations.fs_deleted = 0 "
+                                   "FROM library INNER JOIN track_locations "
+                                   "ON library.location = track_locations.id"))) {
+        LOG_FAILED_QUERY(query);
+        return {};
+    }
+    while (query.next()) {
+        const QDateTime stored = query.value(1).toDateTime();
+        rows.append({query.value(0).toString(),
+                stored.isValid() ? mixxx::localDateTimeFromUtc(stored) : QDateTime(),
+                query.value(2).toBool()});
+    }
+    return recentlyAdded(rows, directories, today);
 }
 
 } // namespace decklab
