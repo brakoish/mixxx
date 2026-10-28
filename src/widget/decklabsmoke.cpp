@@ -8,6 +8,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFontInfo>
+#include <QHeaderView> // r7-recent
 #include <QHelpEvent>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -849,6 +850,7 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
             seedDemoDownloads(surface->library(), QDir(config->getSettingsPath()).filePath("decklab-demo-media"),
                     QDir(config->getSettingsPath()).filePath("decklab-demo-home/Music")); // r7-browse
             const auto press = [surface] { surface->browsePress(); return true; };
+            auto recentSort = std::make_shared<int>(-1); // r7-recent: the Library's sort column before
             auto captures = std::make_shared<QList<BrowseCapture>>(QList<BrowseCapture>{
                     {"sources", 500, [surface] {
                          QMetaObject::invokeMethod(surface->findChild<QComboBox*>("decklab-deck-layout"), "activated", Q_ARG(int, 1));
@@ -1094,6 +1096,53 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                              });
                          });
                          return true;
+                     }},
+                    {"recently-added-row", 600, [surface, failures, recentSort] {
+                         // r7-recent: back on the Library's categories, Recently
+                         // Added follows All Tracks (every demo track came in today).
+                         surface->browseBack();
+                         QCoreApplication::processEvents();
+                         auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
+                         int all = -1;
+                         int recent = -1;
+                         for (int row = 0; list && row < list->count(); ++row) {
+                             const QString text = list->item(row)->text();
+                             if (text == decklab::categoryName(decklab::Category::AllTracks)) all = row;
+                             if (text == decklab::categoryName(decklab::Category::RecentlyAdded)) recent = row;
+                         }
+                         if (all < 0 || recent != all + 1) failures->append(QStringLiteral("Recently Added does not follow All Tracks"));
+                         auto* library = surface->findChild<WLibrary*>();
+                         auto* table = library ? library->getCurrentTrackTableView() : nullptr;
+                         *recentSort = table ? table->horizontalHeader()->sortIndicatorSection() : -1;
+                         return selectListItem(surface, decklab::categoryName(decklab::Category::RecentlyAdded));
+                     }},
+                    {"recently-added", 900, [surface, failures] {
+                         // Its tracks, newest first: the Library's own rows.
+                         surface->browsePress();
+                         QCoreApplication::processEvents();
+                         auto* library = surface->findChild<WLibrary*>();
+                         auto* table = library ? library->getCurrentTrackTableView() : nullptr;
+                         auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
+                         const int added = tracks ? tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::DateTimeAdded) : -1;
+                         if (added < 0 || table->horizontalHeader()->sortIndicatorSection() != added ||
+                                 table->horizontalHeader()->sortIndicatorOrder() != Qt::DescendingOrder) {
+                             failures->append(QStringLiteral("Recently Added is not newest first"));
+                         }
+                         if (!table || !table->model()->rowCount()) return false;
+                         table->selectRow(0);
+                         return true;
+                     }},
+                    {"recently-added-back", 600, [surface, failures, recentSort] {
+                         // Back on its row; the table's own sort is back.
+                         surface->browseBack();
+                         QCoreApplication::processEvents();
+                         auto* library = surface->findChild<WLibrary*>();
+                         auto* table = library ? library->getCurrentTrackTableView() : nullptr;
+                         if (!table || table->horizontalHeader()->sortIndicatorSection() != *recentSort)
+                             failures->append(QStringLiteral("Recently Added left the Library's sort changed"));
+                         auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
+                         return list && list->currentItem() &&
+                                 list->currentItem()->text() == decklab::categoryName(decklab::Category::RecentlyAdded);
                      }},
                     {"downloads", 900, [surface, failures] {
                          // r7-browse: the home's DOWNLOADS tile opens the single
