@@ -1780,6 +1780,7 @@ add_library(
   src/decklab/decklabpreview.cpp
   src/decklab/decklabrail.cpp
   src/decklab/decklabsettings.cpp
+  src/decklab/decklabguistall.cpp
   src/decklab/decklabsetupmodel.cpp
   src/decklab/decklabsetupwizard.cpp
   src/decklab/decklabsignals.cpp
