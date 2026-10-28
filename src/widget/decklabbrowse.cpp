@@ -536,6 +536,8 @@ QString categoryName(Category category) {
         return translate("BPM");
     case Category::Key:
         return translate("Key");
+    case Category::RecentlyAdded:
+        return translate("Recently Added");
     }
     return {};
 }
@@ -562,6 +564,45 @@ QString bpmBucketQuery(int bpm) {
         return QStringLiteral("bpm:\"\"");
     }
     return QStringLiteral("bpm:%1-%2").arg(QString::number(bpm - 0.5), QString::number(bpm + 0.49));
+}
+
+QDate recentlyAddedSince(const QDate& today) {
+    return today.addDays(-kRecentlyAddedDays);
+}
+
+QString recentlyAddedQuery(const QDate& today) {
+    return QStringLiteral("added:\">=%1\"")
+            .arg(QLocale().toString(recentlyAddedSince(today), QLocale::ShortFormat));
+}
+
+int countAddedSince(const QAbstractItemModel& model, int column, const QDate& since) {
+    if (column < 0 || column >= model.columnCount()) {
+        return -1;
+    }
+    int count = 0;
+    const int rows = model.rowCount();
+    for (int row = 0; row < rows; ++row) {
+        const QVariant value = model.index(row, column).data();
+        const QDate date = value.canConvert<QDate>() ? value.toDate() : QDate();
+        if (date.isValid() && date >= since) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+QString recentDayLabel(const QDate& day, const QDate& today) {
+    if (!day.isValid()) {
+        return QString();
+    }
+    const qint64 ago = day.daysTo(today);
+    if (ago == 0) {
+        return translate("Today");
+    }
+    if (ago == 1) {
+        return translate("Yesterday");
+    }
+    return QLocale().toString(day, day.year() == today.year() ? QStringLiteral("d MMM") : QStringLiteral("d MMM yyyy"));
 }
 
 QVector<CategoryValue> collectCategoryValues(
@@ -838,6 +879,17 @@ void paintGlyph(QPainter& painter, const QRectF& box, Glyph glyph, const QColor&
         painter.drawRoundedRect(QRectF(at(0.08, 0.08), at(0.92, 0.92)), s * 0.12, s * 0.12);
         painter.drawPolyline(QPolygonF{at(0.24, 0.5), at(0.36, 0.5), at(0.44, 0.28), at(0.54, 0.72),
                 at(0.62, 0.38), at(0.68, 0.5), at(0.78, 0.5)});
+        break;
+    case Glyph::Recent:
+        // r7-recent: the track list with a plus: what joined it lately.
+        for (qreal y : {0.22, 0.47}) {
+            painter.drawLine(at(0.32, y), at(0.88, y));
+            painter.drawPoint(at(0.14, y));
+        }
+        painter.drawPoint(at(0.14, 0.72));
+        painter.drawLine(at(0.32, 0.72), at(0.5, 0.72));
+        painter.drawLine(at(0.62, 0.74), at(0.9, 0.74));
+        painter.drawLine(at(0.76, 0.6), at(0.76, 0.88));
         break;
     case Glyph::Mixes:
         // Two keys that overlap: what mixes with the playing deck.

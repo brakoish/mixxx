@@ -39,6 +39,8 @@
 #include <QStyle>
 #include <QStyleOptionButton>
 #include <QTextBrowser>
+#include <QFutureWatcher> // r7-recent
+#include <QtConcurrent>   // r7-recent
 #include <QSqlQuery>
 #include <algorithm>
 #include <cmath>
@@ -77,6 +79,8 @@
 #include "decklab/decklabdownloads.h"         // r7-browse: DOWNLOADS and SAMPLES
 #include "decklab/decklabmedia.h"             // r7-library
 #include "library/decklabfoldertablemodel.h"  // r7-browse
+#include "util/db/dbconnectionpooled.h"       // r7-recent
+#include "util/db/dbconnectionpooler.h"       // r7-recent
 #include "track/keyutils.h"
 #include "track/cueinfo.h"
 #include "track/track.h"
@@ -568,6 +572,7 @@ enum class FolderList {
     Playlist,     // one playlist folder, in playlist order
     AllDownloads, // every download, newest first (search in DOWNLOADS)
     Samples,      // ~/Music/Deck Lab Samples, newest first
+    Recent,       // r7-recent: Recently Added (the Library's or a stick's), newest first
 };
 } // namespace decklab
 
@@ -706,6 +711,28 @@ struct DeckLabBrowseState {
     bool samplesForPad = false; // SAMPLES opened by a pad's Load
     bool homeOnReturn = false;  // ... left by the load: Browse comes back on the home
     DeckLabActionButton* allMusic = nullptr;
+    // r7-recent: Recently Added. Its count is read with the All Tracks count
+    // (from the same rows, no database read). It sorts the library's own
+    // track table newest first; what it changed is kept here and given back
+    // when the list is left: the column and order, Mixxx's saved sort
+    // history and, if the table showed another list meanwhile, its saved
+    // header. The library's saved sort never moves.
+    int recentCount = -1; // a rekordbox source's; the Library's comes from recentTracks
+    QPointer<WTrackTableView> recentTable;
+    QPointer<QAbstractItemModel> recentModel;
+    int recentSection = -1;
+    Qt::SortOrder recentOrder = Qt::AscendingOrder;
+    QString recentColumns;
+    QString recentHeader;
+    // r7-recent, round two: the Library's and the sticks' Recently Added
+    // (DeckLabFolderTableModel's rule), read off the GUI thread, and the
+    // stick a shown list belongs to (empty: the Library).
+    QList<decklab::RecentTrack> recentTracks;
+    QDate recentAsked;  // the day the last read was for
+    bool recentWanted = false; // another read is due once this one ends
+    QFutureWatcher<QList<decklab::RecentTrack>>* recentWatcher = nullptr;
+    QTimer recentRetry; // not quiet yet: ask again
+    QString recentStick;
 };
 
 WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
@@ -1231,6 +1258,8 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
 }
 
 WDeckLab::~WDeckLab() {
+    // r7-recent: a library read still running ends before the surface goes.
+    if (m_browseState && m_browseState->recentWatcher) m_browseState->recentWatcher->waitForFinished();
     m_fxTimer.stop();
     m_meterTimer.stop();
     qApp->removeEventFilter(this);
@@ -1873,8 +1902,67 @@ decklab::Glyph categoryGlyph(decklab::Category category) {
     case decklab::Category::Album: return decklab::Glyph::Album;
     case decklab::Category::Bpm: return decklab::Glyph::Bpm;
     case decklab::Category::Key: return decklab::Glyph::Key;
+    case decklab::Category::RecentlyAdded: return decklab::Glyph::Recent; // r7-recent
     }
     return decklab::Glyph::None;
+}
+// r7-recent: the model settings Mixxx keeps a table's sort in
+// (BaseSqlTableModel, WTrackTableViewHeader).
+const QString kColumnsSorting = QStringLiteral("ColumnsSorting");
+const QString kHeaderState = QStringLiteral("header_state_pb");
+// Sorts a track table's model without a select when it can (the search that
+// follows reads it once) and moves the header's arrow without telling the
+// table, so neither Mixxx's sort controls nor a second select follow.
+void sortTrackTable(WTrackTableView* table, QAbstractItemModel* model, int column, Qt::SortOrder order, bool select) {
+    if (!model || column < 0) return;
+    auto* sql = qobject_cast<BaseSqlTableModel*>(model);
+    if (sql && !select) sql->setSort(column, order);
+    else model->sort(column, order);
+    if (table && table->model() == model) {
+        const QSignalBlocker blocker(table->horizontalHeader());
+        table->horizontalHeader()->setSortIndicator(column, order);
+    }
+}
+// Newest first on the table's model, keeping what it was (once per visit).
+void sortNewestFirst(DeckLabBrowseState& b, WTrackTableView* table) {
+    auto* model = table ? table->model() : nullptr;
+    auto* tracks = dynamic_cast<TrackModel*>(model);
+    if (!tracks) return;
+    const int column = tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::DateTimeAdded);
+    if (column < 0) return;
+    if (!b.recentModel || b.recentModel != model) {
+        b.recentTable = table;
+        b.recentModel = model;
+        b.recentSection = table->horizontalHeader()->sortIndicatorSection();
+        b.recentOrder = table->horizontalHeader()->sortIndicatorOrder();
+        b.recentColumns = tracks->getModelSetting(kColumnsSorting);
+        b.recentHeader = tracks->getModelSetting(kHeaderState);
+    }
+    sortTrackTable(table, model, column, Qt::DescendingOrder, false);
+    // Round two: its day column, while it is shown.
+    model->setProperty(decklab::kDayColumnProperty, true);
+    table->applyDeckLabLayout();
+}
+// The sort Recently Added found, back on its model; select reads it at once
+// (otherwise the search that follows does).
+void restoreRecentSort(DeckLabBrowseState& b, bool select) {
+    const QPointer<QAbstractItemModel> model = std::exchange(b.recentModel, nullptr);
+    const QPointer<WTrackTableView> table = std::exchange(b.recentTable, nullptr);
+    auto* tracks = dynamic_cast<TrackModel*>(model.data());
+    if (!tracks) return;
+    const bool shown = table && table->model() == model;
+    int column = b.recentSection;
+    Qt::SortOrder order = b.recentOrder;
+    if (column < 0 || tracks->sortColumnIdFromColumnIndex(column) == TrackModel::SortColumnId::Invalid) {
+        column = tracks->defaultSortColumn();
+        order = tracks->defaultSortOrder();
+    }
+    sortTrackTable(shown ? table.data() : nullptr, model, column, order, select && shown);
+    model->setProperty(decklab::kDayColumnProperty, false);
+    if (shown) table->applyDeckLabLayout();
+    tracks->setModelSetting(kColumnsSorting, b.recentColumns);
+    // The table saved its header (the newest-first arrow) when it moved on.
+    if (!shown && !b.recentHeader.isEmpty()) tracks->setModelSetting(kHeaderState, b.recentHeader);
 }
 // The surface style sheet's QPushButton min-height wins over setFixedHeight()
 // in the real application. Pin the height in the button's own style sheet too
@@ -2749,7 +2837,17 @@ void WDeckLab::bindBrowser(WSearchLineEdit* search, WLibrarySidebar* sidebar, WL
     });
     // r7 fix: a stick ejected or pulled while the DOWNLOADS list is open
     // leaves it at once (one folder read); off screen, when it shows again.
+    // r7-recent: Recently Added's read (off the GUI thread) and its retry.
+    m_browseState->recentWatcher = new QFutureWatcher<QList<decklab::RecentTrack>>(this);
+    connect(m_browseState->recentWatcher, &QFutureWatcherBase::finished, this, [this] {
+        m_browseState->recentTracks = m_browseState->recentWatcher->result();
+        recentlyAddedRead();
+    });
+    m_browseState->recentRetry.setSingleShot(true);
+    m_browseState->recentRetry.setInterval(3000);
+    connect(&m_browseState->recentRetry, &QTimer::timeout, this, [this] { readRecentlyAdded(); });
     connect(&decklab::MediaPresence::instance(), &decklab::MediaPresence::changed, this, [this] {
+        readRecentlyAdded(); // r7-recent: a stick came, went or its rows moved
         if (!m_browseState || m_browseState->list != DeckLabList::Downloads ||
                 m_browseState->itemsList != DeckLabList::Downloads) return;
         if (m_page == 1 && m_browseStack && m_browseStack->currentIndex() == 0) {
@@ -2820,6 +2918,7 @@ void WDeckLab::bindBrowser(WSearchLineEdit* search, WLibrarySidebar* sidebar, WL
         auto& state = *m_browseState;
         state.filter.clear();
         state.valueLabel.clear();
+        restoreRecentSort(state, true); // r7-recent: so does Recently Added's order
         if (state.matchOnly) applyMatchFilter(true);
         showTracks();
         // Counts are final once the model has applied the query.
@@ -2839,6 +2938,7 @@ void WDeckLab::bindBrowser(WSearchLineEdit* search, WLibrarySidebar* sidebar, WL
     if (m_library) m_library->setRowHeight(44);
     initHistory(); // r5-history
     initBackgroundAnalysis(); // r7-browse
+    readRecentlyAdded();      // r7-recent
     showSources();
 }
 
@@ -3073,6 +3173,16 @@ void WDeckLab::browseBack() {
     if (m_browseStack->currentIndex() != 0) {
         // r7-browse: the tracks of DOWNLOADS go back to its list, SAMPLES to the home.
         if (folderTableShown()) {
+            if (b.folderList == decklab::FolderList::Recent) { // r7-recent: to the row it was opened from
+                b.folderList = decklab::FolderList::None;
+                if (b.list == DeckLabList::Folder) {
+                    showFolder(b.folderPath);
+                } else {
+                    activateBrowseSource(); // the Library's own list again (Mixes, All Tracks)
+                    showCategories();
+                }
+                return;
+            }
             if (b.list == DeckLabList::Downloads) showDownloads(b.downloadsKey);
             else showHome(QStringLiteral("samples"));
             return;
@@ -3179,7 +3289,11 @@ QStringList WDeckLab::browseSegments() const {
     if (tracks) {
         const QString typed = m_search ? m_search->currentText().trimmed() : QString();
         QStringList path;
-        if (folderTableShown()) { // r7-browse
+        if (folderTableShown() && b.folderList == decklab::FolderList::Recent) { // r7-recent
+            if (!b.recentStick.isEmpty()) path << (b.stickName.isEmpty() ? tr("USB stick") : b.stickName);
+            else path = b.source.isValid() ? pathTo(b.source) : QStringList{tr("Library")};
+            path << decklab::categoryName(decklab::Category::RecentlyAdded);
+        } else if (folderTableShown()) { // r7-browse
             if (b.folderList == decklab::FolderList::Samples) path << tr("Samples");
             else path << tr("Downloads");
             if (b.folderList == decklab::FolderList::Playlist) path << b.folderTitle;
@@ -3190,8 +3304,10 @@ QStringList WDeckLab::browseSegments() const {
         } else if (b.source.isValid() && b.fromCategories) {
             path = pathTo(b.source);
             const bool filtered = !b.filter.isEmpty();
-            if (filtered) path << decklab::categoryName(b.category) << b.valueLabel;
-            else if (typed.isEmpty() && !b.matchOnly) path << decklab::categoryName(decklab::Category::AllTracks);
+            if (filtered) {
+                path << decklab::categoryName(b.category);
+                if (!b.valueLabel.isEmpty()) path << b.valueLabel; // r7-recent: Recently Added has none
+            } else if (typed.isEmpty() && !b.matchOnly) path << decklab::categoryName(decklab::Category::AllTracks);
         } else {
             path = pathTo(m_sidebar->currentIndex());
         }
@@ -3359,6 +3475,8 @@ void WDeckLab::clearBrowseFilter() {
     b.filter.clear();
     b.matchOnly = false;
     b.matchApplied.clear();
+    // r7-recent: the search below reads the sort given back.
+    restoreRecentSort(b, !(filtered && m_libraryWidget));
     if (filtered && m_libraryWidget) m_libraryWidget->search(QString());
 }
 void WDeckLab::activateBrowseSource() {
@@ -3391,6 +3509,16 @@ void WDeckLab::enterCategories(const QModelIndex& source) {
     if (ready && tracks && !tracks->currentSearch().isEmpty()) m_libraryWidget->search(QString());
     if (ready && table && table->model()) b.trackCount = table->model()->rowCount();
     if (ready && b.rekordbox && b.trackCount >= 0) b.stickTracks.insert(b.stickPath, b.trackCount);
+    // r7-recent: a rekordbox export's Recently Added counts from the same
+    // rows (rekordbox's own date). The Library's comes from the read
+    // (recentTracks), read again on a new day.
+    b.recentCount = -1;
+    if (ready && b.rekordbox && tracks) {
+        b.recentCount = decklab::countAddedSince(*table->model(),
+                tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::DateTimeAdded),
+                decklab::recentlyAddedSince(QDate::currentDate()));
+    }
+    if (!b.rekordbox && b.recentAsked != QDate::currentDate()) readRecentlyAdded();
     b.loadingSince = ready ? -1 : m_clock.elapsed();
     showCategories();
 }
@@ -3426,6 +3554,9 @@ void WDeckLab::showCategories() {
     const QString loading = tr("Reading…");
     QList<std::tuple<Category, bool, QString>> entries;
     entries.append(std::make_tuple(Category::AllTracks, ready, !ready ? loading : b.trackCount >= 0 ? QString::number(b.trackCount) : QString()));
+    // r7-recent: what is new in the last 30 days; no row without any.
+    const int recent = b.rekordbox ? b.recentCount : static_cast<int>(recentLocations(QString()).size());
+    if (ready && recent > 0) entries.append(std::make_tuple(Category::RecentlyAdded, true, QString::number(recent)));
     if (b.rekordbox) {
         const int playlists = ready && sources && b.source.isValid() ? sources->rowCount(b.source) : 0;
         if (!ready || playlists) entries.append(std::make_tuple(Category::Playlists, playlists > 0, ready ? QString::number(playlists) : loading));
@@ -3503,6 +3634,24 @@ void WDeckLab::openCategory(int rowIndex) {
     if (category == Category::AllTracks) {
         activateBrowseSource();
         clearBrowseFilter();
+        b.fromCategories = true;
+        showTracks();
+        return;
+    }
+    if (category == Category::RecentlyAdded && !b.rekordbox) { openRecentlyAdded(QString()); return; } // r7-recent
+    if (category == Category::RecentlyAdded) {
+        // r7-recent: a rekordbox export's tracks with a date added filter the
+        // breadcrumb names (the search box stays free for typing), newest
+        // first with their days.
+        if (!m_libraryWidget) return;
+        activateBrowseSource();
+        if (m_search) m_search->slotRestoreSearch(QString());
+        clearBrowseFilter();
+        const QString query = decklab::recentlyAddedQuery(QDate::currentDate());
+        sortNewestFirst(b, m_libraryWidget->getCurrentTrackTableView());
+        m_libraryWidget->search(query);
+        b.filter = query;
+        b.valueLabel.clear();
         b.fromCategories = true;
         showTracks();
         return;
@@ -3616,6 +3765,11 @@ void WDeckLab::checkRekordboxImport() {
     auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
     if (table && table->model()) b.trackCount = table->model()->rowCount();
     if (!b.stickPath.isEmpty() && b.trackCount >= 0) b.stickTracks.insert(b.stickPath, b.trackCount);
+    if (auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr) { // r7-recent
+        b.recentCount = decklab::countAddedSince(*table->model(),
+                tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::DateTimeAdded),
+                decklab::recentlyAddedSince(QDate::currentDate()));
+    }
     if (b.list == DeckLabList::Categories && m_browseStack->currentIndex() == 0) showCategories();
 }
 void WDeckLab::syncSelectedTrack() {
@@ -3665,6 +3819,12 @@ void WDeckLab::refreshBrowseCard() {
             subtitle = key == QStringLiteral("tracks") ? countText(count.toInt(), tr("1 track"), tr("%1 tracks"))
                                                        : (b.stickName.isEmpty() ? tr("Folder") : b.stickName);
             if (key == QStringLiteral("tracks")) hint = tr("Press or tap to show them");
+            if (key == QStringLiteral("recent")) { // r7-recent
+                const QString days = QString::number(decklab::kRecentlyAddedDays);
+                subtitle = count == QStringLiteral("1") ? tr("Last %1 days · 1 track").arg(days)
+                                                        : tr("Last %1 days · %2 tracks").arg(days, count);
+                hint = tr("Press or tap to show them");
+            }
         } else if (key.startsWith(QStringLiteral("usb:"))) {
             hint = subtitle.startsWith(tr("rekordbox")) ? tr("Opens its playlists and tracks") : tr("Opens its folders");
         } else if (key == QStringLiteral("more")) {
@@ -3721,9 +3881,15 @@ void WDeckLab::refreshBrowseCard() {
             const auto category = static_cast<decklab::Category>(item->data(DeckLabListDelegate::CategoryRole).toInt());
             const QString count = item->data(DeckLabListDelegate::CountRole).toString();
             const bool enabled = item->flags() & Qt::ItemIsEnabled;
-            b.card->showItem(categoryGlyph(category), item->text(),
-                    !enabled || count.isEmpty() || category != decklab::Category::AllTracks ? source
-                            : count == QStringLiteral("1") ? tr("%1 · 1 track").arg(source) : tr("%1 · %2 tracks").arg(source, count),
+            QString about = !enabled || count.isEmpty() || category != decklab::Category::AllTracks ? source
+                    : count == QStringLiteral("1") ? tr("%1 · 1 track").arg(source) : tr("%1 · %2 tracks").arg(source, count);
+            if (category == decklab::Category::RecentlyAdded && enabled && !count.isEmpty()) { // r7-recent
+                const QString days = QString::number(decklab::kRecentlyAddedDays);
+                // The card is narrow: the days first, then the count.
+                about = count == QStringLiteral("1") ? tr("Last %1 days · 1 track").arg(days)
+                                                     : tr("Last %1 days · %2 tracks").arg(days, count);
+            }
+            b.card->showItem(categoryGlyph(category), item->text(), about,
                     enabled ? openHint : tr("Reading %1…").arg(source));
         } else {
             const QString count = item->data(DeckLabListDelegate::CountRole).toString();
@@ -4806,6 +4972,7 @@ void WDeckLab::markHomeStale() {
     if (!m_browseState) return;
     m_browseState->homeStale = true;
     m_browseState->libraryCountAt = -100000; // the Library tile counts again
+    readRecentlyAdded(); // r7-recent
     if (m_page == 1 && m_browseState->list == DeckLabList::Home && m_browseState->itemsList == DeckLabList::Home &&
             m_browseStack && m_browseStack->currentIndex() == 0) {
         refreshHomeIfSticksChanged();
@@ -4955,6 +5122,17 @@ void WDeckLab::showFolder(const QString& path) {
     {
         const QSignalBlocker blocker(b.items);
         b.items->clear();
+        // r7-recent: at the stick's top, what is new on it, first.
+        const int recent = !b.stickPath.isEmpty() && b.folderPath == QDir::cleanPath(b.stickPath)
+                ? static_cast<int>(recentLocations(b.stickPath).size())
+                : 0;
+        if (recent > 0) {
+            auto* item = new QListWidgetItem(decklab::categoryName(decklab::Category::RecentlyAdded), b.items);
+            item->setData(DeckLabListDelegate::KeyRole, QStringLiteral("recent"));
+            item->setData(DeckLabListDelegate::GlyphRole, static_cast<int>(decklab::Glyph::Recent));
+            item->setData(DeckLabListDelegate::CountRole, QString::number(recent));
+            item->setData(DeckLabListDelegate::ChevronRole, true);
+        }
         if (!files.isEmpty()) {
             auto* item = new QListWidgetItem(tr("Tracks in this folder"), b.items);
             item->setData(DeckLabListDelegate::KeyRole, QStringLiteral("tracks"));
@@ -4983,6 +5161,7 @@ void WDeckLab::openFolderRow(int rowIndex) {
     if (!item || !(item->flags() & Qt::ItemIsEnabled)) return;
     const QString key = item->data(DeckLabListDelegate::KeyRole).toString();
     if (key == QStringLiteral("tracks")) openFolderTracks();
+    else if (key == QStringLiteral("recent")) openRecentlyAdded(b.stickPath); // r7-recent
     else if (key.startsWith(QStringLiteral("folder:"))) showFolder(QDir(b.folderPath).filePath(key.mid(7)));
 }
 void WDeckLab::openFolderTracks() {
@@ -6748,13 +6927,17 @@ int WDeckLab::showFolderTracks(decklab::FolderList list,
         // from the library, and LOAD, pads and Preview work as anywhere.
         if (!b.folderModel) b.folderModel = new DeckLabFolderTableModel(this, m_library->trackCollectionManager());
         rows = b.folderModel->setLocations(locations, key);
+        // r7-recent: Recently Added shows each track's day.
+        b.folderModel->setProperty(decklab::kDayColumnProperty, list == decklab::FolderList::Recent);
         m_library->slotShowTrackModel(b.folderModel);
     }
     showTracks();
     // r7 fix: what the list leaves out, truthfully. Files join the library
     // with the next library scan (or, a TO PAD sample, once it is quiet).
     const int files = static_cast<int>(locations.size());
-    if (rows >= 0 && rows < files && b.toast) {
+    if (list == decklab::FolderList::Recent) { // r7-recent: library rows only; nothing waits
+        if (rows == 0 && b.toast) b.toast->showMessage(tr("Nothing in this list."), 2600);
+    } else if (rows >= 0 && rows < files && b.toast) {
         const int waiting = files - rows;
         if (list == decklab::FolderList::Samples) {
             b.toast->showMessage(waiting == 1 ? tr("1 new sample joins this list when nothing plays.")
@@ -6803,6 +6986,86 @@ void WDeckLab::openSamples(bool forPad) {
     showFolderTracks(decklab::FolderList::Samples, files, QStringLiteral("samples"), tr("Samples"));
     b.samplesForPad = forPad;
     applyBrowsePresentation();
+}
+// r7-recent: Recently Added for the Library and the sticks
+// (DeckLabFolderTableModel's rule). Its list is the folder table: the
+// library's own rows in that order, so LOAD, Preview and TO PAD work as in
+// any list, with a day column.
+void WDeckLab::readRecentlyAdded() {
+    if (!m_browseState || !m_browseState->recentWatcher || !m_library || !m_library->trackCollectionManager()) return;
+    auto& b = *m_browseState;
+    if (b.recentWatcher->isRunning()) {
+        b.recentWanted = true;
+        return;
+    }
+    // Every library row is read: only once it is quiet, never mid-set (the
+    // list keeps what it read until then).
+    if (!backgroundSettled()) {
+        b.recentWanted = true;
+        if (!b.recentRetry.isActive()) b.recentRetry.start();
+        return;
+    }
+    b.recentWanted = false;
+    const mixxx::DbConnectionPoolPtr pool = m_library->dbConnectionPool();
+    const QDate today = QDate::currentDate();
+    b.recentAsked = today;
+    b.recentWatcher->setFuture(QtConcurrent::run([pool, today] {
+        const mixxx::DbConnectionPooler pooler(pool);
+        const QSqlDatabase database = mixxx::DbConnectionPooled(pool);
+        return decklab::readRecentlyAdded(database, today);
+    }));
+}
+void WDeckLab::recentlyAddedRead() {
+    auto& b = *m_browseState;
+    if (b.recentWanted) readRecentlyAdded();
+    // The Library's categories or a stick's top folder on screen count again,
+    // on the row they were on.
+    if (m_page != 1 || !m_browseStack || m_browseStack->currentIndex() != 0 || !b.items) return;
+    const QString current = b.items->currentItem() ? b.items->currentItem()->text() : QString();
+    if (b.list == DeckLabList::Categories && b.itemsList == DeckLabList::Categories && !b.rekordbox &&
+            b.source.isValid() && !b.loadFailed) {
+        showCategories();
+    } else if (b.list == DeckLabList::Folder && b.itemsList == DeckLabList::Folder && !b.stickPath.isEmpty() &&
+            b.folderPath == QDir::cleanPath(b.stickPath)) {
+        showFolder(b.folderPath);
+    } else {
+        return;
+    }
+    for (int row = 0; row < b.items->count(); ++row) {
+        if (b.items->item(row)->text() == current) {
+            b.items->setCurrentRow(row);
+            break;
+        }
+    }
+}
+QStringList WDeckLab::recentLocations(const QString& stick) const {
+    const auto& b = *m_browseState;
+    // A stick that is out lists nothing (its rows wait, as everywhere).
+    const QStringList away = decklab::MediaPresence::instance().awayRoots();
+    const QString prefix = stick.isEmpty() ? QString() : QDir::cleanPath(stick) + QLatin1Char('/');
+    QStringList locations;
+    for (const decklab::RecentTrack& track : std::as_const(b.recentTracks)) {
+        if (!prefix.isEmpty() && !track.location.startsWith(prefix)) continue;
+        const QString root = decklab::mediaRootOf(track.location);
+        if (!root.isEmpty() && std::binary_search(away.cbegin(), away.cend(), root)) continue;
+        locations << track.location;
+    }
+    return locations;
+}
+void WDeckLab::openRecentlyAdded(const QString& stick) {
+    auto& b = *m_browseState;
+    const QStringList locations = recentLocations(stick);
+    if (locations.isEmpty()) return;
+    b.recentStick = stick;
+    showFolderTracks(decklab::FolderList::Recent, locations,
+            stick.isEmpty() ? QStringLiteral("recent") : QString(QStringLiteral("recent:") + stick),
+            decklab::categoryName(decklab::Category::RecentlyAdded));
+}
+void WDeckLab::setRecentlyAddedForTesting(const QList<decklab::RecentTrack>& tracks) {
+    if (!m_browseState) return;
+    m_browseState->recentTracks = tracks;
+    m_browseState->recentAsked = QDate::currentDate();
+    recentlyAddedRead();
 }
 bool WDeckLab::folderTableShown() const {
     if (!m_browseState || !m_browseStack || m_browseStack->currentIndex() == 0) return false;

@@ -5,6 +5,8 @@
 #include <QRegularExpression>
 #include <algorithm>
 
+#include "decklab/decklabmedia.h" // r7-recent: a stick's top folder
+
 namespace decklab {
 
 namespace {
@@ -247,6 +249,16 @@ QStringList audioFilesNewestFirst(const QString& folder) {
 bool isSampleLocation(const QString& location) {
     const QString samples = samplesFolder();
     return !samples.isEmpty() && location.startsWith(QDir::cleanPath(samples) + QLatin1Char('/'));
+}
+
+bool isDownloadLocation(const QString& location) {
+    const QString stick = mediaRootOf(location);
+    if (!stick.isEmpty() &&
+            location.startsWith(stick + QLatin1Char('/') + kDownloadsFolderName + QLatin1Char('/'))) {
+        return true;
+    }
+    const QString card = cardDownloadsFolder();
+    return !card.isEmpty() && location.startsWith(QDir::cleanPath(card) + QLatin1Char('/'));
 }
 
 } // namespace decklab

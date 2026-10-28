@@ -9,6 +9,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QLocale> // r7-recent
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QTemporaryDir>
@@ -24,6 +25,7 @@
 #include "library/trackcollection.h"
 #include "test/librarytest.h"
 #include "track/track.h"
+#include "widget/decklabbrowse.h" // r7-recent
 #include "widget/decklabbrowsehome.h"
 
 namespace {
@@ -691,4 +693,209 @@ TEST_F(DeckLabDownloadsDbTest, AnalysisTakesUnanalyzedDownloadsNewestFirst) {
     EXPECT_EQ(2, where.size());
     EXPECT_EQ(fresh, where.value(freshId));
     EXPECT_EQ(keyless, where.value(keylessId));
+}
+
+// r7-recent: Recently Added is Mixxx's own date added filter on the Library's
+// track list: the tracks added in the last 30 days (whatever added them),
+// newest first by date added, and the count Browse shows reads the same
+// rows. The filter holds in a locale whose short date has spaces in it.
+TEST_F(DeckLabDownloadsDbTest, RecentlyAddedListsTheLast30DaysNewestFirst) {
+    QTemporaryDir music;
+    const MusicFolder folder(music.path());
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    const QList<std::pair<QString, qint64>> added{
+            {QStringLiteral("Generated Older"), 60LL * 24 * 3600},
+            {QStringLiteral("Generated Week"), 7LL * 24 * 3600},
+            {QStringLiteral("Generated Now"), 3600},
+            {QStringLiteral("Generated Last Month"), 31LL * 24 * 3600},
+            {QStringLiteral("Generated Fortnight"), 14LL * 24 * 3600},
+            {QStringLiteral("Generated Edge"), 29LL * 24 * 3600},
+    };
+    QHash<QString, QString> paths;
+    for (const auto& [title, seconds] : added) {
+        const QString path = music.filePath(QStringLiteral("New Music/") + title + QStringLiteral(".wav"));
+        paths.insert(title, path);
+        const TrackId id = addTrack(path, title, 124, QStringLiteral("8A"), true);
+        QSqlQuery query(internalCollection()->database());
+        query.prepare(QStringLiteral("UPDATE library SET datetime_added = :added WHERE id = :id"));
+        query.bindValue(QStringLiteral(":added"), now.addSecs(-seconds));
+        query.bindValue(QStringLiteral(":id"), id.toVariant());
+        ASSERT_TRUE(query.exec()) << query.lastError().text().toStdString();
+    }
+    connectLibraryCache();
+    const QStringList newest{paths.value(QStringLiteral("Generated Now")),
+            paths.value(QStringLiteral("Generated Week")),
+            paths.value(QStringLiteral("Generated Fortnight")),
+            paths.value(QStringLiteral("Generated Edge"))};
+
+    LibraryTableModel tracks(nullptr, trackCollectionManager(), "mixxx.db.model.library");
+    tracks.select();
+    ASSERT_EQ(6, tracks.rowCount());
+    const QDate today = QDate::currentDate();
+    const int column = tracks.columnIndexFromSortColumnId(TrackModel::SortColumnId::DateTimeAdded);
+    ASSERT_GE(column, 0);
+    EXPECT_EQ(4, decklab::countAddedSince(tracks, column, decklab::recentlyAddedSince(today)));
+    EXPECT_EQ(-1, decklab::countAddedSince(tracks, -1, decklab::recentlyAddedSince(today))) << "no date added column";
+    tracks.setSort(column, Qt::DescendingOrder);
+    const QLocale before;
+    for (const QLocale& locale : {QLocale(QLocale::English, QLocale::UnitedStates),
+                 QLocale(QLocale::German, QLocale::Germany), QLocale::c()}) {
+        QLocale::setDefault(locale);
+        tracks.search(decklab::recentlyAddedQuery(today));
+        EXPECT_EQ(newest, locations(tracks)) << decklab::recentlyAddedQuery(today).toStdString();
+    }
+    QLocale::setDefault(before);
+    tracks.search(QString());
+    EXPECT_EQ(6, tracks.rowCount());
+}
+
+// r7-recent: the day Recently Added shows each track under: Today,
+// Yesterday, else the day and month as the History's days read.
+TEST(DeckLabDownloadsTest, RecentlyAddedDayLabels) {
+    const QLocale before;
+    QLocale::setDefault(QLocale(QLocale::English, QLocale::UnitedKingdom));
+    const QDate today(2026, 10, 27);
+    EXPECT_EQ(QStringLiteral("Today"), decklab::recentDayLabel(today, today));
+    EXPECT_EQ(QStringLiteral("Yesterday"), decklab::recentDayLabel(QDate(2026, 10, 26), today));
+    EXPECT_EQ(QStringLiteral("25 Oct"), decklab::recentDayLabel(QDate(2026, 10, 25), today));
+    EXPECT_EQ(QStringLiteral("30 Dec 2025"), decklab::recentDayLabel(QDate(2025, 12, 30), QDate(2026, 1, 2)));
+    EXPECT_TRUE(decklab::recentDayLabel(QDate(), today).isEmpty());
+    QLocale::setDefault(before);
+}
+
+// r7-recent: one rule for every root: what is new to this unit in the last
+// 30 days, newest first, without a root's starting collection (the tracks
+// of the local day it first had any), but with Get Music's downloads even
+// on that day. Counts mirror a real unit: the Music folder had 21 tracks
+// over six days from day 29, a stick 100 on its first read (day 13), then
+// 144 over the next days, and 96 downloads to the stick over days 3 and 2.
+TEST(DeckLabDownloadsTest, RecentlyAddedLeavesOutAStartingCollection) {
+    const MusicFolder folder(QStringLiteral("/home/decklab/Music"));
+    const QStringList directories{QStringLiteral("/home/decklab/Music")};
+    const QString stick = QStringLiteral("/media/decklab/1234-ABCD");
+    const QDate today = QDate::currentDate();
+    const auto at = [today](int daysAgo, int minute) {
+        return QDateTime(today.addDays(-daysAgo), QTime(10, 0)).addSecs(60LL * minute);
+    };
+    QList<decklab::AddedRow> rows;
+    for (int n = 0; n < 21; ++n) { // 5 on its first day, then 16 over five days
+        const int day = n < 5 ? 29 : 28 - (n - 5) % 5;
+        rows.append({QStringLiteral("/home/decklab/Music/Generated Song %1.wav").arg(n), at(day, n), true});
+    }
+    for (int n = 0; n < 100; ++n) {
+        rows.append({stick + QStringLiteral("/Crate/Generated Tone %1.wav").arg(n), at(13, n % 50), true});
+    }
+    for (int n = 0; n < 144; ++n) {
+        rows.append({stick + QStringLiteral("/Later/Generated Tone %1.wav").arg(n), at(11 - n % 8, n), true});
+    }
+    for (int n = 0; n < 96; ++n) {
+        rows.append({stick + QStringLiteral("/Deck Lab Downloads/Generated Download %1.m4a").arg(n),
+                at(n < 48 ? 3 : 2, n), true});
+    }
+    // A sample, a hidden row and a track from before the window: never listed.
+    rows.append({QStringLiteral("/home/decklab/Music/Deck Lab Samples/Generated Hit.wav"), at(1, 0), true});
+    rows.append({stick + QStringLiteral("/Later/Generated Merged.wav"), at(1, 1), false});
+    rows.append({QStringLiteral("/srv/decklab/Generated Loose.wav"), at(40, 0), true});
+    const QList<decklab::RecentTrack> recent = decklab::recentlyAdded(rows, directories, today);
+    EXPECT_EQ(16 + 144 + 96, recent.size());
+    int downloads = 0;
+    for (int n = 0; n < recent.size(); ++n) {
+        EXPECT_FALSE(recent[n].location.contains(QStringLiteral("/Crate/"))) << "the stick's first read";
+        EXPECT_FALSE(recent[n].location.endsWith(QStringLiteral("Generated Hit.wav")));
+        EXPECT_FALSE(recent[n].location.endsWith(QStringLiteral("Generated Merged.wav")));
+        if (n > 0) EXPECT_GE(recent[n - 1].added, recent[n].added) << "newest first";
+        downloads += recent[n].location.contains(QStringLiteral("/Deck Lab Downloads/"));
+    }
+    EXPECT_EQ(96, downloads);
+    // Downloads count on their root's first day too: a stick Get Music
+    // filled first, and the Pi card's New Music on the Music folder's first day.
+    const QString other = QStringLiteral("/media/decklab/9999-0000");
+    const QList<decklab::AddedRow> firstDay{
+            {other + QStringLiteral("/Deck Lab Downloads/Generated First.m4a"), at(5, 0), true},
+            {other + QStringLiteral("/Generated Copied.wav"), at(5, 1), true},
+            {QStringLiteral("/home/decklab/Music/New Music/Generated Single.m4a"), at(20, 0), true},
+            {QStringLiteral("/home/decklab/Music/Generated Song.wav"), at(20, 1), true},
+            {QStringLiteral("/home/decklab/Music/Generated Later.wav"), at(19, 0), true}};
+    QStringList kept;
+    for (const auto& track : decklab::recentlyAdded(firstDay, directories, today)) kept << track.location;
+    EXPECT_EQ((QStringList{other + QStringLiteral("/Deck Lab Downloads/Generated First.m4a"),
+                      QStringLiteral("/home/decklab/Music/Generated Later.wav"),
+                      QStringLiteral("/home/decklab/Music/New Music/Generated Single.m4a")}),
+            kept);
+    // The roots: a stick's media root first, else the longest library folder.
+    EXPECT_EQ(stick, decklab::recentRootOf(stick + QStringLiteral("/a/b.wav"), directories));
+    EXPECT_EQ(QStringLiteral("/home/decklab/Music/Sets"),
+            decklab::recentRootOf(QStringLiteral("/home/decklab/Music/Sets/x.wav"),
+                    {QStringLiteral("/home/decklab/Music"), QStringLiteral("/home/decklab/Music/Sets/")}));
+    EXPECT_TRUE(decklab::recentRootOf(QStringLiteral("/srv/x.wav"), directories).isEmpty());
+    EXPECT_TRUE(decklab::isDownloadLocation(stick + QStringLiteral("/Deck Lab Downloads/x.m4a")));
+    EXPECT_FALSE(decklab::isDownloadLocation(stick + QStringLiteral("/Music/Deck Lab Downloads/x.m4a")));
+    EXPECT_TRUE(decklab::isDownloadLocation(QStringLiteral("/home/decklab/Music/New Music/x.m4a")));
+}
+
+// r7-recent: the same rule read from the library database (the library
+// folders from Mixxx's directories table; every row, hidden ones too, for a
+// root's first day), then shown by the folder table in that order with each
+// track's date added for its day column. Two roots with different first days.
+TEST_F(DeckLabDownloadsDbTest, RecentlyAddedReadsTheLibraryAndShowsItNewestFirst) {
+    const MusicFolder folder(QStringLiteral("/home/decklab/Music"));
+    const QString stick = QStringLiteral("/media/decklab/1234-ABCD");
+    const QDate today = QDate::currentDate();
+    QSqlQuery query(internalCollection()->database());
+    ASSERT_TRUE(query.exec(QStringLiteral("INSERT INTO directories (directory) VALUES ('/home/decklab/Music')")))
+            << query.lastError().text().toStdString();
+    struct Row {
+        QString location;
+        int daysAgo;
+        bool hidden;
+    };
+    const QList<Row> rows{
+            {QStringLiteral("/home/decklab/Music/Generated First A.wav"), 25, false},
+            {QStringLiteral("/home/decklab/Music/Generated First B.wav"), 25, false},
+            {QStringLiteral("/home/decklab/Music/Generated Second.wav"), 9, false},
+            {stick + QStringLiteral("/Generated Hidden First.wav"), 14, true}, // the stick's first day
+            {stick + QStringLiteral("/Generated Read.wav"), 14, false},
+            {stick + QStringLiteral("/Deck Lab Downloads/Generated Download.m4a"), 14, false},
+            {stick + QStringLiteral("/Generated New.wav"), 4, false},
+            {QStringLiteral("/home/decklab/Music/Generated Old.wav"), 45, false},
+    };
+    for (const Row& row : rows) {
+        const TrackId id = addTrack(row.location, QFileInfo(row.location).baseName(), 124, QStringLiteral("8A"), true);
+        query.prepare(QStringLiteral("UPDATE library SET datetime_added = :added, mixxx_deleted = :hidden WHERE id = :id"));
+        query.bindValue(QStringLiteral(":added"), QDateTime(today.addDays(-row.daysAgo), QTime(11, 0)).toUTC());
+        query.bindValue(QStringLiteral(":hidden"), row.hidden ? 1 : 0);
+        query.bindValue(QStringLiteral(":id"), id.toVariant());
+        ASSERT_TRUE(query.exec()) << query.lastError().text().toStdString();
+    }
+    // The Music folder's first day was day 45 (Generated Old): day 25 counts.
+    QStringList newest;
+    for (const auto& track : decklab::readRecentlyAdded(internalCollection()->database(), today)) {
+        newest << track.location;
+        EXPECT_EQ(QTime(11, 0), track.added.time()) << "local time";
+    }
+    EXPECT_EQ((QStringList{stick + QStringLiteral("/Generated New.wav"),
+                      QStringLiteral("/home/decklab/Music/Generated Second.wav"),
+                      stick + QStringLiteral("/Deck Lab Downloads/Generated Download.m4a"),
+                      QStringLiteral("/home/decklab/Music/Generated First A.wav"),
+                      QStringLiteral("/home/decklab/Music/Generated First B.wav")}),
+            newest);
+    // Without its oldest row the Music folder's first day is day 25.
+    ASSERT_TRUE(query.exec(QStringLiteral("UPDATE library SET datetime_added = NULL WHERE location IN "
+                                          "(SELECT id FROM track_locations WHERE location LIKE '%Generated Old.wav')")));
+    QStringList later;
+    for (const auto& track : decklab::readRecentlyAdded(internalCollection()->database(), today)) later << track.location;
+    EXPECT_EQ((QStringList{stick + QStringLiteral("/Generated New.wav"),
+                      QStringLiteral("/home/decklab/Music/Generated Second.wav"),
+                      stick + QStringLiteral("/Deck Lab Downloads/Generated Download.m4a")}),
+            later);
+    // The list: the library's rows in that order, each with its date added.
+    connectLibraryCache();
+    DeckLabFolderTableModel list(nullptr, trackCollectionManager());
+    EXPECT_EQ(3, list.setLocations(later, QStringLiteral("recent")));
+    EXPECT_EQ(later, locations(list));
+    const int added = list.columnIndexFromSortColumnId(TrackModel::SortColumnId::DateTimeAdded);
+    ASSERT_GE(added, 0);
+    EXPECT_FALSE(list.isColumnInternal(added));
+    EXPECT_EQ(today.addDays(-4), list.index(0, added).data().toDate());
+    EXPECT_EQ(today.addDays(-14), list.index(2, added).data().toDate());
 }

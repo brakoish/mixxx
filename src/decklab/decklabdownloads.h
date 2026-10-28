@@ -86,5 +86,9 @@ QStringList audioFilesNewestFirst(const QString& folder);
 
 /// Whether location lies inside the samples folder.
 bool isSampleLocation(const QString& location);
+/// r7-recent: whether location is a Get Music download: inside "Deck Lab
+/// Downloads" at the top of a stick (its media root, decklabmedia.h) or
+/// inside ~/Music/New Music. Names only, no file is read.
+bool isDownloadLocation(const QString& location);
 
 } // namespace decklab

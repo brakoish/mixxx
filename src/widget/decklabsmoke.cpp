@@ -8,6 +8,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFontInfo>
+#include <QHeaderView> // r7-recent
 #include <QHelpEvent>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -21,6 +22,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QSet> // r7-recent
 #include <QSqlQuery> // r5-history
 #include <QStackedWidget>
 #include <QTimer>
@@ -38,6 +40,8 @@
 #include "decklab/decklabsystemui.h"
 #include "decklab/decklabui.h"
 #include "library/decklabknob.h"
+#include "library/basetrackcache.h"            // r7-recent
+#include "library/decklabfoldertablemodel.h"   // r7-recent
 #include "library/coverartutils.h"
 #include "library/library.h"
 #include "library/librarytablemodel.h" // r5-fix2-history
@@ -466,6 +470,38 @@ void seedDemoDownloads(Library* library, const QString& stickRoot, const QString
     }
 }
 
+// r7-recent: the demo tracks came in over the last days (two longer ago than
+// Recently Added's 30 days), the downloads today. The surface reads Recently
+// Added off the GUI thread once it is quiet; here it is read at once.
+void seedDemoRecent(WDeckLab* surface) {
+    Library* library = surface ? surface->library() : nullptr;
+    if (!library || !library->trackCollectionManager()) return;
+    TrackCollection* collection = library->trackCollectionManager()->internalCollection();
+    QSqlDatabase database = collection->database();
+    const QDate today = QDate::currentDate();
+    QSet<TrackId> changed;
+    int n = 0;
+    for (const DemoTrack& demo : kDemoTracks) {
+        const int daysAgo = n < 3 ? 1 : n < 6 ? 4 : n < 8 ? 12 : 45;
+        ++n;
+        const QDateTime added = QDateTime(today.addDays(-daysAgo), QTime(18, 0)).toUTC();
+        QSqlQuery query(database);
+        query.prepare(QStringLiteral("SELECT id FROM library WHERE title = :title"));
+        query.bindValue(QStringLiteral(":title"), QString::fromUtf8(demo.title));
+        if (!query.exec() || !query.next()) continue;
+        const TrackId id(query.value(0));
+        QSqlQuery update(database);
+        update.prepare(QStringLiteral("UPDATE library SET datetime_added = :added WHERE id = :id"));
+        update.bindValue(QStringLiteral(":added"), added);
+        update.bindValue(QStringLiteral(":id"), id.toVariant());
+        if (!update.exec()) continue;
+        if (const TrackPointer track = library->trackCollectionManager()->getTrackById(id)) track->setDateAdded(added);
+        changed.insert(id);
+    }
+    collection->getTrackSource()->slotTracksAddedOrChanged(changed);
+    surface->setRecentlyAddedForTesting(decklab::readRecentlyAdded(database, today));
+}
+
 // r5-history: a generated history for the History captures: last night's
 // set (two demo tracks, moved back a day) and this set (three, two of them
 // on paused decks). Rows go into Mixxx's own history playlists as the setlog
@@ -848,6 +884,7 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
             seedDemoStick(QDir(config->getSettingsPath()).filePath("decklab-demo-media"));
             seedDemoDownloads(surface->library(), QDir(config->getSettingsPath()).filePath("decklab-demo-media"),
                     QDir(config->getSettingsPath()).filePath("decklab-demo-home/Music")); // r7-browse
+            seedDemoRecent(surface); // r7-recent
             const auto press = [surface] { surface->browsePress(); return true; };
             auto captures = std::make_shared<QList<BrowseCapture>>(QList<BrowseCapture>{
                     {"sources", 500, [surface] {
@@ -1093,6 +1130,73 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                                  ControlObject::set(ConfigKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("eject")), 0);
                              });
                          });
+                         return true;
+                     }},
+                    {"recently-added-row", 600, [surface, failures] {
+                         // r7-recent: back on the Library's categories, Recently
+                         // Added follows All Tracks (the demo tracks came in over
+                         // the last days; two are older than 30 days).
+                         surface->browseBack();
+                         QCoreApplication::processEvents();
+                         auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
+                         int all = -1;
+                         int recent = -1;
+                         for (int row = 0; list && row < list->count(); ++row) {
+                             const QString text = list->item(row)->text();
+                             if (text == decklab::categoryName(decklab::Category::AllTracks)) all = row;
+                             if (text == decklab::categoryName(decklab::Category::RecentlyAdded)) recent = row;
+                         }
+                         if (all < 0 || recent != all + 1) failures->append(QStringLiteral("Recently Added does not follow All Tracks"));
+                         return selectListItem(surface, decklab::categoryName(decklab::Category::RecentlyAdded));
+                     }},
+                    {"recently-added", 900, [surface, failures] {
+                         // Its tracks, newest first, each with its day first: the
+                         // Library's own rows (the folder table).
+                         surface->browsePress();
+                         QCoreApplication::processEvents();
+                         auto* library = surface->findChild<WLibrary*>();
+                         auto* table = library ? library->getCurrentTrackTableView() : nullptr;
+                         auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
+                         const int added = tracks ? tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::DateTimeAdded) : -1;
+                         if (added < 0 || table->isColumnHidden(added) || table->horizontalHeader()->visualIndex(added) != 0 ||
+                                 !table->itemDelegateForColumn(added) ||
+                                 !table->itemDelegateForColumn(added)->property("decklabDay").toBool()) {
+                             failures->append(QStringLiteral("Recently Added shows no day column"));
+                         }
+                         for (int row = 1; added >= 0 && row < table->model()->rowCount(); ++row) {
+                             if (table->model()->index(row, added).data().toDate() > table->model()->index(row - 1, added).data().toDate())
+                                 failures->append(QStringLiteral("Recently Added is not newest first"));
+                         }
+                         if (!table || !table->model()->rowCount()) return false;
+                         table->selectRow(0);
+                         return true;
+                     }},
+                    {"recently-added-back", 600, [surface, failures] {
+                         // Back on its row; All Tracks keeps its own columns.
+                         surface->browseBack();
+                         QCoreApplication::processEvents();
+                         auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
+                         auto* library = surface->findChild<WLibrary*>();
+                         auto* table = library ? library->getCurrentTrackTableView() : nullptr;
+                         auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
+                         const int added = tracks ? tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::DateTimeAdded) : -1;
+                         if (added >= 0 && !table->isColumnHidden(added)) failures->append(QStringLiteral("All Tracks shows the day column"));
+                         return list && list->currentItem() &&
+                                 list->currentItem()->text() == decklab::categoryName(decklab::Category::RecentlyAdded);
+                     }},
+                    {"recently-added-stick", 600, [surface, failures] {
+                         // The demo stick's top folder starts with what is new on it.
+                         clickVisible(surface, QStringLiteral("decklab-usb"));
+                         QCoreApplication::processEvents();
+                         surface->browsePress();
+                         QCoreApplication::processEvents();
+                         auto* list = surface->findChild<QListWidget*>(QStringLiteral("decklab-browse-categories"));
+                         if (!list || !list->count() ||
+                                 list->item(0)->text() != decklab::categoryName(decklab::Category::RecentlyAdded)) {
+                             failures->append(QStringLiteral("The stick's top folder has no Recently Added row"));
+                             return false;
+                         }
+                         list->setCurrentRow(0);
                          return true;
                      }},
                     {"downloads", 900, [surface, failures] {

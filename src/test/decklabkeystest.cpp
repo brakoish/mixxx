@@ -4,6 +4,8 @@
 // texts only: as a rekordbox export, a file tag or Mixxx would store them.
 #include <gtest/gtest.h>
 
+#include <QDate> // r7-recent
+#include <QHash>
 #include <QListWidget>
 #include <QSet>
 #include <QSqlDatabase>
@@ -474,4 +476,70 @@ TEST(DeckLabBrowseTest, RekordboxRowsReadSortAndFilterByKey) {
     }
     QSqlDatabase::removeDatabase(connection);
     notation->set(before);
+}
+
+// r7-recent: a rekordbox USB's rows keep the export's date added ("YYYY-MM-DD",
+// rekordbox's own day) in datetime_added, so the feature's model has a date
+// added column: Recently Added filters the last 30 days with Mixxx's date
+// added filter (no first-import rule: the date is rekordbox's) and sorts
+// newest first. A table made by an older build gets the column (it is
+// dropped and made again at start, but never trusted). Generated rows.
+TEST(DeckLabBrowseTest, RekordboxRowsKeepTheirDateAdded) {
+    const QString connection = QStringLiteral("decklab-r7-recent-rekordbox");
+    {
+        QSqlDatabase database = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connection);
+        database.setDatabaseName(QStringLiteral(":memory:"));
+        ASSERT_TRUE(database.open());
+        // An older build's table: no datetime_added.
+        QSqlQuery query(database);
+        ASSERT_TRUE(query.exec(QStringLiteral(
+                "CREATE TABLE rekordbox_library (id INTEGER PRIMARY KEY AUTOINCREMENT, rb_id INTEGER, "
+                "artist TEXT, title TEXT, album TEXT, year INTEGER, genre TEXT, tracknumber TEXT, "
+                "location TEXT UNIQUE, comment TEXT, duration INTEGER, bitrate TEXT, bpm FLOAT, key TEXT, "
+                "key_id INTEGER, rating INTEGER, analyze_path TEXT UNIQUE, device TEXT, color INTEGER)")));
+        ASSERT_TRUE(RekordboxFeature::createLibraryTableForTesting(database));
+        ASSERT_TRUE(RekordboxFeature::createLibraryTableForTesting(database)) << "twice is fine";
+        ASSERT_TRUE(query.exec(QStringLiteral("PRAGMA table_info(rekordbox_library)")));
+        QStringList columns;
+        while (query.next()) columns << query.value(1).toString();
+        EXPECT_EQ(1, columns.count(LIBRARYTABLE_DATETIMEADDED));
+        const QDate today = QDate::currentDate();
+        const QList<std::pair<QString, QString>> tracks{
+                {QStringLiteral("Generated Tone Old"), today.addDays(-40).toString(Qt::ISODate)},
+                {QStringLiteral("Generated Tone Week"), today.addDays(-7).toString(Qt::ISODate)},
+                {QStringLiteral("Generated Tone Undated"), QString()},
+                {QStringLiteral("Generated Tone Today"), today.toString(Qt::ISODate)},
+                {QStringLiteral("Generated Tone Month"), today.addDays(-29).toString(Qt::ISODate)}};
+        for (int row = 0; row < tracks.size(); ++row) {
+            ASSERT_TRUE(RekordboxFeature::insertLibraryTrackForTesting(
+                    database, row + 1, tracks[row].first, QStringLiteral("8A"), tracks[row].second));
+        }
+        // Read back as the model reads it: the same local day everywhere.
+        ASSERT_TRUE(query.exec(QStringLiteral("SELECT title, datetime_added FROM rekordbox_library ORDER BY rb_id")));
+        QHash<QString, QDate> days;
+        while (query.next()) {
+            const QDateTime stored = query.value(1).toDateTime();
+            days.insert(query.value(0).toString(), stored.isValid() ? stored.toLocalTime().date() : QDate());
+        }
+        EXPECT_EQ(today, days.value(QStringLiteral("Generated Tone Today")));
+        EXPECT_EQ(today.addDays(-7), days.value(QStringLiteral("Generated Tone Week")));
+        EXPECT_FALSE(days.value(QStringLiteral("Generated Tone Undated")).isValid());
+        // The feature's columns carry it, mapped as Mixxx's date added column.
+        const QStringList feature = RekordboxFeature::libraryColumns();
+        ASSERT_TRUE(feature.contains(LIBRARYTABLE_DATETIMEADDED));
+        ColumnCache cache(feature);
+        EXPECT_GE(cache.fieldIndex(ColumnCache::COLUMN_LIBRARYTABLE_DATETIMEADDED), 0);
+        // Recently Added's filter, parsed as BaseTrackCache parses it, newest first.
+        SearchQueryParser parser(nullptr, {LIBRARYTABLE_TITLE});
+        parser.setAvailableColumns(feature);
+        const QString where = parser.parseQuery(decklab::recentlyAddedQuery(today), QString())->toSql();
+        ASSERT_TRUE(query.exec(QStringLiteral("SELECT title FROM rekordbox_library WHERE %1 ORDER BY datetime_added DESC")
+                                       .arg(where)))
+                << where.toStdString();
+        QStringList recent;
+        while (query.next()) recent << query.value(0).toString();
+        EXPECT_EQ((QStringList{"Generated Tone Today", "Generated Tone Week", "Generated Tone Month"}), recent);
+        database.close();
+    }
+    QSqlDatabase::removeDatabase(connection);
 }
