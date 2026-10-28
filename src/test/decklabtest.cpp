@@ -60,6 +60,7 @@
 #include "effects/effectslot.h"
 #include "engine/decklabplaystart.h" // r6-playstart
 #include "library/decklabknob.h"
+#include "library/decklabfoldertablemodel.h" // r7-recent
 #include "library/libraryfeature.h"
 #include "library/librarycontrol.h"
 #include "library/library_prefs.h" // r6-keys
@@ -8370,13 +8371,14 @@ class DeckLabDatedLibrary final : public QStandardItemModel, public TrackModel {
 };
 } // namespace
 
-// r7-recent: Recently Added follows All Tracks in the Library's categories
-// (never on a rekordbox stick: an export has no date added), counting what
-// the last 30 days brought. It lists those tracks newest first; Back returns
-// to it; All Tracks afterwards is every track in the DJ's own order, and the
-// saved sort never moved. Typing in it searches the library, as typing
-// replaces a category value (B-35).
-TEST_F(NativeDeckLabTest, RecentlyAddedListsTheLast30DaysNewestFirst) {
+// r7-recent: a rekordbox stick's Recently Added follows All Tracks, counting
+// what rekordbox's own date says came in the last 30 days. It lists those
+// tracks newest first with their day in the first column; Back returns to
+// it; All Tracks afterwards is every track in the DJ's own order, no day
+// column, and the saved sort never moved. Typing in it searches the stick,
+// as typing replaces a category value (B-35). The rows here stand in for the
+// export's (the date added column is what the feature reads).
+TEST_F(NativeDeckLabTest, RekordboxRecentlyAddedListsTheLast30DaysNewestFirst) {
     const QDateTime now = QDateTime::currentDateTime();
     auto* rows = new DeckLabDatedLibrary({{QStringLiteral("Generated Tone A"), now.addDays(-2)},
             {QStringLiteral("Generated Tone B"), now.addDays(-45)},
@@ -8391,12 +8393,20 @@ TEST_F(NativeDeckLabTest, RecentlyAddedListsTheLast30DaysNewestFirst) {
     table->sortByColumn(0, Qt::AscendingOrder); settle(); // the DJ's own order: by title
     const QString saved = rows->getModelSetting(QStringLiteral("ColumnsSorting"));
     ASSERT_FALSE(saved.isEmpty());
+    const int dayColumn = 1;
+    ASSERT_TRUE(table->isColumnHidden(dayColumn));
     const QString stick = makeStick(QStringLiteral("3A1F-0C2D"), true);
     addRekordboxDevice(QStringLiteral("DJ USB"), stick, true);
     panel->selectPage(1); QCoreApplication::processEvents();
+    // The Library has no Recently Added before its read found any.
     ASSERT_TRUE(selectRow(QStringLiteral("Library")));
     panel->browsePress(); QCoreApplication::processEvents();
-    EXPECT_EQ((QStringList{"All Tracks", "Recently Added", "Artist", "Album", "BPM", "Key"}), listTexts());
+    EXPECT_EQ((QStringList{"All Tracks", "Artist", "Album", "BPM", "Key"}), listTexts());
+    panel->browseBack(); QCoreApplication::processEvents();
+    ASSERT_TRUE(selectRow(QStringLiteral("DJ USB"))) << listTexts().join(" / ").toStdString();
+    panel->browsePress(); QCoreApplication::processEvents();
+    ASSERT_EQ(QStringList{QStringLiteral("DJ USB")}, crumbs());
+    EXPECT_EQ((QStringList{"All Tracks", "Recently Added", "Playlists", "Artist", "Album", "BPM", "Key"}), listTexts());
     auto* list = browseList(); ASSERT_NE(nullptr, list);
     ASSERT_GE(list->count(), 2);
     const QListWidgetItem* recent = list->item(1);
@@ -8408,52 +8418,112 @@ TEST_F(NativeDeckLabTest, RecentlyAddedListsTheLast30DaysNewestFirst) {
     auto* card = static_cast<DeckLabTrackCard*>(panel->findChild<QWidget*>("decklab-track-card"));
     ASSERT_NE(nullptr, card);
     EXPECT_EQ(QStringLiteral("Recently Added"), card->title());
-    capture(QStringLiteral("r7-recent-categories.png"));
-    // Its tracks: the last 30 days, newest first; the search box stays free.
+    // Its tracks: the last 30 days, newest first, each with its day; the
+    // search box stays free.
     panel->browsePress(); QCoreApplication::processEvents(); settle();
     EXPECT_TRUE(library->isVisible());
-    EXPECT_EQ((QStringList{"Library", "Recently Added"}), crumbs());
+    EXPECT_EQ((QStringList{"DJ USB", "Recently Added"}), crumbs());
     EXPECT_EQ((QStringList{"Generated Tone C", "Generated Tone A", "Generated Tone D"}), rows->titles());
-    EXPECT_EQ(1, table->horizontalHeader()->sortIndicatorSection());
+    EXPECT_EQ(dayColumn, table->horizontalHeader()->sortIndicatorSection());
     EXPECT_EQ(Qt::DescendingOrder, table->horizontalHeader()->sortIndicatorOrder());
     EXPECT_NE(saved, rows->getModelSetting(QStringLiteral("ColumnsSorting")));
+    EXPECT_FALSE(table->isColumnHidden(dayColumn));
+    EXPECT_EQ(0, table->horizontalHeader()->visualIndex(dayColumn)) << "the day comes first";
+    ASSERT_NE(nullptr, table->itemDelegateForColumn(dayColumn));
+    EXPECT_TRUE(table->itemDelegateForColumn(dayColumn)->property("decklabDay").toBool());
+    const QDate today = QDate::currentDate();
+    QStringList days;
+    for (int row = 0; row < rows->rowCount(); ++row) {
+        days << decklab::recentDayLabel(rows->index(row, dayColumn).data().toDate(), today);
+    }
+    EXPECT_EQ(decklab::recentDayLabel(today.addDays(-2), today), days.value(1));
+    EXPECT_EQ(days.join(QLatin1Char(' ')), paintedKeys(table, dayColumn));
     auto* searchBox = panel->findChild<WSearchLineEdit*>(); ASSERT_NE(nullptr, searchBox);
     EXPECT_TRUE(searchBox->currentText().isEmpty());
-    capture(QStringLiteral("r7-recent-tracks.png"));
-    // Back: on Recently Added, the DJ's order back and its saved sort as it was.
+    capture(QStringLiteral("r7-recent-rekordbox-tracks.png"));
+    // Back: on Recently Added, the DJ's order and columns back, its saved sort as it was.
     panel->browseBack(); QCoreApplication::processEvents();
-    EXPECT_EQ(QStringList{QStringLiteral("Library")}, crumbs());
+    EXPECT_EQ(QStringList{QStringLiteral("DJ USB")}, crumbs());
     ASSERT_NE(nullptr, list->currentItem());
     EXPECT_EQ(QStringLiteral("Recently Added"), list->currentItem()->text());
     EXPECT_EQ(0, table->horizontalHeader()->sortIndicatorSection());
     EXPECT_EQ(Qt::AscendingOrder, table->horizontalHeader()->sortIndicatorOrder());
     EXPECT_EQ(saved, rows->getModelSetting(QStringLiteral("ColumnsSorting")));
+    EXPECT_TRUE(table->isColumnHidden(dayColumn));
+    EXPECT_FALSE(rows->property(decklab::kDayColumnProperty).toBool());
     // All Tracks afterwards: every track, by title.
     ASSERT_TRUE(selectRow(QStringLiteral("All Tracks")));
     panel->browsePress(); QCoreApplication::processEvents(); settle();
-    EXPECT_EQ((QStringList{"Library", "All Tracks"}), crumbs());
+    EXPECT_EQ((QStringList{"DJ USB", "All Tracks"}), crumbs());
     EXPECT_EQ((QStringList{"Generated Tone A", "Generated Tone B", "Generated Tone C", "Generated Tone D", "Generated Tone E"}),
             rows->titles());
-    // A rekordbox stick: no Recently Added.
-    panel->browseBack(); panel->browseBack(); QCoreApplication::processEvents();
-    ASSERT_EQ(QStringList{QStringLiteral("Sources")}, crumbs());
-    ASSERT_TRUE(selectRow(QStringLiteral("DJ USB"))) << listTexts().join(" / ").toStdString();
-    panel->browsePress(); QCoreApplication::processEvents();
-    ASSERT_EQ(QStringList{QStringLiteral("DJ USB")}, crumbs());
-    EXPECT_EQ(QStringLiteral("All Tracks"), listTexts().value(0));
-    EXPECT_FALSE(listTexts().contains(QStringLiteral("Recently Added"))) << listTexts().join(" / ").toStdString();
-    // Typing in Recently Added searches the library, in the DJ's order.
+    EXPECT_TRUE(table->isColumnHidden(dayColumn));
+    // Typing in Recently Added searches the stick, in the DJ's order.
     panel->browseBack(); QCoreApplication::processEvents();
-    ASSERT_TRUE(selectRow(QStringLiteral("Library")));
-    panel->browsePress(); QCoreApplication::processEvents();
     ASSERT_TRUE(selectRow(QStringLiteral("Recently Added")));
     panel->browsePress(); QCoreApplication::processEvents(); settle();
     ASSERT_EQ(3, rows->rowCount());
     library->search(QStringLiteral("Tone B")); // what Mixxx's search box does in the app
     searchBox->lineEdit()->setText(QStringLiteral("Tone B"));
     QTest::qWait(800);
-    EXPECT_EQ((QStringList{"Library", QString::fromUtf8("Search “Tone B” · 1")}), crumbs());
+    EXPECT_EQ((QStringList{"DJ USB", QString::fromUtf8("Search “Tone B” · 1")}), crumbs());
     EXPECT_EQ(QStringList{QStringLiteral("Generated Tone B")}, rows->titles());
     EXPECT_EQ(0, table->horizontalHeader()->sortIndicatorSection());
+    EXPECT_TRUE(table->isColumnHidden(dayColumn));
     EXPECT_EQ(saved, rows->getModelSetting(QStringLiteral("ColumnsSorting")));
+}
+
+// r7-recent: the Library's Recently Added (what its read found: the
+// library's rule, decklabdownloadstest) follows All Tracks with the count of
+// every listed track; a stick's own top folder starts with the tracks new on
+// that stick. Each opens its list (the folder table), named in the
+// breadcrumb; Back returns to the row it was opened from. A folder deeper on
+// the stick has no such row.
+TEST_F(NativeDeckLabTest, LibraryAndStickRecentlyAddedRows) {
+    const QString stick = makeStick(QStringLiteral("3A1F-0C2D"), false);
+    ASSERT_TRUE(QDir().mkpath(stick + QStringLiteral("/House")));
+    QFile file(stick + QStringLiteral("/Generated Tone.wav"));
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.close();
+    const QDateTime now = QDateTime::currentDateTime();
+    panel->setRecentlyAddedForTesting({{stick + QStringLiteral("/Deck Lab Downloads/Generated Download.m4a"), now},
+            {QStringLiteral("/home/decklab/Music/Generated Song.wav"), now.addDays(-1)},
+            {stick + QStringLiteral("/House/Generated Tone 2.wav"), now.addDays(-3)}});
+    panel->selectPage(1); QCoreApplication::processEvents();
+    ASSERT_TRUE(selectRow(QStringLiteral("Library")));
+    panel->browsePress(); QCoreApplication::processEvents();
+    EXPECT_EQ((QStringList{"All Tracks", "Recently Added", "Artist", "Album", "BPM", "Key"}), listTexts());
+    auto* list = browseList(); ASSERT_NE(nullptr, list);
+    EXPECT_EQ(QStringLiteral("3"), list->item(1)->data(DeckLabListDelegate::CountRole).toString());
+    capture(QStringLiteral("r7-recent-categories.png"));
+    ASSERT_TRUE(selectRow(QStringLiteral("Recently Added")));
+    panel->browsePress(); QCoreApplication::processEvents();
+    EXPECT_EQ((QStringList{"Library", "Recently Added"}), crumbs());
+    panel->browseBack(); QCoreApplication::processEvents();
+    EXPECT_EQ(QStringList{QStringLiteral("Library")}, crumbs());
+    ASSERT_NE(nullptr, list->currentItem());
+    EXPECT_EQ(QStringLiteral("Recently Added"), list->currentItem()->text());
+    // The stick: its own two, first in its top folder.
+    panel->browseBack(); QCoreApplication::processEvents();
+    ASSERT_TRUE(selectRow(QStringLiteral("USB stick"))) << listTexts().join(" / ").toStdString();
+    panel->browsePress(); QCoreApplication::processEvents();
+    EXPECT_EQ((QStringList{"Recently Added", "Tracks in this folder", "House"}), listTexts());
+    EXPECT_EQ(QStringLiteral("2"), list->item(0)->data(DeckLabListDelegate::CountRole).toString());
+    EXPECT_EQ(static_cast<int>(decklab::Glyph::Recent), list->item(0)->data(DeckLabListDelegate::GlyphRole).toInt());
+    EXPECT_GE(list->visualItemRect(list->item(0)).height(), 44);
+    capture(QStringLiteral("r7-recent-stick.png"));
+    ASSERT_TRUE(selectRow(QStringLiteral("Recently Added")));
+    panel->browsePress(); QCoreApplication::processEvents();
+    EXPECT_EQ((QStringList{"USB stick", "Recently Added"}), crumbs());
+    panel->browseBack(); QCoreApplication::processEvents();
+    EXPECT_EQ(QStringList{QStringLiteral("USB stick")}, crumbs());
+    ASSERT_NE(nullptr, list->currentItem());
+    EXPECT_EQ(QStringLiteral("Recently Added"), list->currentItem()->text());
+    ASSERT_TRUE(selectRow(QStringLiteral("House")));
+    panel->browsePress(); QCoreApplication::processEvents();
+    EXPECT_FALSE(listTexts().contains(QStringLiteral("Recently Added"))) << "only at the stick's top";
+    // Nothing new on it any more: no row.
+    panel->browseBack(); QCoreApplication::processEvents();
+    panel->setRecentlyAddedForTesting({{QStringLiteral("/home/decklab/Music/Generated Song.wav"), now}});
+    EXPECT_EQ((QStringList{"Tracks in this folder", "House"}), listTexts());
 }
