@@ -22,7 +22,9 @@
 
 class QAbstractItemModel;
 class QListWidget;
+class QModelIndex;
 class QPainter;
+class TrackModel;
 
 namespace decklab {
 
@@ -369,6 +371,25 @@ class DeckLabBreadcrumb : public QWidget {
     QStringList m_segments;
 };
 
+// What a track list's row says about its track, read from the row's own
+// columns (no file, no database). An external library's highlighted row
+// (a rekordbox export) is shown from it: resolving that row to a Track
+// would add it to the library on the GUI thread (TrackModel).
+struct DeckLabTrackRow {
+    QString location;
+    QString title;
+    QString artist;
+    QString album;
+    QString genre;
+    QString comment;
+    QString keyText; // as the KEY column shows it ("8A", "Am", a tag)
+    double bpm = 0;
+    double duration = 0; // seconds
+    int rating = 0;
+    QColor color;
+};
+DeckLabTrackRow deckLabTrackRow(const TrackModel& tracks, const QModelIndex& index);
+
 // Details pane for the highlighted track or Browse item. Fixed geometry and
 // custom painting: a selection change only repaints this widget.
 class DeckLabTrackCard : public QWidget {
@@ -381,6 +402,9 @@ class DeckLabTrackCard : public QWidget {
     /// export's "8A", a USB file's tag), shown when Mixxx has no key for the
     /// track itself.
     void showTrack(const TrackPointer& track, const QString& storedKeyText = QString());
+    /// r7: a row that is not resolved to a track (DeckLabTrackRow). No
+    /// cover: reading it would mean the file.
+    void showRow(const DeckLabTrackRow& row);
     void showItem(decklab::Glyph glyph,
             const QString& title,
             const QString& subtitle,
@@ -392,6 +416,10 @@ class DeckLabTrackCard : public QWidget {
     }
     QString title() const {
         return m_title;
+    }
+    /// The file of the track or row shown (empty for an item).
+    QString location() const {
+        return m_location;
     }
     QString matchSummary() const;
     /// r6-keys: the KEY chip's text, in the chosen key format.

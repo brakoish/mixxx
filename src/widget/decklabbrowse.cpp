@@ -26,6 +26,8 @@
 #include "decklab/decklabusbname.h"
 #include "library/coverart.h"
 #include "library/coverartcache.h"
+#include "library/starrating.h"
+#include "library/trackmodel.h"
 #include "track/keyutils.h"
 #include "track/track.h"
 #include "util/color/rgbcolor.h"
@@ -1369,6 +1371,36 @@ void DeckLabBreadcrumb::paintEvent(QPaintEvent*) {
     }
 }
 
+DeckLabTrackRow deckLabTrackRow(const TrackModel& tracks, const QModelIndex& index) {
+    DeckLabTrackRow row;
+    if (!index.isValid()) {
+        return row;
+    }
+    const auto cell = [&tracks, &index](TrackModel::SortColumnId id, int role) {
+        const int column = tracks.columnIndexFromSortColumnId(id);
+        return column >= 0 ? index.sibling(index.row(), column).data(role) : QVariant();
+    };
+    using Column = TrackModel::SortColumnId;
+    row.location = tracks.getTrackLocation(index);
+    row.title = cell(Column::Title, Qt::DisplayRole).toString();
+    row.artist = cell(Column::Artist, Qt::DisplayRole).toString();
+    row.album = cell(Column::Album, Qt::DisplayRole).toString();
+    row.genre = cell(Column::Genre, Qt::DisplayRole).toString();
+    row.comment = cell(Column::Comment, Qt::DisplayRole).toString();
+    row.keyText = cell(Column::Key, Qt::DisplayRole).toString();
+    // Mixxx's tables give the stored values for editing: BPM, seconds, the
+    // star count (a StarRating) and the color's RGB value.
+    bool ok = false;
+    const double bpm = cell(Column::Bpm, Qt::EditRole).toDouble(&ok);
+    row.bpm = ok && std::isfinite(bpm) && bpm > 0 ? bpm : 0;
+    const double duration = cell(Column::Duration, Qt::EditRole).toDouble(&ok);
+    row.duration = ok && std::isfinite(duration) && duration > 0 ? duration : 0;
+    const QVariant rating = cell(Column::Rating, Qt::EditRole);
+    row.rating = rating.canConvert<StarRating>() ? rating.value<StarRating>().starCount() : rating.toInt();
+    row.color = mixxx::RgbColor::toQColor(mixxx::RgbColor::fromQVariant(cell(Column::Color, Qt::EditRole)));
+    return row;
+}
+
 DeckLabTrackCard::DeckLabTrackCard(QWidget* parent)
         : QWidget(parent) {
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -1444,6 +1476,31 @@ void DeckLabTrackCard::showTrack(const TrackPointer& track, const QString& store
         m_coverScaled = QPixmap();
         requestCover();
     }
+    setAccessibleName(m_artist.isEmpty() ? m_title : QString(m_title + QStringLiteral(" — ") + m_artist));
+    update();
+}
+
+void DeckLabTrackCard::showRow(const DeckLabTrackRow& row) {
+    m_itemMode = false;
+    m_track.reset();
+    m_location = row.location;
+    m_title = row.title.trimmed();
+    if (m_title.isEmpty()) {
+        m_title = QFileInfo(m_location).completeBaseName();
+    }
+    m_artist = row.artist.trimmed();
+    m_album = row.album.trimmed();
+    m_genre = row.genre.trimmed();
+    m_comment = row.comment.simplified();
+    // r6-keys: as stored, painted through displayKey().
+    m_keyText = row.keyText.trimmed();
+    m_key = m_keyText.isEmpty() ? mixxx::track::io::key::INVALID : keyFromText(m_keyText);
+    m_bpm = row.bpm;
+    m_duration = row.duration;
+    m_rating = row.rating;
+    m_color = row.color;
+    m_cover = QPixmap();
+    m_coverScaled = QPixmap();
     setAccessibleName(m_artist.isEmpty() ? m_title : QString(m_title + QStringLiteral(" — ") + m_artist));
     update();
 }

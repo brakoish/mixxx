@@ -181,6 +181,8 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void clearBrowseFilter();
     void checkRekordboxImport();
     void syncSelectedTrack();
+    QModelIndex unresolvedTrackRow() const;                    // r7
+    bool previewingSelected(const TrackPointer& previewing) const; // r7
     void refreshBrowseCard();
     void refreshPreviewButton();
     void togglePreview();
