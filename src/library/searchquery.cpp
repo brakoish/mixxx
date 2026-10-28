@@ -909,12 +909,13 @@ DateAddedFilterNode::DateAddedFilterNode(const QString& argument)
 
 QDateTime DateAddedFilterNode::parseDate(const QString& dateStr) const {
     // Prior to Qt 6.7 QLocale::toDate() with QLocale::ShortFormat used the
-    // base year 1900. With 6.7+ we can specify the century, ie. 20 for 2000.
-    // Mixxx was created aftre 2000 :)
+    // base year 1900. With 6.7+ we can pass the first year of the century
+    // two-digit years fall into. Mixxx was created aftre 2000 :)
+    // r7-recent: it is a year, not a century: 20 read "26" as the year 26.
 #if QT_VERSION < QT_VERSION_CHECK(6, 7, 0)
     QDate date = QLocale().toDate(dateStr, QLocale::ShortFormat);
 #else
-    QDate date = QLocale().toDate(dateStr, QLocale::ShortFormat, 20);
+    QDate date = QLocale().toDate(dateStr, QLocale::ShortFormat, 2000);
 #endif
     if (!date.isValid()) {
         return {};
