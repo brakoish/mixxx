@@ -9,6 +9,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QLocale> // r7-recent
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QTemporaryDir>
@@ -24,6 +25,7 @@
 #include "library/trackcollection.h"
 #include "test/librarytest.h"
 #include "track/track.h"
+#include "widget/decklabbrowse.h" // r7-recent
 #include "widget/decklabbrowsehome.h"
 
 namespace {
@@ -691,4 +693,58 @@ TEST_F(DeckLabDownloadsDbTest, AnalysisTakesUnanalyzedDownloadsNewestFirst) {
     EXPECT_EQ(2, where.size());
     EXPECT_EQ(fresh, where.value(freshId));
     EXPECT_EQ(keyless, where.value(keylessId));
+}
+
+// r7-recent: Recently Added is Mixxx's own date added filter on the Library's
+// track list: the tracks added in the last 30 days (whatever added them),
+// newest first by date added, and the count Browse shows reads the same
+// rows. The filter holds in a locale whose short date has spaces in it.
+TEST_F(DeckLabDownloadsDbTest, RecentlyAddedListsTheLast30DaysNewestFirst) {
+    QTemporaryDir music;
+    const MusicFolder folder(music.path());
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    const QList<std::pair<QString, qint64>> added{
+            {QStringLiteral("Generated Older"), 60LL * 24 * 3600},
+            {QStringLiteral("Generated Week"), 7LL * 24 * 3600},
+            {QStringLiteral("Generated Now"), 3600},
+            {QStringLiteral("Generated Last Month"), 31LL * 24 * 3600},
+            {QStringLiteral("Generated Fortnight"), 14LL * 24 * 3600},
+            {QStringLiteral("Generated Edge"), 29LL * 24 * 3600},
+    };
+    QHash<QString, QString> paths;
+    for (const auto& [title, seconds] : added) {
+        const QString path = music.filePath(QStringLiteral("New Music/") + title + QStringLiteral(".wav"));
+        paths.insert(title, path);
+        const TrackId id = addTrack(path, title, 124, QStringLiteral("8A"), true);
+        QSqlQuery query(internalCollection()->database());
+        query.prepare(QStringLiteral("UPDATE library SET datetime_added = :added WHERE id = :id"));
+        query.bindValue(QStringLiteral(":added"), now.addSecs(-seconds));
+        query.bindValue(QStringLiteral(":id"), id.toVariant());
+        ASSERT_TRUE(query.exec()) << query.lastError().text().toStdString();
+    }
+    connectLibraryCache();
+    const QStringList newest{paths.value(QStringLiteral("Generated Now")),
+            paths.value(QStringLiteral("Generated Week")),
+            paths.value(QStringLiteral("Generated Fortnight")),
+            paths.value(QStringLiteral("Generated Edge"))};
+
+    LibraryTableModel tracks(nullptr, trackCollectionManager(), "mixxx.db.model.library");
+    tracks.select();
+    ASSERT_EQ(6, tracks.rowCount());
+    const QDate today = QDate::currentDate();
+    const int column = tracks.columnIndexFromSortColumnId(TrackModel::SortColumnId::DateTimeAdded);
+    ASSERT_GE(column, 0);
+    EXPECT_EQ(4, decklab::countAddedSince(tracks, column, decklab::recentlyAddedSince(today)));
+    EXPECT_EQ(-1, decklab::countAddedSince(tracks, -1, decklab::recentlyAddedSince(today))) << "no date added column";
+    tracks.setSort(column, Qt::DescendingOrder);
+    const QLocale before;
+    for (const QLocale& locale : {QLocale(QLocale::English, QLocale::UnitedStates),
+                 QLocale(QLocale::German, QLocale::Germany), QLocale::c()}) {
+        QLocale::setDefault(locale);
+        tracks.search(decklab::recentlyAddedQuery(today));
+        EXPECT_EQ(newest, locations(tracks)) << decklab::recentlyAddedQuery(today).toStdString();
+    }
+    QLocale::setDefault(before);
+    tracks.search(QString());
+    EXPECT_EQ(6, tracks.rowCount());
 }

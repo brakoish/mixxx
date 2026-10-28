@@ -13,6 +13,7 @@
 #include <QHeaderView> // r6-keys
 #include <QDialog>
 #include <QComboBox>
+#include <QDateTime> // r7-recent
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -8234,4 +8235,225 @@ TEST_F(NativeDeckLabTest, StalePageEchoNeverBounces) {
     EXPECT_EQ(1, ControlObject::get(ConfigKey("[Tab]", "current")));
     for (int pass = 0; pass < 12; ++pass) QCoreApplication::processEvents();
     EXPECT_EQ(1, panel->currentPage()) << "still there: no ping-pong";
+}
+
+namespace {
+// r7-recent (tests): the library's own rows as its track table holds them:
+// generated titles and when each was added (Mixxx's date added column shows
+// the local date). It reads Recently Added's filter, a typed word and a sort
+// as the library's model does, and keeps its sort history in ColumnsSorting
+// (latest first, three at most) as BaseSqlTableModel does.
+class DeckLabDatedLibrary final : public QStandardItemModel, public TrackModel {
+  public:
+    struct Row {
+        QString title;
+        QDateTime added;
+    };
+    explicit DeckLabDatedLibrary(QList<Row> rows)
+            : QStandardItemModel(0, 2),
+              TrackModel(QSqlDatabase(), "mixxx.db.model.decklab.dated"),
+              m_rows(std::move(rows)) {
+        setHorizontalHeaderLabels({QStringLiteral("Title"), QStringLiteral("Date Added")});
+        refill();
+    }
+    QStringList titles() const {
+        QStringList out;
+        for (int row = 0; row < rowCount(); ++row) out << item(row, 0)->text();
+        return out;
+    }
+    void sort(int column, Qt::SortOrder order) override {
+        m_column = column;
+        m_order = order;
+        const QString name = column == 1 ? QStringLiteral("datetime_added") : QStringLiteral("title");
+        for (int i = static_cast<int>(m_history.size()) - 1; i >= 0; --i) {
+            if (m_history.at(i).first == name) m_history.removeAt(i);
+        }
+        m_history.prepend({name, order == Qt::AscendingOrder ? 1 : -1});
+        while (m_history.size() > 3) m_history.removeLast();
+        QString saved;
+        for (const auto& entry : std::as_const(m_history)) saved += QStringLiteral("%1 %2 ").arg(entry.first).arg(entry.second);
+        m_settings.insert(QStringLiteral("ColumnsSorting"), saved);
+        refill();
+    }
+    Capabilities getCapabilities() const override {
+        return Capability::Sorting;
+    }
+    QString getModelSetting(const QString& name) override {
+        return m_settings.value(name);
+    }
+    bool setModelSetting(const QString& name, const QVariant& value) override {
+        m_settings.insert(name, value.toString());
+        return true;
+    }
+    TrackPointer getTrack(const QModelIndex&) const override {
+        return {};
+    }
+    TrackPointer getTrackByRef(const TrackRef&) const override {
+        return {};
+    }
+    QUrl getTrackUrl(const QModelIndex&) const override {
+        return {};
+    }
+    QString getTrackLocation(const QModelIndex& index) const override {
+        return QStringLiteral("/home/dj/Music/%1.wav").arg(index.sibling(index.row(), 0).data().toString());
+    }
+    TrackId getTrackId(const QModelIndex&) const override {
+        return {};
+    }
+    CoverInfo getCoverInfo(const QModelIndex&) const override {
+        return {};
+    }
+    const QVector<int> getTrackRows(TrackId) const override {
+        return {};
+    }
+    void search(const QString& text) override {
+        m_search = text;
+        refill();
+    }
+    const QString currentSearch() const override {
+        return m_search;
+    }
+    bool isColumnInternal(int) override {
+        return false;
+    }
+    bool isColumnHiddenByDefault(int) override {
+        return false;
+    }
+    SortColumnId sortColumnIdFromColumnIndex(int index) const override {
+        return index == 0 ? SortColumnId::Title : index == 1 ? SortColumnId::DateTimeAdded : SortColumnId::Invalid;
+    }
+    int columnIndexFromSortColumnId(SortColumnId column) const override {
+        return column == SortColumnId::Title ? 0 : column == SortColumnId::DateTimeAdded ? 1 : -1;
+    }
+    QString modelKey(bool) const override {
+        return QStringLiteral("decklab-dated-library");
+    }
+    bool updateTrackGenre(Track*, const QString&) const override {
+        return false;
+    }
+#if defined(__EXTRA_METADATA__)
+    bool updateTrackMood(Track*, const QString&) const override {
+        return false;
+    }
+#endif
+
+  private:
+    void refill() {
+        const QDate today = QDate::currentDate();
+        QList<Row> shown;
+        for (const Row& row : std::as_const(m_rows)) {
+            if (m_search == decklab::recentlyAddedQuery(today)) {
+                if (row.added.toLocalTime().date() < decklab::recentlyAddedSince(today)) continue;
+            } else if (!m_search.isEmpty() && !row.title.contains(m_search, Qt::CaseInsensitive)) {
+                continue;
+            }
+            shown << row;
+        }
+        std::stable_sort(shown.begin(), shown.end(), [this](const Row& a, const Row& b) {
+            const bool less = m_column == 1 ? a.added < b.added : a.title < b.title;
+            const bool more = m_column == 1 ? b.added < a.added : b.title < a.title;
+            return m_order == Qt::AscendingOrder ? less : more;
+        });
+        setRowCount(0);
+        for (const Row& row : std::as_const(shown)) {
+            auto* added = new QStandardItem();
+            added->setData(row.added.toLocalTime().date(), Qt::DisplayRole);
+            appendRow({new QStandardItem(row.title), added});
+        }
+    }
+    QList<Row> m_rows;
+    QString m_search;
+    int m_column = 0;
+    Qt::SortOrder m_order = Qt::AscendingOrder;
+    QList<QPair<QString, int>> m_history;
+    QHash<QString, QString> m_settings;
+};
+} // namespace
+
+// r7-recent: Recently Added follows All Tracks in the Library's categories
+// (never on a rekordbox stick: an export has no date added), counting what
+// the last 30 days brought. It lists those tracks newest first; Back returns
+// to it; All Tracks afterwards is every track in the DJ's own order, and the
+// saved sort never moved. Typing in it searches the library, as typing
+// replaces a category value (B-35).
+TEST_F(NativeDeckLabTest, RecentlyAddedListsTheLast30DaysNewestFirst) {
+    const QDateTime now = QDateTime::currentDateTime();
+    auto* rows = new DeckLabDatedLibrary({{QStringLiteral("Generated Tone A"), now.addDays(-2)},
+            {QStringLiteral("Generated Tone B"), now.addDays(-45)},
+            {QStringLiteral("Generated Tone C"), now.addSecs(-60)},
+            {QStringLiteral("Generated Tone D"), now.addDays(-12)},
+            {QStringLiteral("Generated Tone E"), now.addDays(-31)}});
+    auto* table = new WTrackTableView(library, config(), nullptr, 1.0);
+    rows->setParent(table); // the table saves its header from it as it goes
+    library->registerView(QStringLiteral("decklab-dated-table"), table);
+    table->loadTrackModel(rows, false);
+    library->switchToView(QStringLiteral("decklab-dated-table"));
+    table->sortByColumn(0, Qt::AscendingOrder); settle(); // the DJ's own order: by title
+    const QString saved = rows->getModelSetting(QStringLiteral("ColumnsSorting"));
+    ASSERT_FALSE(saved.isEmpty());
+    const QString stick = makeStick(QStringLiteral("3A1F-0C2D"), true);
+    addRekordboxDevice(QStringLiteral("DJ USB"), stick, true);
+    panel->selectPage(1); QCoreApplication::processEvents();
+    ASSERT_TRUE(selectRow(QStringLiteral("Library")));
+    panel->browsePress(); QCoreApplication::processEvents();
+    EXPECT_EQ((QStringList{"All Tracks", "Recently Added", "Artist", "Album", "BPM", "Key"}), listTexts());
+    auto* list = browseList(); ASSERT_NE(nullptr, list);
+    ASSERT_GE(list->count(), 2);
+    const QListWidgetItem* recent = list->item(1);
+    EXPECT_EQ(QStringLiteral("3"), recent->data(DeckLabListDelegate::CountRole).toString());
+    EXPECT_EQ(static_cast<int>(decklab::Glyph::Recent), recent->data(DeckLabListDelegate::GlyphRole).toInt());
+    EXPECT_TRUE(recent->flags() & Qt::ItemIsEnabled);
+    EXPECT_GE(list->visualItemRect(recent).height(), 44);
+    ASSERT_TRUE(selectRow(QStringLiteral("Recently Added"))); QCoreApplication::processEvents();
+    auto* card = static_cast<DeckLabTrackCard*>(panel->findChild<QWidget*>("decklab-track-card"));
+    ASSERT_NE(nullptr, card);
+    EXPECT_EQ(QStringLiteral("Recently Added"), card->title());
+    capture(QStringLiteral("r7-recent-categories.png"));
+    // Its tracks: the last 30 days, newest first; the search box stays free.
+    panel->browsePress(); QCoreApplication::processEvents(); settle();
+    EXPECT_TRUE(library->isVisible());
+    EXPECT_EQ((QStringList{"Library", "Recently Added"}), crumbs());
+    EXPECT_EQ((QStringList{"Generated Tone C", "Generated Tone A", "Generated Tone D"}), rows->titles());
+    EXPECT_EQ(1, table->horizontalHeader()->sortIndicatorSection());
+    EXPECT_EQ(Qt::DescendingOrder, table->horizontalHeader()->sortIndicatorOrder());
+    EXPECT_NE(saved, rows->getModelSetting(QStringLiteral("ColumnsSorting")));
+    auto* searchBox = panel->findChild<WSearchLineEdit*>(); ASSERT_NE(nullptr, searchBox);
+    EXPECT_TRUE(searchBox->currentText().isEmpty());
+    capture(QStringLiteral("r7-recent-tracks.png"));
+    // Back: on Recently Added, the DJ's order back and its saved sort as it was.
+    panel->browseBack(); QCoreApplication::processEvents();
+    EXPECT_EQ(QStringList{QStringLiteral("Library")}, crumbs());
+    ASSERT_NE(nullptr, list->currentItem());
+    EXPECT_EQ(QStringLiteral("Recently Added"), list->currentItem()->text());
+    EXPECT_EQ(0, table->horizontalHeader()->sortIndicatorSection());
+    EXPECT_EQ(Qt::AscendingOrder, table->horizontalHeader()->sortIndicatorOrder());
+    EXPECT_EQ(saved, rows->getModelSetting(QStringLiteral("ColumnsSorting")));
+    // All Tracks afterwards: every track, by title.
+    ASSERT_TRUE(selectRow(QStringLiteral("All Tracks")));
+    panel->browsePress(); QCoreApplication::processEvents(); settle();
+    EXPECT_EQ((QStringList{"Library", "All Tracks"}), crumbs());
+    EXPECT_EQ((QStringList{"Generated Tone A", "Generated Tone B", "Generated Tone C", "Generated Tone D", "Generated Tone E"}),
+            rows->titles());
+    // A rekordbox stick: no Recently Added.
+    panel->browseBack(); panel->browseBack(); QCoreApplication::processEvents();
+    ASSERT_EQ(QStringList{QStringLiteral("Sources")}, crumbs());
+    ASSERT_TRUE(selectRow(QStringLiteral("DJ USB"))) << listTexts().join(" / ").toStdString();
+    panel->browsePress(); QCoreApplication::processEvents();
+    ASSERT_EQ(QStringList{QStringLiteral("DJ USB")}, crumbs());
+    EXPECT_EQ(QStringLiteral("All Tracks"), listTexts().value(0));
+    EXPECT_FALSE(listTexts().contains(QStringLiteral("Recently Added"))) << listTexts().join(" / ").toStdString();
+    // Typing in Recently Added searches the library, in the DJ's order.
+    panel->browseBack(); QCoreApplication::processEvents();
+    ASSERT_TRUE(selectRow(QStringLiteral("Library")));
+    panel->browsePress(); QCoreApplication::processEvents();
+    ASSERT_TRUE(selectRow(QStringLiteral("Recently Added")));
+    panel->browsePress(); QCoreApplication::processEvents(); settle();
+    ASSERT_EQ(3, rows->rowCount());
+    library->search(QStringLiteral("Tone B")); // what Mixxx's search box does in the app
+    searchBox->lineEdit()->setText(QStringLiteral("Tone B"));
+    QTest::qWait(800);
+    EXPECT_EQ((QStringList{"Library", QString::fromUtf8("Search “Tone B” · 1")}), crumbs());
+    EXPECT_EQ(QStringList{QStringLiteral("Generated Tone B")}, rows->titles());
+    EXPECT_EQ(0, table->horizontalHeader()->sortIndicatorSection());
+    EXPECT_EQ(saved, rows->getModelSetting(QStringLiteral("ColumnsSorting")));
 }
