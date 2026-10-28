@@ -8295,7 +8295,7 @@ class DeckLabDatedLibrary final : public QStandardItemModel, public TrackModel {
         return {};
     }
     QString getTrackLocation(const QModelIndex& index) const override {
-        return QStringLiteral("/home/dj/Music/%1.wav").arg(index.sibling(index.row(), 0).data().toString());
+        return QStringLiteral("/home/decklab/Music/%1.wav").arg(index.sibling(index.row(), 0).data().toString());
     }
     TrackId getTrackId(const QModelIndex&) const override {
         return {};
