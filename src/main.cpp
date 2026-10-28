@@ -25,6 +25,7 @@
 #include "waveform/visualsmanager.h"
 #include "waveform/waveformwidgetfactory.h"
 #endif
+#include "decklab/decklabguistall.h"
 #include "decklab/decklabsignals.h"
 #include "mixxxmainwindow.h"
 #if defined(__WINDOWS__)
@@ -137,7 +138,14 @@ int runMixxx(MixxxApplication* pApp, const CmdlineArgs& args) {
             if (pTermination) {
                 pTermination->arm();
             }
+            // Deck Lab: a frozen screen's stack goes into the log (and
+            // decklab-gui-stall.log); [DeckLab] GuiStallReportMs, 0 = off.
+            const UserSettingsPointer pSettings = pCoreServices->getSettings();
+            DeckLabGuiStallWatch::start(
+                    QDir(pSettings->getSettingsPath()).filePath(QStringLiteral("decklab-gui-stall.log")),
+                    pSettings->getValue(ConfigKey(QStringLiteral("[DeckLab]"), QStringLiteral("GuiStallReportMs")), 8000));
             exitCode = pApp->exec();
+            DeckLabGuiStallWatch::stop();
         }
     }
     return exitCode;

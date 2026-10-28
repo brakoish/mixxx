@@ -21,6 +21,10 @@ class BaseExternalPlaylistModel : public BaseSqlTableModel {
     void setPlaylistById(int playlistId);
 
     TrackPointer getTrack(const QModelIndex& index) const override;
+    // Deck Lab: getTrack() adds the row to the library (see TrackModel).
+    bool resolvesTracksCheaply() const override {
+        return false;
+    }
     TrackId getTrackId(const QModelIndex& index) const override;
     QString getTrackLocation(const QModelIndex& index) const override;
     bool isColumnInternal(int column) override;

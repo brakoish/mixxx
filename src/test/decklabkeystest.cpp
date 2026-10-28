@@ -339,6 +339,35 @@ TEST(DeckLabBrowseTest, TrackCardShowsTheRowsKeyWhenTheTrackHasNone) {
     }
 }
 
+// r7 freeze: an export row that is not resolved to a Track shows on the card
+// from its own columns: title, key as stored (in the chosen format), BPM,
+// and its file. Nothing else is read; a row without a title shows its file
+// name.
+TEST(DeckLabBrowseTest, TrackCardShowsARowFromItsColumns) {
+    DeckLabGeneratedFolder folder({QStringLiteral("Am"), QStringLiteral("Unknown")}, 126.0);
+    const DeckLabTrackRow first = deckLabTrackRow(folder, folder.index(0, 2));
+    EXPECT_EQ(QStringLiteral("Generated Tone 0"), first.title);
+    EXPECT_EQ(QStringLiteral("Am"), first.keyText);
+    EXPECT_DOUBLE_EQ(126.0, first.bpm);
+    EXPECT_EQ(QStringLiteral("/media/decklab/GENERATED/Generated Tone 0.wav"), first.location);
+    EXPECT_TRUE(first.artist.isEmpty()) << "no artist column";
+    EXPECT_DOUBLE_EQ(0.0, first.duration);
+    DeckLabTrackCard card;
+    KeyFormatScope lancelot(KeyFormat::Lancelot);
+    card.showRow(first);
+    EXPECT_EQ(QStringLiteral("Generated Tone 0"), card.title());
+    EXPECT_EQ(QStringLiteral("8A"), card.keyText());
+    EXPECT_EQ(first.location, card.location());
+    EXPECT_FALSE(card.track());
+    DeckLabTrackRow untitled = deckLabTrackRow(folder, folder.index(1, 0));
+    EXPECT_EQ(QStringLiteral("Unknown"), untitled.keyText);
+    untitled.title.clear();
+    card.showRow(untitled);
+    EXPECT_EQ(QStringLiteral("Generated Tone 1"), card.title()) << "the file's name";
+    EXPECT_EQ(QStringLiteral("Unknown"), card.keyText()) << "text that is not a key, as stored";
+    EXPECT_TRUE(deckLabTrackRow(folder, QModelIndex()).location.isEmpty());
+}
+
 // A USB folder sorted by key goes round the wheel of the notation the
 // library shows ([Library],key_notation), not alphabetically ("10A" before
 // "1A", "Am" before "Ebm"); tags that are not keys come first, as in the

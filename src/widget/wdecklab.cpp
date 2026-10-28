@@ -2345,7 +2345,10 @@ QWidget* WDeckLab::buildBrowse() {
         auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
         auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
         const QModelIndex source = mixTableRow(state.items->currentItem()); // r5-fix3-history: by its file
-        state.selectedTrack = tracks && source.isValid() ? tracks->getTrack(source) : TrackPointer();
+        // r7: a rekordbox export's row is not resolved for a highlight.
+        state.selectedTrack = tracks && source.isValid() && tracks->resolvesTracksCheaply()
+                ? tracks->getTrack(source)
+                : TrackPointer();
         refreshBrowseCard();
         refreshPreviewButton();
     });
@@ -3779,7 +3782,30 @@ void WDeckLab::syncSelectedTrack() {
     const QModelIndexList rows = table && table->selectionModel() ? table->selectionModel()->selectedRows() : QModelIndexList();
     if (!tracks || rows.size() != 1) { b.selectedTrack.reset(); return; }
     if (b.selectedTrack && tracks->getTrackLocation(rows.first()) == b.selectedTrack->getLocation()) return;
+    // r7: a rekordbox export's row joins the library only when it is used
+    // (LOAD, Preview, TO PAD); the card shows the row itself.
+    if (!tracks->resolvesTracksCheaply()) { b.selectedTrack.reset(); return; }
     b.selectedTrack = tracks->getTrack(rows.first());
+}
+QModelIndex WDeckLab::unresolvedTrackRow() const {
+    // r7: the highlighted row of a list whose rows are not resolved to a
+    // Track while they are only highlighted (TrackModel::resolvesTracksCheaply).
+    const auto& b = *m_browseState;
+    auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+    auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
+    if (!tracks || tracks->resolvesTracksCheaply() || !browseTrackLevel()) return {};
+    if (b.list == DeckLabList::Mixes && m_browseStack->currentIndex() == 0) return mixTableRow(b.items->currentItem());
+    const QModelIndexList rows = table->selectionModel() ? table->selectionModel()->selectedRows() : QModelIndexList();
+    return rows.size() == 1 ? rows.first() : QModelIndex();
+}
+bool WDeckLab::previewingSelected(const TrackPointer& previewing) const {
+    if (!previewing) return false;
+    if (m_browseState->selectedTrack) return previewing == m_browseState->selectedTrack;
+    // r7: an unresolved row is the previewed track when it is its file.
+    const QModelIndex row = unresolvedTrackRow();
+    auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+    auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
+    return row.isValid() && tracks && tracks->getTrackLocation(row) == previewing->getLocation();
 }
 void WDeckLab::refreshBrowseCard() {
     if (!m_browseState) return;
@@ -3798,6 +3824,16 @@ void WDeckLab::refreshBrowseCard() {
                 const int column = tracks ? tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Key) : -1;
                 const QModelIndexList rows = table->selectionModel() ? table->selectionModel()->selectedRows() : QModelIndexList();
                 if (column >= 0 && rows.size() == 1) stored = rows.first().sibling(rows.first().row(), column).data().toString();
+            }
+        }
+        if (!b.selectedTrack) {
+            // r7: a rekordbox export's row, from its own columns.
+            const QModelIndex row = unresolvedTrackRow();
+            auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+            auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
+            if (row.isValid() && tracks) {
+                b.card->showRow(deckLabTrackRow(*tracks, row));
+                return;
             }
         }
         b.card->showTrack(b.selectedTrack, stored);
@@ -3929,12 +3965,13 @@ void WDeckLab::refreshPreviewButton() {
     auto* previewDeck = m_players && m_players->numberOfPreviewDecks() > 0 ? m_players->getPreviewDeck(0) : nullptr;
     const TrackPointer previewing = previewDeck ? previewDeck->getLoadedTrack() : TrackPointer();
     const bool tracks = browseTrackLevel(); // r4-browse: Mixes too
-    const bool same = playing && previewing && previewing == b.selectedTrack;
+    const bool same = playing && previewingSelected(previewing);
     b.preview->setText(same ? tr("Stop") : tr("Preview"));
     b.preview->setGlyph(same ? decklab::Glyph::Stop : decklab::Glyph::Play);
     b.preview->setTone(same ? Tone::Active : Tone::Neutral);
     b.preview->setDetail(playing ? (same ? tr("Playing in headphones") : tr("Another track playing")) : tr("Headphones"));
-    b.preview->setEnabled(available && ((tracks && (b.selectedTrack || listTrackRow())) || playing)); // r5-fix3-history
+    b.preview->setEnabled(available &&
+            ((tracks && (b.selectedTrack || listTrackRow() || unresolvedTrackRow().isValid())) || playing)); // r5-fix3-history, r7
 }
 void WDeckLab::togglePreview() {
     const ConfigKey load(QStringLiteral("[PreviewDeck1]"), QStringLiteral("LoadSelectedTrackAndPlay"));
@@ -3952,8 +3989,8 @@ void WDeckLab::togglePreview() {
     // r7 fix: a file whose stick is out is said, never loaded (the same
     // track playing still pauses).
     auto* previewDeck = m_players && m_players->numberOfPreviewDecks() > 0 ? m_players->getPreviewDeck(0) : nullptr;
-    const bool same = value(load.group, QStringLiteral("play")) > 0 && previewDeck && m_browseState->selectedTrack &&
-            previewDeck->getLoadedTrack() == m_browseState->selectedTrack;
+    const bool same = value(load.group, QStringLiteral("play")) > 0 && previewDeck &&
+            previewingSelected(previewDeck->getLoadedTrack());
     if (tracks && selected && !same && selectedFileGone()) return;
     // Same track: Mixxx toggles play/pause; another track: load and play it.
     if (tracks && selected) pulse(load.group, load.item);
@@ -6368,6 +6405,14 @@ void WDeckLab::hookTrackLevel() {
     if (!selection) return;
     const auto update = [this] { updateTrackLevel(); };
     b.levelConnections << connect(selection, &QItemSelectionModel::selectionChanged, this, update);
+    // r7: a rekordbox export's row is shown at once, from its own columns
+    // (nothing is read; its Track is made only when it is used).
+    b.levelConnections << connect(selection, &QItemSelectionModel::selectionChanged, this, [this] {
+        if (!unresolvedTrackRow().isValid()) return;
+        m_browseState->selectedTrack.reset();
+        refreshBrowseCard();
+        refreshPreviewButton();
+    });
     if (const QAbstractItemModel* model = selection->model()) {
         b.levelConnections << connect(model, &QAbstractItemModel::modelReset, this, update)
                            << connect(model, &QAbstractItemModel::rowsRemoved, this, update)

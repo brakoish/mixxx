@@ -451,7 +451,13 @@ void WTrackTableView::slotGuiTick50ms(double /*unused*/) {
             if (indices.size() == 1 && indices.first().isValid()) {
                 // A single track has been selected
                 TrackModel* pTrackModel = getTrackModel();
-                if (pTrackModel) {
+                if (pTrackModel && !pTrackModel->resolvesTracksCheaply()) {
+                    // Deck Lab: an external library's row is not added to
+                    // the library (its file read, a database write) only
+                    // because it is highlighted. Receivers see no track and
+                    // show the row itself.
+                    emit trackSelected(TrackPointer());
+                } else if (pTrackModel) {
                     TrackPointer pTrack = pTrackModel->getTrack(indices.first());
                     if (pTrack) {
                         emit trackSelected(pTrack);

@@ -21,6 +21,7 @@
 #include <QComboBox>
 #include <QSignalSpy>
 #include <QTemporaryDir>
+#include <QThread> // r7 freeze
 #include <QTest>
 #include <algorithm>
 #include <csignal>
@@ -39,6 +40,7 @@
 #include "decklab/decklabinstruments.h"
 #include "decklab/decklabsetupmodel.h"
 #include "decklab/decklabsetupwizard.h"
+#include "decklab/decklabguistall.h" // r7 freeze
 #include "decklab/decklabsignals.h"
 #include "decklab/decklabsystem.h"
 #include "decklab/decklabrail.h"
@@ -1597,6 +1599,46 @@ TEST_F(DeckLabSystemTest, TerminationSignalBecomesOneGracefulQtRequest) {
     EXPECT_EQ(SIG_DFL, current.sa_handler);
 #else
     GTEST_SKIP() << "POSIX signals only";
+#endif
+}
+
+// r7 freeze: a GUI thread that stops running its event loop has its stack
+// written once per stall (to the report file and the log), so the next
+// frozen screen names the call it waits in; a thread that runs again is
+// watched afresh. Nothing is written while the loop runs.
+namespace {
+Q_NEVER_INLINE void blockTheGuiThreadForTesting(int milliseconds) {
+    QThread::msleep(static_cast<unsigned long>(milliseconds));
+}
+} // namespace
+
+TEST_F(DeckLabSystemTest, AStalledGuiThreadHasItsStackReportedOncePerStall) {
+#if defined(__linux__) && defined(__GLIBC__)
+    QTemporaryDir dir;
+    const QString report = dir.filePath(QStringLiteral("decklab-gui-stall.log"));
+    ASSERT_TRUE(DeckLabGuiStallWatch::start(report, 300));
+    EXPECT_FALSE(DeckLabGuiStallWatch::start(report, 300)) << "once per process";
+    QTest::qWait(700); // the loop runs: armed, nothing reported
+    EXPECT_EQ(0, DeckLabGuiStallWatch::reportsForTesting());
+    blockTheGuiThreadForTesting(1500);
+    ASSERT_TRUE(QTest::qWaitFor([] { return DeckLabGuiStallWatch::reportsForTesting() == 1; }, 3000));
+    QFile file(report);
+    ASSERT_TRUE(file.open(QIODevice::ReadOnly));
+    const QStringList lines = QString::fromUtf8(file.readAll()).split(QChar(u'\n'), Qt::SkipEmptyParts);
+    ASSERT_FALSE(lines.isEmpty());
+    EXPECT_EQ(QStringLiteral("Deck Lab: GUI thread stack"), lines.first());
+    EXPECT_GE(lines.size(), 4) << "a stack, frame by frame";
+    file.close();
+    QTest::qWait(700); // running again: no second report for the same stall
+    EXPECT_EQ(1, DeckLabGuiStallWatch::reportsForTesting());
+    blockTheGuiThreadForTesting(1000);
+    EXPECT_TRUE(QTest::qWaitFor([] { return DeckLabGuiStallWatch::reportsForTesting() == 2; }, 3000))
+            << "a later stall is reported too";
+    DeckLabGuiStallWatch::stop();
+    EXPECT_FALSE(DeckLabGuiStallWatch::running());
+    EXPECT_FALSE(DeckLabGuiStallWatch::start(report, 0)) << "0 turns it off";
+#else
+    GTEST_SKIP() << "Linux with glibc only";
 #endif
 }
 

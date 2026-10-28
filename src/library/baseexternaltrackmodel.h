@@ -22,6 +22,10 @@ class BaseExternalTrackModel : public BaseSqlTableModel {
     Capabilities getCapabilities() const override;
     TrackId getTrackId(const QModelIndex& index) const override;
     TrackPointer getTrack(const QModelIndex& index) const override;
+    // Deck Lab: getTrack() adds the row to the library (see TrackModel).
+    bool resolvesTracksCheaply() const override {
+        return false;
+    }
     QString getTrackLocation(const QModelIndex& index) const override;
     bool isColumnInternal(int column) override;
     Qt::ItemFlags flags(const QModelIndex& index) const override;
