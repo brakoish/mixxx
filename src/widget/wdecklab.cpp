@@ -3825,8 +3825,9 @@ void WDeckLab::refreshBrowseCard() {
                     : count == QStringLiteral("1") ? tr("%1 · 1 track").arg(source) : tr("%1 · %2 tracks").arg(source, count);
             if (category == decklab::Category::RecentlyAdded && enabled && !count.isEmpty()) { // r7-recent
                 const QString days = QString::number(decklab::kRecentlyAddedDays);
-                about = count == QStringLiteral("1") ? tr("%1 · 1 track · last %2 days").arg(source, days)
-                                                     : tr("%1 · %2 tracks · last %3 days").arg(source, count, days);
+                // The card is narrow: the days first, then the count.
+                about = count == QStringLiteral("1") ? tr("Last %1 days · 1 track").arg(days)
+                                                     : tr("Last %1 days · %2 tracks").arg(days, count);
             }
             b.card->showItem(categoryGlyph(category), item->text(), about,
                     enabled ? openHint : tr("Reading %1…").arg(source));
