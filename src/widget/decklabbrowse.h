@@ -6,6 +6,7 @@
 // the Browse page. Pure functions are kept free of widgets for unit tests.
 
 #include <QColor>
+#include <QDate>
 #include <QLabel>
 #include <QPixmap>
 #include <QPushButton>
@@ -143,6 +144,9 @@ enum class Category {
     Album,
     Bpm,
     Key,
+    // r7-recent: the library's tracks added in the last 30 days, newest
+    // first. Listed after All Tracks (the order is the list's, not this enum's).
+    RecentlyAdded,
 };
 QString categoryName(Category category);
 
@@ -161,6 +165,16 @@ QVector<CategoryValue> collectCategoryValues(
 void relabelKeyValues(QListWidget& list);
 QString exactTextQuery(const QString& field, const QString& value);
 QString bpmBucketQuery(int bpm);
+// r7-recent: Recently Added is the library's tracks added since local
+// midnight kRecentlyAddedDays days before today: Mixxx's own date added
+// filter, in the date format its parser reads (the locale's short date,
+// quoted: some locales put spaces in it).
+constexpr int kRecentlyAddedDays = 30;
+QDate recentlyAddedSince(const QDate& today);
+QString recentlyAddedQuery(const QDate& today);
+// How many rows of an existing track model were added on or after since, from
+// its date added column (the local date). No database access.
+int countAddedSince(const QAbstractItemModel& model, int column, const QDate& since);
 
 enum class Glyph {
     None,
@@ -197,6 +211,8 @@ enum class Glyph {
     // r7-browse: the DOWNLOADS and SAMPLES tiles.
     Download,
     Sample,
+    // r7-recent: Recently Added.
+    Recent,
 };
 void paintGlyph(QPainter& painter, const QRectF& box, Glyph glyph, const QColor& color);
 
