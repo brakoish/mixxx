@@ -4,6 +4,7 @@
 #include <rekordbox_anlz.h>
 #include <rekordbox_pdb.h>
 
+#include <QDateTime> // r7-recent
 #include <QDir>
 #include <QHash>
 #include <QMap>
@@ -14,6 +15,7 @@
 #include <QStorageInfo>
 #include <QStringList>
 #include <QTextCodec>
+#include <QTimeZone> // r7-recent
 #include <QtDebug>
 #include <exception>
 
@@ -160,12 +162,32 @@ bool createLibraryTable(QSqlDatabase& database, const QString& tableName) {
             "    rating INTEGER,"
             "    analyze_path TEXT UNIQUE,"
             "    device TEXT,"
-            "    color INTEGER"
+            "    color INTEGER,"
+            // r7-recent: the export's date added (Recently Added).
+            "    datetime_added TEXT"
             ");");
 
     if (!query.exec()) {
         LOG_FAILED_QUERY(query);
         return false;
+    }
+    // r7-recent: a table from before it (the tables are dropped and made
+    // again at start, so only a table left by an older build) gets the column.
+    QSqlQuery columns(database);
+    if (!columns.exec(QStringLiteral("PRAGMA table_info(%1)").arg(tableName))) {
+        LOG_FAILED_QUERY(columns);
+        return false;
+    }
+    bool dated = false;
+    while (columns.next()) {
+        dated = dated || columns.value(1).toString() == LIBRARYTABLE_DATETIMEADDED;
+    }
+    if (!dated) {
+        QSqlQuery add(database);
+        if (!add.exec(QStringLiteral("ALTER TABLE %1 ADD COLUMN %2 TEXT").arg(tableName, LIBRARYTABLE_DATETIMEADDED))) {
+            LOG_FAILED_QUERY(add);
+            return false;
+        }
     }
 
     return true;
@@ -446,10 +468,10 @@ const QString kInsertLibraryTrack = QStringLiteral("INSERT INTO ") + kRekordboxL
         QStringLiteral(
         " (rb_id, artist, title, album, year,"
         "genre,comment,tracknumber,bpm, bitrate,duration, location,"
-        "rating,key,key_id,analyze_path,device,color) VALUES (:rb_id, :artist, "
+        "rating,key,key_id,analyze_path,device,color,datetime_added) VALUES (:rb_id, :artist, "
         ":title, :album, :year,:genre,"
         ":comment, :tracknumber,:bpm, :bitrate,:duration, :location,"
-        ":rating,:key,:key_id,:analyze_path,:device,:color)");
+        ":rating,:key,:key_id,:analyze_path,:device,:color,:datetime_added)");
 
 struct LibraryTrackRow {
     int rbId = 0;
@@ -469,7 +491,23 @@ struct LibraryTrackRow {
     QString analyzePath;
     QString device;
     QVariant color;
+    QString dateAdded; // r7-recent: the export's "YYYY-MM-DD"
 };
+
+// r7-recent: rekordbox's date added ("YYYY-MM-DD", a day without a clock or
+// zone) at noon UTC, so it reads as the same local day in the table and the
+// date added filter wherever the unit is. Null when the export has none.
+QVariant rekordboxDateAdded(const QString& text) {
+    const QDate day = QDate::fromString(text.trimmed(), Qt::ISODate);
+    if (!day.isValid()) {
+        return QVariant();
+    }
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+    return QDateTime(day, QTime(12, 0), QTimeZone::UTC);
+#else
+    return QDateTime(day, QTime(12, 0), Qt::UTC);
+#endif
+}
 
 bool insertLibraryTrackRow(QSqlQuery& query, const LibraryTrackRow& row) {
     query.bindValue(":rb_id", row.rbId);
@@ -492,6 +530,7 @@ bool insertLibraryTrackRow(QSqlQuery& query, const LibraryTrackRow& row) {
     query.bindValue(":analyze_path", row.analyzePath);
     query.bindValue(":device", row.device);
     query.bindValue(":color", row.color);
+    query.bindValue(":datetime_added", rekordboxDateAdded(row.dateAdded));
     if (!query.exec()) {
         LOG_FAILED_QUERY(query);
         return false;
@@ -531,6 +570,7 @@ void insertTrack(
     row.analyzePath = devicePath + getText(track->analyze_path());
     row.device = device;
     row.color = mixxx::RgbColor::toQVariant(colorFromID(static_cast<int>(track->color_id())));
+    row.dateAdded = getText(track->date_added()); // r7-recent
     insertLibraryTrackRow(query, row);
 
     int trackID = -1;
@@ -1561,6 +1601,7 @@ QStringList RekordboxFeature::libraryColumns() {
             LIBRARYTABLE_KEY,
             LIBRARYTABLE_KEY_ID, // key text read once, formatted and sorted as a key
             LIBRARYTABLE_COLOR,
+            LIBRARYTABLE_DATETIMEADDED, // r7-recent: the export's date added
             REKORDBOX_ANALYZE_PATH};
 }
 
@@ -1571,7 +1612,8 @@ bool RekordboxFeature::createLibraryTableForTesting(QSqlDatabase& database) {
 bool RekordboxFeature::insertLibraryTrackForTesting(QSqlDatabase& database,
         int rbId,
         const QString& title,
-        const QString& keyText) {
+        const QString& keyText,
+        const QString& dateAdded) {
     QSqlQuery query(database);
     if (!query.prepare(kInsertLibraryTrack)) {
         LOG_FAILED_QUERY(query);
@@ -1585,6 +1627,7 @@ bool RekordboxFeature::insertLibraryTrackForTesting(QSqlDatabase& database,
     row.key = keyText;
     row.bpm = 120;
     row.device = QStringLiteral("GENERATED");
+    row.dateAdded = dateAdded;
     return insertLibraryTrackRow(query, row);
 }
 

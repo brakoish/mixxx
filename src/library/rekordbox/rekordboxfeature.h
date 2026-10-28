@@ -88,10 +88,12 @@ class RekordboxFeature : public BaseExternalLibraryFeature {
     /// Deck Lab r6-keys, for tests: the rekordbox_library table, and one
     /// generated track row written through the import's own INSERT.
     static bool createLibraryTableForTesting(QSqlDatabase& database);
+    /// r7-recent: with the export's date added ("YYYY-MM-DD").
     static bool insertLibraryTrackForTesting(QSqlDatabase& database,
             int rbId,
             const QString& title,
-            const QString& keyText);
+            const QString& keyText,
+            const QString& dateAdded = QString());
 
   public slots:
     void activate() override;
