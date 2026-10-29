@@ -1274,7 +1274,7 @@ TEST_F(NativeDeckLabTest, ScreenSleepIsChosenUnderWaveformsAndSavedAtOnce) {
     EXPECT_TRUE(panel->rect().contains(area)) << "whole on the 800x480 page";
     EXPECT_FALSE(row->segmented()) << "five choices: the value and a picker";
     QStringList shown;
-    for (int index = 0; index < row->optionCount(); ++index) shown << row->segmentText(index);
+    for (int index = 0; index < row->model()->count(); ++index) shown << row->segmentText(index);
     EXPECT_EQ((QStringList{"5 min", "10 min", "15 min", "30 min", "1 hour"}), shown);
     auto* choice = panel->findChild<QComboBox*>(QStringLiteral("decklab-screen-sleep")); ASSERT_NE(nullptr, choice);
     EXPECT_EQ(15, choice->currentData().toInt());
