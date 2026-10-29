@@ -14,6 +14,7 @@
 #include <cmath>
 
 #include "decklab/decklabkeys.h" // r6-keys
+#include "decklab/decklabscreensleep.h"
 #include "decklab/decklabsystemui.h"
 #include "decklab/decklabui.h"
 #include "decklab/decklabutility.h"
@@ -501,6 +502,27 @@ void DeckLabSettingsPage::buildDisplay(QWidget* content) {
         refreshValues();
     });
     rows->addWidget(waves);
+    // The backlight goes off after this long without a touch or the
+    // controller, only while nothing plays or records (decklabscreensleep.h).
+    auto* sleep = new ChoiceRow(tr("Screen sleep"), content, QStringLiteral("decklab-settings-screen-sleep"),
+            QStringLiteral("decklab-screen-sleep"));
+    for (const int minutes : DeckLabScreenSleep::choices()) {
+        if (minutes == 60) {
+            sleep->addOption(tr("1 hour"), tr("After 1 hour"), minutes);
+        } else {
+            sleep->addOption(tr("%1 min").arg(minutes), tr("After %1 minutes").arg(minutes), minutes);
+        }
+    }
+    sleep->setHint(tr("When nothing plays. A touch or the controller wakes it."));
+    const int sleepMinutes = m_hooks.screenSleepMinutes ? m_hooks.screenSleepMinutes()
+                                                        : DeckLabScreenSleep::kDefaultMinutes;
+    sleep->model()->setCurrentIndex(std::max(0, sleep->model()->findData(sleepMinutes)));
+    connect(sleep->model(), qOverload<int>(&QComboBox::activated), this, [this, sleep](int index) {
+        if (m_hooks.screenSleepChosen) {
+            m_hooks.screenSleepChosen(sleep->model()->itemData(index).toInt());
+        }
+    });
+    rows->addWidget(sleep);
     auto* factory = WaveformWidgetFactory::instance();
     auto* motion = new ChoiceRow(tr("Waveform motion"), content, QStringLiteral("decklab-settings-motion"),
             QStringLiteral("decklab-waveform-fps"));

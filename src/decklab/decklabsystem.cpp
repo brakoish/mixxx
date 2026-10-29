@@ -217,8 +217,14 @@ DeckLabSystem::DeckLabSystem(Services services, QObject* parent, const QString& 
                   [this](const QString& method, const QJsonObject& params) {
                       m_client->call(method, params);
                   },
+                  this)),
+          m_screenSleep(new DeckLabScreenSleep(
+                  [this](const QString& method, const QJsonObject& params) {
+                      m_client->call(method, params);
+                  },
                   this)) {
     m_clock.start();
+    m_screenSleep->setMinutes(DeckLabScreenSleep::savedMinutes(m_services.config));
     m_utilities->setHooks(utilityHooks());
     m_preview->setHooks(previewHooks());
     connect(m_client, &DeckLabdClient::readyChanged, this, &DeckLabSystem::onReady);
@@ -367,6 +373,8 @@ void DeckLabSystem::onReady(bool ready) {
         // until decklabd says otherwise.
         m_preview->onConnectionLost();
     }
+    // Screen sleep's policy lives on this connection: a new one needs it again.
+    m_screenSleep->setReady(ready);
     emit readyChanged(ready);
 }
 
@@ -755,6 +763,9 @@ bool DeckLabSystem::settled() const {
 void DeckLabSystem::activityChanged() {
     m_quietSpell.busy(m_clock.elapsed());
     m_utilities->onActivity();
+    // The screen never sleeps while anything plays or records.
+    const decklab::Activity now = activity();
+    m_screenSleep->setBusy(now.playing || now.recording);
 }
 
 decklab::Activity DeckLabSystem::activity() const {

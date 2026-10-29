@@ -1779,6 +1779,7 @@ add_library(
   src/decklab/decklaboverlay.cpp
   src/decklab/decklabpreview.cpp
   src/decklab/decklabrail.cpp
+  src/decklab/decklabscreensleep.cpp
   src/decklab/decklabsettings.cpp
   src/decklab/decklabguistall.cpp
   src/decklab/decklabsetupmodel.cpp
