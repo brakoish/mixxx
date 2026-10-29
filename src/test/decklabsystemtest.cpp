@@ -38,6 +38,7 @@
 #include "decklab/decklabdclient.h"
 #include "decklab/decklabfakeservice.h"
 #include "decklab/decklabinstruments.h"
+#include "decklab/decklabscreensleep.h"
 #include "decklab/decklabsetupmodel.h"
 #include "decklab/decklabsetupwizard.h"
 #include "decklab/decklabguistall.h" // r7 freeze
@@ -2861,4 +2862,103 @@ TEST_F(DeckLabSystemTest, AUnitAlreadySetUpSkipsWelcomeAfterTheUpdate) {
         DeckLabSystem untouched(fresh, nullptr, QStringLiteral("/nonexistent/decklabd.sock"));
         EXPECT_TRUE(untouched.firstRunDue());
     }
+}
+
+// ------------------------------------------------------------ screen sleep --
+
+// decklabd runs the timer; Deck Lab tells it the wait, busy and controller
+// use, only while it is connected, and the whole policy on each connection.
+TEST_F(DeckLabSystemTest, ScreenSleepTellsDecklabdTheWaitBusyAndControllerUse) {
+    QList<QPair<QString, QJsonObject>> sent;
+    DeckLabScreenSleep sleep([&sent](const QString& method, const QJsonObject& params) {
+        sent.append({method, params});
+    });
+    EXPECT_EQ(DeckLabScreenSleep::kDefaultMinutes, sleep.minutes());
+    sleep.setBusy(true);
+    sleep.setMinutes(30);
+    DeckLabScreenSleep::controllerUsed();
+    QCoreApplication::processEvents();
+    EXPECT_TRUE(sent.isEmpty()) << "nothing goes out before decklabd is there";
+    sleep.setReady(true);
+    ASSERT_EQ(1, sent.size());
+    EXPECT_EQ(QStringLiteral("display.sleep"), sent.at(0).first);
+    EXPECT_EQ((QJsonObject{{"after", 1800}, {"busy", true}}), sent.at(0).second);
+    // While something plays the screen never sleeps: controller use is not passed on.
+    DeckLabScreenSleep::controllerUsed();
+    QCoreApplication::processEvents();
+    EXPECT_EQ(1, sent.size());
+    sleep.setBusy(true);
+    EXPECT_EQ(1, sent.size()) << "no change, nothing sent";
+    sleep.setBusy(false);
+    ASSERT_EQ(2, sent.size());
+    EXPECT_EQ((QJsonObject{{"busy", false}}), sent.at(1).second);
+    // Controller threads report; the GUI thread passes it on, at most once per interval.
+    std::unique_ptr<QThread> controller(QThread::create([] { DeckLabScreenSleep::controllerUsed(); }));
+    controller->start();
+    ASSERT_TRUE(controller->wait(2000));
+    ASSERT_TRUE(QTest::qWaitFor([&] { return sent.size() == 3; }, 2000));
+    EXPECT_EQ(QStringLiteral("display.activity"), sent.at(2).first);
+    EXPECT_TRUE(sent.at(2).second.isEmpty());
+    DeckLabScreenSleep::controllerUsed();
+    QTest::qWait(30);
+    EXPECT_EQ(3, sent.size()) << "within kActivityIntervalMs the screen is still lit";
+    // Only the offered waits.
+    sleep.setMinutes(7);
+    sleep.setMinutes(30);
+    EXPECT_EQ(3, sent.size());
+    sleep.setMinutes(60);
+    ASSERT_EQ(4, sent.size());
+    EXPECT_EQ((QJsonObject{{"after", 3600}}), sent.at(3).second);
+    // decklabd restarted: the policy ended with the old connection.
+    sleep.setReady(false);
+    sleep.setBusy(true);
+    sleep.setBusy(false);
+    EXPECT_EQ(4, sent.size());
+    sleep.setReady(true);
+    ASSERT_EQ(5, sent.size());
+    EXPECT_EQ((QJsonObject{{"after", 3600}, {"busy", false}}), sent.at(4).second);
+    DeckLabScreenSleep::controllerUsed();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return sent.size() == 6; }, 2000)) << "the first use after a reconnect goes out";
+    EXPECT_EQ(QStringLiteral("display.activity"), sent.at(5).first);
+}
+
+// The wait survives a restart (saved at once: units are switched off at the
+// wall) and reaches decklabd when Deck Lab connects, again after a reconnect.
+TEST_F(DeckLabSystemTest, ScreenSleepWaitIsSavedAndSentOnEveryConnection) {
+    EXPECT_EQ(15, DeckLabScreenSleep::savedMinutes(config()));
+    EXPECT_EQ((QList<int>{5, 10, 15, 30, 60}), DeckLabScreenSleep::choices());
+    DeckLabScreenSleep::saveMinutes(config(), 7);
+    EXPECT_EQ(15, DeckLabScreenSleep::savedMinutes(config()));
+    DeckLabScreenSleep::saveMinutes(config(), 30);
+    saveAndReloadConfig();
+    EXPECT_EQ(30, DeckLabScreenSleep::savedMinutes(config()));
+    config()->setValue(ConfigKey(QStringLiteral("[DeckLab]"), QStringLiteral("ScreenSleepMinutes")), 2);
+    EXPECT_EQ(15, DeckLabScreenSleep::savedMinutes(config())) << "not one of the choices";
+    DeckLabScreenSleep::saveMinutes(config(), 30);
+
+    DeckLabFakeService fake;
+    ASSERT_TRUE(fake.listen(socketPath()));
+    DeckLabSystem::Services services;
+    services.config = config();
+    DeckLabSystem system(services, nullptr, socketPath());
+    const auto policies = [&fake] {
+        QList<QJsonObject> found;
+        for (const auto& request : std::as_const(fake.requests)) {
+            if (request.value(QStringLiteral("method")).toString() == QStringLiteral("display.sleep")) {
+                found.append(request.value(QStringLiteral("params")).toObject());
+            }
+        }
+        return found;
+    };
+    system.start();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return policies().size() == 1; }, 3000));
+    EXPECT_EQ((QJsonObject{{"after", 1800}, {"busy", false}}), policies().at(0));
+    // The fake is an older decklabd (unknown_method): nothing breaks.
+    EXPECT_TRUE(system.isReady());
+    system.screenSleep()->setMinutes(5);
+    ASSERT_TRUE(QTest::qWaitFor([&] { return policies().size() == 2; }, 2000));
+    EXPECT_EQ((QJsonObject{{"after", 300}}), policies().at(1));
+    fake.disconnectClients();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return policies().size() == 3; }, 8000));
+    EXPECT_EQ((QJsonObject{{"after", 300}, {"busy", false}}), policies().at(2));
 }

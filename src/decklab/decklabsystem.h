@@ -17,6 +17,7 @@
 #include "decklab/decklabcontrollers.h"
 #include "decklab/decklabpreview.h"
 #include "decklab/decklabquiet.h"
+#include "decklab/decklabscreensleep.h"
 #include "decklab/decklabsetupmodel.h"
 #include "decklab/decklabutilities.h"
 #include "preferences/usersettings.h"
@@ -89,6 +90,10 @@ class DeckLabSystem : public QObject {
     /// Sample Maker's headphone preview on [PreviewDeck1] and PUT ON PAD.
     DeckLabPreview* preview() const {
         return m_preview;
+    }
+    /// Settings → Display → Screen sleep, carried out by decklabd.
+    DeckLabScreenSleep* screenSleep() const {
+        return m_screenSleep;
     }
     bool isReady() const;
     UserSettingsPointer config() const {
@@ -296,6 +301,7 @@ class DeckLabSystem : public QObject {
     DeckLabdClient* m_client;
     DeckLabUtilities* m_utilities;
     DeckLabPreview* m_preview;
+    DeckLabScreenSleep* m_screenSleep;
     // [PreviewDeck1]'s track and its own loop while Sample Maker's cut is in
     // the deck's loop controls. Mixxx saves those controls as the track's
     // loop when it unloads the track, so the track's loop goes back first.

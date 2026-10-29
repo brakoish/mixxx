@@ -51,6 +51,7 @@
 #include "control/controlproxy.h"
 #include "decklab/decklabrail.h"
 #include "decklab/decklabsettings.h"
+#include "decklab/decklabscreensleep.h" // screen sleep: Settings -> Display
 #include "decklab/decklabdclient.h" // r5-history: is the clock synchronized?
 #include "decklab/decklabsystem.h"  // r5-history
 #include "decklab/decklabsystempages.h"
@@ -2640,6 +2641,11 @@ QWidget* WDeckLab::buildSettings() {
         m_sideBySideWaveforms = sideBySide;
         m_config->setValue(ConfigKey("[DeckLab]", "WaveformLayout"), sideBySide ? 1 : 0);
         updateLayers();
+    };
+    settings.screenSleepMinutes = [this] { return DeckLabScreenSleep::savedMinutes(m_config); };
+    settings.screenSleepChosen = [this](int minutes) {
+        DeckLabScreenSleep::saveMinutes(m_config, minutes);
+        if (m_system) m_system->screenSleep()->setMinutes(minutes);
     };
     settings.keyNotationChosen = [this](int notation) { setKeyNotation(notation); };
     settings.dimPlayedChosen = [this](bool dim) {

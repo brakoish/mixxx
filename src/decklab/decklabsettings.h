@@ -52,6 +52,8 @@ class DeckLabSettingsPage : public QWidget {
         std::function<bool()> fourDecksShown;
         std::function<void(bool)> waveformLayoutChosen; // true: side by side
         std::function<bool()> sideBySide;
+        std::function<int()> screenSleepMinutes; // [DeckLab] ScreenSleepMinutes
+        std::function<void(int)> screenSleepChosen;
         std::function<void(int)> keyNotationChosen; // decklab::KeyFormat: 0 Lancelot, 1 Open Key, 2 Musical
         std::function<void(bool)> dimPlayedChosen;
         std::function<void(int)> tool;   // 2 Get music, 3 Sample Maker, 10 Storage

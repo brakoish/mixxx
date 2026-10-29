@@ -4,6 +4,7 @@
 #include <algorithm>
 
 #include "controllers/scripting/legacy/controllerscriptenginelegacy.h"
+#include "decklab/decklabscreensleep.h"
 #include "moc_controller.cpp"
 #include "util/cmdlineargs.h"
 #include "util/screensaver.h"
@@ -138,6 +139,11 @@ void Controller::triggerActivity() {
     // Inhibit Updates for 1000 milliseconds
     if (m_userActivityInhibitTimer.elapsed() > 1000) {
         mixxx::ScreenSaverHelper::triggerUserActivity();
+        // Deck Lab screen sleep: controller use keeps the screen lit and
+        // wakes it. MIDI Through echoes Mixxx's own output, not a person.
+        if (!m_sDeviceName.startsWith(QStringLiteral("MIDI Through"), Qt::CaseInsensitive)) {
+            DeckLabScreenSleep::controllerUsed();
+        }
         m_userActivityInhibitTimer.start();
     }
 }

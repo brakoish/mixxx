@@ -1258,6 +1258,34 @@ TEST_F(NativeDeckLabTest, ControllerLayerChangeRefreshesPlayState) {
     EXPECT_DOUBLE_EQ(0, ControlObject::get(ConfigKey("[Channel3]", "play")));
 }
 
+// Screen sleep: Settings → Display, right under Waveforms, with the owner's
+// choices (2026-10-29) and 15 minutes until one is chosen; saved at once.
+TEST_F(NativeDeckLabTest, ScreenSleepIsChosenUnderWaveformsAndSavedAtOnce) {
+    panel->selectPage(4); QCoreApplication::processEvents();
+    panel->findChild<QPushButton*>(QStringLiteral("decklab-settings-category-3"))->click(); QTest::qWait(50);
+    auto* row = panel->findChild<decklab::ui::ChoiceRow*>(QStringLiteral("decklab-settings-screen-sleep"));
+    auto* waves = panel->findChild<decklab::ui::ChoiceRow*>(QStringLiteral("decklab-settings-waveforms"));
+    ASSERT_NE(nullptr, row); ASSERT_NE(nullptr, waves);
+    EXPECT_TRUE(row->isVisible());
+    EXPECT_TRUE(panel->findChild<QWidget*>(QStringLiteral("decklab-settings-page-3"))->isAncestorOf(row));
+    auto* rows = row->parentWidget()->layout(); ASSERT_NE(nullptr, rows);
+    EXPECT_EQ(rows->indexOf(waves) + 1, rows->indexOf(row));
+    const QRect area(row->mapTo(panel.get(), QPoint()), row->size());
+    EXPECT_TRUE(panel->rect().contains(area)) << "whole on the 800x480 page";
+    EXPECT_FALSE(row->segmented()) << "five choices: the value and a picker";
+    QStringList shown;
+    for (int index = 0; index < row->optionCount(); ++index) shown << row->segmentText(index);
+    EXPECT_EQ((QStringList{"5 min", "10 min", "15 min", "30 min", "1 hour"}), shown);
+    auto* choice = panel->findChild<QComboBox*>(QStringLiteral("decklab-screen-sleep")); ASSERT_NE(nullptr, choice);
+    EXPECT_EQ(15, choice->currentData().toInt());
+    EXPECT_EQ(QStringLiteral("15 min"), row->segmentText(row->currentIndex()));
+    capture(QStringLiteral("screen-sleep-settings-display.png"));
+    choice->setCurrentIndex(4);
+    QMetaObject::invokeMethod(choice, "activated", Q_ARG(int, 4)); QTest::qWait(20);
+    EXPECT_EQ(60, config()->getValue(ConfigKey("[DeckLab]", "ScreenSleepMinutes"), 0));
+    EXPECT_EQ(QStringLiteral("1 hour"), row->segmentText(row->currentIndex()));
+}
+
 TEST_F(NativeDeckLabTest, WaveformLayoutPreferenceRoundTripsBothDeckCountsWithoutEngineWrites) {
     QMetaObject::invokeMethod(panel->findChild<QComboBox*>("decklab-deck-layout"), "activated", Q_ARG(int, 2));
     QTest::qWait(30);
