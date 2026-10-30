@@ -737,7 +737,8 @@ struct DeckLabBrowseState {
     // r8-browse: the list first. Easy Mode's settings (Settings › Library),
     // ▶ and i on the highlighted row, the card in a panel over the list on
     // demand, the preview strip above the dock while it plays, whether a
-    // controller is there (the knob legend).
+    // controller is there (the knob legend), and what a swipe locked on
+    // (the LOAD tile's stale-tap guard: target, epoch, pad, row).
     decklab::EasyMode easy;
     QWidget* rowActions = nullptr;
     DeckLabActionButton* rowInfo = nullptr;
@@ -749,6 +750,8 @@ struct DeckLabBrowseState {
     QBoxLayout* heading = nullptr; // the header row (History's New set takes EASY MODE's place)
     bool controllerOpen = false; // the system says a controller is open
     bool controllerSeen = false; // a knob event reached Browse
+    std::tuple<int, quint64, int> swipePressed{0, 0, 0};
+    QPersistentModelIndex swipeSelection;
 };
 
 WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
@@ -2007,6 +2010,263 @@ DeckLabActionButton* browseButton(QWidget* parent, const QString& text, const QS
     return b;
 }
 
+// r8-browse: the shade over a row that slides under a swipe: the row itself
+// (a picture of it, taken as it locks) moved by the finger, and behind it
+// the target deck's colour with LOAD and its number, an arrow pointing the
+// way the row moves. Brighter once a release would load.
+class DeckLabSwipeShade final : public QWidget {
+  public:
+    explicit DeckLabSwipeShade(QWidget* viewport)
+            : QWidget(viewport) {
+        setObjectName(QStringLiteral("decklab-row-swipe"));
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setAttribute(Qt::WA_OpaquePaintEvent);
+        hide();
+    }
+    void start(const QRect& row, const QPixmap& picture) {
+        m_picture = picture;
+        m_offset = 0;
+        setGeometry(row);
+        show();
+        raise();
+    }
+    void setOffset(int offset, int deck, bool armed) {
+        m_offset = offset;
+        m_deck = deck;
+        m_armed = armed;
+        update();
+    }
+    int offset() const {
+        return m_offset;
+    }
+    int deck() const {
+        return m_deck;
+    }
+
+  protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        const QColor colour = m_deck > 0 ? deckLabDeckColor(m_deck) : decklab::colors::panel;
+        painter.fillRect(rect(), m_armed ? colour : colour.darker(260));
+        // The revealed strip: right of the row when it moves left, and so on.
+        const QRect strip = m_offset < 0 ? QRect(width() + m_offset, 0, -m_offset, height())
+                                         : QRect(0, 0, m_offset, height());
+        if (m_deck > 0 && strip.width() > 24) {
+            const QColor ink = m_armed ? (colour.lightnessF() > 0.55 ? decklab::colors::ground : decklab::colors::ink) : decklab::colors::ink;
+            const QString text = tr("LOAD %1").arg(m_deck);
+            const QFont face = decklab::numberFont(font(), 18);
+            const int textWidth = QFontMetrics(face).horizontalAdvance(text);
+            const int arrow = 12;
+            const int total = arrow + 6 + textWidth;
+            const int left = strip.center().x() - std::min(total, strip.width() - 8) / 2;
+            const QPointF tip(m_offset < 0 ? left : left + arrow, height() / 2.0);
+            const qreal back = m_offset < 0 ? left + arrow : left;
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(ink);
+            painter.drawPolygon(QPolygonF{tip, QPointF(back, height() / 2.0 - 7), QPointF(back, height() / 2.0 + 7)});
+            painter.setFont(face);
+            painter.setPen(ink);
+            painter.drawText(QRect(left + arrow + 6, 0, std::max(0, strip.right() - left - arrow - 6), height()),
+                    Qt::AlignLeft | Qt::AlignVCenter,
+                    text);
+        }
+        painter.drawPixmap(m_offset, 0, m_picture);
+    }
+
+  private:
+    QPixmap m_picture;
+    int m_offset = 0;
+    int m_deck = 0;
+    bool m_armed = false;
+};
+
+// r8-browse (the owner's scope addition): gestures on Browse's track rows.
+// A swipe left loads the row to the left deck and right to the right deck,
+// through the very path and guards of that deck's LOAD tile; a hold (450 ms,
+// still) previews the row in the headphones. Mouse events drive it: a
+// desktop drag, or a touch once Qt hands it over as mouse events. A swipe
+// locks only when the movement is clearly sideways (16 px, twice the
+// vertical), so vertical kinetic scrolling is untouched; it loads only past
+// 60 px, still twice the vertical. A hold or a swipe is never also a tap,
+// a selection drag or a LOAD.
+class DeckLabRowGestures final : public QObject {
+  public:
+    static constexpr int kLock = 16;
+    static constexpr int kSwipe = 60;
+    static constexpr int kStill = 10;
+    static constexpr int kHoldMs = 450;
+    struct Hooks {
+        std::function<bool()> enabled;
+        std::function<int(int side)> deck; // 0: no swipe toward that side (0 left, 1 right)
+        std::function<void(const QModelIndex&)> select;
+        std::function<void(int side)> begin; // the row locked, or turned, toward side
+        std::function<void(int side)> swiped;
+        std::function<void()> held;
+        std::function<void()> moved; // the viewport changed size
+    };
+    DeckLabRowGestures(QAbstractItemView* view, Hooks hooks)
+            : QObject(view->viewport()),
+              m_view(view),
+              m_viewport(view->viewport()),
+              m_hooks(std::move(hooks)),
+              m_shade(new DeckLabSwipeShade(view->viewport())) {
+        setObjectName(QStringLiteral("decklab-row-gestures"));
+        m_hold.setSingleShot(true);
+        m_hold.setInterval(kHoldMs);
+        // A finger that starts a kinetic scroll is neither a hold nor a swipe.
+        connect(QScroller::scroller(m_viewport), &QScroller::stateChanged, this, [this](QScroller::State state) {
+            if (m_mode == Mode::Pending && (state == QScroller::Dragging || state == QScroller::Scrolling)) {
+                m_hold.stop();
+                m_mode = Mode::Other;
+            }
+        });
+        connect(&m_hold, &QTimer::timeout, this, [this] {
+            if (m_mode != Mode::Pending || !m_row.isValid()) return;
+            m_mode = Mode::Held;
+            m_hooks.select(m_row);
+            m_hooks.held();
+        });
+        m_viewport->installEventFilter(this);
+    }
+
+  protected:
+    bool eventFilter(QObject*, QEvent* event) override {
+        switch (event->type()) {
+        case QEvent::MouseButtonPress: {
+            const auto* mouse = static_cast<QMouseEvent*>(event);
+            if (m_cancelling || mouse->button() != Qt::LeftButton) return false;
+            reset();
+            if (!m_hooks.enabled()) return false;
+            m_press = mouse->position().toPoint();
+            m_row = m_view->indexAt(m_press);
+            if (!m_row.isValid()) return false;
+            m_mode = Mode::Pending;
+            m_hold.start();
+            return false; // the table highlights the row, as a tap does
+        }
+        case QEvent::MouseMove: {
+            const auto* mouse = static_cast<QMouseEvent*>(event);
+            if (!(mouse->buttons() & Qt::LeftButton)) return false;
+            const QPoint at = mouse->position().toPoint();
+            m_dx = at.x() - m_press.x();
+            m_dy = at.y() - m_press.y();
+            if (m_mode == Mode::Pending) {
+                if (std::abs(m_dx) > kStill || std::abs(m_dy) > kStill) m_hold.stop();
+                if (std::abs(m_dx) >= kLock && std::abs(m_dx) >= 2 * std::abs(m_dy)) {
+                    const int side = m_dx < 0 ? 0 : 1;
+                    if (!m_hooks.deck(side)) {
+                        m_mode = Mode::Other;
+                        return false;
+                    }
+                    lock(side);
+                    return true;
+                }
+                if (std::abs(m_dy) > kStill && std::abs(m_dy) > std::abs(m_dx)) m_mode = Mode::Other;
+                return false;
+            }
+            if (m_mode == Mode::Sliding) {
+                const int side = m_dx < 0 ? 0 : m_dx > 0 ? 1 : m_side;
+                if (side != m_side && m_hooks.deck(side)) {
+                    m_side = side;
+                    m_hooks.begin(side);
+                }
+                slide();
+                return true;
+            }
+            return m_mode == Mode::Held;
+        }
+        case QEvent::MouseButtonRelease: {
+            if (m_cancelling) return false;
+            m_hold.stop();
+            if (m_mode == Mode::Sliding) {
+                const bool swiped = std::abs(m_dx) >= kSwipe && std::abs(m_dx) >= 2 * std::abs(m_dy) &&
+                        (m_dx < 0 ? 0 : 1) == m_side;
+                const int side = m_side;
+                reset();
+                cancelPress();
+                if (swiped) m_hooks.swiped(side); // short of it: the row is back, nothing loads
+                return true;
+            }
+            if (m_mode == Mode::Held) {
+                reset();
+                cancelPress();
+                return true;
+            }
+            reset();
+            return false;
+        }
+        case QEvent::MouseButtonDblClick:
+            return m_mode == Mode::Sliding || m_mode == Mode::Held;
+        case QEvent::Resize:
+            if (m_hooks.moved) m_hooks.moved();
+            return false;
+        case QEvent::TouchCancel:
+        case QEvent::Hide:
+            reset();
+            return false;
+        default:
+            return false;
+        }
+    }
+
+  private:
+    enum class Mode {
+        None,
+        Pending, // pressed, still deciding
+        Sliding, // a sideways swipe
+        Held,    // a hold that previewed
+        Other,   // a vertical drag or a press elsewhere: the table's own
+    };
+    void lock(int side) {
+        m_hold.stop();
+        m_mode = Mode::Sliding;
+        m_side = side;
+        // A finger that went sideways is not a kinetic scroll.
+        QScroller::scroller(m_viewport)->stop();
+        m_hooks.select(m_row);
+        m_hooks.begin(side);
+        const QRect row(0, m_view->visualRect(m_row).top(), m_viewport->width(), m_view->visualRect(m_row).height());
+        m_shade->start(row, m_viewport->grab(row));
+        slide();
+    }
+    void slide() {
+        const int limit = m_viewport->width() * 3 / 5;
+        const int offset = std::clamp(m_dx, -limit, limit);
+        const bool armed = std::abs(m_dx) >= kSwipe && std::abs(m_dx) >= 2 * std::abs(m_dy);
+        m_shade->setOffset(offset, m_hooks.deck(m_side), armed);
+    }
+    void reset() {
+        m_hold.stop();
+        m_mode = Mode::None;
+        m_dx = m_dy = 0;
+        m_side = -1;
+        m_shade->hide();
+    }
+    // The table saw the press: a release outside every row clears its press
+    // state without clicking an index (as DeckLabTouchScrollGuard does).
+    void cancelPress() {
+        const QPoint outside(-10, -10);
+        QMouseEvent cancel(QEvent::MouseButtonRelease, outside, m_viewport->mapToGlobal(outside),
+                Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        m_cancelling = true;
+        QCoreApplication::sendEvent(m_viewport, &cancel);
+        m_cancelling = false;
+    }
+
+    QAbstractItemView* m_view;
+    QWidget* m_viewport;
+    Hooks m_hooks;
+    DeckLabSwipeShade* m_shade;
+    Mode m_mode = Mode::None;
+    QPoint m_press;
+    QPersistentModelIndex m_row;
+    int m_dx = 0;
+    int m_dy = 0;
+    int m_side = -1;
+    QTimer m_hold;
+    bool m_cancelling = false;
+};
 } // namespace
 
 QWidget* WDeckLab::buildBrowse() {
@@ -3174,7 +3434,7 @@ void WDeckLab::showTracks() {
     if (m_page == 1) decklab::MediaPresence::instance().shownOnScreen(); // r7: a stale list reads now
     applyBrowsePresentation(); // r4-browse
     updateBreadcrumb(); refreshLoadButtons(); refreshBrowseCard(); updateMatchBar(); scheduleMatchCount();
-    scheduleRowActions(); // r8-browse
+    hookTrackTable(); scheduleRowActions(); // r8-browse
 }
 bool WDeckLab::trackListOnScreen() const {
     return m_page == 1 && m_browseStack && m_libraryWidget && m_browseStack->currentWidget() == m_libraryWidget;
@@ -7353,7 +7613,28 @@ void WDeckLab::initBackgroundAnalysis() {
 // r8-browse: the list first. The track table takes Browse's whole width;
 // the highlighted row carries ▶ and i, the card opens over the list's
 // right side on demand, and the headphone preview has a strip above the
-// dock only while it plays.
+// dock only while it plays. Swipes and holds on the rows (DeckLabRowGestures).
+void WDeckLab::hookTrackTable() {
+    auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+    if (!table || table->property("decklabRowGestures").toBool()) return;
+    table->setProperty("decklabRowGestures", true);
+    DeckLabRowGestures::Hooks hooks;
+    const QPointer<WTrackTableView> view(table);
+    hooks.enabled = [this, view] {
+        return view && trackListOnScreen() && m_libraryWidget->getCurrentTrackTableView() == view;
+    };
+    hooks.deck = [this](int side) { return swipeDeck(side); };
+    hooks.select = [view](const QModelIndex& index) {
+        if (!view || !index.isValid() || !view->selectionModel() || index.model() != view->model()) return;
+        view->selectionModel()->setCurrentIndex(index,
+                QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    };
+    hooks.begin = [this](int side) { beginSwipe(side); };
+    hooks.swiped = [this](int side) { finishSwipe(side); };
+    hooks.held = [this] { startPreview(); };
+    hooks.moved = [this] { scheduleRowActions(); };
+    new DeckLabRowGestures(table, std::move(hooks));
+}
 void WDeckLab::scheduleRowActions() {
     if (!m_browseState || m_browseState->rowActionsQueued) return;
     m_browseState->rowActionsQueued = true;
@@ -7474,6 +7755,20 @@ void WDeckLab::tickPreviewStrip() {
     const double duration = value(group, QStringLiteral("duration"));
     m_browseState->previewStrip->setPosition(fraction, std::isfinite(fraction) ? fraction * duration : 0);
 }
+void WDeckLab::startPreview() {
+    // A held row: its preview starts, or keeps playing (a hold is never the
+    // stop that ▶ on the same row is).
+    const ConfigKey load(QStringLiteral("[PreviewDeck1]"), QStringLiteral("LoadSelectedTrackAndPlay"));
+    if (!ControlObject::exists(load) || !browseTrackLevel()) return;
+    auto* previewDeck = m_players && m_players->numberOfPreviewDecks() > 0 ? m_players->getPreviewDeck(0) : nullptr;
+    if (value(load.group, QStringLiteral("play")) > 0 && previewDeck && previewingSelected(previewDeck->getLoadedTrack())) {
+        refreshPreviewStrip();
+        return;
+    }
+    if (selectedFileGone()) return; // r7 fix
+    // r7-hunt2: a rekordbox row is resolved here, by Mixxx's own load.
+    pulse(load.group, load.item);
+}
 void WDeckLab::applyEasyMode(const decklab::EasyMode& mode) {
     if (!m_browseState) return;
     auto& b = *m_browseState;
@@ -7518,4 +7813,43 @@ void WDeckLab::refreshLegendShown() {
     // TURN / PRESS / SHIFT+PRESS teach a knob: only with a controller, and
     // never under the search keyboard.
     setVisibleIf(m_browseState->legend, controllerConnected() && !(m_keyboard && !m_keyboard->isHidden()));
+}
+int WDeckLab::swipeDeck(int side) const {
+    // A swipe left loads the left deck, right the right deck: the dock's
+    // first two tiles. Two decks: the decks shown (displayedDeck, as the
+    // tiles map them); four decks: decks 1 and 2, the dock's own left and
+    // right of the base layer (decks 1 and 3 left, 2 and 4 right). None while
+    // the dock loads a pad (its second tile is Cancel there).
+    if (m_sampleTarget || side < 0 || side > 1) return 0;
+    return m_fourDeckLayout ? side + 1 : displayedDeck(side);
+}
+void WDeckLab::beginSwipe(int side) {
+    // What a press on that deck's LOAD tile records (its stale-tap guard).
+    auto& b = *m_browseState;
+    refreshLoadButtons();
+    auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+    b.swipePressed = {swipeDeck(side), m_interactionEpoch, m_sampleTarget};
+    b.swipeSelection = table ? table->currentIndex().siblingAtColumn(0) : QModelIndex();
+}
+void WDeckLab::finishSwipe(int side) {
+    // The LOAD tile's click, exactly: the same target, epoch, pad and row as
+    // when the swipe locked, then loadDeck (its playing-deck refusal and
+    // row checks); a tile that cannot load says why instead.
+    auto& b = *m_browseState;
+    const int slot = side + 1;
+    auto* table = m_libraryWidget ? m_libraryWidget->getCurrentTrackTableView() : nullptr;
+    const QPersistentModelIndex current = table ? table->currentIndex().siblingAtColumn(0) : QModelIndex();
+    const auto pressed = std::exchange(b.swipePressed, {0, 0, 0});
+    if (std::get<0>(pressed) == 0 || std::get<0>(pressed) != swipeDeck(side) ||
+            std::get<1>(pressed) != m_interactionEpoch || std::get<2>(pressed) != m_sampleTarget ||
+            b.swipeSelection != current) {
+        return;
+    }
+    refreshLoadButtons();
+    QWidget* tile = m_loadButtons[slot - 1];
+    if (!tile || !tile->isEnabled()) {
+        showLoadUnavailable(slot);
+        return;
+    }
+    loadDeck(slot);
 }

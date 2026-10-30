@@ -333,7 +333,9 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void initBackgroundAnalysis();
     // r8-browse: the list first: ▶ and i on the highlighted row, the info
     // panel over the list's right side, the preview strip above the dock;
-    // Easy Mode's settings; the knob legend only with a controller.
+    // Easy Mode's settings; the knob legend only with a controller; swipes
+    // (a load to the left or right deck) and holds (a preview) on the rows.
+    void hookTrackTable();
     void scheduleRowActions();
     void placeRowActions();
     bool trackRowsOnScreen() const;
@@ -341,11 +343,15 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void placeInfo();
     void refreshPreviewStrip();
     void tickPreviewStrip();
+    void startPreview(); // the highlighted row, unless it already plays
     void applyEasyMode(const decklab::EasyMode& mode);
     bool controllerConnected() const;
     void refreshControllerPresence();
     void noteControllerUsed();
     void refreshLegendShown();
+    int swipeDeck(int side) const; // 0: no swipe toward that side
+    void beginSwipe(int side);
+    void finishSwipe(int side);
     int displayedDeck(int side) const;
     void setDisplayedDeck(int side, int deck);
     QString channel(int deck) const;
