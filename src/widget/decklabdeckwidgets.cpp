@@ -1436,16 +1436,55 @@ void DeckLabChipButton::paintEvent(QPaintEvent*) {
 DeckLabMark::DeckLabMark(const QString& iconPath, QWidget* parent)
         : QWidget(parent),
           m_icon(iconPath) {
+    setObjectName(QStringLiteral("decklab-mark"));
     setAttribute(Qt::WA_OpaquePaintEvent);
     setAttribute(Qt::WA_TransparentForMouseEvents);
     setFixedSize(48, 44);
     setAccessibleName(QCoreApplication::translate("DeckLabDeckStrip", "Deck Lab"));
 }
 
+void DeckLabMark::setTarget(QAbstractButton* target) {
+    m_target = target;
+    setAttribute(Qt::WA_TransparentForMouseEvents, target == nullptr);
+    if (!target) {
+        return;
+    }
+    setAccessibleName(target->accessibleName());
+    // The tab's own press and page change repaint the mark with it.
+    connect(target, &QAbstractButton::pressed, this, qOverload<>(&QWidget::update));
+    connect(target, &QAbstractButton::released, this, qOverload<>(&QWidget::update));
+    connect(target, &QAbstractButton::toggled, this, qOverload<>(&QWidget::update));
+}
+
+void DeckLabMark::mousePressEvent(QMouseEvent* event) {
+    if (!m_target || event->button() != Qt::LeftButton || !m_target->isEnabled()) {
+        QWidget::mousePressEvent(event);
+        return;
+    }
+    m_target->setDown(true);
+    update();
+}
+
+void DeckLabMark::mouseReleaseEvent(QMouseEvent* event) {
+    if (!m_target || !m_target->isDown()) {
+        QWidget::mouseReleaseEvent(event);
+        return;
+    }
+    m_target->setDown(false);
+    update();
+    if (event->button() == Qt::LeftButton && rect().contains(event->position().toPoint())) {
+        m_target->click();
+    }
+}
+
 void DeckLabMark::paintEvent(QPaintEvent*) {
     QPainter painter(this);
-    painter.fillRect(rect(), kMiniPanel);
+    painter.fillRect(rect(), m_target && m_target->isDown() ? kPanelPressed : kMiniPanel);
     painter.fillRect(QRect(0, height() - 1, width(), 1), kHairline);
+    if (m_target && m_target->isChecked()) {
+        // The Decks tab's underline runs under the mark too.
+        painter.fillRect(QRect(0, height() - 3, width(), 3), kText);
+    }
     if (!m_icon.isNull()) {
         // The brand's pixel-grid mark at its native 24 px.
         painter.drawPixmap(QRect((width() - 24) / 2, (height() - 1 - 24) / 2, 24, 24), m_icon);

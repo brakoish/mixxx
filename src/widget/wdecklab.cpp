@@ -870,9 +870,10 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     // and a fixed status zone in signal-flow order: USB, CTRL, WI-FI, REC,
     // OUT and the main meter. Nothing here ever changes width.
     const QStringList names = {tr("Decks"), tr("Browse"), tr("Sampler"), tr("Lab FX"), tr("Settings")};
-    rail->addWidget(new DeckLabMark(QDir(m_config->getResourcePath())
-                                            .filePath(QStringLiteral("skins/DeckLab/decklab-icon-24.png")),
-            m_rail));
+    auto* mark = new DeckLabMark(QDir(m_config->getResourcePath())
+                                         .filePath(QStringLiteral("skins/DeckLab/decklab-icon-24.png")),
+            m_rail);
+    rail->addWidget(mark);
     const QStringList triggers = {"overview", "library", "samplers", "effects", "settings"};
     auto* navigation = new QButtonGroup(this);
     for (int page = 0; page < 5; ++page) {
@@ -904,6 +905,9 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     // the qw-library call: a tap opens the stick in Browse, with or without
     // the system service; a long press opens the status sheet.
     DeckLabRail::Hooks railHooks;
+    // r8-browse: the mark and the Decks tab are one tap target to Decks,
+    // pressed and lit together.
+    mark->setTarget(m_tabs[0]);
     railHooks.browseUsb = [this] { openUsbInBrowse(); };
     railHooks.deckSetup = [this](int step) {
         if (m_systemUi && m_systemUi->openWizard(step)) return;

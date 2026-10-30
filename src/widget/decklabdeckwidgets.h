@@ -404,17 +404,23 @@ class DeckLabChipButton final : public QPushButton {
 };
 
 // Brand mark at the left of the tab rail: waveform bars split by a red
-// playhead (played bars graphite, unplayed white). Display only.
+// playhead (played bars graphite, unplayed white). r8-browse: with a target
+// (the Decks tab) the mark and the tab are one big tap target: a tap on the
+// mark clicks the tab, and both show the press and the current page.
 class DeckLabMark final : public QWidget {
   public:
     // iconPath: the brand's pixel-grid mark; painted from geometry if missing.
     explicit DeckLabMark(const QString& iconPath, QWidget* parent = nullptr);
+    void setTarget(QAbstractButton* target);
 
   protected:
     void paintEvent(QPaintEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
 
   private:
     QPixmap m_icon;
+    QAbstractButton* m_target = nullptr;
 };
 
 // Painted segment level meter for the Decks page. It is polled by the display
