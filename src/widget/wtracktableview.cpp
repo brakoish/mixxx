@@ -65,9 +65,9 @@ DeckLabRowMatch deckLabRowMatch(const QModelIndex& index, int keyColumn, int bpm
         return result;
     }
     if (keyColumn >= 0) {
-        result.harmonic = decklab::harmonicMatch(
-                decklab::keyFromText(index.siblingAtColumn(keyColumn).data().toString()),
-                reference.key);
+        // r8-browse: Easy Mode's key rule (none when it matches BPM only).
+        result.harmonic = reference.keyMatch(
+                decklab::keyFromText(index.siblingAtColumn(keyColumn).data().toString()));
     }
     if (bpmColumn >= 0) {
         bool ok = false;
@@ -185,7 +185,10 @@ class DeckLabBpmDelegate final : public DeckLabCellDelegate {
         painter->setPen(ink);
         // ▲/▼ difference to the reference deck (B-51) in a fixed right slot.
         const decklab::MatchReference& reference = decklab::matchReference();
-        const QString delta = reference.active() ? decklab::bpmDeltaText(match.bpm, reference.bpm) : QString();
+        // r8-browse: not while Easy Mode matches keys only.
+        const QString delta = reference.active() && reference.usesTempo()
+                ? decklab::bpmDeltaText(match.bpm, reference.bpm)
+                : QString();
         const int deltaWidth = delta.isEmpty() ? 0 : std::min(46, option.rect.width() / 2);
         painter->drawText(option.rect.adjusted(4, 0, -8 - deltaWidth, 0),
                 Qt::AlignLeft | Qt::AlignVCenter,

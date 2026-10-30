@@ -17,6 +17,7 @@
 #include <QWidget>
 #include <functional>
 
+#include "preferences/usersettings.h" // r8-browse: Easy Mode's [DeckLab] keys
 #include "proto/keys.pb.h"
 #include "track/track_decl.h"
 
@@ -79,8 +80,36 @@ QString tempoWindowText(const TempoWindow& window);
 QString bpmDeltaText(double trackBpm, double referenceBpm);
 // "Same key", "Relative 8A→8B", "Key +1 (up)", "Key −1 (down)"; empty otherwise.
 QString keyRelationText(ChromaticKey track, ChromaticKey reference);
-// Lancelot names that mix with the reference: same, relative, -1 and +1.
-QStringList compatibleLancelotKeys(ChromaticKey reference);
+// r8-browse: Easy Mode, the unit's name for matching (the Match bar, row
+// highlights, ONLY). What it matches on, which keys count and how wide the
+// BPM window is are Settings › Library › Easy Mode, saved as [DeckLab] keys.
+enum class MatchOn {
+    KeyAndBpm,
+    KeyOnly,
+    BpmOnly,
+};
+enum class KeyRule {
+    Wide,     // same key, relative and one step on the wheel (round 4's rule)
+    Relative, // same key and relative
+    Same,     // same key only
+};
+struct EasyMode {
+    bool on = true;
+    MatchOn matchOn = MatchOn::KeyAndBpm;
+    KeyRule keys = KeyRule::Wide;
+    int rangePercent = 6;
+    bool operator==(const EasyMode&) const = default;
+};
+// The BPM ranges Settings offers: 3, 6 (the default), 10 and 16 percent.
+QVector<int> easyModeRanges();
+EasyMode loadEasyMode(const UserSettingsPointer& config);
+void saveEasyMode(const UserSettingsPointer& config, const EasyMode& mode);
+// Whether rule counts a relation (never None).
+bool keyRuleAllows(KeyRule rule, HarmonicMatch match);
+
+// Lancelot names that mix with the reference: same, relative, -1 and +1
+// (r8-browse: fewer under a narrower rule).
+QStringList compatibleLancelotKeys(ChromaticKey reference, KeyRule rule = KeyRule::Wide);
 
 // Parses any key notation shown by Mixxx or an export (8A, 1m, Am, A♭m...).
 // Cached, GUI thread only. r6-keys: decklab::parseKey (decklab/decklabkeys.h).
@@ -96,12 +125,31 @@ struct MatchReference {
     ChromaticKey key = mixxx::track::io::key::INVALID;
     double bpm = 0;
     TempoDirection direction = TempoDirection::Both;
+    // r8-browse: Easy Mode's settings. Every reader (row highlights, the
+    // filter, the summary, the count, Mixes) asks through these.
+    MatchOn matchOn = MatchOn::KeyAndBpm;
+    KeyRule keys = KeyRule::Wide;
+    double tolerance = 0.06;
     bool active() const {
         return enabled && deck > 0;
     }
-    TempoWindow window() const {
-        return tempoWindow(bpm, direction);
+    bool usesKey() const {
+        return matchOn != MatchOn::BpmOnly;
     }
+    bool usesTempo() const {
+        return matchOn != MatchOn::KeyOnly;
+    }
+    // Invalid (any tempo) when BPM is not matched.
+    TempoWindow window() const {
+        return usesTempo() ? tempoWindow(bpm, direction, tolerance) : TempoWindow();
+    }
+    // Every key passes: keys are not matched, or the deck has none.
+    bool anyKey() const {
+        return !usesKey() || key == mixxx::track::io::key::INVALID;
+    }
+    // The track's relation as Easy Mode counts it: None when keys are not
+    // matched or the key rule leaves the relation out.
+    HarmonicMatch keyMatch(ChromaticKey track) const;
     bool sameAs(const MatchReference& other) const;
 };
 const MatchReference& matchReference();

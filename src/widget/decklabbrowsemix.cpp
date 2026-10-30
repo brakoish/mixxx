@@ -21,7 +21,7 @@ QString translate(const char* text) {
 }
 
 int closenessRank(ChromaticKey key, const MatchReference& reference) {
-    switch (harmonicMatch(key, reference.key)) {
+    switch (reference.keyMatch(key)) { // r8-browse: Easy Mode's key rule
     case HarmonicMatch::Same:
         return 0;
     case HarmonicMatch::Relative:
@@ -30,7 +30,8 @@ int closenessRank(ChromaticKey key, const MatchReference& reference) {
     case HarmonicMatch::None:
         break;
     }
-    // Only possible when the reference has no key: every key is as good.
+    // Only possible when the reference has no key or keys are not matched:
+    // every key is as good.
     return 0;
 }
 
@@ -71,8 +72,8 @@ bool mixesWith(const MixCandidate& candidate, const MatchReference& reference) {
     if (!reference.active()) {
         return false;
     }
-    const bool key = reference.key == mixxx::track::io::key::INVALID ||
-            harmonicMatch(candidate.key, reference.key) != HarmonicMatch::None;
+    // r8-browse: the same Easy Mode rule as the rows and ONLY.
+    const bool key = reference.anyKey() || reference.keyMatch(candidate.key) != HarmonicMatch::None;
     const TempoWindow window = reference.window();
     const bool tempo = !window.isValid() || tempoInWindow(candidate.bpm, window);
     return key && tempo;

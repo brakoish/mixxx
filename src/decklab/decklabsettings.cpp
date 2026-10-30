@@ -605,7 +605,7 @@ void DeckLabSettingsPage::buildLibrary(QWidget* content) {
         // capitals, and "AM" is not a key.
         m_keys->addOption(decklab::keyFormatName(format), decklab::keyFormatName(format), static_cast<int>(format));
     }
-    m_keys->setHint(tr("How keys read in Browse, on the decks and in Match"));
+    m_keys->setHint(tr("How keys read in Browse, on the decks and in Easy Mode"));
     // The format on screen (applied from the config at start-up, or followed
     // from the desktop preferences since), so the row never disagrees with it.
     m_keys->model()->setCurrentIndex(static_cast<int>(decklab::keyFormat()));
@@ -624,6 +624,41 @@ void DeckLabSettingsPage::buildLibrary(QWidget* content) {
         }
     });
     rows->addWidget(played);
+    // r8-browse: Easy Mode, Browse's matching: the EASY MODE button, its
+    // bar, the row highlights and ONLY all follow these rows (one matcher,
+    // decklab::MatchReference), saved as [DeckLab] keys and applied at once.
+    rows->addWidget(new SectionRule(tr("Easy Mode"), content));
+    const decklab::EasyMode easy = m_hooks.easyMode ? m_hooks.easyMode() : decklab::EasyMode();
+    m_easy = new SwitchRow(tr("Easy Mode"), content, QStringLiteral("decklab-easy-mode"));
+    m_easy->setHint(tr("Highlights tracks that mix with the playing deck"));
+    m_easy->setChecked(easy.on);
+    connect(m_easy, &QPushButton::clicked, this, [this] { chooseEasyMode(); });
+    rows->addWidget(m_easy);
+    m_easyMatchOn = new ChoiceRow(tr("Match on"), content, QStringLiteral("decklab-settings-easy-match-on"),
+            QStringLiteral("decklab-easy-match-on"));
+    m_easyMatchOn->addOption(tr("Key + BPM"), tr("Key and BPM"), static_cast<int>(decklab::MatchOn::KeyAndBpm));
+    m_easyMatchOn->addOption(tr("Key"), tr("Key only"), static_cast<int>(decklab::MatchOn::KeyOnly));
+    m_easyMatchOn->addOption(tr("BPM"), tr("BPM only"), static_cast<int>(decklab::MatchOn::BpmOnly));
+    m_easyMatchOn->model()->setCurrentIndex(std::max(0, m_easyMatchOn->model()->findData(static_cast<int>(easy.matchOn))));
+    rows->addWidget(m_easyMatchOn);
+    m_easyKeys = new ChoiceRow(tr("Keys that match"), content, QStringLiteral("decklab-settings-easy-keys"),
+            QStringLiteral("decklab-easy-keys"));
+    m_easyKeys->addOption(tr("Same, relative, ±1"), tr("Same key, relative and ±1"), static_cast<int>(decklab::KeyRule::Wide));
+    m_easyKeys->addOption(tr("Same and relative"), tr("Same key and relative"), static_cast<int>(decklab::KeyRule::Relative));
+    m_easyKeys->addOption(tr("Same key"), tr("Same key only"), static_cast<int>(decklab::KeyRule::Same));
+    m_easyKeys->model()->setCurrentIndex(std::max(0, m_easyKeys->model()->findData(static_cast<int>(easy.keys))));
+    rows->addWidget(m_easyKeys);
+    m_easyRange = new ChoiceRow(tr("BPM range"), content, QStringLiteral("decklab-settings-easy-range"),
+            QStringLiteral("decklab-easy-range"));
+    for (const int percent : decklab::easyModeRanges()) {
+        m_easyRange->addOption(QStringLiteral("±%1%").arg(percent), tr("±%1% of the deck's BPM").arg(percent), percent);
+    }
+    m_easyRange->model()->setCurrentIndex(std::max(0, m_easyRange->model()->findData(easy.rangePercent)));
+    rows->addWidget(m_easyRange);
+    for (auto* choice : {m_easyMatchOn, m_easyKeys, m_easyRange}) {
+        connect(choice->model(), qOverload<int>(&QComboBox::activated), this, [this](int) { chooseEasyMode(); });
+    }
+    refreshEasyRows();
     rows->addWidget(new SectionRule(tr("Apps"), content));
     // Recording and USB drives have one home now (Unit › Storage); the
     // separate "Record mix to USB" and "Check USB drives" launchers are gone.
@@ -644,6 +679,30 @@ void DeckLabSettingsPage::buildLibrary(QWidget* content) {
         m_tools.append(row);
         rows->addWidget(row);
     }
+}
+
+void DeckLabSettingsPage::chooseEasyMode() {
+    decklab::EasyMode mode;
+    mode.on = m_easy->isChecked();
+    mode.matchOn = static_cast<decklab::MatchOn>(m_easyMatchOn->model()->currentData().toInt());
+    mode.keys = static_cast<decklab::KeyRule>(m_easyKeys->model()->currentData().toInt());
+    mode.rangePercent = m_easyRange->model()->currentData().toInt();
+    if (m_hooks.easyModeChosen) {
+        m_hooks.easyModeChosen(mode);
+    }
+    refreshEasyRows();
+}
+
+void DeckLabSettingsPage::refreshEasyRows() {
+    // Off: its rows wait; a choice that does not apply says why.
+    const bool on = m_easy->isChecked();
+    const auto matchOn = static_cast<decklab::MatchOn>(m_easyMatchOn->model()->currentData().toInt());
+    m_easyMatchOn->setDisabledHint(tr("Easy Mode is off"));
+    m_easyKeys->setDisabledHint(on ? tr("Easy Mode matches BPM only") : tr("Easy Mode is off"));
+    m_easyRange->setDisabledHint(on ? tr("Easy Mode matches keys only") : tr("Easy Mode is off"));
+    m_easyMatchOn->setEnabled(on);
+    m_easyKeys->setEnabled(on && matchOn != decklab::MatchOn::BpmOnly);
+    m_easyRange->setEnabled(on && matchOn != decklab::MatchOn::KeyOnly);
 }
 
 // ------------------------------------------------------------- navigation --

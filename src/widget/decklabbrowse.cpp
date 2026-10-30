@@ -323,7 +323,54 @@ QString keyRelationText(ChromaticKey track, ChromaticKey reference) {
     return {};
 }
 
-QStringList compatibleLancelotKeys(ChromaticKey reference) {
+QVector<int> easyModeRanges() {
+    return {3, 6, 10, 16};
+}
+
+namespace {
+const QString kEasyGroup = QStringLiteral("[DeckLab]");
+} // namespace
+
+EasyMode loadEasyMode(const UserSettingsPointer& config) {
+    EasyMode mode;
+    if (!config) {
+        return mode;
+    }
+    mode.on = config->getValue(ConfigKey(kEasyGroup, QStringLiteral("EasyMode")), 1) != 0;
+    mode.matchOn = static_cast<MatchOn>(std::clamp(
+            config->getValue(ConfigKey(kEasyGroup, QStringLiteral("EasyModeMatchOn")), 0), 0, 2));
+    mode.keys = static_cast<KeyRule>(std::clamp(
+            config->getValue(ConfigKey(kEasyGroup, QStringLiteral("EasyModeKeys")), 0), 0, 2));
+    const int range = config->getValue(ConfigKey(kEasyGroup, QStringLiteral("EasyModeBpmRange")), 6);
+    mode.rangePercent = easyModeRanges().contains(range) ? range : 6;
+    return mode;
+}
+
+void saveEasyMode(const UserSettingsPointer& config, const EasyMode& mode) {
+    if (!config) {
+        return;
+    }
+    config->setValue(ConfigKey(kEasyGroup, QStringLiteral("EasyMode")), mode.on ? 1 : 0);
+    config->setValue(ConfigKey(kEasyGroup, QStringLiteral("EasyModeMatchOn")), static_cast<int>(mode.matchOn));
+    config->setValue(ConfigKey(kEasyGroup, QStringLiteral("EasyModeKeys")), static_cast<int>(mode.keys));
+    config->setValue(ConfigKey(kEasyGroup, QStringLiteral("EasyModeBpmRange")), mode.rangePercent);
+}
+
+bool keyRuleAllows(KeyRule rule, HarmonicMatch match) {
+    switch (match) {
+    case HarmonicMatch::Same:
+        return true;
+    case HarmonicMatch::Relative:
+        return rule != KeyRule::Same;
+    case HarmonicMatch::Adjacent:
+        return rule == KeyRule::Wide;
+    case HarmonicMatch::None:
+        break;
+    }
+    return false;
+}
+
+QStringList compatibleLancelotKeys(ChromaticKey reference, KeyRule rule) {
     const LancelotPosition position = lancelot(reference);
     if (!position.isValid()) {
         return {};
@@ -333,10 +380,15 @@ QStringList compatibleLancelotKeys(ChromaticKey reference) {
     const auto wheel = [](int number) {
         return (number + 11) % 12 + 1;
     };
-    return {QString::number(position.number) + letter,
-            QString::number(position.number) + other,
-            QString::number(wheel(position.number - 1)) + letter,
-            QString::number(wheel(position.number + 1)) + letter};
+    QStringList keys{QString::number(position.number) + letter};
+    if (keyRuleAllows(rule, HarmonicMatch::Relative)) {
+        keys << QString::number(position.number) + other;
+    }
+    if (keyRuleAllows(rule, HarmonicMatch::Adjacent)) {
+        keys << QString::number(wheel(position.number - 1)) + letter
+             << QString::number(wheel(position.number + 1)) + letter;
+    }
+    return keys;
 }
 
 QString matchFilterQuery(const MatchReference& reference, const QString& extra) {
@@ -352,7 +404,8 @@ QString matchFilterQuery(const MatchReference& reference, const QString& extra) 
         // QString::arg(double) always writes a '.' decimal point.
         required << QStringLiteral("bpm:%1-%2").arg(window.low, 0, 'f', 2).arg(window.high, 0, 'f', 2);
     }
-    const QStringList keys = compatibleLancelotKeys(reference.key);
+    // r8-browse: Easy Mode's key rule; no key terms when it matches BPM only.
+    const QStringList keys = reference.usesKey() ? compatibleLancelotKeys(reference.key, reference.keys) : QStringList();
     if (keys.isEmpty()) {
         return required.join(QLatin1Char(' '));
     }
@@ -486,9 +539,19 @@ bool MatchReference::sameAs(const MatchReference& other) const {
             automatic == other.automatic && direction == other.direction &&
             std::abs(bpm - other.bpm) < 0.005;
 }
+            matchOn == other.matchOn && keys == other.keys && // r8-browse
+            std::abs(tolerance - other.tolerance) < 1e-9 &&
 
 const MatchReference& matchReference() {
     return mutableReference();
+HarmonicMatch MatchReference::keyMatch(ChromaticKey track) const {
+    if (!usesKey()) {
+        return HarmonicMatch::None;
+    }
+    const HarmonicMatch match = harmonicMatch(track, key);
+    return keyRuleAllows(keys, match) ? match : HarmonicMatch::None;
+}
+
 }
 
 void setMatchReference(const MatchReference& reference) {

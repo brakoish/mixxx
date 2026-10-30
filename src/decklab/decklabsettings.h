@@ -9,6 +9,7 @@
 
 #include "decklab/decklabsystempages.h"
 #include "preferences/usersettings.h"
+#include "widget/decklabbrowse.h" // r8-browse: decklab::EasyMode
 
 class DeckLabSystemUi;
 class QPushButton;
@@ -56,6 +57,9 @@ class DeckLabSettingsPage : public QWidget {
         std::function<void(int)> screenSleepChosen;
         std::function<void(int)> keyNotationChosen; // decklab::KeyFormat: 0 Lancelot, 1 Open Key, 2 Musical
         std::function<void(bool)> dimPlayedChosen;
+        // r8-browse: Easy Mode (Browse's matching), saved and applied by the surface.
+        std::function<decklab::EasyMode()> easyMode;
+        std::function<void(const decklab::EasyMode&)> easyModeChosen;
         std::function<void(int)> tool;   // 2 Get music, 3 Sample Maker, 10 Storage
         std::function<void()> advanced; // the desktop preferences
         std::function<void()> leave;    // back from the category list
@@ -102,6 +106,8 @@ class DeckLabSettingsPage : public QWidget {
     void selectDeck(int deck);
     void refreshDeckRows();
     void refreshLayoutRows();
+    void chooseEasyMode();     // r8-browse: the rows' choice, to the surface
+    void refreshEasyRows();    // r8-browse
     bool knobBack();
     void setLevel(int level);
     QString channel(int deck) const;
@@ -134,6 +140,11 @@ class DeckLabSettingsPage : public QWidget {
     decklab::ui::ChoiceRow* m_waves = nullptr;
     // Library (r6-keys: the key format moved here, where keys are browsed)
     decklab::ui::ChoiceRow* m_keys = nullptr;
+    // Library: r8-browse: Easy Mode
+    decklab::ui::SwitchRow* m_easy = nullptr;
+    decklab::ui::ChoiceRow* m_easyMatchOn = nullptr;
+    decklab::ui::ChoiceRow* m_easyKeys = nullptr;
+    decklab::ui::ChoiceRow* m_easyRange = nullptr;
     // Controller & audio
     decklab::ui::InfoRow* m_health = nullptr;
     QList<QPushButton*> m_tools;
