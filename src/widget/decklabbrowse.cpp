@@ -12,6 +12,7 @@
 #include <QStorageInfo>
 #include <QLinearGradient>
 #include <QLocale>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QResizeEvent>
@@ -31,6 +32,7 @@
 #include "track/keyutils.h"
 #include "track/track.h"
 #include "util/color/rgbcolor.h"
+#include "waveform/waveform.h" // r8-browse: the preview strip's overview
 #include "widget/decklabdeckwidgets.h"
 
 namespace decklab {
@@ -537,13 +539,11 @@ QColor keyWheelColor(ChromaticKey key) {
 bool MatchReference::sameAs(const MatchReference& other) const {
     return enabled == other.enabled && deck == other.deck && key == other.key &&
             automatic == other.automatic && direction == other.direction &&
-            std::abs(bpm - other.bpm) < 0.005;
-}
             matchOn == other.matchOn && keys == other.keys && // r8-browse
             std::abs(tolerance - other.tolerance) < 1e-9 &&
+            std::abs(bpm - other.bpm) < 0.005;
+}
 
-const MatchReference& matchReference() {
-    return mutableReference();
 HarmonicMatch MatchReference::keyMatch(ChromaticKey track) const {
     if (!usesKey()) {
         return HarmonicMatch::None;
@@ -552,6 +552,8 @@ HarmonicMatch MatchReference::keyMatch(ChromaticKey track) const {
     return keyRuleAllows(keys, match) ? match : HarmonicMatch::None;
 }
 
+const MatchReference& matchReference() {
+    return mutableReference();
 }
 
 void setMatchReference(const MatchReference& reference) {
@@ -668,6 +670,26 @@ QString recentDayLabel(const QDate& day, const QDate& today) {
         return translate("Yesterday");
     }
     return QLocale().toString(day, day.year() == today.year() ? QStringLiteral("d MMM") : QStringLiteral("d MMM yyyy"));
+}
+
+QDate dayDividerOf(const QModelIndex& index, int dayColumn) {
+    if (!index.isValid() || dayColumn < 0) {
+        return {};
+    }
+    const QDate day = index.sibling(index.row(), dayColumn).data().toDate();
+    if (!day.isValid() ||
+            (index.row() > 0 && index.sibling(index.row() - 1, dayColumn).data().toDate() == day)) {
+        return {};
+    }
+    return day;
+}
+
+QString dayDividerText(const QDate& day, const QDate& today) {
+    return recentDayLabel(day, today).toUpper();
+}
+
+int dayDividerWidth(const QFont& base, const QString& text) {
+    return QFontMetrics(labelFont(base)).horizontalAdvance(text) + 16;
 }
 
 QVector<CategoryValue> collectCategoryValues(
@@ -1007,6 +1029,19 @@ void paintGlyph(QPainter& painter, const QRectF& box, Glyph glyph, const QColor&
             painter.drawEllipse(at(x, 0.5), s * 0.09, s * 0.09);
         }
         break;
+    case Glyph::Headphones: // r8-browse
+        painter.drawArc(QRectF(at(0.16, 0.14), at(0.84, 0.82)), 0, 180 * 16);
+        painter.setBrush(color);
+        painter.drawRoundedRect(QRectF(at(0.1, 0.5), at(0.3, 0.86)), 2, 2);
+        painter.drawRoundedRect(QRectF(at(0.7, 0.5), at(0.9, 0.86)), 2, 2);
+        break;
+    case Glyph::Info: // r8-browse
+        painter.drawEllipse(QRectF(at(0.1, 0.1), at(0.9, 0.9)));
+        painter.drawLine(at(0.5, 0.45), at(0.5, 0.72));
+        painter.setBrush(color);
+        painter.setPen(Qt::NoPen);
+        painter.drawEllipse(at(0.5, 0.3), s * 0.06, s * 0.06);
+        break;
     case Glyph::None:
         break;
     }
@@ -1269,8 +1304,8 @@ void DeckLabDeckChip::setReference(int deck, bool automatic, const QString& deta
     m_automatic = automatic;
     m_detail = detail;
     setAccessibleName(deck > 0
-                    ? (automatic ? tr("Match to deck %1 (automatic): %2").arg(deck).arg(detail)
-                                 : tr("Match to deck %1: %2").arg(deck).arg(detail))
+                    ? (automatic ? tr("Easy Mode deck %1 (automatic): %2").arg(deck).arg(detail)
+                                 : tr("Easy Mode deck %1: %2").arg(deck).arg(detail))
                     : detail);
     update();
 }
@@ -1601,33 +1636,6 @@ void DeckLabTrackCard::refreshMatch() {
     }
 }
 
-QString DeckLabTrackCard::matchSummary() const {
-    const MatchReference& reference = matchReference();
-    if (m_itemMode || !reference.active()) {
-        return {};
-    }
-    // The reference deck is named on the Match bar; keep this short and say
-    // it in BPM: "Same key · ▼ 2.0 BPM slower".
-    QStringList parts;
-    const QString relation = keyRelationText(m_key, reference.key);
-    if (!relation.isEmpty()) {
-        parts << relation;
-    }
-    if (std::isfinite(m_bpm) && m_bpm > 0 && reference.bpm > 0) {
-        const double delta = m_bpm - reference.bpm;
-        if (std::abs(delta) < 0.05) {
-            parts << tr("same BPM");
-        } else {
-            const QString size = QLocale().toString(std::abs(delta), 'f', 1);
-            parts << (delta > 0 ? tr("▲ %1 BPM faster").arg(size) : tr("▼ %1 BPM slower").arg(size));
-        }
-    }
-    if (parts.isEmpty()) {
-        return {};
-    }
-    return parts.join(QStringLiteral(" · "));
-}
-
 void DeckLabTrackCard::requestCover() {
     if (!m_covers || !m_track) {
         return;
@@ -1733,10 +1741,10 @@ void DeckLabTrackCard::paintTrack(QPainter& painter) {
             colors::muted,
             2);
 
+    // r8-browse: the chips light as the rows do; the relation is never
+    // written out (the rows show it: the key pill, the BPM difference).
     const MatchReference& reference = matchReference();
-    const HarmonicMatch harmonic = reference.active()
-            ? harmonicMatch(m_key, reference.key)
-            : HarmonicMatch::None;
+    const HarmonicMatch harmonic = reference.active() ? reference.keyMatch(m_key) : HarmonicMatch::None;
     const bool tempo = reference.active() && tempoInWindow(m_bpm, reference.window());
     const QString key = keyText(); // r6-keys
     const int chipTop = artBox.bottom() + 9;
@@ -1765,7 +1773,7 @@ void DeckLabTrackCard::paintTrack(QPainter& painter) {
     y = chipTop + chipHeight + 8;
     const int bottom = height() - pad;
     const QFontMetrics smallMetrics(smallFont);
-    // Rating and track color, then the relation to the reference deck.
+    // Rating and track color, then the album and genre.
     if (y + 14 <= bottom) {
         int x = pad;
         for (int star = 0; star < 5; ++star) {
@@ -1780,17 +1788,6 @@ void DeckLabTrackCard::paintTrack(QPainter& painter) {
             x += 18;
         }
         y += 20;
-    }
-    const QString summary = matchSummary();
-    const QFont summaryFont = strongFont(font());
-    const QFontMetrics summaryMetrics(summaryFont);
-    if (!summary.isEmpty() && y + summaryMetrics.height() <= bottom) {
-        painter.setFont(summaryFont);
-        painter.setPen(harmonic != HarmonicMatch::None || tempo ? colors::keyMatch : colors::muted);
-        painter.drawText(QRect(pad, y, width() - 2 * pad, summaryMetrics.height()),
-                Qt::AlignLeft | Qt::AlignVCenter,
-                summaryMetrics.elidedText(summary, Qt::ElideRight, width() - 2 * pad));
-        y += summaryMetrics.height() + 4;
     }
     QStringList about;
     if (!m_album.isEmpty()) {
@@ -1860,6 +1857,184 @@ void DeckLabTrackCard::paintItem(QPainter& painter) {
                     hintFont,
                     colors::muted,
                     lines);
+        }
+    }
+}
+
+DeckLabPreviewStrip::DeckLabPreviewStrip(QWidget* parent)
+        : QWidget(parent) {
+    setObjectName(QStringLiteral("decklab-preview-strip"));
+    setAttribute(Qt::WA_OpaquePaintEvent);
+    setFixedHeight(kHeight);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    setAccessibleName(tr("Headphone preview"));
+}
+
+void DeckLabPreviewStrip::setTrack(const TrackPointer& track) {
+    if (track == m_track) {
+        return;
+    }
+    QObject::disconnect(m_summaryConnection);
+    m_track = track;
+    m_title.clear();
+    if (m_track) {
+        m_title = m_track->getTitle().trimmed();
+        if (m_title.isEmpty()) {
+            m_title = QFileInfo(m_track->getLocation()).completeBaseName();
+        }
+        const QString artist = m_track->getArtist().trimmed();
+        if (!artist.isEmpty()) {
+            m_title += QStringLiteral(" · ") + artist;
+        }
+        // Analysis hands the summary over later for a track it reads now.
+        m_summaryConnection = QObject::connect(m_track.get(), &Track::waveformSummaryUpdated, this, [this] {
+            renderOverview();
+            update();
+        });
+    }
+    setAccessibleName(m_title.isEmpty() ? tr("Headphone preview") : tr("Previewing %1").arg(m_title));
+    renderOverview();
+    update();
+}
+
+void DeckLabPreviewStrip::setPosition(double fraction, double seconds) {
+    fraction = std::isfinite(fraction) ? std::clamp(fraction, 0.0, 1.0) : 0.0;
+    seconds = std::isfinite(seconds) ? std::max(0.0, seconds) : 0.0;
+    // A repaint only for a playhead moved by a pixel or a new second.
+    const QRect area = overviewRect();
+    const bool moved = std::lround(fraction * area.width()) != std::lround(m_position * area.width()) ||
+            static_cast<int>(seconds) != static_cast<int>(m_seconds);
+    m_position = fraction;
+    m_seconds = seconds;
+    if (moved) {
+        update();
+    }
+}
+
+QRect DeckLabPreviewStrip::stopRect() const {
+    return QRect(width() - 44, (height() - 40) / 2, 44, 40);
+}
+
+QRect DeckLabPreviewStrip::overviewRect() const {
+    // The glyph (36 px) and the title (a third of the rest, 120-220 px),
+    // then the overview, the time (52 px) and the stop.
+    const int left = 36 + std::clamp((width() - 36 - 52 - 44) / 3, 120, 220) + 8;
+    const int right = stopRect().left() - 52;
+    return QRect(left, 5, std::max(0, right - left), height() - 10);
+}
+
+void DeckLabPreviewStrip::renderOverview() {
+    const QRect area = overviewRect();
+    m_overview = QPixmap();
+    if (!m_track || area.width() <= 0 || area.height() <= 0) {
+        return;
+    }
+    const ConstWaveformPointer summary = m_track->getWaveformSummary();
+    const int size = summary ? summary->getDataSize() : 0;
+    if (size < 4) {
+        return;
+    }
+    // Once per track, summary or width: the strip then only blits it.
+    m_overview = QPixmap(area.size());
+    m_overview.fill(Qt::transparent);
+    QPainter painter(&m_overview);
+    const int pairs = size / 2; // left and right interleaved
+    const double middle = area.height() / 2.0;
+    for (int x = 0; x < area.width(); ++x) {
+        const int from = static_cast<int>(static_cast<qint64>(x) * pairs / area.width());
+        const int to = std::max(from + 1, static_cast<int>(static_cast<qint64>(x + 1) * pairs / area.width()));
+        int peak = 0;
+        for (int pair = from; pair < to && 2 * pair + 1 < size; ++pair) {
+            peak = std::max({peak,
+                    static_cast<int>(summary->get(2 * pair).filtered.all),
+                    static_cast<int>(summary->get(2 * pair + 1).filtered.all)});
+        }
+        const double half = std::max(0.5, peak / 255.0 * middle);
+        painter.fillRect(QRectF(x, middle - half, 1, 2 * half), colors::muted);
+    }
+}
+
+void DeckLabPreviewStrip::resizeEvent(QResizeEvent* event) {
+    QWidget::resizeEvent(event);
+    renderOverview();
+}
+
+void DeckLabPreviewStrip::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.fillRect(rect(), colors::panel);
+    painter.fillRect(QRect(0, 0, width(), 1), colors::edge);
+    paintGlyph(painter, QRectF(8, (height() - 22) / 2.0, 22, 22), Glyph::Headphones, colors::keyMatch);
+    const QRect area = overviewRect();
+    const QFont titleFace = strongFont(font());
+    const QFontMetrics titleMetrics(titleFace);
+    const QRect titleBox(36, 0, std::max(0, area.left() - 8 - 36), height());
+    painter.setFont(titleFace);
+    painter.setPen(colors::ink);
+    painter.drawText(titleBox,
+            Qt::AlignLeft | Qt::AlignVCenter,
+            titleMetrics.elidedText(m_title.isEmpty() ? tr("Preview") : m_title, Qt::ElideRight, titleBox.width()));
+    painter.fillRect(area, colors::ground);
+    if (!m_overview.isNull()) {
+        painter.drawPixmap(area.topLeft(), m_overview);
+    } else {
+        painter.fillRect(QRect(area.left(), area.center().y(), area.width(), 1), colors::edge);
+    }
+    // The played part dimmed, then the playhead in live red.
+    const int head = area.left() + static_cast<int>(std::lround(m_position * std::max(0, area.width() - 1)));
+    painter.fillRect(QRect(area.left(), area.top(), head - area.left(), area.height()), QColor(13, 15, 18, 120));
+    painter.fillRect(QRect(head - 1, area.top() - 2, 2, area.height() + 4), colors::onAir);
+    painter.setFont(numberFont(font(), 16));
+    painter.setPen(colors::ink);
+    const int whole = static_cast<int>(m_seconds);
+    painter.drawText(QRect(area.right() + 1, 0, 52, height()),
+            Qt::AlignCenter,
+            QStringLiteral("%1:%2").arg(whole / 60).arg(whole % 60, 2, 10, QLatin1Char('0')));
+    const QRect stop = stopRect();
+    if (m_stopDown) {
+        painter.fillRect(stop, colors::raise);
+    }
+    paintGlyph(painter, QRectF(stop.center().x() - 9, stop.center().y() - 9, 18, 18), Glyph::Close, colors::ink);
+}
+
+void DeckLabPreviewStrip::seekAt(int x) {
+    const QRect area = overviewRect();
+    if (area.width() <= 0 || !m_seek) {
+        return;
+    }
+    const double fraction = std::clamp((x - area.left()) / static_cast<double>(area.width()), 0.0, 1.0);
+    m_position = fraction;
+    update();
+    m_seek(fraction);
+}
+
+void DeckLabPreviewStrip::mousePressEvent(QMouseEvent* event) {
+    if (event->button() != Qt::LeftButton) {
+        return;
+    }
+    const QPoint at = event->position().toPoint();
+    if (stopRect().contains(at)) {
+        m_stopDown = true;
+        update();
+    } else if (overviewRect().adjusted(0, -5, 0, 5).contains(at)) {
+        m_seeking = true;
+        seekAt(at.x());
+    }
+}
+
+void DeckLabPreviewStrip::mouseMoveEvent(QMouseEvent* event) {
+    if (m_seeking && (event->buttons() & Qt::LeftButton)) {
+        seekAt(event->position().toPoint().x());
+    }
+}
+
+void DeckLabPreviewStrip::mouseReleaseEvent(QMouseEvent* event) {
+    m_seeking = false;
+    if (m_stopDown) {
+        m_stopDown = false;
+        update();
+        if (stopRect().contains(event->position().toPoint()) && m_stop) {
+            m_stop();
         }
     }
 }

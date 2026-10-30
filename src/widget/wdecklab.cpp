@@ -734,6 +734,21 @@ struct DeckLabBrowseState {
     QFutureWatcher<QList<decklab::RecentTrack>>* recentWatcher = nullptr;
     QTimer recentRetry; // not quiet yet: ask again
     QString recentStick;
+    // r8-browse: the list first. Easy Mode's settings (Settings › Library),
+    // ▶ and i on the highlighted row, the card in a panel over the list on
+    // demand, the preview strip above the dock while it plays, whether a
+    // controller is there (the knob legend).
+    decklab::EasyMode easy;
+    QWidget* rowActions = nullptr;
+    DeckLabActionButton* rowInfo = nullptr;
+    bool rowActionsQueued = false;
+    QWidget* info = nullptr;
+    DeckLabActionButton* infoClose = nullptr;
+    DeckLabPreviewStrip* previewStrip = nullptr;
+    QTimer previewTick;
+    QBoxLayout* heading = nullptr; // the header row (History's New set takes EASY MODE's place)
+    bool controllerOpen = false; // the system says a controller is open
+    bool controllerSeen = false; // a knob event reached Browse
 };
 
 WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
@@ -887,6 +902,9 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
         createControl(kTab, triggers[page]);
         watch(kTab, triggers[page], [this, page](double v) { if (v > 0) selectPage(page); });
     }
+    // r8-browse: the mark and the Decks tab are one tap target to Decks,
+    // pressed and lit together.
+    mark->setTarget(m_tabs[0]);
     // Spare width (wider panels) goes here, never into the tabs.
     rail->addStretch(1);
     // Controller effect units as lamps; tapping opens the full read-only list.
@@ -905,9 +923,6 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     // the qw-library call: a tap opens the stick in Browse, with or without
     // the system service; a long press opens the status sheet.
     DeckLabRail::Hooks railHooks;
-    // r8-browse: the mark and the Decks tab are one tap target to Decks,
-    // pressed and lit together.
-    mark->setTarget(m_tabs[0]);
     railHooks.browseUsb = [this] { openUsbInBrowse(); };
     railHooks.deckSetup = [this](int step) {
         if (m_systemUi && m_systemUi->openWizard(step)) return;
@@ -1128,11 +1143,13 @@ WDeckLab::WDeckLab(UserSettingsPointer config, Library* library,
     // the rail above (decklab/decklabrail.h).
     // Scripts write these directly; an open menu or dialog gets them instead.
     watch(kNative, "browse_press", [this](double v) {
+        if (v > 0) noteControllerUsed(); // r8-browse: the knob legend
         if (v > 0 && decklab::knobForBrowse("[DeckLabNative] browse_press", decklab::KnobAction::Press, 1)) browsePress();
     });
     watch(kNative, "browse_back", [this](double v) {
         // r4-browse (B-48): a Back held for 600 ms goes to the source home.
         if (m_browseState && v <= 0) m_browseState->backHoldControl.stop();
+        if (v > 0) noteControllerUsed(); // r8-browse
         if (v > 0 && decklab::knobForBrowse("[DeckLabNative] browse_back", decklab::KnobAction::Back, -1)) {
             browseBack();
             if (m_browseState && m_page == 1) m_browseState->backHoldControl.start();
@@ -1944,8 +1961,8 @@ void sortNewestFirst(DeckLabBrowseState& b, WTrackTableView* table) {
         b.recentHeader = tracks->getModelSetting(kHeaderState);
     }
     sortTrackTable(table, model, column, Qt::DescendingOrder, false);
-    // Round two: its day column, while it is shown.
-    model->setProperty(decklab::kDayColumnProperty, true);
+    // Round two: its days, while it is shown (r8-browse: dividers, no column).
+    model->setProperty(decklab::kDayDividersProperty, true);
     table->applyDeckLabLayout();
 }
 // The sort Recently Added found, back on its model; select reads it at once
@@ -1963,7 +1980,7 @@ void restoreRecentSort(DeckLabBrowseState& b, bool select) {
         order = tracks->defaultSortOrder();
     }
     sortTrackTable(shown ? table.data() : nullptr, model, column, order, select && shown);
-    model->setProperty(decklab::kDayColumnProperty, false);
+    model->setProperty(decklab::kDayDividersProperty, false);
     if (shown) table->applyDeckLabLayout();
     tracks->setModelSetting(kColumnsSorting, b.recentColumns);
     // The table saved its header (the newest-first arrow) when it moved on.
@@ -1989,20 +2006,23 @@ DeckLabActionButton* browseButton(QWidget* parent, const QString& text, const QS
     if (width > 0) b->setFixedWidth(width);
     return b;
 }
+
 } // namespace
 
 QWidget* WDeckLab::buildBrowse() {
     m_browseState = std::make_unique<DeckLabBrowseState>();
     auto& b = *m_browseState;
     b.matchEnabled = m_config->getValue(ConfigKey("[DeckLab]", "BrowseMatch"), 1) != 0;
+    b.easy = decklab::loadEasyMode(m_config); // r8-browse
     for (const auto& name : {"browse_move", "browse_select", "browse_enter", "load_refused"}) {
         createControl(kNative, QString::fromLatin1(name));
     }
     m_breadcrumb = nullptr; // Replaced by the painted, middle-eliding breadcrumb.
     m_browser = new QWidget(this);
     m_browser->setObjectName(QStringLiteral("decklab-browse"));
-    // r4-browse: the list and the info pane on top, then the knob legend and
-    // the deck dock (the LOAD targets) along the bottom.
+    // r4-browse: the list on top, then the knob legend and the deck dock
+    // (the LOAD targets) along the bottom. r8-browse: the list takes the
+    // whole width; the preview strip sits on the dock while it plays.
     b.pageLayout = column(m_browser);
     auto* body = new QWidget(m_browser);
     body->setObjectName(QStringLiteral("decklab-browse-body"));
@@ -2039,8 +2059,10 @@ QWidget* WDeckLab::buildBrowse() {
     connect(b.allMusic, &QPushButton::clicked, this, [this] { showHome(QStringLiteral("root:tracks")); });
     b.allMusic->hide();
     heading->addWidget(b.allMusic);
-    b.match = browseButton(m_browser, tr("Match"), QStringLiteral("decklab-browse-match"),
-            tr("Highlight tracks that mix with the playing deck"), decklab::Glyph::None, 128);
+    // r8-browse: MATCH is Easy Mode on the unit (Settings › Library ›
+    // Easy Mode turns it off and says what it matches on).
+    b.match = browseButton(m_browser, tr("Easy Mode"), QStringLiteral("decklab-browse-match"),
+            tr("Easy Mode: highlight tracks that mix with the playing deck"), decklab::Glyph::None, 128);
     connect(b.match, &QPushButton::clicked, this, [this] {
         // Toggle; the button's tone and state line show on/off and the deck.
         auto& state = *m_browseState;
@@ -2066,14 +2088,15 @@ QWidget* WDeckLab::buildBrowse() {
         // Match Deck filters what you are looking at (B-42): the current list,
         // or the source you are inside; it never switches to another source.
         const int matchDeck = matchReferenceDeck();
-        auto* match = menu->addAction(matchDeck ? tr("Match Deck %1").arg(matchDeck) : tr("Match Deck"),
+        auto* match = menu->addAction(matchDeck ? tr("Easy Mode: only deck %1's matches").arg(matchDeck)
+                                                : tr("Easy Mode: only matches"),
                 this, [this] { showOnlyMatches(); });
         match->setObjectName(QStringLiteral("decklab-tools-match"));
         const auto& state = *m_browseState;
         const bool hereIsAList = m_browseStack->currentIndex() != 0 || state.list == DeckLabList::Folder ||
                 (state.source.isValid() && (state.list == DeckLabList::Categories || state.list == DeckLabList::Values ||
                                                    state.list == DeckLabList::Mixes));
-        match->setEnabled(matchDeck > 0 && hereIsAList &&
+        match->setEnabled(state.easy.on && matchDeck > 0 && hereIsAList && // r8-browse
                 (value(channel(matchDeck), "bpm") > 0 || value(channel(matchDeck), "visual_key") > 0));
         menu->addAction(tr("Clear filter"), this, [this] {
             clearBrowseFilter(); m_browseState->fromCategories = false;
@@ -2123,11 +2146,54 @@ QWidget* WDeckLab::buildBrowse() {
     });
     heading->addWidget(tools);
     layout->addLayout(heading);
+    b.heading = heading; // r8-browse: History's New set sits here
     m_searchPanel = new QWidget(main); m_searchRow = row(m_searchPanel);
     layout->addWidget(m_searchPanel); m_searchPanel->hide();
     layout->addWidget(buildMatchBar(main));
     m_browseStack = new QStackedWidget(main);
     layout->addWidget(m_browseStack, 1);
+    // r8-browse: the track card on demand, in a panel over the list's right
+    // side: the highlighted row's i opens it; its ✕, the i again or leaving
+    // Browse (or the track list) closes it. Hidden, it still follows the
+    // highlight (refreshBrowseCard), so it opens on the right track.
+    b.info = new QWidget(main);
+    b.info->setObjectName(QStringLiteral("decklab-browse-info"));
+    b.info->setAttribute(Qt::WA_StyledBackground);
+    b.info->setStyleSheet(QStringLiteral("QWidget#decklab-browse-info{background:#0D0F12;border-left:1px solid #2C313A;}"));
+    auto* infoLayout = column(b.info);
+    infoLayout->setContentsMargins(6, 4, 6, 6);
+    infoLayout->setSpacing(4);
+    auto* infoHead = row(nullptr, 0);
+    infoHead->addStretch(1);
+    b.infoClose = browseButton(b.info, QString(), QStringLiteral("decklab-info-close"), tr("Close track details"),
+            decklab::Glyph::Close, 44);
+    connect(b.infoClose, &QPushButton::clicked, this, [this] { setInfoOpen(false); });
+    infoHead->addWidget(b.infoClose);
+    infoLayout->addLayout(infoHead);
+    b.card = new DeckLabTrackCard(b.info);
+    b.card->setObjectName(QStringLiteral("decklab-track-card"));
+    infoLayout->addWidget(b.card, 1);
+    b.info->hide();
+    new DeckLabEventHook(m_browseStack, [this](QObject*, QEvent* event) {
+        if (event->type() == QEvent::Resize || event->type() == QEvent::Move) placeInfo();
+        return false;
+    });
+    // r8-browse: ▶ and i ride on the highlighted row (placeRowActions), in
+    // the track table's viewport, so a scroll carries them with the row.
+    b.rowActions = new QWidget(m_browser);
+    b.rowActions->setObjectName(QStringLiteral("decklab-row-actions"));
+    auto* rowActions = row(b.rowActions, 2);
+    b.preview = browseButton(b.rowActions, QString(), QStringLiteral("decklab-preview"),
+            tr("Preview the highlighted track in headphones"), decklab::Glyph::Play, 44);
+    holdHeight(b.preview, decklab::kTrackRowHeight - 2);
+    connect(b.preview, &QPushButton::clicked, this, [this] { togglePreview(); });
+    rowActions->addWidget(b.preview);
+    b.rowInfo = browseButton(b.rowActions, QString(), QStringLiteral("decklab-row-info"), tr("Track details"),
+            decklab::Glyph::Info, 44);
+    holdHeight(b.rowInfo, decklab::kTrackRowHeight - 2);
+    connect(b.rowInfo, &QPushButton::clicked, this, [this] { setInfoOpen(!m_browseState->info->isVisible()); });
+    rowActions->addWidget(b.rowInfo);
+    b.rowActions->hide();
 
     // List level: the native sidebar (added by bindBrowser) or the category/
     // value list. Index 0 of the Browse stack in both cases.
@@ -2169,6 +2235,7 @@ QWidget* WDeckLab::buildBrowse() {
         browseEnter();
     });
     connect(b.items, &QListWidget::currentRowChanged, this, [this](int) {
+        scheduleRowActions(); // r8-browse: a History or Mixes track row has ▶ and i
         refreshBrowseCard();
         // r4-browse: a Mixes row is the highlighted track.
         if (m_browseState->list == DeckLabList::Mixes) syncMixSelection();
@@ -2197,8 +2264,9 @@ QWidget* WDeckLab::buildBrowse() {
         }
     });
 
-    // Details pane: the highlighted item, one-tap Preview, and the protected
-    // LOAD targets showing each deck's state.
+    // The pane: r8-browse: only while the search keyboard is up, where it
+    // holds the deck dock above the keyboard (the list keeps its rows). The
+    // card moved to the info panel, Preview onto the highlighted row.
     auto* pane = new QWidget(m_browser);
     pane->setObjectName(QStringLiteral("decklab-browse-pane"));
     pane->setAttribute(Qt::WA_StyledBackground);
@@ -2216,14 +2284,8 @@ QWidget* WDeckLab::buildBrowse() {
     auto* paneLayout = column(pane);
     paneLayout->setContentsMargins(6, 6, 6, 6);
     paneLayout->setSpacing(6);
-    paneLayout->addStretch(0);
-    b.card = new DeckLabTrackCard(pane);
-    b.card->setObjectName(QStringLiteral("decklab-track-card"));
-    paneLayout->addWidget(b.card, 1);
-    b.preview = browseButton(pane, tr("Preview"), QStringLiteral("decklab-preview"),
-            tr("Preview the highlighted track in headphones"), decklab::Glyph::Play, 0);
-    connect(b.preview, &QPushButton::clicked, this, [this] { togglePreview(); });
-    paneLayout->addWidget(b.preview);
+    paneLayout->addStretch(1);
+    pane->hide();
     // r4-browse (move 3): the deck dock is the LOAD target. It replaces the
     // mini strips and these LOAD buttons; its tiles keep their names, text
     // and stale-tap guards.
@@ -2260,11 +2322,23 @@ QWidget* WDeckLab::buildBrowse() {
         });
     }
     outer->addWidget(pane);
-    // r4-browse (move 4): the knob legend, then the dock.
+    // r4-browse (move 4): the knob legend, then the dock. r8-browse: the
+    // legend only with a controller (refreshLegendShown); the preview strip
+    // just above the dock, never over its LOAD targets.
     b.legend = new DeckLabKnobLegend(m_browser);
     b.legend->setObjectName(QStringLiteral("decklab-knob-legend"));
+    b.legend->hide();
     b.pageLayout->addWidget(b.legend);
+    b.previewStrip = new DeckLabPreviewStrip(m_browser);
+    b.previewStrip->setSeek([this](double fraction) {
+        set(QStringLiteral("[PreviewDeck1]"), QStringLiteral("playposition"), fraction);
+    });
+    b.previewStrip->setStop([this] { stopPreview(); });
+    b.previewStrip->hide();
+    b.pageLayout->addWidget(b.previewStrip);
     b.pageLayout->addWidget(b.dock);
+    b.previewTick.setInterval(150);
+    connect(&b.previewTick, &QTimer::timeout, this, [this] { tickPreviewStrip(); });
     // 800 px is the design target; wider screens give the pane a little more.
     new DeckLabEventHook(m_browser, [pane](QObject* watched, QEvent* event) {
         if (event->type() == QEvent::Resize) {
@@ -2294,6 +2368,7 @@ QWidget* WDeckLab::buildBrowse() {
     // controller sent after it; a script's own write from its thread queues.
     auto* moveTurn = new ControlProxy(kNative, QStringLiteral("browse_move"), this, ControlFlag::NoWarnIfMissing);
     moveTurn->connectValueChanged(this, [this](double v) {
+        if (v != 0) noteControllerUsed(); // r8-browse: the knob legend
         if (v != 0 && std::isfinite(v) &&
                 decklab::knobForBrowse("[DeckLabNative] browse_move", decklab::KnobAction::Move, v)) {
             browseMove(int(std::clamp(v, -10000.0, 10000.0)), false);
@@ -2301,6 +2376,7 @@ QWidget* WDeckLab::buildBrowse() {
     }, Qt::AutoConnection);
     auto* selectTurn = new ControlProxy(kNative, QStringLiteral("browse_select"), this, ControlFlag::NoWarnIfMissing);
     selectTurn->connectValueChanged(this, [this](double v) {
+        if (v != 0) noteControllerUsed(); // r8-browse
         if (v != 0 && std::isfinite(v) &&
                 decklab::knobForBrowse("[DeckLabNative] browse_select", decklab::KnobAction::Move, v)) {
             browseMove(int(std::clamp(v, -10000.0, 10000.0)), true);
@@ -2313,7 +2389,10 @@ QWidget* WDeckLab::buildBrowse() {
     // Registered before the constructor's own browse_sources handler, which
     // then resets the sidebar root.
     watch(kNative, "browse_sources", [this](double v) { if (v > 0) resetBrowseLevels(); });
-    watch(QStringLiteral("[PreviewDeck1]"), QStringLiteral("play"), [this](double) { refreshPreviewButton(); });
+    watch(QStringLiteral("[PreviewDeck1]"), QStringLiteral("play"), [this](double) {
+        refreshPreviewButton();
+        refreshPreviewStrip(); // r8-browse
+    });
     watch(kTab, QStringLiteral("current"), [this](double v) { if (int(v) != 1) stopPreview(); });
     for (int deck = 1; deck <= 4; ++deck) {
         for (const auto& key : {"bpm", "visual_key", "sync_leader", "track_loaded", "play"}) {
@@ -2440,7 +2519,7 @@ QWidget* WDeckLab::buildMatchBar(QWidget* parent) {
     });
     bar->addWidget(b.matchOnlyButton);
     b.matchClear = browseButton(b.matchBar, QString(), QStringLiteral("decklab-match-clear"),
-            tr("Turn matching off"), decklab::Glyph::Close, 44);
+            tr("Turn Easy Mode off"), decklab::Glyph::Close, 44);
     connect(b.matchClear, &QPushButton::clicked, this, [this] {
         auto& state = *m_browseState;
         state.matchOnly = false;
@@ -2652,6 +2731,9 @@ QWidget* WDeckLab::buildSettings() {
         if (m_system) m_system->screenSleep()->setMinutes(minutes);
     };
     settings.keyNotationChosen = [this](int notation) { setKeyNotation(notation); };
+    // r8-browse: Easy Mode, applied at once (the button, the bar, the rows).
+    settings.easyMode = [this] { return m_browseState ? m_browseState->easy : decklab::loadEasyMode(m_config); };
+    settings.easyModeChosen = [this](const decklab::EasyMode& mode) { applyEasyMode(mode); };
     settings.dimPlayedChosen = [this](bool dim) {
         m_config->setValue(ConfigKey("[Library]", "ApplyPlayedTrackColor"), dim);
         BaseTrackTableModel::setApplyPlayedTrackColor(dim);
@@ -2948,7 +3030,11 @@ void WDeckLab::bindBrowser(WSearchLineEdit* search, WLibrarySidebar* sidebar, WL
         });
         b.card->enableCovers();
     }
-    if (m_library) m_library->setRowHeight(44);
+    if (m_library) m_library->setRowHeight(decklab::kTrackRowHeight); // r8-browse: 36 px rows
+    // r8-browse: the strip names the preview's track once it is loaded.
+    if (auto* preview = m_players && m_players->numberOfPreviewDecks() > 0 ? m_players->getPreviewDeck(0) : nullptr) {
+        connect(preview, &BaseTrackPlayer::newTrackLoaded, this, [this](TrackPointer) { refreshPreviewStrip(); });
+    }
     initHistory(); // r5-history
     initBackgroundAnalysis(); // r7-browse
     readRecentlyAdded();      // r7-recent
@@ -2975,6 +3061,7 @@ void WDeckLab::selectPage(int page) {
         }
         m_sampleTarget = 0;
         m_sampleEdit = false;
+        setInfoOpen(false); // r8-browse
     }
     releaseTouchCue(); ++m_interactionEpoch;
     m_page = page;
@@ -3021,6 +3108,7 @@ void WDeckLab::selectPage(int page) {
     }
     updateLayers();
     refreshLoadButtons(); refreshFx(); updateStatus();
+    refreshPreviewStrip(); scheduleRowActions(); // r8-browse
 }
 
 void WDeckLab::showSources() {
@@ -3028,6 +3116,7 @@ void WDeckLab::showSources() {
     auto& b = *m_browseState;
     // Captured before any widget switch can move focus to the sidebar.
     const QPersistentModelIndex highlighted(m_sidebar->currentIndex());
+    setInfoOpen(false); // r8-browse: the card is for a track list's rows
     m_browseStack->setCurrentWidget(b.listStack);
     if (value("[Sidebar]", "sidebar_visible") != 1) set("[Sidebar]", "sidebar_visible", 1);
     if (b.list == DeckLabList::Home) {
@@ -3072,6 +3161,7 @@ void WDeckLab::showSources() {
     }
     applyBrowsePresentation(); // r4-browse
     updateBreadcrumb(); refreshLoadButtons(); refreshBrowseCard(); updateMatchBar();
+    scheduleRowActions(); // r8-browse
 }
 void WDeckLab::showTracks() {
     if (!m_libraryWidget) return;
@@ -3084,6 +3174,7 @@ void WDeckLab::showTracks() {
     if (m_page == 1) decklab::MediaPresence::instance().shownOnScreen(); // r7: a stale list reads now
     applyBrowsePresentation(); // r4-browse
     updateBreadcrumb(); refreshLoadButtons(); refreshBrowseCard(); updateMatchBar(); scheduleMatchCount();
+    scheduleRowActions(); // r8-browse
 }
 bool WDeckLab::trackListOnScreen() const {
     return m_page == 1 && m_browseStack && m_libraryWidget && m_browseStack->currentWidget() == m_libraryWidget;
@@ -3976,10 +4067,10 @@ void WDeckLab::refreshPreviewButton() {
     const TrackPointer previewing = previewDeck ? previewDeck->getLoadedTrack() : TrackPointer();
     const bool tracks = browseTrackLevel(); // r4-browse: Mixes too
     const bool same = playing && previewingSelected(previewing);
-    b.preview->setText(same ? tr("Stop") : tr("Preview"));
+    // r8-browse: ▶ on the highlighted row; ■ while this row plays.
     b.preview->setGlyph(same ? decklab::Glyph::Stop : decklab::Glyph::Play);
     b.preview->setTone(same ? Tone::Active : Tone::Neutral);
-    b.preview->setDetail(playing ? (same ? tr("Playing in headphones") : tr("Another track playing")) : tr("Headphones"));
+    b.preview->setAccessibleName(same ? tr("Stop the preview") : tr("Preview the highlighted track in headphones"));
     b.preview->setEnabled(available &&
             ((tracks && (b.selectedTrack || listTrackRow() || unresolvedTrackRow().isValid())) || playing)); // r5-fix3-history, r7
 }
@@ -4056,8 +4147,12 @@ void WDeckLab::refreshMatchReference() {
     if (!m_browseState) return;
     auto& b = *m_browseState;
     decklab::MatchReference reference;
-    reference.enabled = b.matchEnabled;
+    // r8-browse: Easy Mode off in Settings: no highlights, no bar, no ONLY.
+    reference.enabled = b.easy.on && b.matchEnabled;
     reference.direction = b.direction;
+    reference.matchOn = b.easy.matchOn;
+    reference.keys = b.easy.keys;
+    reference.tolerance = b.easy.rangePercent / 100.0;
     reference.deck = matchReferenceDeck();
     reference.automatic = !(b.pinnedDeck > 0 && reference.deck == b.pinnedDeck);
     if (reference.deck) {
@@ -4080,9 +4175,9 @@ void WDeckLab::refreshMatchReference() {
         }
         b.match->setDetail(detail);
         b.match->setTone(tone);
-        b.match->setAccessibleName(!b.matchEnabled ? tr("Matching is off")
-                        : reference.deck         ? tr("Match tracks to deck %1: key and tempo").arg(reference.deck)
-                                                 : tr("Matching is on; load a deck to match"));
+        b.match->setAccessibleName(!b.matchEnabled ? tr("Easy Mode is off")
+                        : reference.deck         ? tr("Easy Mode: tracks that mix with deck %1").arg(reference.deck)
+                                                 : tr("Easy Mode is on; load a deck to match"));
     }
     if (!reference.sameAs(decklab::matchReference())) {
         decklab::setMatchReference(reference);
@@ -4682,7 +4777,11 @@ void WDeckLab::attachSystem(DeckLabSystem* system) {
         // r7 fix: Get Music or Sample Maker closed: the DOWNLOADS and
         // SAMPLES tiles count their folders again.
         connect(system->utilities(), &DeckLabUtilities::closed, this, [this] { markHomeStale(); });
+        // r8-browse: the knob legend shows while a controller is open.
+        connect(system, &DeckLabSystem::controllersChanged, this, [this] { refreshControllerPresence(); });
+        connect(system, &DeckLabSystem::devicesChanged, this, [this] { refreshControllerPresence(); });
     }
+    refreshControllerPresence();
 }
 void WDeckLab::updateStatus() {
     int overloads = int(value("[App]", "audio_latency_overload_count"));
@@ -4841,8 +4940,8 @@ void WDeckLab::setSearchOpen(bool open) {
     // (it never floats over them).
     if (m_page == 1 && decklab::lanes::presentationFor(1) == decklab::lanes::Presentation::Compact)
         setVisibleIf(m_waveforms, !open);
-    // The keyboard leaves little height: keep Preview and LOAD, drop the card.
-    if (m_browseState && m_browseState->card) m_browseState->card->setVisible(!open);
+    // The keyboard leaves little height: r8-browse: the info panel closes.
+    if (open) setInfoOpen(false);
     // r4-browse: the deck dock moves into the pane above the keyboard (the
     // list keeps its rows), and the knob legend steps aside.
     if (m_browseState && m_browseState->dock) {
@@ -4857,10 +4956,11 @@ void WDeckLab::setSearchOpen(bool open) {
         // round4: the LOAD targets never vanish. Re-parenting hides the dock
         // until the next event-loop pass, and the pane it moves into is
         // hidden on the source home, so show both now.
-        setVisibleIf(b.pane, open || !(m_browseStack->currentIndex() == 0 && b.list == DeckLabList::Home));
+        setVisibleIf(b.pane, open); // r8-browse: the pane is only this
         b.dock->show();
-        setVisibleIf(b.legend, !open);
+        refreshLegendShown(); // r8-browse: steps aside (and needs a controller)
     }
+    refreshPreviewStrip(); scheduleRowActions(); // r8-browse
     if (open && m_search && m_search->lineEdit()) m_search->lineEdit()->setFocus(Qt::OtherFocusReason);
     updateMatchBar();
     if (m_browseState) updateBreadcrumb();
@@ -5291,6 +5391,10 @@ void WDeckLab::showOnlyMatches() {
     // B-42: Tools › Match Deck filters what you are looking at and says so on
     // the Match bar and in the breadcrumb, with a visible way out.
     auto& b = *m_browseState;
+    if (!b.easy.on) { // r8-browse: Settings › Library › Easy Mode
+        if (b.toast) b.toast->showMessage(tr("Easy Mode is off in Settings"), 2000);
+        return;
+    }
     if (m_browseStack->currentIndex() == 0) {
         if (b.list == DeckLabList::Folder) {
             openFolderTracks();
@@ -5303,7 +5407,7 @@ void WDeckLab::showOnlyMatches() {
             showTracks();
         }
         if (m_browseStack->currentIndex() == 0) {
-            if (b.toast) b.toast->showMessage(tr("Open a list, then pick Match Deck"), 2000);
+            if (b.toast) b.toast->showMessage(tr("Open a list first, then Easy Mode"), 2000);
             return;
         }
     }
@@ -5344,7 +5448,10 @@ void WDeckLab::updateMatchBar() {
     const bool keyboard = m_keyboard && m_keyboard->isVisible();
     // r7-browse: a pad's SAMPLES list has ALL MUSIC instead of MATCH, and no Match bar.
     const bool padSamples = m_sampleTarget && b.folderList == decklab::FolderList::Samples && folderTableShown();
-    const bool shown = b.matchEnabled && tracks && (!keyboard || b.matchOnly) && !padSamples;
+    // r8-browse: only while Easy Mode is engaged on a deck: no "Load a deck
+    // first" row taking the rows' height (the EASY MODE button says it).
+    const bool shown = b.easy.on && b.matchEnabled && decklab::matchReference().active() && tracks &&
+            (!keyboard || b.matchOnly) && !padSamples;
     setVisibleIf(b.matchBar, shown);
     // r5-history: re-lay the column now; a layout request taken while Browse
     // was hidden left the bar's 46 px reserved over the list (History, home).
@@ -5363,15 +5470,22 @@ void WDeckLab::updateMatchBar() {
             decklab::TempoDirection::Both, decklab::TempoDirection::Faster};
     for (int n = 0; n < 3; ++n) {
         b.directions[n]->setTone(b.direction == order[n] ? Tone::Selected : Tone::Neutral);
-        b.directions[n]->setEnabled(active && reference.bpm > 0);
+        b.directions[n]->setEnabled(active && reference.usesTempo() && reference.bpm > 0);
     }
     if (!active) {
         // r5-polish: short enough for the summary at 800 px ("…to mat…" was cut).
         b.matchSummary->setLines(tr("Load a deck first"), QString(), false);
     } else {
+        // r8-browse: what Easy Mode's settings match, as the rows do.
         const auto window = reference.window();
+        QString keys = tr("Key: any");
+        if (!reference.anyKey()) {
+            keys = reference.keys == decklab::KeyRule::Same ? tr("Key: same")
+                    : reference.keys == decklab::KeyRule::Relative ? tr("Key: same, rel")
+                                                                     : tr("Key: same ±1 rel");
+        }
         b.matchSummary->setLines(window.isValid() ? tr("%1 BPM").arg(decklab::tempoWindowText(window)) : tr("Any tempo"),
-                reference.key != mixxx::track::io::key::INVALID ? tr("Key: same ±1 rel") : tr("Key: any"), true);
+                keys, true);
     }
     b.matchOnlyButton->setEnabled(active);
     b.matchOnlyButton->setTone(b.matchOnly ? Tone::Selected : Tone::Neutral);
@@ -5407,7 +5521,7 @@ void WDeckLab::refreshMatchCount() {
             const int keyColumn = tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Key);
             const int bpmColumn = tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Bpm);
             const auto window = reference.window();
-            const bool anyKey = reference.key == mixxx::track::io::key::INVALID;
+            const bool anyKey = reference.anyKey(); // r8-browse: Easy Mode's rule
             count = 0;
             for (int row = 0; row < rows->rowCount(); ++row) {
                 bool tempo = !window.isValid();
@@ -5417,8 +5531,8 @@ void WDeckLab::refreshMatchCount() {
                     tempo = ok && decklab::tempoInWindow(bpm, window);
                 }
                 const bool key = anyKey || (keyColumn >= 0 &&
-                        decklab::harmonicMatch(decklab::keyFromText(rows->index(row, keyColumn).data().toString()),
-                                reference.key) != decklab::HarmonicMatch::None);
+                        reference.keyMatch(decklab::keyFromText(rows->index(row, keyColumn).data().toString())) !=
+                                decklab::HarmonicMatch::None);
                 if (tempo && key) ++count;
             }
         }
@@ -5640,12 +5754,15 @@ void WDeckLab::applyBrowsePresentation() {
     // The home's tiles take the whole width: they say what is inside, so the
     // info pane, Back (nowhere to go) and MATCH (nothing to match) step aside.
     // round4: ... except the pane while the keyboard is up: it holds the dock.
-    setVisibleIf(b.pane, !home || (m_keyboard && !m_keyboard->isHidden()));
+    // r8-browse: the pane only holds the dock above the search keyboard.
+    setVisibleIf(b.pane, m_keyboard && !m_keyboard->isHidden());
     setVisibleIf(b.back, !home);
     // r7-browse: a pad's SAMPLES list puts ALL MUSIC where MATCH sits.
     const bool padSamples = m_sampleTarget && b.folderList == decklab::FolderList::Samples && folderTableShown();
     setVisibleIf(b.allMusic, padSamples);
-    setVisibleIf(b.match, !home && !padSamples);
+    // r8-browse: Easy Mode off hides it; History's New set takes its place.
+    const bool history = m_browseStack->currentIndex() == 0 && b.list == DeckLabList::History;
+    setVisibleIf(b.match, !home && !padSamples && b.easy.on && !history);
     // Tiles flow left to right in reading order; every other level is a list.
     const bool tiles = home && b.itemsList == DeckLabList::Home;
     if (b.items && (b.items->flow() == QListView::LeftToRight) != tiles) {
@@ -5656,10 +5773,11 @@ void WDeckLab::applyBrowsePresentation() {
         // The flow layout reserves room for a scroll bar unless it is off.
         b.items->setVerticalScrollBarPolicy(tiles ? Qt::ScrollBarAlwaysOff : Qt::ScrollBarAsNeeded);
     }
-    // Preview only where a track can be highlighted (B-31).
-    setVisibleIf(b.preview, browseTrackLevel());
+    // Preview only where a track can be highlighted (B-31): r8-browse: on
+    // the highlighted row (placeRowActions).
     applyHistoryPresentation(); // r5-history
     updateKnobLegend();
+    refreshLegendShown(); // r8-browse
 }
 void WDeckLab::refreshDock() {
     if (!m_browseState || !m_browseState->dock) return;
@@ -5898,7 +6016,7 @@ void WDeckLab::fillMixes(bool keepCurrent) {
             item->setData(DeckLabListDelegate::MixBpmRole, mix.bpm);
             item->setData(DeckLabListDelegate::MixDeltaRole, decklab::bpmDeltaText(mix.bpm, reference.bpm));
             item->setData(DeckLabListDelegate::MixRelationRole, relation);
-            item->setData(DeckLabListDelegate::MixMatchRole, static_cast<int>(decklab::harmonicMatch(mix.key, reference.key)));
+            item->setData(DeckLabListDelegate::MixMatchRole, static_cast<int>(reference.keyMatch(mix.key))); // r8-browse
             item->setData(DeckLabListDelegate::MixIndexRole, QVariant::fromValue(QPersistentModelIndex(index)));
             item->setData(decklab::history::LocationRole, tracks->getTrackLocation(index)); // r5-history: its played mark
             if (artistColumn >= 0) item->setData(DeckLabListDelegate::MixArtistRole, model->index(mix.row, artistColumn).data().toString().trimmed());
@@ -5983,7 +6101,10 @@ void WDeckLab::initHistory() {
     b.items->setItemDelegate(new DeckLabHistoryDelegate(b.items));
     delete previous;
     // "New set": hold to confirm (the System kit), on the History levels only.
-    b.newSet = new decklab::ui::HoldButton(tr("Hold for a new set"), b.pane, QStringLiteral("decklab-history-new-set"), 44);
+    // r8-browse: in the header, where EASY MODE sits on other lists (the
+    // pane that held it shows only above the search keyboard now).
+    b.newSet = new decklab::ui::HoldButton(tr("Hold for a new set"), m_browser, QStringLiteral("decklab-history-new-set"), 44);
+    b.newSet->setFixedWidth(176);
     b.newSet->setGate([] {
         return decklab::history::Store::instance().currentCount() > 0 ? QString() : tr("This set is still empty");
     });
@@ -6003,7 +6124,7 @@ void WDeckLab::initHistory() {
         }
         startNewHistorySet();
     });
-    b.paneLayout->insertWidget(b.paneLayout->indexOf(b.preview), b.newSet);
+    b.heading->insertWidget(b.heading->indexOf(b.match), b.newSet);
     b.newSet->hide();
     // From the knob, on the sets' "New set" row: a controller that reports
     // the held press (browse_hold) holds it and lets go; press twice works
@@ -6413,8 +6534,10 @@ void WDeckLab::hookTrackLevel() {
     b.levelConnections.clear();
     b.levelSelection = selection;
     if (!selection) return;
-    const auto update = [this] { updateTrackLevel(); };
+    // r8-browse: ▶ and i follow the highlighted row too.
+    const auto update = [this] { updateTrackLevel(); scheduleRowActions(); };
     b.levelConnections << connect(selection, &QItemSelectionModel::selectionChanged, this, update);
+    b.levelConnections << connect(table->horizontalHeader(), &QHeaderView::sectionResized, this, [this] { scheduleRowActions(); });
     // r7: a rekordbox export's row is shown at once, from its own columns
     // (nothing is read; its Track is made only when it is used).
     b.levelConnections << connect(selection, &QItemSelectionModel::selectionChanged, this, [this] {
@@ -6983,7 +7106,7 @@ int WDeckLab::showFolderTracks(decklab::FolderList list,
         if (!b.folderModel) b.folderModel = new DeckLabFolderTableModel(this, m_library->trackCollectionManager());
         rows = b.folderModel->setLocations(locations, key);
         // r7-recent: Recently Added shows each track's day.
-        b.folderModel->setProperty(decklab::kDayColumnProperty, list == decklab::FolderList::Recent);
+        b.folderModel->setProperty(decklab::kDayDividersProperty, list == decklab::FolderList::Recent);
         m_library->slotShowTrackModel(b.folderModel);
     }
     showTracks();
@@ -7225,4 +7348,174 @@ void WDeckLab::initBackgroundAnalysis() {
         }, Qt::QueuedConnection);
     }
     m_analysis->wake();
+}
+
+// r8-browse: the list first. The track table takes Browse's whole width;
+// the highlighted row carries ▶ and i, the card opens over the list's
+// right side on demand, and the headphone preview has a strip above the
+// dock only while it plays.
+void WDeckLab::scheduleRowActions() {
+    if (!m_browseState || m_browseState->rowActionsQueued) return;
+    m_browseState->rowActionsQueued = true;
+    QTimer::singleShot(0, this, [this] { placeRowActions(); });
+}
+bool WDeckLab::trackRowsOnScreen() const {
+    // A track table, or a History or Mixes track row, highlighted on Browse.
+    return trackListOnScreen() || (m_page == 1 && listTrackRow());
+}
+void WDeckLab::placeRowActions() {
+    if (!m_browseState || !m_browseState->rowActions) return;
+    auto& b = *m_browseState;
+    b.rowActionsQueued = false;
+    QAbstractItemView* view = nullptr;
+    QRect cell;
+    if (trackListOnScreen()) {
+        auto* table = m_libraryWidget->getCurrentTrackTableView();
+        auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
+        const QModelIndexList rows = tracks && table->selectionModel() ? table->selectionModel()->selectedRows() : QModelIndexList();
+        if (rows.size() == 1) {
+            // At the right end of the title (the row's widest cell), so the
+            // key, BPM, artist and time stay readable; else the last column.
+            int column = tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Title);
+            if (column < 0 || table->isColumnHidden(column)) {
+                for (int visual = table->horizontalHeader()->count() - 1; visual >= 0; --visual) {
+                    const int logical = table->horizontalHeader()->logicalIndex(visual);
+                    if (!table->isColumnHidden(logical)) {
+                        column = logical;
+                        break;
+                    }
+                }
+            }
+            if (column >= 0) {
+                view = table;
+                cell = table->visualRect(rows.first().siblingAtColumn(column));
+                // Recently Added: a day's first row names the day at the
+                // title's end (DeckLabCellDelegate::paintDay); stay left of it.
+                const int added = tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::DateTimeAdded);
+                const QDate day = table->model()->property(decklab::kDayDividersProperty).toBool() &&
+                                column == tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Title)
+                        ? decklab::dayDividerOf(rows.first(), added)
+                        : QDate();
+                if (day.isValid()) {
+                    const int label = std::min(cell.width() / 2,
+                            decklab::dayDividerWidth(table->font(), decklab::dayDividerText(day, QDate::currentDate())));
+                    cell.setRight(cell.right() - label - 8);
+                }
+            }
+        }
+    } else if (m_page == 1 && listTrackRow() && b.items->currentItem()) {
+        // A History or Mixes track row: at its right end.
+        view = b.items;
+        cell = b.items->visualItemRect(b.items->currentItem());
+    }
+    if (!view || !cell.isValid() || !cell.intersects(view->viewport()->rect())) {
+        b.rowActions->hide();
+        if (b.info && b.info->isVisible() && !trackRowsOnScreen()) setInfoOpen(false);
+        return;
+    }
+    if (b.rowActions->parentWidget() != view->viewport()) {
+        b.rowActions->setParent(view->viewport());
+    }
+    const int width = 2 * 44 + 2;
+    const int height = decklab::kTrackRowHeight - 2;
+    const QRect place(std::max(cell.left(), cell.right() - width - 3), cell.center().y() - height / 2, width, height);
+    if (b.rowActions->geometry() != place) b.rowActions->setGeometry(place);
+    b.rowActions->show();
+    b.rowActions->raise();
+}
+void WDeckLab::setInfoOpen(bool open) {
+    if (!m_browseState || !m_browseState->info) return;
+    auto& b = *m_browseState;
+    // Only over a list of tracks (their rows have the i).
+    open = open && trackRowsOnScreen() && !(m_keyboard && !m_keyboard->isHidden());
+    if (open) {
+        placeInfo();
+        refreshBrowseCard();
+        b.info->raise();
+    }
+    setVisibleIf(b.info, open);
+    if (b.rowInfo) {
+        b.rowInfo->setTone(open ? DeckLabActionButton::Tone::Selected : DeckLabActionButton::Tone::Neutral);
+        b.rowInfo->setAccessibleName(open ? tr("Close track details") : tr("Track details"));
+    }
+}
+void WDeckLab::placeInfo() {
+    if (!m_browseState || !m_browseState->info || !m_browseStack) return;
+    QWidget* info = m_browseState->info;
+    // Over the list's right side (the column that held the old pane): the
+    // list keeps its width underneath.
+    const QRect list = m_browseStack->geometry();
+    const int width = std::clamp(info->parentWidget()->width() * 36 / 100, 260, 360);
+    const QRect place(list.right() + 1 - width, list.top(), width, list.height());
+    if (info->geometry() != place) info->setGeometry(place);
+}
+void WDeckLab::refreshPreviewStrip() {
+    if (!m_browseState || !m_browseState->previewStrip) return;
+    auto& b = *m_browseState;
+    static const ConfigKey play(QStringLiteral("[PreviewDeck1]"), QStringLiteral("play"));
+    const bool playing = ControlObject::exists(play) && value(play.group, play.item) > 0;
+    // Only while it plays, on Browse, and not under the search keyboard
+    // (the preview keeps playing there).
+    const bool shown = playing && m_page == 1 && !(m_keyboard && !m_keyboard->isHidden());
+    if (shown) {
+        auto* previewDeck = m_players && m_players->numberOfPreviewDecks() > 0 ? m_players->getPreviewDeck(0) : nullptr;
+        b.previewStrip->setTrack(previewDeck ? previewDeck->getLoadedTrack() : TrackPointer());
+        tickPreviewStrip();
+        if (!b.previewTick.isActive()) b.previewTick.start();
+    } else {
+        b.previewTick.stop();
+    }
+    setVisibleIf(b.previewStrip, shown);
+}
+void WDeckLab::tickPreviewStrip() {
+    if (!m_browseState || !m_browseState->previewStrip) return;
+    const QString group = QStringLiteral("[PreviewDeck1]");
+    const double fraction = value(group, QStringLiteral("playposition"));
+    const double duration = value(group, QStringLiteral("duration"));
+    m_browseState->previewStrip->setPosition(fraction, std::isfinite(fraction) ? fraction * duration : 0);
+}
+void WDeckLab::applyEasyMode(const decklab::EasyMode& mode) {
+    if (!m_browseState) return;
+    auto& b = *m_browseState;
+    b.easy = mode;
+    decklab::saveEasyMode(m_config, mode);
+    // Off: no button, no bar, no highlights and no ONLY filter left behind.
+    if (!mode.on && b.matchOnly) {
+        b.matchOnly = false;
+        applyMatchFilter(true);
+    }
+    refreshMatchReference();
+    applyBrowsePresentation();
+    updateBreadcrumb();
+}
+bool WDeckLab::controllerConnected() const {
+    return m_browseState && (m_browseState->controllerOpen || m_browseState->controllerSeen);
+}
+void WDeckLab::refreshControllerPresence() {
+    if (!m_browseState) return;
+    bool open = false;
+    if (m_system) {
+        for (const auto& info : m_system->controllers()) open = open || info.open;
+    }
+    m_browseState->controllerOpen = open;
+    refreshLegendShown();
+}
+void WDeckLab::noteControllerUsed() {
+    // A knob event reached Browse: there is a controller, whatever the
+    // system service knows.
+    if (!m_browseState || m_browseState->controllerSeen) return;
+    m_browseState->controllerSeen = true;
+    refreshLegendShown();
+}
+void WDeckLab::setControllerForTesting(bool connected) {
+    if (!m_browseState) return;
+    m_browseState->controllerSeen = connected;
+    m_browseState->controllerOpen = false;
+    refreshLegendShown();
+}
+void WDeckLab::refreshLegendShown() {
+    if (!m_browseState || !m_browseState->legend) return;
+    // TURN / PRESS / SHIFT+PRESS teach a knob: only with a controller, and
+    // never under the search keyboard.
+    setVisibleIf(m_browseState->legend, controllerConnected() && !(m_keyboard && !m_keyboard->isHidden()));
 }

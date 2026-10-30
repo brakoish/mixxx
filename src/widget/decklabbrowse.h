@@ -229,9 +229,19 @@ int countAddedSince(const QAbstractItemModel& model, int column, const QDate& si
 // day and month as the History's days read them ("25 Oct"; a year back,
 // "25 Oct 2025").
 QString recentDayLabel(const QDate& day, const QDate& today);
-// A track model asks its table for the day column (Recently Added) with this
-// dynamic property set (WTrackTableView's Deck Lab layout).
-inline constexpr const char* kDayColumnProperty = "decklabDayColumn";
+// A track model asks its table for day dividers (Recently Added, newest
+// first) with this dynamic property set (WTrackTableView's Deck Lab layout).
+// r8-browse: a rule and the day's name on its first row, no column.
+inline constexpr const char* kDayDividersProperty = "decklabDayDividers";
+// r8-browse: a divider's day: the row's (from its model's date added
+// column) when the row above came in on another day, else invalid; the
+// label it shows ("TODAY", "YESTERDAY", "25 OCT") and that label's width.
+QDate dayDividerOf(const QModelIndex& index, int dayColumn);
+QString dayDividerText(const QDate& day, const QDate& today);
+int dayDividerWidth(const QFont& base, const QString& text);
+// r8-browse: Browse's track rows (36 px: the list takes the old pane's
+// width; ▶ and i on the highlighted row stay 44 x 36 targets).
+constexpr int kTrackRowHeight = 36;
 
 enum class Glyph {
     None,
@@ -270,6 +280,9 @@ enum class Glyph {
     Sample,
     // r7-recent: Recently Added.
     Recent,
+    // r8-browse: the preview strip and the row's info button.
+    Headphones,
+    Info,
 };
 void paintGlyph(QPainter& painter, const QRectF& box, Glyph glyph, const QColor& color);
 
@@ -469,7 +482,6 @@ class DeckLabTrackCard : public QWidget {
     QString location() const {
         return m_location;
     }
-    QString matchSummary() const;
     /// r6-keys: the KEY chip's text, in the chosen key format.
     QString keyText() const;
     QSize sizeHint() const override;
@@ -505,6 +517,59 @@ class DeckLabTrackCard : public QWidget {
     QString m_subtitle;
     QString m_hint;
     QColor m_accent;
+};
+
+// r8-browse: the headphone preview, shown above the deck dock only while it
+// plays: a headphone glyph, the title, the track's overview (its waveform
+// summary, drawn once per track or summary), the time played and a stop.
+// A touch or drag on the overview seeks the preview, as on a CDJ.
+class DeckLabPreviewStrip : public QWidget {
+  public:
+    static constexpr int kHeight = 40;
+    explicit DeckLabPreviewStrip(QWidget* parent = nullptr);
+    void setTrack(const TrackPointer& track);
+    TrackPointer track() const {
+        return m_track;
+    }
+    QString title() const {
+        return m_title;
+    }
+    // fraction 0..1 of the track; seconds played.
+    void setPosition(double fraction, double seconds);
+    double position() const {
+        return m_position;
+    }
+    void setSeek(std::function<void(double)> seek) {
+        m_seek = std::move(seek);
+    }
+    void setStop(std::function<void()> stop) {
+        m_stop = std::move(stop);
+    }
+    // Where a touch seeks and where it stops (strip coordinates).
+    QRect overviewRect() const;
+    QRect stopRect() const;
+
+  protected:
+    void paintEvent(QPaintEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
+
+  private:
+    void seekAt(int x);
+    void renderOverview();
+
+    TrackPointer m_track;
+    QMetaObject::Connection m_summaryConnection;
+    QString m_title;
+    double m_position = 0;
+    double m_seconds = 0;
+    bool m_seeking = false;
+    bool m_stopDown = false;
+    QPixmap m_overview; // the waveform summary at the overview's size
+    std::function<void(double)> m_seek;
+    std::function<void()> m_stop;
 };
 
 // Transient, non-modal message over the surface (for example a refused load).

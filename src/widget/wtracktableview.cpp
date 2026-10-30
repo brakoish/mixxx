@@ -2,8 +2,10 @@
 
 #include <QContextMenuEvent>
 #include <QDrag>
+#include <QLinearGradient> // r8-browse
 #include <QModelIndex>
 #include <QPainter>
+#include <QPainterPath> // r8-browse
 #include <QScrollBar>
 #include <QShortcut>
 #include <QStylePainter>
@@ -17,6 +19,8 @@
 
 #include "control/controlobject.h"
 #include "decklab/decklabkeys.h" // r6-keys
+#include "library/coverart.h"      // r8-browse: the row's cover thumbnail
+#include "library/coverartcache.h" // r8-browse
 #include "library/dao/trackschema.h"
 #include "library/library.h"
 #include "library/library_prefs.h"
@@ -91,6 +95,7 @@ void paintDeckLabRowTint(QPainter* painter,
     painter->fillRect(option.rect, tint);
 }
 
+
 // Base class for Deck Lab cells: knows where the row's key and BPM live.
 class DeckLabCellDelegate : public DefaultDelegate {
   public:
@@ -112,6 +117,13 @@ class DeckLabCellDelegate : public DefaultDelegate {
             opt.palette.setColor(QPalette::Text, decklab::colors::muted);
         }
         DefaultDelegate::paint(painter, opt, index);
+        paintDay(painter, option, index);
+    }
+    // r8-browse: day dividers (Recently Added). dayColumn is the model's date
+    // added column (-1: none); label: this cell names the day (the title).
+    void setDays(int dayColumn, bool label) {
+        m_dayColumn = dayColumn;
+        m_dayLabel = label;
     }
     bool editorEvent(QEvent*, QAbstractItemModel*, const QStyleOptionViewItem&, const QModelIndex&) override {
         return false;
@@ -130,6 +142,55 @@ class DeckLabCellDelegate : public DefaultDelegate {
     }
 
   protected:
+    // r8-browse: on a day's first row, a rule along the top (not on the
+    // first row) and, in the title cell, the day's name at the right end:
+    // "TODAY", "YESTERDAY", "25 OCT". A painted divider: the rows, the
+    // selection, the knob and LOAD are exactly the model's rows.
+    void paintDay(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const {
+        if (m_dayColumn < 0 || !index.model() || !index.model()->property(decklab::kDayDividersProperty).toBool()) {
+            return;
+        }
+        // The first row of its day (decklab::dayDividerOf), from the model's
+        // date added column, which is not shown.
+        const QDate day = decklab::dayDividerOf(index, m_dayColumn);
+        if (!day.isValid()) {
+            return;
+        }
+        painter->save();
+        if (index.row() > 0) {
+            painter->fillRect(QRect(option.rect.left(), option.rect.top(), option.rect.width(), 1), decklab::colors::dim);
+        }
+        if (m_dayLabel) {
+            const QFont font = decklab::labelFont(option.font);
+            const QFontMetrics metrics(font);
+            const QString text = decklab::dayDividerText(day, QDate::currentDate());
+            const int width = std::min(option.rect.width() / 2, decklab::dayDividerWidth(option.font, text));
+            const QRect pill(option.rect.right() - 6 - width, option.rect.center().y() - 10, width, 20);
+            // The title's end gives way to the label: the row's own ground.
+            const bool selected = option.state & QStyle::State_Selected;
+            const QColor ground = selected ? option.palette.color(QPalette::Highlight)
+                    : (option.features & QStyleOptionViewItem::Alternate)
+                    ? option.palette.color(QPalette::AlternateBase)
+                    : option.palette.color(QPalette::Base);
+            QColor clear = ground;
+            clear.setAlpha(0);
+            QLinearGradient fade(pill.left() - 22, 0, pill.left() - 6, 0);
+            fade.setColorAt(0, clear);
+            fade.setColorAt(1, ground);
+            painter->fillRect(QRect(pill.left() - 22, option.rect.top() + 1, 16, option.rect.height() - 1), fade);
+            painter->fillRect(QRect(pill.left() - 6, option.rect.top() + 1, option.rect.right() - pill.left() + 7,
+                                      option.rect.height() - 1),
+                    ground);
+            painter->setRenderHint(QPainter::Antialiasing);
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(selected ? decklab::colors::panel : decklab::colors::raise);
+            painter->drawRoundedRect(QRectF(pill), 10, 10);
+            painter->setFont(font);
+            painter->setPen(decklab::colors::ink);
+            painter->drawText(pill, Qt::AlignCenter, metrics.elidedText(text, Qt::ElideRight, pill.width() - 8));
+        }
+        painter->restore();
+    }
     // Paints the styled cell (selection, played/missing colors) without text.
     QStyleOptionViewItem drawBase(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const {
         QStyleOptionViewItem opt = option;
@@ -158,6 +219,8 @@ class DeckLabCellDelegate : public DefaultDelegate {
     int m_keyColumn;
     int m_bpmColumn;
     bool m_secondary;
+    int m_dayColumn = -1;   // r8-browse
+    bool m_dayLabel = false; // r8-browse
 };
 
 class DeckLabBpmDelegate final : public DeckLabCellDelegate {
@@ -221,38 +284,7 @@ class DeckLabBpmDelegate final : public DeckLabCellDelegate {
                     number);
         }
         painter->restore();
-    }
-};
-
-// r7-recent: Recently Added's day column: "Today", "Yesterday", "25 Oct".
-// A day's first row says it in full ink under a rule, its other rows in
-// muted ink, so a big batch (a night's downloads) reads as one block to
-// scroll past. Plain cells: rows, selection and the knob are as anywhere.
-class DeckLabDayDelegate final : public DeckLabCellDelegate {
-  public:
-    DeckLabDayDelegate(QTableView* table, int keyColumn, int bpmColumn)
-            : DeckLabCellDelegate(table, keyColumn, bpmColumn, true) {
-        setProperty("decklabDay", true);
-    }
-    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
-        paintDeckLabRowTint(painter, option, deckLabRowMatch(index, m_keyColumn, m_bpmColumn));
-        QStyleOptionViewItem opt = drawBase(painter, option, index);
-        const QDate day = index.data().toDate();
-        const QDate before = index.row() > 0 ? index.sibling(index.row() - 1, index.column()).data().toDate() : QDate();
-        const bool first = !before.isValid() || before != day;
-        const bool selected = opt.state & QStyle::State_Selected;
-        painter->save();
-        if (first && index.row() > 0) {
-            painter->fillRect(QRect(option.rect.left(), option.rect.top(), option.rect.width(), 1), decklab::colors::edge);
-        }
-        const QFont font = decklab::secondaryFont(option.font);
-        painter->setFont(font);
-        painter->setPen(selected ? textColor(opt) : first ? decklab::colors::ink : decklab::colors::muted);
-        const QString text = decklab::recentDayLabel(day, QDate::currentDate());
-        painter->drawText(option.rect.adjusted(8, 0, -6, 0),
-                Qt::AlignLeft | Qt::AlignVCenter,
-                QFontMetrics(font).elidedText(text, Qt::ElideRight, option.rect.width() - 14));
-        painter->restore();
+        paintDay(painter, option, index);
     }
 };
 
@@ -305,7 +337,110 @@ class DeckLabKeyDelegate final : public DeckLabCellDelegate {
             painter->drawText(option.rect.adjusted(15, 0, -4, 0), Qt::AlignLeft | Qt::AlignVCenter, text);
         }
         painter->restore();
+        paintDay(painter, option, index);
     }
+};
+
+// r8-browse: the leading cover thumbnail (28 px). Covers come only from
+// Mixxx's asynchronous CoverArtCache, on its worker threads: a cached one is
+// drawn, a missing one is asked for (never while the list scrolls fast,
+// WLibraryTableView::onlyCachedCoversAndOverviews) and the column repaints
+// when it arrives. Rows of a list that does not resolve its tracks cheaply
+// (a rekordbox export) get a neutral square: nothing is read from the stick.
+// A cover known only by Mixxx's legacy hash is skipped too: asking for it
+// would resolve the track on the GUI thread.
+class DeckLabCoverDelegate final : public DeckLabCellDelegate {
+  public:
+    static constexpr int kSide = 28;
+    DeckLabCoverDelegate(WTrackTableView* table, int keyColumn, int bpmColumn)
+            : DeckLabCellDelegate(table, keyColumn, bpmColumn) {
+        setProperty("decklabCover", true);
+        if (CoverArtCache* cache = CoverArtCache::instance()) {
+            connect(cache,
+                    &CoverArtCache::coverFound,
+                    this,
+                    [this](const QObject* requester, const CoverInfo&, const QPixmap& pixmap) {
+                        if (requester == this && !pixmap.isNull()) {
+                            repaintColumn();
+                        }
+                    });
+        }
+        connect(table, &WLibraryTableView::onlyCachedCoversAndOverviews, this, [this](bool cachedOnly) {
+            m_cachedOnly = cachedOnly;
+            if (!cachedOnly && std::exchange(m_missed, false)) {
+                repaintColumn();
+            }
+        });
+    }
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        paintDeckLabRowTint(painter, option, deckLabRowMatch(index, m_keyColumn, m_bpmColumn));
+        drawBase(painter, option, index);
+        const int side = std::max(8, std::min({kSide, option.rect.height() - 8, option.rect.width() - 8}));
+        const QRect box(option.rect.left() + (option.rect.width() - side) / 2,
+                option.rect.top() + (option.rect.height() - side) / 2,
+                side,
+                side);
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing);
+        const QPixmap pixmap = cover(index, side);
+        if (!pixmap.isNull()) {
+            // Centre-cropped to the square.
+            const QSizeF size = pixmap.deviceIndependentSize();
+            const qreal edge = std::min(size.width(), size.height());
+            const qreal ratio = pixmap.devicePixelRatio();
+            const QRectF source(((size.width() - edge) / 2) * ratio, ((size.height() - edge) / 2) * ratio,
+                    edge * ratio, edge * ratio);
+            QPainterPath clip;
+            clip.addRoundedRect(QRectF(box), 3, 3);
+            painter->setClipPath(clip);
+            painter->drawPixmap(QRectF(box), pixmap, source);
+        } else {
+            painter->setPen(QPen(decklab::colors::edge, 1));
+            painter->setBrush(decklab::colors::raise);
+            painter->drawRoundedRect(QRectF(box).adjusted(0.5, 0.5, -0.5, -0.5), 3, 3);
+        }
+        painter->restore();
+        paintDay(painter, option, index);
+    }
+
+  private:
+    QPixmap cover(const QModelIndex& index, int side) const {
+        const auto* tracks = dynamic_cast<const TrackModel*>(index.model());
+        if (!tracks || !tracks->resolvesTracksCheaply()) {
+            return {};
+        }
+        // From the row's own columns (no file, no database).
+        const CoverInfo info = tracks->getCoverInfo(index);
+        if (!info.hasImage() || !CoverArtCache::instance()) {
+            return {};
+        }
+        const qreal ratio = m_table->devicePixelRatioF();
+        const int width = static_cast<int>(side * ratio);
+        QPixmap pixmap = CoverArtCache::getCachedCover(info, width);
+        if (!pixmap.isNull()) {
+            pixmap.setDevicePixelRatio(ratio);
+            return pixmap;
+        }
+        if (m_cachedOnly) {
+            m_missed = true;
+        } else if (!info.imageDigest().isEmpty()) {
+            CoverArtCache::requestUncachedCover(this, info, width);
+        }
+        return {};
+    }
+    void repaintColumn() {
+        const int column = m_table->horizontalHeader()->logicalIndexAt(0); // the leading column
+        if (column < 0) {
+            m_table->viewport()->update();
+            return;
+        }
+        // Only the thumbnails' strip of the viewport.
+        const int x = m_table->columnViewportPosition(column);
+        m_table->viewport()->update(QRect(x, 0, m_table->columnWidth(column), m_table->viewport()->height()));
+    }
+
+    bool m_cachedOnly = false;
+    mutable bool m_missed = false;
 };
 
 } // anonymous namespace
@@ -685,12 +820,15 @@ const QString kDeckLabColumnsSetting = QStringLiteral("decklab_columns");
 // Deck Lab's default for an 800 px touch screen: playlist order where it
 // exists, then Key, BPM, Title and Artist. It is only a default: Mixxx's own
 // header menu and header dragging change it, and the choice is saved per view.
-const std::array<TrackModel::SortColumnId, 5> kDeckLabDefaultColumns{
+// r8-browse: with the list at full width, Time (the track's length) too;
+// the cover thumbnail always leads (applyDeckLabLayout).
+const std::array<TrackModel::SortColumnId, 6> kDeckLabDefaultColumns{
         TrackModel::SortColumnId::Position,
         TrackModel::SortColumnId::Key,
         TrackModel::SortColumnId::Bpm,
         TrackModel::SortColumnId::Title,
-        TrackModel::SortColumnId::Artist};
+        TrackModel::SortColumnId::Artist,
+        TrackModel::SortColumnId::Duration};
 
 int deckLabColumnWidth(TrackModel::SortColumnId id) {
     switch (id) {
@@ -701,15 +839,18 @@ int deckLabColumnWidth(TrackModel::SortColumnId id) {
     case TrackModel::SortColumnId::Bpm:
         return 104; // value and its difference to the reference deck
     case TrackModel::SortColumnId::Duration:
+        return 86; // r8-browse: "DURATION" uncut over "4:05"
     case TrackModel::SortColumnId::Year:
     case TrackModel::SortColumnId::TimesPlayed:
         return 64;
     case TrackModel::SortColumnId::Color:
         return 44;
+    case TrackModel::SortColumnId::CoverArt:
+        return 40; // r8-browse: a 28 px thumbnail
     case TrackModel::SortColumnId::Rating:
         return 96;
     case TrackModel::SortColumnId::DateTimeAdded:
-        return 104; // r7-recent: "Yesterday", "25 Oct"
+        return 104;
     default:
         return 150;
     }
@@ -759,29 +900,24 @@ void WTrackTableView::applyDeckLabLayout() {
     if (columns.isEmpty()) {
         for (const auto id : kDeckLabDefaultColumns) addColumn(id);
     }
-    // r7-recent: Recently Added asks for its day column first, in place of
-    // the list's position numbers; never saved as the list's own columns.
-    const bool days = model()->property(decklab::kDayColumnProperty).toBool();
+    // r7-recent: Recently Added (newest first) has no position numbers.
+    // r8-browse: and no day column: its days are dividers on the rows
+    // (DeckLabCellDelegate::paintDay), read from the hidden date added column.
+    const bool days = model()->property(decklab::kDayDividersProperty).toBool();
     const int dayColumn = tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::DateTimeAdded);
-    if (days && dayColumn >= 0 && !tracks->isColumnInternal(dayColumn)) {
+    if (days) {
         columns.removeAll(dayColumn);
         columns.removeAll(tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Position));
-        columns.prepend(dayColumn);
-    }
-    if (dayColumn >= 0) {
-        auto* old = itemDelegateForColumn(dayColumn);
-        const bool dayDelegate = old && old->property("decklabDay").toBool();
-        if (days && !dayDelegate) {
-            setItemDelegateForColumn(dayColumn, new DeckLabDayDelegate(this,
-                    tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Key),
-                    tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::Bpm)));
-            delete old;
-        } else if (!days && dayDelegate) {
-            setItemDelegateForColumn(dayColumn, tracks->delegateForColumn(dayColumn, this)); // the model's own
-            delete old;
-        }
     }
     if (columns.isEmpty()) return;
+    // r8-browse: the cover thumbnail leads every list, a rekordbox export's
+    // too (a neutral square there), whatever the saved columns say.
+    const int coverColumn = tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::CoverArt);
+    if (coverColumn >= 0 && coverColumn < model()->columnCount()) {
+        columns.removeAll(coverColumn);
+        columns.prepend(coverColumn);
+    }
+    header->setProperty("decklabBlankSection", coverColumn >= 0 ? QVariant(coverColumn) : QVariant());
     m_applyingDeckLabLayout = true;
     for (int column = 0; column < model()->columnCount(); ++column)
         setColumnHidden(column, !columns.contains(column));
@@ -799,19 +935,26 @@ void WTrackTableView::applyDeckLabLayout() {
         const auto id = tracks->sortColumnIdFromColumnIndex(column);
         const bool key = column == keyColumn;
         const bool bpm = column == bpmColumn;
-        if (!key && !bpm && !deckLabPlainTextColumn(id)) continue;
-        const char* marker = key ? "decklabKey" : bpm ? "decklabBpm" : "decklabCell";
+        const bool cover = column == coverColumn; // r8-browse
+        if (!key && !bpm && !cover && !deckLabPlainTextColumn(id)) continue;
+        const char* marker = key ? "decklabKey" : bpm ? "decklabBpm" : cover ? "decklabCover" : "decklabCell";
         auto* old = itemDelegateForColumn(column);
+        DeckLabCellDelegate* delegate = nullptr;
         if (old && old->property(marker).toBool() && old->property("decklabKeyColumn").toInt() == keyColumn &&
-                old->property("decklabBpmColumn").toInt() == bpmColumn) continue;
-        DefaultDelegate* delegate = nullptr;
-        if (key) delegate = new DeckLabKeyDelegate(this, keyColumn, bpmColumn);
-        else if (bpm) delegate = new DeckLabBpmDelegate(this, keyColumn, bpmColumn);
-        else delegate = new DeckLabCellDelegate(this, keyColumn, bpmColumn,
-                id != TrackModel::SortColumnId::Title && id != TrackModel::SortColumnId::Position);
-        delegate->setProperty("decklabKeyColumn", keyColumn);
-        delegate->setProperty("decklabBpmColumn", bpmColumn);
-        setItemDelegateForColumn(column, delegate); delete old;
+                old->property("decklabBpmColumn").toInt() == bpmColumn) {
+            delegate = static_cast<DeckLabCellDelegate*>(old);
+        } else {
+            if (key) delegate = new DeckLabKeyDelegate(this, keyColumn, bpmColumn);
+            else if (bpm) delegate = new DeckLabBpmDelegate(this, keyColumn, bpmColumn);
+            else if (cover) delegate = new DeckLabCoverDelegate(this, keyColumn, bpmColumn);
+            else delegate = new DeckLabCellDelegate(this, keyColumn, bpmColumn,
+                    id != TrackModel::SortColumnId::Title && id != TrackModel::SortColumnId::Position);
+            delegate->setProperty("decklabKeyColumn", keyColumn);
+            delegate->setProperty("decklabBpmColumn", bpmColumn);
+            setItemDelegateForColumn(column, delegate); delete old;
+        }
+        // r8-browse: Recently Added's dividers; the title names the day.
+        delegate->setDays(days ? dayColumn : -1, column == title);
     }
     setEditTriggers(QAbstractItemView::NoEditTriggers); setDragEnabled(false);
     // Reordering by dragging a header and Mixxx's column menu stay available.
@@ -825,10 +968,12 @@ void WTrackTableView::applyDeckLabLayout() {
     verticalHeader()->hide(); setWordWrap(false);
     connect(header, &QHeaderView::sectionMoved, this, &WTrackTableView::saveDeckLabColumns, Qt::UniqueConnection);
     connect(header, &QHeaderView::sectionResized, this, &WTrackTableView::slotDeckLabSectionResized, Qt::UniqueConnection);
-    // Smooth kinetic scrolling on the Pi: pixel scrolling, fixed 44px rows,
-    // and no hover repaints from synthesized touch moves.
+    // Smooth kinetic scrolling on the Pi: pixel scrolling, fixed rows
+    // (r8-browse: 36 px) and no hover repaints from synthesized touch moves.
     setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    verticalHeader()->setMinimumSectionSize(decklab::kTrackRowHeight);
+    verticalHeader()->setDefaultSectionSize(decklab::kTrackRowHeight);
     setMouseTracking(false);
     viewport()->setAttribute(Qt::WA_Hover, false);
     QScroller::grabGesture(viewport(), QScroller::TouchGesture);
@@ -874,7 +1019,7 @@ void WTrackTableView::saveDeckLabColumns() {
     auto* header = horizontalHeader();
     if (m_applyingDeckLabLayout || !header->property("decklabLayout").toBool()) return;
     auto* tracks = getTrackModel(); if (!tracks || !model()) return;
-    if (model()->property(decklab::kDayColumnProperty).toBool()) return; // r7-recent: Recently Added's own layout
+    if (model()->property(decklab::kDayDividersProperty).toBool()) return; // r7-recent: Recently Added's own layout
     QStringList ids;
     for (int visual = 0; visual < header->count(); ++visual) {
         const int column = header->logicalIndex(visual);

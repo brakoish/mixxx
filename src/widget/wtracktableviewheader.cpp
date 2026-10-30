@@ -524,8 +524,11 @@ void WTrackTableViewHeader::paintSection(
                                                 .value<Qt::Alignment>();
         QTextOption textOption(alignment);
         textOption.setWrapMode(QTextOption::NoWrap);
-        const QString title =
-                model()->headerData(logicalIndex, orientation(), Qt::DisplayRole).toString();
+        // Deck Lab (r8-browse): the cover thumbnails' column has no label.
+        const QVariant blank = property("decklabBlankSection");
+        const QString title = blank.isValid() && blank.toInt() == logicalIndex
+                ? QString()
+                : model()->headerData(logicalIndex, orientation(), Qt::DisplayRole).toString();
         // QPainter still has the old font (size)
         pPainter->setFont(font());
         pPainter->setPen(opt.palette.color(QPalette::ButtonText));

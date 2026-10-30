@@ -64,6 +64,7 @@ enum class SourceState; // r4-browse
 struct SourceEntry; // r5-history
 enum class FolderList; // r7-browse
 struct RecentTrack; // r7-recent
+struct EasyMode;    // r8-browse
 namespace history {
 struct Change; // r5-history
 } // namespace history
@@ -95,6 +96,8 @@ class WDeckLab : public QWidget, public WBaseWidget {
     void setMatchCountForTesting(int count);
     // r7-recent (tests): Recently Added as if the library read had found these.
     void setRecentlyAddedForTesting(const QList<decklab::RecentTrack>& tracks);
+    // r8-browse (tests): a controller as if one were open (the knob legend).
+    void setControllerForTesting(bool connected);
     // r4-labfx: Lab FX out. Default: CUT (dry now); musical: RELEASE (the
     // tail rings out); mute: ECHO OUT (the track drops for a bar).
     void releaseEffects(bool musical = false, bool mute = false);
@@ -328,6 +331,21 @@ class WDeckLab : public QWidget, public WBaseWidget {
     // A deck, sampler or preview holds (or is loading) this track.
     bool loadedOnAPlayer(TrackId trackId) const;
     void initBackgroundAnalysis();
+    // r8-browse: the list first: ▶ and i on the highlighted row, the info
+    // panel over the list's right side, the preview strip above the dock;
+    // Easy Mode's settings; the knob legend only with a controller.
+    void scheduleRowActions();
+    void placeRowActions();
+    bool trackRowsOnScreen() const;
+    void setInfoOpen(bool open);
+    void placeInfo();
+    void refreshPreviewStrip();
+    void tickPreviewStrip();
+    void applyEasyMode(const decklab::EasyMode& mode);
+    bool controllerConnected() const;
+    void refreshControllerPresence();
+    void noteControllerUsed();
+    void refreshLegendShown();
     int displayedDeck(int side) const;
     void setDisplayedDeck(int side, int deck);
     QString channel(int deck) const;
