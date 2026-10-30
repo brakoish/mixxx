@@ -181,6 +181,11 @@ class DeckLabCellDelegate : public DefaultDelegate {
             painter->fillRect(QRect(pill.left() - 6, option.rect.top() + 1, option.rect.right() - pill.left() + 7,
                                       option.rect.height() - 1),
                     ground);
+            // The row's match tint stays under the label.
+            QStyleOptionViewItem under = option;
+            under.rect = QRect(pill.left() - 22, option.rect.top() + 1, option.rect.right() - pill.left() + 23,
+                    option.rect.height() - 1);
+            paintDeckLabRowTint(painter, under, deckLabRowMatch(index, m_keyColumn, m_bpmColumn));
             painter->setRenderHint(QPainter::Antialiasing);
             painter->setPen(Qt::NoPen);
             painter->setBrush(selected ? decklab::colors::panel : decklab::colors::raise);

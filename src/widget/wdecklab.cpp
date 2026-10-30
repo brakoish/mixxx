@@ -2226,6 +2226,10 @@ class DeckLabRowGestures final : public QObject {
         QScroller::scroller(m_viewport)->stop();
         m_hooks.select(m_row);
         m_hooks.begin(side);
+        // ▶ and i stay off the sliding row (placeRowActions brings them back).
+        if (auto* actions = m_viewport->findChild<QWidget*>(QStringLiteral("decklab-row-actions"), Qt::FindDirectChildrenOnly)) {
+            actions->hide();
+        }
         const QRect row(0, m_view->visualRect(m_row).top(), m_viewport->width(), m_view->visualRect(m_row).height());
         m_shade->start(row, m_viewport->grab(row));
         slide();
@@ -2238,10 +2242,12 @@ class DeckLabRowGestures final : public QObject {
     }
     void reset() {
         m_hold.stop();
+        const bool sliding = m_mode == Mode::Sliding;
         m_mode = Mode::None;
         m_dx = m_dy = 0;
         m_side = -1;
         m_shade->hide();
+        if (sliding && m_hooks.moved) m_hooks.moved(); // ▶ and i back on the row
     }
     // The table saw the press: a release outside every row clears its press
     // state without clicking an index (as DeckLabTouchScrollGuard does).
@@ -4172,6 +4178,7 @@ void WDeckLab::refreshBrowseCard() {
     if (!m_browseState) return;
     auto& b = *m_browseState;
     if (!b.card || !m_browseStack) return;
+    scheduleRowActions(); // r8-browse: ▶ and i follow the highlighted track
     if (b.list == DeckLabList::History && m_browseStack->currentIndex() == 0) { refreshHistoryCard(); return; } // r5-history
     if (browseTrackLevel()) { // r4-browse: Mixes too
         // r6-keys: a track Mixxx has no key for shows the key its row stores
@@ -6964,6 +6971,7 @@ QStringList WDeckLab::historySegments() const {
 }
 void WDeckLab::refreshHistoryCard() {
     auto& b = *m_browseState;
+    scheduleRowActions(); // r8-browse: a set's track row has ▶ and i
     using namespace decklab::history;
     const auto& store = Store::instance();
     const bool trusted = store.clockTrusted();
@@ -7689,7 +7697,10 @@ void WDeckLab::placeRowActions() {
         view = b.items;
         cell = b.items->visualItemRect(b.items->currentItem());
     }
-    if (!view || !cell.isValid() || !cell.intersects(view->viewport()->rect())) {
+    // Not over a row sliding under a swipe (DeckLabRowGestures).
+    const auto* shade = view ? view->viewport()->findChild<QWidget*>(QStringLiteral("decklab-row-swipe"), Qt::FindDirectChildrenOnly)
+                             : nullptr;
+    if (!view || !cell.isValid() || !cell.intersects(view->viewport()->rect()) || (shade && shade->isVisible())) {
         b.rowActions->hide();
         if (b.info && b.info->isVisible() && !trackRowsOnScreen()) setInfoOpen(false);
         return;
