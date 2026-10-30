@@ -76,6 +76,7 @@
 #include "mixer/playermanager.h"
 #include "track/beats.h"
 #include "track/keyutils.h"
+#include "waveform/waveform.h" // r8-browse: a generated overview for the preview strip
 #include "waveform/waveformwidgetfactory.h"
 #include "widget/decklabbrowse.h"
 #include "widget/decklabbrowsedock.h"
@@ -151,8 +152,9 @@ class TestPlayers final : public PlayerManagerInterface {
     BaseTrackPlayer* getPlayer(const ChannelHandle&) const override {return nullptr;}
     BaseTrackPlayer* getDeckBase(int n) const override {return n>=0&&n<4?decks[n]:nullptr;}
     int numberOfDecks() const override {return 4;}
-    PreviewDeck* getPreviewDeck(int) const override {return nullptr;}
-    int numberOfPreviewDecks() const override {return 0;}
+    PreviewDeck* preview = nullptr; // r8-browse: the fixture's preview deck, when a test wants it
+    PreviewDeck* getPreviewDeck(int) const override {return preview;}
+    int numberOfPreviewDecks() const override {return preview ? 1 : 0;}
     Sampler* getSampler(int) const override {return nullptr;}
     int numberOfSamplers() const override {return 0;}
 };
@@ -296,6 +298,18 @@ class NativeDeckLabTest : public BaseSignalPathTest {
             keys << DeckLabPaintedText::of(*cell, option, table->model()->index(row, column)).join(QLatin1Char('|'));
         }
         return keys.join(QLatin1Char(' '));
+    }
+    // r8-browse: what a table's own cell paints for one index, at a width.
+    static QStringList paintedCell(QTableView* table, const QModelIndex& index, int width) {
+        QAbstractItemDelegate* cell = table->itemDelegateForColumn(index.column());
+        if (!cell) return {};
+        QStyleOptionViewItem option;
+        option.initFrom(table);
+        option.widget = table;
+        option.rect = QRect(0, 0, width, decklab::kTrackRowHeight);
+        option.font = table->font();
+        option.state = QStyle::State_Enabled;
+        return DeckLabPaintedText::of(*cell, option, index);
     }
     DeckLabDeckStrip* strip(int deck) const {
         return panel->findChild<DeckLabDeckStrip*>(QStringLiteral("decklab-info-hit-%1").arg(deck));
@@ -491,6 +505,7 @@ TEST_F(NativeDeckLabTest, UsbUtilityReturnsDirectlyToNativeSources) {
 
 TEST_F(NativeDeckLabTest, TouchSearchUsesNativeKeyboardAndReturnsWaveforms) {
     panel->selectPage(1);
+    panel->setControllerForTesting(true); // r8-browse: the legend needs a controller
     panel->findChild<QPushButton*>("decklab-search")->click();
     auto* keyboard = panel->findChild<QWidget*>("decklab-keyboard"); ASSERT_NE(nullptr, keyboard);
     EXPECT_TRUE(keyboard->isVisible()); EXPECT_FALSE(panel->waveformContainer()->isVisible());
@@ -3635,7 +3650,7 @@ TEST_F(NativeDeckLabTest, BrowseToolsMatchPlayingFourthDeckAndGuardStaleUnload) 
     auto* menu = openTools(); ASSERT_NE(nullptr, menu);
     QAction* match = nullptr;
     for (auto* action : menu->actions())
-        if (action->text() == QStringLiteral("Match Deck 4")) match = action;
+        if (action->text() == QStringLiteral("Easy Mode: only deck 4's matches")) match = action; // r8-browse
     ASSERT_NE(nullptr, match); ASSERT_TRUE(match->isEnabled()); match->trigger();
     QCoreApplication::processEvents();
     // B-42: no hidden search and no source switch; the Match bar and the
@@ -5388,26 +5403,37 @@ TEST_F(NativeDeckLabTest, CollectionOpensCategoriesAndBackReturnsToSources) {
 }
 
 // 800x480 is the design target; 1024x600 and 1280x800 touch screens must not break.
+// r8-browse: the list takes the whole width; the card opens over its right side.
 TEST_F(NativeDeckLabTest, BrowseScalesCleanlyTo1024x600And1280x800) {
+    auto* table = installGeneratedTable({QStringLiteral("8A"), QStringLiteral("9A"), QStringLiteral("10B")});
     panel->openCollection(); QCoreApplication::processEvents();
+    table->selectRow(0); settle();
     const QString output = qEnvironmentVariable("DECKLAB_SCREENSHOT_DIR");
     for (const QSize& size : {QSize(1024, 600), QSize(1280, 800), QSize(800, 480)}) {
         panel->resize(size); QTest::qWait(50);
         ASSERT_EQ(size, panel->size());
         auto* browse = panel->findChild<QWidget*>("decklab-browse"); ASSERT_NE(nullptr, browse);
-        auto* pane = panel->findChild<QWidget*>("decklab-browse-pane"); ASSERT_NE(nullptr, pane);
-        const QRect paneRect(pane->mapTo(panel.get(), QPoint()), pane->size());
-        EXPECT_TRUE(panel->rect().contains(paneRect)) << size.width();
-        EXPECT_GE(pane->width(), 236); EXPECT_LE(pane->width(), 340);
+        EXPECT_FALSE(panel->findChild<QWidget*>("decklab-browse-pane")->isVisible());
         const QRect tracksRect(library->mapTo(panel.get(), QPoint()), library->size());
         EXPECT_TRUE(library->isVisible());
-        EXPECT_LE(tracksRect.right(), paneRect.left()) << size.width();
-        EXPECT_GE(tracksRect.width(), 500) << size.width();
+        EXPECT_GE(tracksRect.width(), size.width() - 2) << size.width();
+        auto* info = panel->findChild<QWidget*>("decklab-row-info"); ASSERT_NE(nullptr, info);
+        ASSERT_TRUE(info->isVisible()) << size.width();
+        auto* panelInfo = panel->findChild<QWidget*>("decklab-browse-info"); ASSERT_NE(nullptr, panelInfo);
+        if (!panelInfo->isVisible()) static_cast<QPushButton*>(info)->click();
+        QCoreApplication::processEvents();
+        ASSERT_TRUE(panelInfo->isVisible());
+        const QRect infoRect(panelInfo->mapTo(panel.get(), QPoint()), panelInfo->size());
+        EXPECT_TRUE(panel->rect().contains(infoRect)) << size.width();
+        EXPECT_EQ(tracksRect.right(), infoRect.right()) << "over the list's right side";
+        EXPECT_GE(panelInfo->width(), 260); EXPECT_LE(panelInfo->width(), 360);
         for (auto* button : browse->findChildren<QPushButton*>()) {
             if (!button->isVisible()) continue;
             const QRect bounds(button->mapTo(panel.get(), QPoint()), button->size());
             EXPECT_TRUE(panel->rect().contains(bounds)) << button->objectName().toStdString() << " " << size.width();
-            EXPECT_GE(button->height(), 44) << button->objectName().toStdString();
+            // ▶ and i ride a 36 px row: 44 x 34 targets.
+            EXPECT_GE(button->height(), button->parentWidget()->objectName() == QStringLiteral("decklab-row-actions") ? 34 : 44)
+                    << button->objectName().toStdString();
         }
         auto* card = panel->findChild<QWidget*>("decklab-track-card");
         EXPECT_TRUE(card->isVisible()); EXPECT_GE(card->height(), 96);
@@ -5656,20 +5682,15 @@ TEST_F(NativeDeckLabTest, MatchBarShowsDeckWindowDirectionAndClears) {
     auto* faster = static_cast<DeckLabActionButton*>(panel->findChild<QPushButton*>("decklab-match-faster"));
     auto* both = static_cast<DeckLabActionButton*>(panel->findChild<QPushButton*>("decklab-match-both"));
     ASSERT_TRUE(match && only && faster && both);
-    ASSERT_TRUE(bar->isVisible());
-    // No deck loaded: neutral, never the match green (B-50). r5-polish:
-    // nothing in the bar is cut off at 800x480 ("Load a deck to mat...").
-    EXPECT_EQ(QStringLiteral("Load a deck first"), summary->primary());
-    EXPECT_FALSE(summary->active());
+    // No deck loaded: neutral, never the match green (B-50). r8-browse: no
+    // bar either ("Load a deck first" took the rows' height); EASY MODE
+    // says it, and fits its slot.
+    EXPECT_FALSE(bar->isVisible());
     EXPECT_EQ(800, panel->width());
-    EXPECT_TRUE(summary->textFits()) << summary->width();
-    EXPECT_TRUE(chip->textFits());
-    EXPECT_TRUE(only->textFits());
-    capture(QStringLiteral("browse-match-bar-empty.png"));
-    EXPECT_EQ(0, chip->deck());
+    EXPECT_TRUE(match->isVisible());
+    EXPECT_TRUE(match->textFits());
     EXPECT_EQ(Tone::Neutral, match->tone());
     EXPECT_EQ(QStringLiteral("Load a deck"), match->detail());
-    EXPECT_FALSE(only->isEnabled());
     // A paused reference: deck 1 at 122 BPM in 8A.
     panel->selectPage(0);
     loadGenerated(1, 122, mixxx::track::io::key::A_MINOR); ProcessBuffer(); QTest::qWait(250);
@@ -5874,6 +5895,9 @@ TEST_F(NativeDeckLabTest, KnobLegendFollowsTheLevelAndSaysMenu) {
     using decklab::LegendLevel;
     panel->selectPage(1); QCoreApplication::processEvents();
     auto* legend = dynamic_cast<DeckLabKnobLegend*>(panel->findChild<QWidget*>("decklab-knob-legend")); ASSERT_NE(nullptr, legend);
+    // r8-browse: it teaches a knob, so only with a controller.
+    EXPECT_FALSE(legend->isVisible());
+    panel->setControllerForTesting(true); QCoreApplication::processEvents();
     EXPECT_TRUE(legend->isVisible()); EXPECT_EQ(24, legend->height());
     EXPECT_EQ(LegendLevel::Home, legend->level());
     // Back with nowhere to go: the legend flashes and says Back again goes to Decks.
@@ -8403,7 +8427,8 @@ class DeckLabDatedLibrary final : public QStandardItemModel, public TrackModel {
 
 // r7-recent: a rekordbox stick's Recently Added follows All Tracks, counting
 // what rekordbox's own date says came in the last 30 days. It lists those
-// tracks newest first with their day in the first column; Back returns to
+// tracks newest first, each day's first row naming its day (r8-browse: a
+// divider on the row, no date column); Back returns to
 // it; All Tracks afterwards is every track in the DJ's own order, no day
 // column, and the saved sort never moved. Typing in it searches the stick,
 // as typing replaces a category value (B-35). The rows here stand in for the
@@ -8457,17 +8482,20 @@ TEST_F(NativeDeckLabTest, RekordboxRecentlyAddedListsTheLast30DaysNewestFirst) {
     EXPECT_EQ(dayColumn, table->horizontalHeader()->sortIndicatorSection());
     EXPECT_EQ(Qt::DescendingOrder, table->horizontalHeader()->sortIndicatorOrder());
     EXPECT_NE(saved, rows->getModelSetting(QStringLiteral("ColumnsSorting")));
-    EXPECT_FALSE(table->isColumnHidden(dayColumn));
-    EXPECT_EQ(0, table->horizontalHeader()->visualIndex(dayColumn)) << "the day comes first";
-    ASSERT_NE(nullptr, table->itemDelegateForColumn(dayColumn));
-    EXPECT_TRUE(table->itemDelegateForColumn(dayColumn)->property("decklabDay").toBool());
+    // r8-browse: no date column; each day's first row names its day in
+    // its title cell (these three came in on three days).
+    EXPECT_TRUE(table->isColumnHidden(dayColumn));
+    EXPECT_TRUE(rows->property(decklab::kDayDividersProperty).toBool());
     const QDate today = QDate::currentDate();
     QStringList days;
     for (int row = 0; row < rows->rowCount(); ++row) {
-        days << decklab::recentDayLabel(rows->index(row, dayColumn).data().toDate(), today);
+        days << decklab::recentDayLabel(rows->index(row, dayColumn).data().toDate(), today).toUpper();
     }
-    EXPECT_EQ(decklab::recentDayLabel(today.addDays(-2), today), days.value(1));
-    EXPECT_EQ(days.join(QLatin1Char(' ')), paintedKeys(table, dayColumn));
+    EXPECT_EQ(decklab::recentDayLabel(today.addDays(-2), today).toUpper(), days.value(1));
+    for (int row = 0; row < rows->rowCount(); ++row) {
+        const QStringList painted = paintedCell(table, rows->index(row, 0), 400);
+        EXPECT_TRUE(painted.contains(days.value(row))) << row << ": " << painted.join(" / ").toStdString();
+    }
     auto* searchBox = panel->findChild<WSearchLineEdit*>(); ASSERT_NE(nullptr, searchBox);
     EXPECT_TRUE(searchBox->currentText().isEmpty());
     capture(QStringLiteral("r7-recent-rekordbox-tracks.png"));
@@ -8480,7 +8508,7 @@ TEST_F(NativeDeckLabTest, RekordboxRecentlyAddedListsTheLast30DaysNewestFirst) {
     EXPECT_EQ(Qt::AscendingOrder, table->horizontalHeader()->sortIndicatorOrder());
     EXPECT_EQ(saved, rows->getModelSetting(QStringLiteral("ColumnsSorting")));
     EXPECT_TRUE(table->isColumnHidden(dayColumn));
-    EXPECT_FALSE(rows->property(decklab::kDayColumnProperty).toBool());
+    EXPECT_FALSE(rows->property(decklab::kDayDividersProperty).toBool());
     // All Tracks afterwards: every track, by title.
     ASSERT_TRUE(selectRow(QStringLiteral("All Tracks")));
     panel->browsePress(); QCoreApplication::processEvents(); settle();
@@ -8726,4 +8754,630 @@ TEST_F(NativeDeckLabTest, ExportRowsAreShownWithoutResolvingTheirTracks) {
     table->selectRow(2); settle(); pause();
     EXPECT_EQ(QStringLiteral("Generated Tone C"), card->title());
     EXPECT_EQ(0, rows->resolved) << "a highlighted export row was resolved to a Track";
+}
+
+namespace {
+// r8-browse: a track list as Browse lists it: title, artist, key, BPM, time
+// and Mixxx's cover column, its files real (generated, empty) so LOAD and
+// the preview may take them. cheap says whether it resolves its tracks
+// cheaply (the library) or not (a rekordbox export); every cover lookup and
+// every resolution is counted. Generated titles, keys and tempos.
+class DeckLabBrowseRows final : public QStandardItemModel, public TrackModel {
+  public:
+    DeckLabBrowseRows(const QString& folder, bool cheap)
+            : QStandardItemModel(0, 6),
+              TrackModel(QSqlDatabase(), "mixxx.db.model.decklab.browse"),
+              cheap(cheap),
+              m_folder(folder) {
+        setHorizontalHeaderLabels({QStringLiteral("Title"), QStringLiteral("Artist"), QStringLiteral("Key"),
+                QStringLiteral("BPM"), QStringLiteral("Duration"), QStringLiteral("Cover")});
+        const QList<std::tuple<QString, QString, double>> rows{
+                {QStringLiteral("Generated Tone A"), QStringLiteral("8A"), 122.0},
+                {QStringLiteral("Generated Tone B"), QStringLiteral("8B"), 124.0},
+                {QStringLiteral("Generated Tone C"), QStringLiteral("9A"), 126.0},
+                {QStringLiteral("Generated Tone D"), QStringLiteral("3B"), 140.0},
+                {QStringLiteral("Generated Tone E"), QStringLiteral("8A"), 120.0}};
+        for (const auto& [title, key, bpm] : rows) {
+            QFile file(QDir(m_folder).filePath(title + QStringLiteral(".wav")));
+            if (file.open(QIODevice::WriteOnly)) file.close();
+            auto* tempo = new QStandardItem();
+            tempo->setData(bpm, Qt::DisplayRole);
+            auto* duration = new QStandardItem();
+            duration->setData(QStringLiteral("4:05"), Qt::DisplayRole);
+            appendRow({new QStandardItem(title), new QStandardItem(QStringLiteral("Demo Artist")),
+                    new QStandardItem(key), tempo, duration, new QStandardItem()});
+        }
+    }
+    bool cheap;
+    mutable int resolved = 0;
+    mutable int coverLookups = 0;
+    bool resolvesTracksCheaply() const override {
+        return cheap;
+    }
+    Capabilities getCapabilities() const override {
+        return Capability::LoadToDeck | Capability::LoadToPreviewDeck;
+    }
+    QString getModelSetting(const QString& name) override {
+        return m_settings.value(name);
+    }
+    bool setModelSetting(const QString& name, const QVariant& value) override {
+        m_settings.insert(name, value.toString());
+        return true;
+    }
+    TrackPointer getTrack(const QModelIndex&) const override {
+        ++resolved;
+        return {};
+    }
+    TrackPointer getTrackByRef(const TrackRef&) const override {
+        ++resolved;
+        return {};
+    }
+    QUrl getTrackUrl(const QModelIndex&) const override {
+        return {};
+    }
+    QString getTrackLocation(const QModelIndex& index) const override {
+        return QDir(m_folder).filePath(index.sibling(index.row(), 0).data().toString() + QStringLiteral(".wav"));
+    }
+    TrackId getTrackId(const QModelIndex&) const override {
+        return {};
+    }
+    CoverInfo getCoverInfo(const QModelIndex&) const override {
+        ++coverLookups;
+        return {};
+    }
+    const QVector<int> getTrackRows(TrackId) const override {
+        return {};
+    }
+    void search(const QString&) override {
+    }
+    const QString currentSearch() const override {
+        return {};
+    }
+    bool isColumnInternal(int) override {
+        return false;
+    }
+    bool isColumnHiddenByDefault(int) override {
+        return false;
+    }
+    SortColumnId sortColumnIdFromColumnIndex(int index) const override {
+        const std::array<SortColumnId, 6> columns{SortColumnId::Title, SortColumnId::Artist, SortColumnId::Key,
+                SortColumnId::Bpm, SortColumnId::Duration, SortColumnId::CoverArt};
+        return index >= 0 && index < 6 ? columns[index] : SortColumnId::Invalid;
+    }
+    int columnIndexFromSortColumnId(SortColumnId column) const override {
+        for (int index = 0; index < 6; ++index) {
+            if (sortColumnIdFromColumnIndex(index) == column) return index;
+        }
+        return -1;
+    }
+    QString modelKey(bool) const override {
+        return QStringLiteral("decklab-browse-rows");
+    }
+    bool updateTrackGenre(Track*, const QString&) const override {
+        return false;
+    }
+#if defined(__EXTRA_METADATA__)
+    bool updateTrackMood(Track*, const QString&) const override {
+        return false;
+    }
+#endif
+
+  private:
+    QString m_folder;
+    QHash<QString, QString> m_settings;
+};
+
+// A pointer drag on a widget, as a desktop mouse or a touch Qt hands over
+// as mouse events: press, steps of movement, then (unless release is false)
+// the release where it ended.
+void dragPointer(QWidget* target, const QPoint& from, const QPoint& to, bool release = true, int steps = 6) {
+    const auto send = [target](QEvent::Type type, const QPoint& at, Qt::MouseButtons buttons) {
+        QMouseEvent event(type, at, target->mapToGlobal(at), Qt::LeftButton, buttons, Qt::NoModifier);
+        QCoreApplication::sendEvent(target, &event);
+    };
+    send(QEvent::MouseButtonPress, from, Qt::LeftButton);
+    for (int step = 1; step <= steps; ++step) {
+        send(QEvent::MouseMove, from + (to - from) * step / steps, Qt::LeftButton);
+        QCoreApplication::processEvents();
+    }
+    if (release) send(QEvent::MouseButtonRelease, to, Qt::NoButton);
+    QCoreApplication::processEvents();
+}
+void releasePointer(QWidget* target, const QPoint& at) {
+    QMouseEvent event(QEvent::MouseButtonRelease, at, target->mapToGlobal(at), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(target, &event);
+    QCoreApplication::processEvents();
+}
+
+// Counts the presses a control gets (a LOAD, a preview).
+class DeckLabPressCounter {
+  public:
+    explicit DeckLabPressCounter(const ConfigKey& key) {
+        if (!ControlObject::exists(key)) m_owned = std::make_unique<ControlObject>(key);
+        QObject::connect(ControlObject::getControl(key), &ControlObject::valueChanged, &m_context, [this](double v) {
+            if (v > 0) ++presses;
+        });
+    }
+    int presses = 0;
+
+  private:
+    std::unique_ptr<ControlObject> m_owned;
+    QObject m_context;
+};
+} // namespace
+
+// The fixture's Browse over DeckLabBrowseRows, shown as the track list.
+class NativeDeckLabRowsTest : public NativeDeckLabTest {
+  protected:
+    WTrackTableView* showRows(bool cheap = true) {
+        rows = new DeckLabBrowseRows(files.path(), cheap);
+        table = new WTrackTableView(library, config(), nullptr, 1.0);
+        rows->setParent(table);
+        library->registerView(QStringLiteral("decklab-browse-rows"), table);
+        table->loadTrackModel(rows, false);
+        library->switchToView(QStringLiteral("decklab-browse-rows"));
+        panel->openCollection(); settle();
+        return table;
+    }
+    QPoint rowPoint(int row, int x = -1) const {
+        const QRect r = table->visualRect(rows->index(row, 0));
+        return QPoint(x >= 0 ? x : table->viewport()->width() / 2, r.center().y());
+    }
+    QTemporaryDir files;
+    DeckLabBrowseRows* rows = nullptr;
+    WTrackTableView* table = nullptr;
+};
+
+// r8-browse: the list first. Rows are 36 px with a 28 px cover thumbnail
+// leading; the list takes Browse's whole width (Artist and Time fit). A
+// rekordbox export's rows show a neutral square: nothing is looked up or
+// resolved for them.
+TEST_F(NativeDeckLabRowsTest, TrackRowsAre36PxWithTheCoverFirstAndTheListFullWidth) {
+    showRows(false);
+    ASSERT_TRUE(table->isVisible());
+    EXPECT_EQ(decklab::kTrackRowHeight, 36);
+    EXPECT_EQ(36, table->rowHeight(0));
+    EXPECT_EQ(36, table->verticalHeader()->defaultSectionSize());
+    const int cover = rows->columnIndexFromSortColumnId(TrackModel::SortColumnId::CoverArt);
+    EXPECT_EQ(0, table->horizontalHeader()->visualIndex(cover)) << "the cover leads";
+    EXPECT_FALSE(table->isColumnHidden(cover));
+    ASSERT_NE(nullptr, table->itemDelegateForColumn(cover));
+    EXPECT_TRUE(table->itemDelegateForColumn(cover)->property("decklabCover").toBool());
+    EXPECT_LE(table->columnWidth(cover), 44);
+    for (const auto id : {TrackModel::SortColumnId::Key, TrackModel::SortColumnId::Bpm, TrackModel::SortColumnId::Title,
+                 TrackModel::SortColumnId::Artist, TrackModel::SortColumnId::Duration}) {
+        EXPECT_FALSE(table->isColumnHidden(rows->columnIndexFromSortColumnId(id))) << static_cast<int>(id);
+    }
+    // No pane: the list's width is Browse's.
+    EXPECT_FALSE(panel->findChild<QWidget*>("decklab-browse-pane")->isVisible());
+    EXPECT_GE(library->width(), panel->width() - 2);
+    const int artist = rows->columnIndexFromSortColumnId(TrackModel::SortColumnId::Artist);
+    EXPECT_GE(table->columnWidth(artist), 150);
+    // Painting every cover cell of the export reads nothing.
+    for (int row = 0; row < rows->rowCount(); ++row) paintedCell(table, rows->index(row, cover), 40);
+    table->viewport()->grab();
+    EXPECT_EQ(0, rows->coverLookups);
+    EXPECT_EQ(0, rows->resolved);
+    capture(QStringLiteral("r8-browse-list.png"));
+    // The library's rows ask the cover cache (from the row's own columns).
+    rows->cheap = true;
+    paintedCell(table, rows->index(0, cover), 40);
+    EXPECT_GE(rows->coverLookups, 1);
+    EXPECT_EQ(0, rows->resolved);
+}
+
+// r8-browse: ▶ and i ride the highlighted row only, 44 x 34 targets on a
+// 36 px row; i opens the track card over the list's right side, and its ✕,
+// the i again or leaving Browse closes it. No match notes are written on it.
+TEST_F(NativeDeckLabRowsTest, RowActionsAndTheInfoPanelOpenAndClose) {
+    DeckLabPressCounter previews(ConfigKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("LoadSelectedTrackAndPlay")));
+    showRows(false); // a rekordbox export's rows: the card shows each from its columns
+    auto* actions = panel->findChild<QWidget*>(QStringLiteral("decklab-row-actions")); ASSERT_NE(nullptr, actions);
+    auto* preview = panel->findChild<QPushButton*>(QStringLiteral("decklab-preview")); ASSERT_NE(nullptr, preview);
+    auto* info = panel->findChild<QPushButton*>(QStringLiteral("decklab-row-info")); ASSERT_NE(nullptr, info);
+    auto* panelInfo = panel->findChild<QWidget*>(QStringLiteral("decklab-browse-info")); ASSERT_NE(nullptr, panelInfo);
+    table->clearSelection(); settle();
+    EXPECT_FALSE(actions->isVisible()) << "nothing highlighted";
+    table->selectRow(1); settle();
+    ASSERT_TRUE(actions->isVisible());
+    EXPECT_EQ(table->viewport(), actions->parentWidget());
+    const QRect row = table->visualRect(rows->index(1, 0));
+    EXPECT_GE(actions->geometry().top(), row.top());
+    EXPECT_LE(actions->geometry().bottom(), row.bottom());
+    EXPECT_GE(preview->width(), 44); EXPECT_GE(preview->height(), 34);
+    EXPECT_GE(info->width(), 44); EXPECT_GE(info->height(), 34);
+    EXPECT_TRUE(preview->isEnabled());
+    // ▶ previews the row (r7-hunt2: Mixxx's load resolves it then, not before).
+    EXPECT_EQ(0, rows->resolved);
+    QTest::mouseClick(preview, Qt::LeftButton); QCoreApplication::processEvents();
+    EXPECT_EQ(1, previews.presses);
+    // Another row: they move with the highlight.
+    table->selectRow(3); settle();
+    EXPECT_LE(std::abs(table->visualRect(rows->index(3, 0)).center().y() - actions->geometry().center().y()), 1);
+    // i opens the card for the highlighted row; it follows the highlight.
+    EXPECT_FALSE(panelInfo->isVisible());
+    QTest::mouseClick(info, Qt::LeftButton); QCoreApplication::processEvents();
+    ASSERT_TRUE(panelInfo->isVisible());
+    auto* card = static_cast<DeckLabTrackCard*>(panel->findChild<QWidget*>(QStringLiteral("decklab-track-card")));
+    ASSERT_NE(nullptr, card);
+    EXPECT_TRUE(card->isVisible());
+    EXPECT_TRUE(panelInfo->isAncestorOf(card));
+    EXPECT_EQ(QStringLiteral("Generated Tone D"), card->title());
+    const QRect over(panelInfo->mapTo(panel.get(), QPoint()), panelInfo->size());
+    const QRect list(library->mapTo(panel.get(), QPoint()), library->size());
+    EXPECT_EQ(list.right(), over.right());
+    EXPECT_GE(over.width(), 260);
+    EXPECT_EQ(DeckLabActionButton::Tone::Selected, static_cast<DeckLabActionButton*>(info)->tone());
+    table->selectRow(0); settle();
+    EXPECT_EQ(QStringLiteral("Generated Tone A"), card->title());
+    // The card writes no match note (the rows show it): nothing it paints
+    // names a relation, with a deck to match.
+    loadGenerated(1, 122, mixxx::track::io::key::A_MINOR); ProcessBuffer(); QTest::qWait(250);
+    panel->openCollection(); settle();
+    table->selectRow(1); settle();
+    if (!panelInfo->isVisible()) QTest::mouseClick(info, Qt::LeftButton);
+    QCoreApplication::processEvents();
+    DeckLabPaintedText device;
+    {
+        QPainter painter(&device);
+        card->render(&painter);
+    }
+    for (const QString& text : device.texts()) {
+        EXPECT_FALSE(text.contains(QStringLiteral("Relative")) || text.contains(QStringLiteral("Same key")) ||
+                text.contains(QStringLiteral("BPM faster")) || text.contains(QStringLiteral("BPM slower")))
+                << text.toStdString();
+    }
+    capture(QStringLiteral("r8-browse-info.png"));
+    // ✕ closes it; i opens it and i again closes it.
+    panel->findChild<QPushButton*>(QStringLiteral("decklab-info-close"))->click(); QCoreApplication::processEvents();
+    EXPECT_FALSE(panelInfo->isVisible());
+    QTest::mouseClick(info, Qt::LeftButton); QCoreApplication::processEvents();
+    EXPECT_TRUE(panelInfo->isVisible());
+    QTest::mouseClick(info, Qt::LeftButton); QCoreApplication::processEvents();
+    EXPECT_FALSE(panelInfo->isVisible());
+    // Leaving Browse closes it.
+    QTest::mouseClick(info, Qt::LeftButton); QCoreApplication::processEvents();
+    ASSERT_TRUE(panelInfo->isVisible());
+    panel->selectPage(0); QCoreApplication::processEvents();
+    panel->selectPage(1); QCoreApplication::processEvents(); settle();
+    EXPECT_FALSE(panelInfo->isVisible());
+    // The search keyboard closes it too and keeps the dock above itself.
+    QTest::mouseClick(info, Qt::LeftButton); QCoreApplication::processEvents();
+    panel->findChild<QPushButton*>(QStringLiteral("decklab-search"))->click(); QCoreApplication::processEvents();
+    EXPECT_FALSE(panelInfo->isVisible());
+    auto* pane = panel->findChild<QWidget*>(QStringLiteral("decklab-browse-pane"));
+    EXPECT_TRUE(pane->isVisible());
+    EXPECT_TRUE(pane->isAncestorOf(panel->findChild<QWidget*>(QStringLiteral("decklab-deck-dock"))));
+    panel->findChild<QPushButton*>(QStringLiteral("decklab-search-done"))->click(); QCoreApplication::processEvents();
+    EXPECT_FALSE(pane->isVisible());
+}
+
+// r8-browse: the preview strip shows above the dock only while the
+// headphone preview plays: the title, its time, a touch on the overview
+// seeks and ✕ stops it. It never covers a LOAD target.
+TEST_F(NativeDeckLabRowsTest, PreviewStripShowsOnlyWhilePreviewingAndSeeks) {
+    players->preview = m_pPreview1.get();
+    showRows();
+    auto* strip = static_cast<DeckLabPreviewStrip*>(panel->findChild<QWidget*>(QStringLiteral("decklab-preview-strip")));
+    ASSERT_NE(nullptr, strip);
+    EXPECT_FALSE(strip->isVisible());
+    const auto track = m_pPreview1->loadFakeTrack(false, 124);
+    track->setTitle(QStringLiteral("Generated Tone P"));
+    track->setArtist(QStringLiteral("Demo Artist"));
+    // A generated overview: a swell and a break, as analysis would hand over.
+    auto summary = WaveformPointer(new Waveform(44100, 44100 * 200, 10, 1600, 0));
+    for (int n = 0; n < summary->getDataSize(); ++n) {
+        const double at = n / static_cast<double>(std::max(1, summary->getDataSize()));
+        const double level = (at > 0.45 && at < 0.55 ? 0.25 : 0.8) * (0.55 + 0.45 * std::abs(std::sin(n * 0.37)));
+        summary->data()[n].filtered.all = static_cast<unsigned char>(std::clamp(level * 255.0, 0.0, 255.0));
+    }
+    track->setWaveformSummary(summary);
+    const ConfigKey play(QStringLiteral("[PreviewDeck1]"), QStringLiteral("play"));
+    ControlObject::set(play, 1); settle();
+    ASSERT_TRUE(strip->isVisible());
+    EXPECT_EQ(DeckLabPreviewStrip::kHeight, strip->height());
+    EXPECT_TRUE(strip->title().startsWith(QStringLiteral("Generated Tone P"))) << strip->title().toStdString();
+    auto* dock = panel->findChild<QWidget*>(QStringLiteral("decklab-deck-dock"));
+    const QRect shown(strip->mapTo(panel.get(), QPoint()), strip->size());
+    const QRect targets(dock->mapTo(panel.get(), QPoint()), dock->size());
+    EXPECT_LE(shown.bottom(), targets.top()) << "above the dock";
+    EXPECT_FALSE(shown.intersects(targets));
+    EXPECT_EQ(panel->height() - 1, targets.bottom());
+    // A touch on the overview seeks the preview there.
+    const QRect overview = strip->overviewRect();
+    QTest::mouseClick(strip, Qt::LeftButton, Qt::NoModifier, QPoint(overview.left() + overview.width() * 3 / 4, overview.center().y()));
+    EXPECT_NEAR(0.75, ControlObject::get(ConfigKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("playposition"))), 0.02);
+    capture(QStringLiteral("r8-browse-previewing.png"));
+    // ✕ stops it, and the strip goes.
+    QTest::mouseClick(strip, Qt::LeftButton, Qt::NoModifier, strip->stopRect().center()); settle();
+    EXPECT_DOUBLE_EQ(0, ControlObject::get(play));
+    EXPECT_FALSE(strip->isVisible());
+    // Never off Browse.
+    ControlObject::set(play, 1); settle();
+    EXPECT_TRUE(strip->isVisible());
+    panel->selectPage(0); settle();
+    EXPECT_FALSE(strip->isVisible());
+    ControlObject::set(play, 0); settle();
+}
+
+// r8-browse: Easy Mode's settings (Settings › Library) change the one
+// matcher: the row highlights (MatchReference::keyMatch, the window), the
+// ONLY filter (matchFilterQuery) and the bar's summary, at once, saved as
+// [DeckLab] keys.
+TEST_F(NativeDeckLabRowsTest, EasyModeSettingsChangeHighlightFilterAndSummary) {
+    using decklab::HarmonicMatch;
+    loadGenerated(1, 122, mixxx::track::io::key::A_MINOR); ProcessBuffer(); QTest::qWait(250);
+    showRows();
+    const auto key = [](const char* text) { return decklab::keyFromText(QString::fromLatin1(text)); };
+    const auto reference = [] { return decklab::matchReference(); };
+    ASSERT_TRUE(reference().active());
+    EXPECT_EQ(HarmonicMatch::Same, reference().keyMatch(key("8A")));
+    EXPECT_EQ(HarmonicMatch::Relative, reference().keyMatch(key("8B")));
+    EXPECT_EQ(HarmonicMatch::Adjacent, reference().keyMatch(key("9A")));
+    EXPECT_TRUE(decklab::matchFilterQuery(reference()).contains(QStringLiteral("key:9A")));
+    auto* summary = static_cast<DeckLabTwoLineLabel*>(panel->findChild<QWidget*>(QStringLiteral("decklab-match-summary")));
+    ASSERT_NE(nullptr, summary);
+    EXPECT_EQ(QString::fromUtf8("Key: same ±1 rel"), summary->secondary());
+    // Settings › Library › Easy Mode.
+    panel->selectPage(4); QCoreApplication::processEvents();
+    panel->findChild<QPushButton*>(QStringLiteral("decklab-settings-category-4"))->click(); QTest::qWait(50);
+    auto* easy = panel->findChild<decklab::ui::SwitchRow*>(QStringLiteral("decklab-easy-mode"));
+    auto* matchOn = panel->findChild<decklab::ui::ChoiceRow*>(QStringLiteral("decklab-settings-easy-match-on"));
+    auto* keys = panel->findChild<decklab::ui::ChoiceRow*>(QStringLiteral("decklab-settings-easy-keys"));
+    auto* range = panel->findChild<decklab::ui::ChoiceRow*>(QStringLiteral("decklab-settings-easy-range"));
+    ASSERT_TRUE(easy && matchOn && keys && range);
+    EXPECT_TRUE(easy->isChecked());
+    EXPECT_EQ(0, matchOn->currentIndex());
+    EXPECT_EQ(0, keys->currentIndex());
+    EXPECT_EQ(1, range->currentIndex()) << "6% until chosen";
+    if (auto* scroll = panel->findChild<QScrollArea*>(QStringLiteral("decklab-settings-scroll-4"))) {
+        scroll->ensureWidgetVisible(range, 0, 0); QCoreApplication::processEvents();
+    }
+    capture(QStringLiteral("r8-settings-easy-mode.png"));
+    // Same key only.
+    keys->choose(2); QCoreApplication::processEvents();
+    EXPECT_EQ(decklab::KeyRule::Same, reference().keys);
+    EXPECT_EQ(HarmonicMatch::Same, reference().keyMatch(key("8A")));
+    EXPECT_EQ(HarmonicMatch::None, reference().keyMatch(key("8B")));
+    EXPECT_EQ(HarmonicMatch::None, reference().keyMatch(key("9A")));
+    QString query = decklab::matchFilterQuery(reference());
+    EXPECT_TRUE(query.contains(QStringLiteral("key:8A")));
+    EXPECT_FALSE(query.contains(QStringLiteral("key:8B")) || query.contains(QStringLiteral("key:9A"))) << query.toStdString();
+    EXPECT_EQ(2, config()->getValue(ConfigKey("[DeckLab]", "EasyModeKeys"), -1));
+    // Same key and relative.
+    keys->choose(1); QCoreApplication::processEvents();
+    EXPECT_EQ(HarmonicMatch::Relative, reference().keyMatch(key("8B")));
+    EXPECT_EQ(HarmonicMatch::None, reference().keyMatch(key("9A")));
+    query = decklab::matchFilterQuery(reference());
+    EXPECT_TRUE(query.contains(QStringLiteral("key:8B")));
+    EXPECT_FALSE(query.contains(QStringLiteral("key:9A")));
+    // ±16%: a wider window, in the highlight and the filter.
+    range->choose(3); QCoreApplication::processEvents();
+    EXPECT_NEAR(0.16, reference().tolerance, 1e-9);
+    EXPECT_TRUE(decklab::tempoInWindow(140, reference().window()));
+    EXPECT_TRUE(decklab::matchFilterQuery(reference()).contains(QStringLiteral("bpm:102.48-141.52")));
+    EXPECT_EQ(16, config()->getValue(ConfigKey("[DeckLab]", "EasyModeBpmRange"), -1));
+    // The bar says the same, back on Browse.
+    panel->selectPage(1); QCoreApplication::processEvents(); settle();
+    ASSERT_TRUE(summary->isVisible());
+    EXPECT_EQ(QString::fromUtf8("102–142 BPM"), summary->primary());
+    EXPECT_EQ(QStringLiteral("Key: same, rel"), summary->secondary());
+    // Key only: any tempo; the BPM range waits.
+    panel->selectPage(4); QCoreApplication::processEvents();
+    matchOn->choose(1); QCoreApplication::processEvents();
+    EXPECT_FALSE(reference().window().isValid());
+    EXPECT_FALSE(decklab::matchFilterQuery(reference()).contains(QStringLiteral("bpm:")));
+    EXPECT_FALSE(decklab::tempoInWindow(122, reference().window())) << "no BPM highlight";
+    EXPECT_FALSE(range->isEnabled());
+    EXPECT_TRUE(keys->isEnabled());
+    // BPM only: no key highlight, no key terms; the key rule waits.
+    matchOn->choose(2); QCoreApplication::processEvents();
+    EXPECT_EQ(HarmonicMatch::None, reference().keyMatch(key("8A")));
+    EXPECT_TRUE(reference().anyKey());
+    query = decklab::matchFilterQuery(reference());
+    EXPECT_FALSE(query.contains(QStringLiteral("key:")));
+    EXPECT_TRUE(query.contains(QStringLiteral("bpm:")));
+    EXPECT_FALSE(keys->isEnabled());
+    EXPECT_EQ(2, config()->getValue(ConfigKey("[DeckLab]", "EasyModeMatchOn"), -1));
+    // Saved: a new surface reads them back.
+    const decklab::EasyMode saved = decklab::loadEasyMode(config());
+    EXPECT_EQ(decklab::MatchOn::BpmOnly, saved.matchOn);
+    EXPECT_EQ(decklab::KeyRule::Relative, saved.keys);
+    EXPECT_EQ(16, saved.rangePercent);
+}
+
+// r8-browse: Easy Mode off (Settings) hides the EASY MODE button and the
+// bar and turns the highlights off; the bar shows only while Easy Mode is
+// engaged on a loaded deck, otherwise its height goes to the rows.
+TEST_F(NativeDeckLabRowsTest, FilterBarOnlyWhileEasyModeIsEngaged) {
+    showRows();
+    auto* bar = panel->findChild<QWidget*>(QStringLiteral("decklab-match-bar")); ASSERT_NE(nullptr, bar);
+    auto* match = static_cast<DeckLabActionButton*>(panel->findChild<QPushButton*>(QStringLiteral("decklab-browse-match")));
+    ASSERT_NE(nullptr, match);
+    EXPECT_FALSE(bar->isVisible()) << "no deck: no bar";
+    EXPECT_TRUE(match->isVisible());
+    const int rowsAlone = library->height();
+    loadGenerated(1, 122, mixxx::track::io::key::A_MINOR); ProcessBuffer(); QTest::qWait(250);
+    panel->openCollection(); settle();
+    ASSERT_TRUE(bar->isVisible());
+    EXPECT_LT(library->height(), rowsAlone);
+    capture(QStringLiteral("r8-browse-easy-mode-bar.png"));
+    // Off on the button: no bar, the rows get the height back.
+    match->click(); settle();
+    EXPECT_FALSE(bar->isVisible());
+    EXPECT_EQ(rowsAlone, library->height());
+    EXPECT_FALSE(decklab::matchReference().active());
+    match->click(); settle();
+    EXPECT_TRUE(bar->isVisible());
+    // Easy Mode off in Settings: no button, no bar, no highlights.
+    panel->selectPage(4); QCoreApplication::processEvents();
+    panel->findChild<QPushButton*>(QStringLiteral("decklab-settings-category-4"))->click(); QTest::qWait(50);
+    auto* easy = panel->findChild<decklab::ui::SwitchRow*>(QStringLiteral("decklab-easy-mode")); ASSERT_NE(nullptr, easy);
+    easy->click(); QCoreApplication::processEvents();
+    EXPECT_FALSE(easy->isChecked());
+    EXPECT_EQ(0, config()->getValue(ConfigKey("[DeckLab]", "EasyMode"), -1));
+    EXPECT_FALSE(decklab::matchReference().active());
+    EXPECT_TRUE(decklab::matchFilterQuery(decklab::matchReference()).isEmpty());
+    EXPECT_FALSE(panel->findChild<decklab::ui::ChoiceRow*>(QStringLiteral("decklab-settings-easy-keys"))->isEnabled());
+    panel->selectPage(1); QCoreApplication::processEvents(); settle();
+    EXPECT_FALSE(match->isVisible());
+    EXPECT_FALSE(bar->isVisible());
+    EXPECT_EQ(rowsAlone, library->height());
+    // On again: as it was.
+    panel->selectPage(4); QCoreApplication::processEvents();
+    easy->click(); QCoreApplication::processEvents();
+    panel->selectPage(1); QCoreApplication::processEvents(); settle();
+    EXPECT_TRUE(match->isVisible());
+    EXPECT_TRUE(bar->isVisible());
+    EXPECT_TRUE(decklab::matchReference().active());
+}
+
+// r8-browse: the Deck Lab mark and the Decks tab are one tap target: a tap
+// on the mark goes to Decks, and the two show the press and the page together.
+TEST_F(NativeDeckLabTest, LogoAndDecksTabAreOneTargetToDecks) {
+    panel->selectPage(1); QCoreApplication::processEvents();
+    auto* mark = panel->findChild<QWidget*>(QStringLiteral("decklab-mark")); ASSERT_NE(nullptr, mark);
+    auto* decks = panel->findChild<QPushButton*>(QStringLiteral("decklab-tab-0")); ASSERT_NE(nullptr, decks);
+    EXPECT_FALSE(mark->testAttribute(Qt::WA_TransparentForMouseEvents));
+    EXPECT_EQ(mark->geometry().right() + 1, decks->geometry().left()) << "side by side";
+    QTest::mousePress(mark, Qt::LeftButton); QCoreApplication::processEvents();
+    EXPECT_TRUE(decks->isDown()) << "pressed together";
+    EXPECT_EQ(1, panel->currentPage());
+    QTest::mouseRelease(mark, Qt::LeftButton); QCoreApplication::processEvents();
+    EXPECT_FALSE(decks->isDown());
+    EXPECT_EQ(0, panel->currentPage());
+    EXPECT_TRUE(decks->isChecked());
+    // Lit together: the tab's underline runs under the mark.
+    const QImage lit = mark->grab().toImage();
+    EXPECT_EQ(QColor(0xf2, 0xf4, 0xf7), lit.pixelColor(4, lit.height() - 2));
+    // A press that slides off the mark goes nowhere.
+    panel->selectPage(1); QCoreApplication::processEvents();
+    QTest::mousePress(mark, Qt::LeftButton);
+    QTest::mouseRelease(mark, Qt::LeftButton, Qt::NoModifier, QPoint(mark->width() + 40, 10));
+    EXPECT_EQ(1, panel->currentPage());
+    const QImage unlit = mark->grab().toImage();
+    EXPECT_NE(QColor(0xf2, 0xf4, 0xf7), unlit.pixelColor(4, unlit.height() - 2));
+}
+
+// r8-browse (the owner's addition): a row swiped left loads the left deck,
+// right the right deck, through the LOAD tile's own path: its guards,
+// loadDeck and the refusal of a deck on air. A short or vertical drag loads
+// nothing, the row snaps back.
+TEST_F(NativeDeckLabRowsTest, RowSwipesLoadTheLeftAndRightDecksThroughLoadsPath) {
+    showRows();
+    DeckLabPressCounter load1(ConfigKey(QStringLiteral("[Channel1]"), QStringLiteral("LoadSelectedTrack")));
+    DeckLabPressCounter load2(ConfigKey(QStringLiteral("[Channel2]"), QStringLiteral("LoadSelectedTrack")));
+    DeckLabPressCounter load3(ConfigKey(QStringLiteral("[Channel3]"), QStringLiteral("LoadSelectedTrack")));
+    QWidget* viewport = table->viewport();
+    const int middle = viewport->width() / 2;
+    // Left: deck 1, and the swiped row is the one loaded (highlighted).
+    dragPointer(viewport, rowPoint(2, middle), rowPoint(2, middle - 120));
+    EXPECT_EQ(1, load1.presses);
+    EXPECT_EQ(0, load2.presses);
+    EXPECT_EQ(2, table->currentIndex().row());
+    auto* shade = panel->findChild<QWidget*>(QStringLiteral("decklab-row-swipe"));
+    ASSERT_NE(nullptr, shade);
+    EXPECT_FALSE(shade->isVisible()) << "the row is back";
+    // Right: deck 2.
+    dragPointer(viewport, rowPoint(1, middle), rowPoint(1, middle + 120));
+    EXPECT_EQ(1, load1.presses);
+    EXPECT_EQ(1, load2.presses);
+    EXPECT_EQ(1, table->currentIndex().row());
+    // Short: nothing, the row snaps back.
+    dragPointer(viewport, rowPoint(0, middle), rowPoint(0, middle - 40));
+    EXPECT_EQ(1, load1.presses);
+    EXPECT_FALSE(shade->isVisible());
+    // Vertical (a scroll), or not clearly sideways: nothing.
+    dragPointer(viewport, rowPoint(0, middle), rowPoint(0, middle) + QPoint(-30, 120));
+    dragPointer(viewport, rowPoint(3, middle), rowPoint(3, middle) + QPoint(-80, -60));
+    EXPECT_EQ(1, load1.presses);
+    EXPECT_EQ(1, load2.presses);
+    // The left deck follows the layer, as the dock's left tile does.
+    ControlObject::set(ConfigKey(QStringLiteral("[DeckLabLeft]"), QStringLiteral("current")), 1); settle();
+    ASSERT_EQ(3, static_cast<DeckLabDockTile*>(panel->findChild<QPushButton*>(QStringLiteral("decklab-load-1")))->deck());
+    dragPointer(viewport, rowPoint(4, middle), rowPoint(4, middle - 120));
+    EXPECT_EQ(1, load3.presses);
+    EXPECT_EQ(1, load1.presses);
+    ControlObject::set(ConfigKey(QStringLiteral("[DeckLabLeft]"), QStringLiteral("current")), 0); settle();
+    // A finger on the touch screen: the same swipe, right to deck 2.
+    swipeTouch(viewport, rowPoint(3, middle - 60), rowPoint(3, middle + 80));
+    settle();
+    EXPECT_EQ(2, load2.presses) << "a touch swipe";
+    EXPECT_EQ(3, table->currentIndex().row());
+    // A touch scroll (vertical) loads nothing.
+    swipeTouch(viewport, rowPoint(4, middle), rowPoint(0, middle + 20));
+    settle();
+    EXPECT_EQ(2, load2.presses);
+    EXPECT_EQ(1, load1.presses);
+    // A page change mid-swipe (the epoch): the stale swipe loads nothing.
+    dragPointer(viewport, rowPoint(1, middle), rowPoint(1, middle - 120), false);
+    panel->selectPage(0); panel->selectPage(1); settle();
+    releasePointer(viewport, rowPoint(1, middle - 120));
+    EXPECT_EQ(1, load1.presses);
+}
+
+// r8-browse: a swipe toward a deck on air loads nothing and says what its
+// LOAD tile says.
+TEST_F(NativeDeckLabRowsTest, ASwipeTowardADeckOnAirIsRefusedWithTheTilesMessage) {
+    loadGenerated(1, 122); ProcessBuffer();
+    ControlObject::set(ConfigKey("[Channel1]", "play"), 1); ProcessBuffer(); QTest::qWait(150);
+    showRows();
+    DeckLabPressCounter load1(ConfigKey(QStringLiteral("[Channel1]"), QStringLiteral("LoadSelectedTrack")));
+    QWidget* viewport = table->viewport();
+    const int middle = viewport->width() / 2;
+    dragPointer(viewport, rowPoint(1, middle), rowPoint(1, middle - 120));
+    EXPECT_EQ(0, load1.presses);
+    auto* toast = panel->findChild<QLabel*>(QStringLiteral("decklab-toast")); ASSERT_NE(nullptr, toast);
+    EXPECT_TRUE(toast->isVisible());
+    EXPECT_EQ(QStringLiteral("Deck 1 is on air. Pause it first."), toast->text());
+    EXPECT_TRUE(static_cast<DeckLabDockTile*>(panel->findChild<QPushButton*>(QStringLiteral("decklab-load-1")))->refusing());
+    EXPECT_DOUBLE_EQ(1, ControlObject::get(ConfigKey("[Channel1]", "play")));
+    ControlObject::set(ConfigKey("[Channel1]", "play"), 0); ProcessBuffer();
+}
+
+// r8-browse: a hold on a row (450 ms, still) previews it and shows the
+// strip; it is never also a tap, a swipe or a LOAD, and the preview plays on
+// after the release. A rekordbox row is resolved only by that preview.
+TEST_F(NativeDeckLabRowsTest, AHeldRowStartsThePreviewAndTheStrip) {
+    players->preview = m_pPreview1.get();
+    showRows(false);
+    DeckLabPressCounter preview(ConfigKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("LoadSelectedTrackAndPlay")));
+    DeckLabPressCounter load1(ConfigKey(QStringLiteral("[Channel1]"), QStringLiteral("LoadSelectedTrack")));
+    QWidget* viewport = table->viewport();
+    const QPoint at = rowPoint(3);
+    // A short press is a tap: it highlights, nothing plays.
+    QTest::mousePress(viewport, Qt::LeftButton, Qt::NoModifier, at); QTest::qWait(100);
+    QTest::mouseRelease(viewport, Qt::LeftButton, Qt::NoModifier, at); settle();
+    EXPECT_EQ(3, table->currentIndex().row());
+    EXPECT_EQ(0, preview.presses);
+    EXPECT_EQ(0, rows->resolved);
+    // A hold on another row previews that row.
+    const QPoint other = rowPoint(1);
+    QTest::mousePress(viewport, Qt::LeftButton, Qt::NoModifier, other); QTest::qWait(600);
+    EXPECT_EQ(1, preview.presses);
+    EXPECT_EQ(1, table->currentIndex().row());
+    QTest::mouseRelease(viewport, Qt::LeftButton, Qt::NoModifier, other); settle();
+    EXPECT_EQ(1, preview.presses) << "the release is not another press";
+    EXPECT_EQ(0, load1.presses);
+    // A finger held on a row on the touch screen previews it too.
+    {
+        static auto* device = QTest::createTouchDevice();
+        const QPoint third = rowPoint(2);
+        auto touch = QTest::touchEvent(viewport, device, false);
+        touch.press(0, third, viewport).commit();
+        QTest::qWait(900);
+        touch.release(0, third, viewport).commit();
+        QTest::qWait(100);
+        settle();
+    }
+    EXPECT_EQ(2, preview.presses) << "a touch hold";
+    EXPECT_EQ(2, table->currentIndex().row());
+    EXPECT_EQ(0, load1.presses);
+    // The preview deck plays it (the engine's part, here by hand): the strip.
+    m_pPreview1->loadFakeTrack(false, 124);
+    ControlObject::set(ConfigKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("play")), 1); settle();
+    auto* strip = panel->findChild<QWidget*>(QStringLiteral("decklab-preview-strip")); ASSERT_NE(nullptr, strip);
+    EXPECT_TRUE(strip->isVisible());
+    ControlObject::set(ConfigKey(QStringLiteral("[PreviewDeck1]"), QStringLiteral("play")), 0); settle();
+    EXPECT_FALSE(strip->isVisible());
 }
