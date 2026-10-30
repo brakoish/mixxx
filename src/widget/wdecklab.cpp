@@ -2516,6 +2516,9 @@ QWidget* WDeckLab::buildBrowse() {
             const auto* resize = static_cast<QResizeEvent*>(event);
             if (resize->oldSize().height() != resize->size().height()) m_browseState->items->doItemsLayout();
         }
+        // r8-browse: a History or Mixes row's ▶ and i once the list has its
+        // size (Browse shown again lays it out after the row is placed).
+        if (event->type() == QEvent::Resize) scheduleRowActions();
         return false;
     });
     new DeckLabEventHook(b.items, [this](QObject*, QEvent* event) {
