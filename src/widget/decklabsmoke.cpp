@@ -20,6 +20,7 @@
 #include <QPainter>
 #include <QPixmap>
 #include <QPushButton>
+#include <QMouseEvent> // r8-browse: a row swipe caught mid-way
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSet> // r7-recent
@@ -80,6 +81,14 @@ constexpr int kLargeFirst = kSystemFirst + 20; // two 1024x600 captures
 constexpr int kLargeCount = 2;
 constexpr int kSheetFirst = kLargeFirst + kLargeCount; // Deck Lab sheets
 constexpr int kSheetCount = 3;
+
+// r8-browse: a pointer on a widget (a desktop mouse, or a touch Qt hands
+// over as mouse events), for a row swipe caught mid-way.
+void sendPointer(QWidget* target, QEvent::Type type, const QPoint& at) {
+    QMouseEvent event(type, at, target->mapToGlobal(at), Qt::LeftButton,
+            type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(target, &event);
+}
 
 void clickVisible(QWidget* root, const QString& name, const QString& text = QString()) {
     for (auto* button : root->findChildren<QPushButton*>(name)) {
@@ -931,11 +940,70 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                          if (const TrackPointer loaded = PlayerInfo::instance().getTrackInfo(QStringLiteral("[Channel1]"))) {
                              loaded->trySetBpm(122.0);
                          }
+                         // r8-browse: Easy Mode engaged on deck 1: its bar over
+                         // the rows, the rows' key pills and BPM differences.
                          surface->selectPage(1);
                          return selectTrack(surface, "Spiral Steps");
                      }},
-                    {"match-bar", 900, [surface] {
-                         // Faster tracks only, filtered: the Match bar and the
+                    {"info", 900, [surface, failures] {
+                         // r8-browse: the highlighted row's i opens the track card
+                         // over the list's right side (cover, BPM, key, time).
+                         if (!surface->findChild<QWidget*>(QStringLiteral("decklab-match-bar"))->isVisible())
+                             failures->append(QStringLiteral("Easy Mode engaged on a deck shows no bar"));
+                         clickVisible(surface, QStringLiteral("decklab-row-info"));
+                         QCoreApplication::processEvents();
+                         return surface->findChild<QWidget*>(QStringLiteral("decklab-browse-info"))->isVisible();
+                     }},
+                    {"previewing", 1400, [surface] {
+                         // r8-browse: ✕ closes the card; ▶ on the row previews it
+                         // in the headphones (the smoke has no sound device), and
+                         // the strip shows above the dock while it plays.
+                         clickVisible(surface, QStringLiteral("decklab-info-close"));
+                         QCoreApplication::processEvents();
+                         if (surface->findChild<QWidget*>(QStringLiteral("decklab-browse-info"))->isVisible()) return false;
+                         clickVisible(surface, QStringLiteral("decklab-preview"));
+                         return true;
+                     }},
+                    {"row-swipe", 700, [surface, failures] {
+                         auto* strip = static_cast<DeckLabPreviewStrip*>(surface->findChild<QWidget*>(QStringLiteral("decklab-preview-strip")));
+                         if (!strip || !strip->isVisible()) failures->append(QStringLiteral("No preview strip while previewing"));
+                         // ✕ on the strip stops the preview; the strip goes.
+                         if (strip && strip->isVisible()) {
+                             sendPointer(strip, QEvent::MouseButtonPress, strip->stopRect().center());
+                             sendPointer(strip, QEvent::MouseButtonRelease, strip->stopRect().center());
+                         }
+                         // r8-browse: a row caught mid-swipe toward the left deck:
+                         // the row slides and deck 1's colour and number show.
+                         auto* library = surface->findChild<WLibrary*>();
+                         auto* table = library ? library->getCurrentTrackTableView() : nullptr;
+                         auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
+                         if (!tracks || table->model()->rowCount() < 2) return false;
+                         const QRect row = table->visualRect(table->model()->index(1, 0));
+                         const QPoint from(table->viewport()->width() / 2, row.center().y());
+                         sendPointer(table->viewport(), QEvent::MouseButtonPress, from);
+                         for (int step = 1; step <= 5; ++step) {
+                             sendPointer(table->viewport(), QEvent::MouseMove, from - QPoint(18 * step, 0));
+                             QCoreApplication::processEvents();
+                         }
+                         auto* shade = table->viewport()->findChild<QWidget*>(QStringLiteral("decklab-row-swipe"));
+                         return shade && shade->isVisible();
+                     }},
+                    {"match-bar", 900, [surface, failures] {
+                         // r8-browse: the swipe let go short of a load: the row is
+                         // back and nothing loaded.
+                         auto* library = surface->findChild<WLibrary*>();
+                         if (auto* table = library ? library->getCurrentTrackTableView() : nullptr) {
+                             const QRect row = table->visualRect(table->model()->index(1, 0));
+                             const QPoint at(table->viewport()->width() / 2 - 20, row.center().y());
+                             sendPointer(table->viewport(), QEvent::MouseMove, at);
+                             sendPointer(table->viewport(), QEvent::MouseButtonRelease, at);
+                             QCoreApplication::processEvents();
+                             auto* shade = table->viewport()->findChild<QWidget*>(QStringLiteral("decklab-row-swipe"));
+                             if (shade && shade->isVisible()) failures->append(QStringLiteral("A short swipe left the row slid"));
+                         }
+                         if (ControlObject::get(ConfigKey(QStringLiteral("[Channel2]"), QStringLiteral("track_loaded"))) > 0)
+                             failures->append(QStringLiteral("A short swipe loaded a deck"));
+                         // Faster tracks only, filtered: the Easy Mode bar and the
                          // breadcrumb say what is shown.
                          clickVisible(surface, QStringLiteral("decklab-match-faster"));
                          clickVisible(surface, QStringLiteral("decklab-match-only"));
@@ -1150,18 +1218,18 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                          return selectListItem(surface, decklab::categoryName(decklab::Category::RecentlyAdded));
                      }},
                     {"recently-added", 900, [surface, failures] {
-                         // Its tracks, newest first, each with its day first: the
-                         // Library's own rows (the folder table).
+                         // Its tracks, newest first: the Library's own rows (the
+                         // folder table). r8-browse: no date column; each day's
+                         // first row is a divider naming the day.
                          surface->browsePress();
                          QCoreApplication::processEvents();
                          auto* library = surface->findChild<WLibrary*>();
                          auto* table = library ? library->getCurrentTrackTableView() : nullptr;
                          auto* tracks = table ? dynamic_cast<TrackModel*>(table->model()) : nullptr;
                          const int added = tracks ? tracks->columnIndexFromSortColumnId(TrackModel::SortColumnId::DateTimeAdded) : -1;
-                         if (added < 0 || table->isColumnHidden(added) || table->horizontalHeader()->visualIndex(added) != 0 ||
-                                 !table->itemDelegateForColumn(added) ||
-                                 !table->itemDelegateForColumn(added)->property("decklabDay").toBool()) {
-                             failures->append(QStringLiteral("Recently Added shows no day column"));
+                         if (added < 0 || !table->isColumnHidden(added) ||
+                                 !table->model()->property(decklab::kDayDividersProperty).toBool()) {
+                             failures->append(QStringLiteral("Recently Added shows a date column or no day dividers"));
                          }
                          for (int row = 1; added >= 0 && row < table->model()->rowCount(); ++row) {
                              if (table->model()->index(row, added).data().toDate() > table->model()->index(row - 1, added).data().toDate())
@@ -1231,6 +1299,21 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                              failures->append(QString(QStringLiteral("Playlist folder out of order: ") + order.join(QStringLiteral(", "))));
                          return selectTrack(surface, QStringLiteral("Second Wind"));
                      }},
+                    {"settings-easy-mode", 700, [surface, failures] {
+                         // r8-browse: Settings › Library › Easy Mode: on/off, what
+                         // it matches on, which keys and how wide the BPM range.
+                         surface->selectPage(4);
+                         clickVisible(surface, QStringLiteral("decklab-settings-category-4"));
+                         QCoreApplication::processEvents();
+                         auto* range = surface->findChild<QWidget*>(QStringLiteral("decklab-settings-easy-range"));
+                         auto* scroll = surface->findChild<QScrollArea*>(QStringLiteral("decklab-settings-scroll-4"));
+                         if (!range || !scroll) {
+                             failures->append(QStringLiteral("Settings has no Easy Mode rows"));
+                             return false;
+                         }
+                         scroll->ensureWidgetVisible(range, 0, 0);
+                         return range->isVisible();
+                     }},
                     {"samples-pad", 900, [surface, failures] {
                          // A pad's Load opens on SAMPLES, with ALL MUSIC for the rest.
                          auto* page = surface->findChild<DeckLabSampler*>(QStringLiteral("decklab-sampler"));
@@ -1259,10 +1342,13 @@ void startDeckLabSmoke(WDeckLab* surface, UserSettingsPointer config) {
                 if (!capture.action()) failures->append(QString(QStringLiteral("Browse capture could not reach: ") + capture.name));
                 QTimer::singleShot(capture.waitMs, surface, [=] {
                     check();
-                    // Browse touch targets keep 44 px in the real surface style.
+                    // Browse touch targets keep 44 px in the real surface style
+                    // (r8-browse: ▶ and i on a 36 px row are 44 x 34).
                     if (auto* browse = surface->findChild<QWidget*>(QStringLiteral("decklab-browse"))) {
                         for (auto* button : browse->findChildren<QPushButton*>()) {
-                            if (button->isVisible() && button->height() < 44) {
+                            const bool onRow = button->parentWidget() &&
+                                    button->parentWidget()->objectName() == QStringLiteral("decklab-row-actions");
+                            if (button->isVisible() && button->height() < (onRow ? decklab::kTrackRowHeight - 2 : 44)) {
                                 failures->append(QStringLiteral("Small Browse touch target %1 (%2 px)")
                                                          .arg(button->objectName())
                                                          .arg(button->height()));
